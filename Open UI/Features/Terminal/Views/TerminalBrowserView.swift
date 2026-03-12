@@ -14,6 +14,7 @@ struct TerminalBrowserView: View {
     var onDismiss: () -> Void
 
     @Environment(\.theme) private var theme
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @State private var showFilePicker = false
     @State private var previewFileURL: URL?
     @State private var shareFileURL: URL?
@@ -54,7 +55,9 @@ struct TerminalBrowserView: View {
             terminalToggleBar
         }
         .background(theme.background)
-        .ignoresSafeArea(.keyboard)
+        .if(horizontalSizeClass == .regular) { view in
+            view.ignoresSafeArea(.keyboard)
+        }
         .task {
             await viewModel.loadDirectory()
         }

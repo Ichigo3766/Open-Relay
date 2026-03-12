@@ -5,9 +5,14 @@
 ### What's New
 
 ### Improvements
-- Full iPad layout overhaul
+- Full iPad layout overhaul — persistent sidebar, centered reading width, 4-column prompt grid, terminal as persistent panel.
+- Added example URL placeholder in the server connection field so users know to include http:// or https:// in their URL.
+- Moved the terminal toggle from the pills row to a compact inline icon next to the voice button, keeping the chat input single-line when no quick pills are pinned.
+- Redesigned onboarding experience.
 
 ### Bug Fixes
+- Fixed floating/compact keyboard on iPad pushing the chat layout up as if it were a full docked keyboard.
+- Fixed dollar amounts being incorrectly rendered as math equations instead of plain text.
 
 ## Previous Builds
 
