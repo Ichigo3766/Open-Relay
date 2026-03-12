@@ -145,7 +145,7 @@ struct ChatInputField: View {
     }
 
     private var hasQuickPills: Bool {
-        !activeQuickPills.isEmpty || isTerminalAvailable
+        !activeQuickPills.isEmpty
     }
 
     /// Whether the voice icon button should appear in the pills row.
@@ -227,6 +227,7 @@ struct ChatInputField: View {
             HStack(alignment: .center, spacing: 8) {
                 inlinePlusButton
                 textField
+                inlineTerminalButton
                 trailingButton
             }
             .padding(.horizontal, 12)
@@ -345,6 +346,109 @@ struct ChatInputField: View {
         .accessibilityLabel(placeholder)
     }
 
+    // MARK: - Inline Terminal Button
+
+    /// Compact terminal icon that sits inline in the text row.
+    /// - Single server: tap toggles on/off
+    /// - Multiple servers: tap opens a Menu for server selection
+    @ViewBuilder
+    private var inlineTerminalButton: some View {
+        if isTerminalAvailable, let onTerminalToggle {
+            let hasMultiple = availableTerminalServers.count > 1
+
+            if hasMultiple {
+                Menu {
+                    Button {
+                        withAnimation(.easeOut(duration: 0.15)) { onTerminalToggle() }
+                        Haptics.play(.light)
+                    } label: {
+                        Label(
+                            terminalEnabled ? "Disable Terminal" : "Enable Terminal",
+                            systemImage: terminalEnabled ? "xmark.circle" : "checkmark.circle"
+                        )
+                    }
+
+                    if terminalEnabled, let onBrowseFiles {
+                        Button {
+                            onBrowseFiles()
+                            Haptics.play(.light)
+                        } label: {
+                            Label("Browse Files", systemImage: "folder")
+                        }
+                    }
+
+                    Divider()
+
+                    ForEach(availableTerminalServers) { server in
+                        Button {
+                            onTerminalServerSelected?(server)
+                            if !terminalEnabled {
+                                withAnimation(.easeOut(duration: 0.15)) { onTerminalToggle() }
+                            }
+                            Haptics.play(.light)
+                        } label: {
+                            HStack {
+                                Text(server.displayName)
+                                if server.id == (availableTerminalServers.first(where: { $0.displayName == terminalServerName })?.id ?? "") {
+                                    Image(systemName: "checkmark")
+                                }
+                            }
+                        }
+                    }
+                } label: {
+                    terminalIconLabel
+                }
+                .buttonStyle(.plain)
+                .disabled(!isEnabled)
+                .animation(.easeInOut(duration: 0.15), value: terminalEnabled)
+                .transition(.scale.combined(with: .opacity))
+            } else {
+                Button {
+                    withAnimation(.easeOut(duration: 0.15)) { onTerminalToggle() }
+                    Haptics.play(.light)
+                } label: {
+                    terminalIconLabel
+                }
+                .buttonStyle(.plain)
+                .disabled(!isEnabled)
+                .animation(.easeInOut(duration: 0.15), value: terminalEnabled)
+                .transition(.scale.combined(with: .opacity))
+            }
+        }
+    }
+
+    /// The compact circular terminal icon used in the inline position.
+    private var terminalIconLabel: some View {
+        Circle()
+            .fill(
+                terminalEnabled
+                    ? theme.brandPrimary.opacity(0.12)
+                    : Color.clear
+            )
+            .frame(width: 30, height: 30)
+            .overlay(
+                Image(systemName: "terminal")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(
+                        terminalEnabled
+                            ? theme.brandPrimary
+                            : theme.textTertiary
+                    )
+            )
+            .overlay(
+                Circle()
+                    .strokeBorder(
+                        terminalEnabled
+                            ? theme.brandPrimary.opacity(0.4)
+                            : Color.clear,
+                        lineWidth: 1
+                    )
+            )
+            .opacity(isEnabled ? 1.0 : 0.4)
+            .accessibilityLabel("Terminal")
+            .accessibilityValue(terminalEnabled ? "Enabled" : "Disabled")
+    }
+
     // MARK: - Trailing Button (Send / Stop / Voice)
 
     private var trailingButton: some View {
@@ -429,13 +533,6 @@ struct ChatInputField: View {
                 HStack(spacing: 6) {
                     ForEach(activeQuickPills, id: \.id) { pill in
                         pillButton(pill)
-                    }
-
-                    // Terminal pill — inline with other pills in the scroll area.
-                    // Tap toggles on/off. Long-press (context menu) lets user
-                    // switch between multiple terminal servers when available.
-                    if isTerminalAvailable, let onTerminalToggle {
-                        terminalPillView(onToggle: onTerminalToggle)
                     }
                 }
             }
@@ -573,119 +670,6 @@ struct ChatInputField: View {
         .buttonStyle(.plain)
         .disabled(!isEnabled)
         .animation(.easeInOut(duration: 0.15), value: pill.isActive)
-    }
-
-    // MARK: - Terminal Pill
-
-    /// Terminal pill with tap-to-toggle and long-press context menu for
-    /// switching between multiple terminal servers.
-    /// - 1 server: simple tap toggle, no context menu
-    /// - 2+ servers: tap toggles, long-press shows server picker with chevron hint
-    @ViewBuilder
-    private func terminalPillView(onToggle: @escaping () -> Void) -> some View {
-        let hasMultiple = availableTerminalServers.count > 1
-        let label = terminalServerName.isEmpty ? "Oterm" : terminalServerName
-
-        let pillLabel = HStack(spacing: 4) {
-            Image(systemName: "terminal")
-                .font(.system(size: 11, weight: .semibold))
-            Text(label)
-                .font(.system(size: 12, weight: terminalEnabled ? .semibold : .medium))
-            // Show a small chevron hint when multiple servers exist
-            if hasMultiple {
-                Image(systemName: "chevron.up.chevron.down")
-                    .font(.system(size: 8, weight: .semibold))
-            }
-        }
-        .foregroundStyle(terminalEnabled ? theme.brandPrimary : theme.textSecondary)
-        .padding(.horizontal, 10)
-        .padding(.vertical, 5)
-        .background(
-            Capsule()
-                .fill(
-                    terminalEnabled
-                        ? theme.brandPrimary.opacity(0.12)
-                        : theme.surfaceContainer.opacity(0.6)
-                )
-        )
-        .overlay(
-            Capsule()
-                .strokeBorder(
-                    terminalEnabled
-                        ? theme.brandPrimary.opacity(0.4)
-                        : Color.clear,
-                    lineWidth: 1
-                )
-        )
-
-        if hasMultiple {
-            // Multiple servers: use Menu for tap (shows picker),
-            // with a toggle option at the top
-            Menu {
-                // Toggle on/off option
-                Button {
-                    withAnimation(.easeOut(duration: 0.15)) { onToggle() }
-                    Haptics.play(.light)
-                } label: {
-                    Label(
-                        terminalEnabled ? "Disable Terminal" : "Enable Terminal",
-                        systemImage: terminalEnabled ? "xmark.circle" : "checkmark.circle"
-                    )
-                }
-
-                // Browse Files option
-                if terminalEnabled, let onBrowseFiles {
-                    Button {
-                        onBrowseFiles()
-                        Haptics.play(.light)
-                    } label: {
-                        Label("Browse Files", systemImage: "folder")
-                    }
-                }
-
-                Divider()
-
-                // Server picker — each server as a selectable option
-                ForEach(availableTerminalServers) { server in
-                    Button {
-                        onTerminalServerSelected?(server)
-                        // Auto-enable terminal when selecting a server
-                        if !terminalEnabled {
-                            withAnimation(.easeOut(duration: 0.15)) { onToggle() }
-                        }
-                        Haptics.play(.light)
-                    } label: {
-                        HStack {
-                            Text(server.displayName)
-                            if server.id == (availableTerminalServers.first(where: { $0.displayName == terminalServerName })?.id ?? "") {
-                                Image(systemName: "checkmark")
-                            }
-                        }
-                    }
-                }
-            } label: {
-                pillLabel
-            }
-            .buttonStyle(.plain)
-            .disabled(!isEnabled)
-            .animation(.easeInOut(duration: 0.15), value: terminalEnabled)
-            .accessibilityLabel("Open Terminal: \(label)")
-            .accessibilityValue(terminalEnabled ? "Enabled" : "Disabled")
-            .accessibilityHint("Tap to switch terminal server")
-        } else {
-            // Single server: simple tap toggle
-            Button {
-                withAnimation(.easeOut(duration: 0.15)) { onToggle() }
-                Haptics.play(.light)
-            } label: {
-                pillLabel
-            }
-            .buttonStyle(.plain)
-            .disabled(!isEnabled)
-            .animation(.easeInOut(duration: 0.15), value: terminalEnabled)
-            .accessibilityLabel("Open Terminal")
-            .accessibilityValue(terminalEnabled ? "Enabled" : "Disabled")
-        }
     }
 
     // MARK: - Mentioned Model Chip

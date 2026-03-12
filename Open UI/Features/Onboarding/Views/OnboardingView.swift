@@ -1,262 +1,454 @@
 import SwiftUI
 
-/// Onboarding sheet shown to first-time users after login — immersive full-screen design.
+// MARK: - Onboarding View
+
+/// Full-screen onboarding experience for first-time users.
+/// Clean, spacious, modern design — no gradients, just solid tints and bold typography.
 struct OnboardingView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.theme) private var theme
     @State private var currentPage = 0
-    @State private var appeared = false
+    @State private var pageAppeared: [Bool] = Array(repeating: false, count: 4)
 
     let userName: String
     let onComplete: () -> Void
 
-    private var pages: [OnboardingPage] {
-        [
-            OnboardingPage(
-                icon: "sparkles",
-                iconColor: .purple,
-                title: "Welcome, \(userName)!",
-                subtitle: "Your AI conversations, beautifully native.",
-                features: [
-                    OnboardingFeature(icon: "bubble.left.and.bubble.right.fill", text: "Chat with any AI model"),
-                    OnboardingFeature(icon: "bolt.fill", text: "Fast, responsive native experience"),
-                    OnboardingFeature(icon: "iphone", text: "Built for iOS from the ground up")
-                ]
-            ),
-            OnboardingPage(
-                icon: "paperclip.circle.fill",
-                iconColor: .blue,
-                title: "Attach & Share",
-                subtitle: "Bring rich context to your conversations.",
-                features: [
-                    OnboardingFeature(icon: "doc.fill", text: "Attach files, images, documents"),
-                    OnboardingFeature(icon: "square.and.arrow.up", text: "Share from any app directly"),
-                    OnboardingFeature(icon: "photo.fill", text: "Multimodal vision support")
-                ]
-            ),
-            OnboardingPage(
-                icon: "waveform.circle.fill",
-                iconColor: .green,
-                title: "Voice & Audio",
-                subtitle: "Speak naturally with AI.",
-                features: [
-                    OnboardingFeature(icon: "mic.fill", text: "Voice input for hands-free use"),
-                    OnboardingFeature(icon: "speaker.wave.2.fill", text: "Natural text-to-speech responses"),
-                    OnboardingFeature(icon: "phone.fill", text: "Voice call mode for conversation")
-                ]
-            ),
-            OnboardingPage(
-                icon: "rocket.fill",
-                iconColor: .orange,
-                title: "You're All Set",
-                subtitle: "Start your first conversation.",
-                features: [
-                    OnboardingFeature(icon: "hand.draw.fill", text: "Swipe to access chat history"),
-                    OnboardingFeature(icon: "plus.circle.fill", text: "Tap + to start a new conversation"),
-                    OnboardingFeature(icon: "gearshape.fill", text: "Customize in Settings")
-                ]
-            )
-        ]
-    }
+    private let totalPages = 4
 
     var body: some View {
-        VStack(spacing: 0) {
-            // Drag handle
-            Capsule()
-                .fill(theme.textTertiary.opacity(0.3))
-                .frame(width: 36, height: 5)
-                .padding(.top, Spacing.md)
+        ZStack {
+            // Background
+            theme.background
+                .ignoresSafeArea()
 
-            // Page content
-            TabView(selection: $currentPage) {
-                ForEach(Array(pages.enumerated()), id: \.offset) { index, page in
-                    pageContent(page, index: index)
-                        .tag(index)
+            // Decorative floating shapes
+            floatingDecor
+                .ignoresSafeArea()
+
+            VStack(spacing: 0) {
+                // Skip button row
+                HStack {
+                    Spacer()
+                    if currentPage < totalPages - 1 {
+                        Button {
+                            dismiss()
+                            onComplete()
+                        } label: {
+                            Text("Skip")
+                                .font(.system(size: 16, weight: .medium))
+                                .foregroundStyle(theme.textTertiary)
+                                .padding(.horizontal, Spacing.md)
+                                .padding(.vertical, Spacing.sm)
+                        }
+                        .transition(.opacity)
+                    }
                 }
-            }
-            .tabViewStyle(.page(indexDisplayMode: .never))
+                .padding(.horizontal, Spacing.screenPadding)
+                .padding(.top, Spacing.sm)
+                .frame(height: 44)
 
-            // Bottom area: indicator + buttons
-            VStack(spacing: Spacing.lg) {
-                // Page indicator
-                pageIndicator
+                // Page content
+                TabView(selection: $currentPage) {
+                    welcomePage.tag(0)
+                    chatPage.tag(1)
+                    voicePage.tag(2)
+                    getStartedPage.tag(3)
+                }
+                .tabViewStyle(.page(indexDisplayMode: .never))
+                .onChange(of: currentPage) { _, newPage in
+                    triggerPageAppear(newPage)
+                }
 
-                // Navigation
-                navigationArea
+                // Bottom area
+                VStack(spacing: Spacing.lg) {
+                    pageIndicator
+                    continueButton
+                }
+                .padding(.horizontal, Spacing.screenPadding)
+                .padding(.bottom, Spacing.xl)
             }
-            .padding(.bottom, Spacing.lg)
         }
-        .background(theme.background)
         .onAppear {
-            withAnimation(.spring(response: 0.6, dampingFraction: 0.8).delay(0.2)) {
-                appeared = true
-            }
-        }
-    }
-
-    // MARK: - Page Content
-
-    private func pageContent(_ page: OnboardingPage, index: Int) -> some View {
-        VStack(spacing: Spacing.lg) {
-            Spacer(minLength: Spacing.lg)
-
-            // Icon with animated background
-            ZStack {
-                // Outer glow
-                Circle()
-                    .fill(page.iconColor.opacity(0.08))
-                    .frame(width: 160, height: 160)
-                    .scaleEffect(appeared ? 1.0 : 0.6)
-
-                // Middle ring
-                Circle()
-                    .fill(page.iconColor.opacity(0.12))
-                    .frame(width: 110, height: 110)
-                    .scaleEffect(appeared ? 1.0 : 0.7)
-
-                // Icon container
-                Image(systemName: page.icon)
-                    .font(.system(size: 40, weight: .semibold))
-                    .foregroundStyle(page.iconColor)
-                    .frame(width: 80, height: 80)
-                    .background(
-                        Circle()
-                            .fill(page.iconColor.opacity(0.15))
-                    )
-                    .scaleEffect(appeared ? 1.0 : 0.5)
-            }
-            .animation(.spring(response: 0.6, dampingFraction: 0.7).delay(0.1), value: appeared)
-
-            // Text content
-            VStack(spacing: Spacing.sm) {
-                Text(page.title)
-                    .font(.system(size: 28, weight: .bold, design: .rounded))
-                    .foregroundStyle(theme.textPrimary)
-                    .multilineTextAlignment(.center)
-
-                Text(page.subtitle)
-                    .font(AppTypography.bodyLargeFont)
-                    .foregroundStyle(theme.textSecondary)
-                    .multilineTextAlignment(.center)
-            }
-            .padding(.horizontal, Spacing.lg)
-
-            // Features list
-            VStack(spacing: Spacing.md) {
-                ForEach(Array(page.features.enumerated()), id: \.offset) { featureIndex, feature in
-                    featureRow(feature, index: featureIndex)
-                }
-            }
-            .padding(.horizontal, Spacing.xl)
-            .padding(.top, Spacing.sm)
-
-            Spacer(minLength: Spacing.xl)
-        }
-    }
-
-    // MARK: - Feature Row
-
-    private func featureRow(_ feature: OnboardingFeature, index: Int) -> some View {
-        HStack(spacing: Spacing.md) {
-            Image(systemName: feature.icon)
-                .font(.system(size: 16, weight: .medium))
-                .foregroundStyle(theme.brandPrimary)
-                .frame(width: 36, height: 36)
-                .background(theme.brandPrimary.opacity(0.1))
-                .clipShape(RoundedRectangle(cornerRadius: CornerRadius.sm, style: .continuous))
-
-            Text(feature.text)
-                .font(AppTypography.bodyMediumFont)
-                .foregroundStyle(theme.textSecondary)
-
-            Spacer()
+            triggerPageAppear(0)
         }
     }
 
     // MARK: - Page Indicator
 
     private var pageIndicator: some View {
-        HStack(spacing: Spacing.sm) {
-            ForEach(0..<pages.count, id: \.self) { index in
+        HStack(spacing: 6) {
+            ForEach(0..<totalPages, id: \.self) { index in
                 Capsule()
-                    .fill(
-                        index == currentPage
-                        ? theme.brandPrimary
-                        : theme.divider
-                    )
-                    .frame(
-                        width: index == currentPage ? 24 : 8,
-                        height: 8
-                    )
-                    .animation(.spring(response: 0.3, dampingFraction: 0.7), value: currentPage)
+                    .fill(index == currentPage ? theme.brandPrimary : theme.divider)
+                    .frame(width: index == currentPage ? 28 : 8, height: 6)
+                    .animation(.spring(response: 0.35, dampingFraction: 0.75), value: currentPage)
             }
         }
     }
 
-    // MARK: - Navigation Area
+    // MARK: - Continue Button
 
-    private var navigationArea: some View {
-        HStack {
-            // Skip button
-            Button {
+    private var continueButton: some View {
+        Button {
+            Haptics.play(.light)
+            if currentPage < totalPages - 1 {
+                withAnimation(.spring(response: 0.4, dampingFraction: 0.85)) {
+                    currentPage += 1
+                }
+            } else {
                 dismiss()
                 onComplete()
-            } label: {
-                Text("Skip")
-                    .font(AppTypography.labelMediumFont)
-                    .foregroundStyle(theme.textTertiary)
-                    .padding(.horizontal, Spacing.md)
-                    .padding(.vertical, Spacing.sm)
             }
+        } label: {
+            Text(currentPage == totalPages - 1 ? "Get Started" : "Continue")
+                .font(.system(size: 17, weight: .semibold))
+                .foregroundStyle(theme.buttonPrimaryText)
+                .frame(maxWidth: .infinity)
+                .frame(height: 54)
+                .background(
+                    RoundedRectangle(cornerRadius: 16, style: .continuous)
+                        .fill(theme.buttonPrimary)
+                )
+                .contentShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+        }
+        .pressEffect()
+    }
 
+    // MARK: - Floating Decor
+
+    private var floatingDecor: some View {
+        GeometryReader { geo in
+            let w = geo.size.width
+            let h = geo.size.height
+
+            // Top-right circle
+            Circle()
+                .fill(theme.brandPrimary.opacity(theme.isDark ? 0.04 : 0.05))
+                .frame(width: 260, height: 260)
+                .offset(x: w * 0.35, y: -60)
+
+            // Bottom-left circle
+            Circle()
+                .fill(theme.brandPrimary.opacity(theme.isDark ? 0.03 : 0.04))
+                .frame(width: 200, height: 200)
+                .offset(x: -80, y: h * 0.65)
+        }
+    }
+
+    // MARK: - Trigger Page Appear
+
+    private func triggerPageAppear(_ page: Int) {
+        // Reset so re-visiting replays the stagger
+        pageAppeared[page] = false
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+            withAnimation(.spring(response: 0.55, dampingFraction: 0.8)) {
+                pageAppeared[page] = true
+            }
+        }
+    }
+
+    // MARK: - Helper: Stagger Offset & Opacity
+
+    private func stagger(_ page: Int, index: Int) -> (Double, CGFloat) {
+        let visible = pageAppeared[page]
+        let opacity: Double = visible ? 1 : 0
+        let offset: CGFloat = visible ? 0 : 20
+        return (opacity, offset)
+    }
+
+    // MARK: - Page 1: Welcome
+
+    private var welcomePage: some View {
+        let (o0, y0) = stagger(0, index: 0)
+        let (o1, y1) = stagger(0, index: 1)
+        let (o2, y2) = stagger(0, index: 2)
+
+        return VStack(spacing: 0) {
             Spacer()
 
-            // Next / Get Started button
-            Button {
-                if currentPage < pages.count - 1 {
-                    withAnimation(.spring(response: 0.4, dampingFraction: 0.8)) {
-                        currentPage += 1
-                    }
-                } else {
-                    dismiss()
-                    onComplete()
-                }
-            } label: {
-                HStack(spacing: Spacing.xs) {
-                    Text(currentPage == pages.count - 1 ? "Get Started" : "Next")
-                        .font(AppTypography.labelLargeFont)
+            // App icon area
+            ZStack {
+                RoundedRectangle(cornerRadius: 28, style: .continuous)
+                    .fill(theme.brandPrimary.opacity(theme.isDark ? 0.12 : 0.08))
+                    .frame(width: 100, height: 100)
 
-                    Image(systemName: currentPage == pages.count - 1 ? "arrow.right" : "chevron.right")
-                        .font(.system(size: 12, weight: .bold))
-                        .contentTransition(.symbolEffect(.replace))
-                }
-                .foregroundStyle(theme.buttonPrimaryText)
-                .padding(.horizontal, Spacing.lg)
-                .padding(.vertical, Spacing.md)
+                Image(systemName: "sparkles")
+                    .font(.system(size: 44, weight: .medium))
+                    .foregroundStyle(theme.brandPrimary)
             }
-            .background(
-                Capsule()
-                    .fill(theme.buttonPrimary)
-                    .shadow(color: theme.buttonPrimary.opacity(0.3), radius: 8, y: 4)
-            )
-            .clipShape(Capsule())
-            .pressEffect()
+            .opacity(o0)
+            .offset(y: y0)
+            .animation(.spring(response: 0.55, dampingFraction: 0.8).delay(0.0), value: pageAppeared[0])
+
+            Spacer().frame(height: Spacing.xl)
+
+            // Title
+            VStack(spacing: Spacing.sm) {
+                Text("Welcome, \(userName)!")
+                    .font(.system(size: 34, weight: .bold, design: .rounded))
+                    .foregroundStyle(theme.textPrimary)
+                    .multilineTextAlignment(.center)
+            }
+            .opacity(o1)
+            .offset(y: y1)
+            .animation(.spring(response: 0.55, dampingFraction: 0.8).delay(0.08), value: pageAppeared[0])
+
+            Spacer().frame(height: Spacing.md)
+
+            // Subtitle
+            Text("Your AI conversations,\nbeautifully native.")
+                .font(.system(size: 18, weight: .regular))
+                .foregroundStyle(theme.textSecondary)
+                .multilineTextAlignment(.center)
+                .lineSpacing(4)
+                .opacity(o2)
+                .offset(y: y2)
+                .animation(.spring(response: 0.55, dampingFraction: 0.8).delay(0.16), value: pageAppeared[0])
+
+            Spacer()
+            Spacer()
         }
         .padding(.horizontal, Spacing.screenPadding)
     }
-}
 
-// MARK: - Onboarding Page Model
+    // MARK: - Page 2: Chat
 
-private struct OnboardingPage {
-    let icon: String
-    let iconColor: Color
-    let title: String
-    let subtitle: String
-    let features: [OnboardingFeature]
-}
+    private var chatPage: some View {
+        let (o0, y0) = stagger(1, index: 0)
+        let (o1, y1) = stagger(1, index: 1)
+        let (o2, y2) = stagger(1, index: 2)
+        let (o3, y3) = stagger(1, index: 3)
 
-private struct OnboardingFeature {
-    let icon: String
-    let text: String
+        return VStack(spacing: 0) {
+            Spacer()
+
+            // Hero icon
+            heroIcon(
+                symbol: "bubble.left.and.bubble.right.fill",
+                tint: .blue,
+                page: 1,
+                delay: 0.0
+            )
+            .opacity(o0)
+            .offset(y: y0)
+            .animation(.spring(response: 0.55, dampingFraction: 0.8).delay(0.0), value: pageAppeared[1])
+
+            Spacer().frame(height: Spacing.xl)
+
+            // Title
+            Text("Chat with AI")
+                .font(.system(size: 34, weight: .bold, design: .rounded))
+                .foregroundStyle(theme.textPrimary)
+                .opacity(o1)
+                .offset(y: y1)
+                .animation(.spring(response: 0.55, dampingFraction: 0.8).delay(0.08), value: pageAppeared[1])
+
+            Spacer().frame(height: Spacing.sm)
+
+            Text("Multiple models. One beautiful app.")
+                .font(.system(size: 18, weight: .regular))
+                .foregroundStyle(theme.textSecondary)
+                .multilineTextAlignment(.center)
+                .opacity(o2)
+                .offset(y: y2)
+                .animation(.spring(response: 0.55, dampingFraction: 0.8).delay(0.14), value: pageAppeared[1])
+
+            Spacer().frame(height: Spacing.xl)
+
+            // Feature chips
+            featureChips(
+                items: [
+                    ("cpu", "Multiple Models"),
+                    ("bolt.fill", "Fast & Native"),
+                    ("doc.fill", "Attach Files")
+                ]
+            )
+            .opacity(o3)
+            .offset(y: y3)
+            .animation(.spring(response: 0.55, dampingFraction: 0.8).delay(0.22), value: pageAppeared[1])
+
+            Spacer()
+            Spacer()
+        }
+        .padding(.horizontal, Spacing.screenPadding)
+    }
+
+    // MARK: - Page 3: Voice
+
+    private var voicePage: some View {
+        let (o0, y0) = stagger(2, index: 0)
+        let (o1, y1) = stagger(2, index: 1)
+        let (o2, y2) = stagger(2, index: 2)
+        let (o3, y3) = stagger(2, index: 3)
+
+        return VStack(spacing: 0) {
+            Spacer()
+
+            // Hero icon
+            heroIcon(
+                symbol: "waveform.circle.fill",
+                tint: .green,
+                page: 2,
+                delay: 0.0
+            )
+            .opacity(o0)
+            .offset(y: y0)
+            .animation(.spring(response: 0.55, dampingFraction: 0.8).delay(0.0), value: pageAppeared[2])
+
+            Spacer().frame(height: Spacing.xl)
+
+            Text("Voice & Audio")
+                .font(.system(size: 34, weight: .bold, design: .rounded))
+                .foregroundStyle(theme.textPrimary)
+                .opacity(o1)
+                .offset(y: y1)
+                .animation(.spring(response: 0.55, dampingFraction: 0.8).delay(0.08), value: pageAppeared[2])
+
+            Spacer().frame(height: Spacing.sm)
+
+            Text("Speak naturally. Listen back.")
+                .font(.system(size: 18, weight: .regular))
+                .foregroundStyle(theme.textSecondary)
+                .multilineTextAlignment(.center)
+                .opacity(o2)
+                .offset(y: y2)
+                .animation(.spring(response: 0.55, dampingFraction: 0.8).delay(0.14), value: pageAppeared[2])
+
+            Spacer().frame(height: Spacing.xl)
+
+            // Feature chips
+            featureChips(
+                items: [
+                    ("mic.fill", "Voice Input"),
+                    ("speaker.wave.2.fill", "Text-to-Speech"),
+                    ("phone.fill", "Voice Calls")
+                ]
+            )
+            .opacity(o3)
+            .offset(y: y3)
+            .animation(.spring(response: 0.55, dampingFraction: 0.8).delay(0.22), value: pageAppeared[2])
+
+            Spacer()
+            Spacer()
+        }
+        .padding(.horizontal, Spacing.screenPadding)
+    }
+
+    // MARK: - Page 4: Get Started
+
+    private var getStartedPage: some View {
+        let (o0, y0) = stagger(3, index: 0)
+        let (o1, y1) = stagger(3, index: 1)
+        let (o2, y2) = stagger(3, index: 2)
+        let (o3, y3) = stagger(3, index: 3)
+
+        return VStack(spacing: 0) {
+            Spacer()
+
+            // Hero icon
+            heroIcon(
+                symbol: "rocket.fill",
+                tint: .orange,
+                page: 3,
+                delay: 0.0
+            )
+            .opacity(o0)
+            .offset(y: y0)
+            .animation(.spring(response: 0.55, dampingFraction: 0.8).delay(0.0), value: pageAppeared[3])
+
+            Spacer().frame(height: Spacing.xl)
+
+            Text("You're All Set")
+                .font(.system(size: 34, weight: .bold, design: .rounded))
+                .foregroundStyle(theme.textPrimary)
+                .opacity(o1)
+                .offset(y: y1)
+                .animation(.spring(response: 0.55, dampingFraction: 0.8).delay(0.08), value: pageAppeared[3])
+
+            Spacer().frame(height: Spacing.sm)
+
+            Text("Here are a few tips to get you going.")
+                .font(.system(size: 18, weight: .regular))
+                .foregroundStyle(theme.textSecondary)
+                .multilineTextAlignment(.center)
+                .opacity(o2)
+                .offset(y: y2)
+                .animation(.spring(response: 0.55, dampingFraction: 0.8).delay(0.14), value: pageAppeared[3])
+
+            Spacer().frame(height: Spacing.xl)
+
+            // Tips
+            VStack(spacing: Spacing.md) {
+                tipRow(icon: "hand.draw.fill", text: "Swipe right to see chat history")
+                tipRow(icon: "plus.circle.fill", text: "Tap + to start a new conversation")
+                tipRow(icon: "gearshape.fill", text: "Customize everything in Settings")
+            }
+            .opacity(o3)
+            .offset(y: y3)
+            .animation(.spring(response: 0.55, dampingFraction: 0.8).delay(0.22), value: pageAppeared[3])
+
+            Spacer()
+            Spacer()
+        }
+        .padding(.horizontal, Spacing.screenPadding)
+    }
+
+    // MARK: - Reusable Components
+
+    /// Large hero icon with a soft tinted background
+    private func heroIcon(symbol: String, tint: Color, page: Int, delay: Double) -> some View {
+        ZStack {
+            Circle()
+                .fill(tint.opacity(theme.isDark ? 0.10 : 0.07))
+                .frame(width: 140, height: 140)
+
+            Image(systemName: symbol)
+                .font(.system(size: 56, weight: .medium))
+                .foregroundStyle(tint)
+        }
+    }
+
+    /// Horizontal row of compact pill-shaped feature chips
+    private func featureChips(items: [(icon: String, label: String)]) -> some View {
+        HStack(spacing: Spacing.sm) {
+            ForEach(Array(items.enumerated()), id: \.offset) { _, item in
+                HStack(spacing: 6) {
+                    Image(systemName: item.icon)
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundStyle(theme.brandPrimary)
+
+                    Text(item.label)
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundStyle(theme.textSecondary)
+                }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 10)
+                .background(
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .fill(theme.surfaceContainer)
+                )
+            }
+        }
+    }
+
+    /// Minimal tip row with icon and text
+    private func tipRow(icon: String, text: String) -> some View {
+        HStack(spacing: Spacing.md) {
+            Image(systemName: icon)
+                .font(.system(size: 18, weight: .medium))
+                .foregroundStyle(theme.brandPrimary)
+                .frame(width: 40, height: 40)
+                .background(
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .fill(theme.brandPrimary.opacity(theme.isDark ? 0.12 : 0.08))
+                )
+
+            Text(text)
+                .font(.system(size: 16, weight: .regular))
+                .foregroundStyle(theme.textSecondary)
+
+            Spacer()
+        }
+        .padding(.horizontal, Spacing.md)
+    }
 }

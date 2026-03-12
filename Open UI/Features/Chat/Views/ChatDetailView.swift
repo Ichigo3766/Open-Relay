@@ -594,16 +594,22 @@ struct ChatDetailView: View {
                 scrollPosition.scrollTo(edge: .bottom)
             }
         }
-        // Streaming: scroll to bottom at start and end — ScrollPosition handles
-        // the in-between anchoring declaratively (no polling timer needed).
+        // Streaming: scroll to bottom at start only. During streaming,
+        // `.defaultScrollAnchor(.bottom)` keeps the view pinned. When
+        // streaming ends, do NOT force a scroll — if the user manually
+        // scrolled up during streaming they should stay where they are.
         .onChange(of: viewModel.isStreaming) { _, streaming in
             if streaming {
                 isScrolledUp = false
                 withAnimation { scrollPosition.scrollTo(edge: .bottom) }
-            } else {
-                if !isScrolledUp {
-                    withAnimation { scrollPosition.scrollTo(edge: .bottom) }
-                }
+            }
+        }
+        // Resume auto-scroll: when the user scrolls back to the bottom
+        // (or taps the FAB) during an active stream, re-pin so new
+        // tokens keep the view anchored at the bottom.
+        .onChange(of: isScrolledUp) { oldValue, newValue in
+            if oldValue == true && newValue == false && viewModel.isStreaming {
+                scrollPosition.scrollTo(edge: .bottom)
             }
         }
     }
@@ -1157,14 +1163,6 @@ struct ChatDetailView: View {
                 // ── Hero: avatar + greeting ──
                 VStack(spacing: Spacing.sm) {
                 ZStack {
-                    // Soft glow ring behind avatar
-                    Circle()
-                        .fill(theme.brandPrimary.opacity(0.08))
-                        .frame(width: 76, height: 76)
-                    Circle()
-                        .fill(theme.brandPrimary.opacity(0.05))
-                        .frame(width: 92, height: 92)
-
                     if let model = viewModel.selectedModel {
                         ModelAvatar(
                             size: 52,

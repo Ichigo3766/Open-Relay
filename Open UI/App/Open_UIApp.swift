@@ -301,13 +301,12 @@ struct RootView: View {
                 MainChatView()
             }
         }
-        .sheet(isPresented: $showOnboarding) {
+        .fullScreenCover(isPresented: $showOnboarding) {
                 OnboardingView(
                     userName: viewModel.currentUser?.displayName ?? "there"
                 ) {
                     viewModel.markOnboardingSeen()
                 }
-                .presentationDetents([.fraction(0.75)])
             }
             .onAppear {
                 // Show onboarding for first-time users

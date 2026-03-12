@@ -83,12 +83,12 @@ struct ModernTextField: View {
 
                 HStack(spacing: Spacing.sm) {
                     if isSecure && !isPasswordVisible {
-                        SecureField("", text: $text)
+                        SecureField("", text: $text, prompt: isFocused ? Text(placeholder).foregroundStyle(theme.textTertiary.opacity(0.5)) : nil)
                             .focused($isFocused)
                             .textContentType(textContentType)
                             .onSubmit { onSubmit?() }
                     } else {
-                        TextField("", text: $text)
+                        TextField("", text: $text, prompt: isFocused ? Text(placeholder).foregroundStyle(theme.textTertiary.opacity(0.5)) : nil)
                             .focused($isFocused)
                             .keyboardType(keyboardType)
                             .textContentType(textContentType)
@@ -246,7 +246,7 @@ struct ServerConnectionView: View {
                     VStack(spacing: Spacing.lg) {
                         ModernTextField(
                             label: "Server URL",
-                            placeholder: "https://your-server.com",
+                            placeholder: "https://your-server.com or http://IP:port",
                             text: $viewModel.serverURL,
                             keyboardType: .URL,
                             textContentType: .URL,
@@ -346,7 +346,7 @@ struct ServerConnectionView: View {
                             .font(AppTypography.labelMediumFont)
                             .foregroundStyle(theme.textSecondary)
 
-                        Text("Enter the URL of your OpenWebUI server.\nThis is typically provided by your administrator.")
+                        Text("Enter the URL of your OpenWebUI server.\nUse https:// or http:// — direct URLs and IP:port supported.")
                             .font(AppTypography.captionFont)
                             .foregroundStyle(theme.textTertiary)
                             .multilineTextAlignment(.center)
