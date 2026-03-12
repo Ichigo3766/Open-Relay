@@ -25,9 +25,7 @@ final class ActiveChatStore {
     /// AttributeGraph cycle (mutation during render → re-render → mutation…).
     @ObservationIgnored private var viewModels: [String: ChatViewModel] = [:]
 
-    /// STORAGE FIX: Maximum number of cached view models to prevent unbounded
-    /// memory growth. Each VM holds a full Conversation with all messages.
-    /// Users who browse many conversations would accumulate them all without this.
+    /// Max cached VMs to prevent unbounded memory growth. Each VM holds a full Conversation.
     private let maxCachedViewModels = 5
 
     /// Access order tracking for LRU eviction.
@@ -57,7 +55,6 @@ final class ActiveChatStore {
     func viewModel(for conversationId: String?) -> ChatViewModel {
         let key = conversationId ?? "__new__"
         if let existing = viewModels[key] {
-            // STORAGE FIX: Update access order for LRU tracking
             accessOrder.removeAll { $0 == key }
             accessOrder.append(key)
             return existing
@@ -76,16 +73,13 @@ final class ActiveChatStore {
         viewModels[key] = vm
         accessOrder.append(key)
 
-        // STORAGE FIX: Evict oldest VMs when over limit (LRU).
-        // Each VM holds a full Conversation with all messages in memory.
         evictIfNeeded()
 
         return vm
     }
 
-    /// Evicts the least-recently-used view models when over the cache limit.
-    /// Never evicts a VM that is currently streaming.
-    /// FIX: Added maxIterations guard to prevent infinite loop when all VMs are streaming.
+    /// Evicts least-recently-used VMs when over the limit.
+    /// Never evicts a VM that is streaming. Guarded against infinite loops.
     private func evictIfNeeded() {
         var iterations = 0
         let maxIterations = accessOrder.count + 1
@@ -222,9 +216,8 @@ final class AppDependencyContainer: ServiceContainer {
         // Clear active chat view models on server switch
         activeChatStore.clear()
 
-        // STORAGE FIX: Only clear user data caches when explicitly switching
-        // servers or logging out — NOT on every app launch (which would nuke
-        // the saved session and cause a black screen).
+        // Only clear user data caches on explicit server switch or logout,
+        // not on every app launch (which would nuke the saved session).
         if isServerSwitch {
             StorageManager.shared.clearAllUserData()
         }

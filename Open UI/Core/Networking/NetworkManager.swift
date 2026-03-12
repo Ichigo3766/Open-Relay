@@ -1,25 +1,17 @@
 import Foundation
 import os.log
 
-/// Handles low-level HTTP networking using `URLSession`, including
-/// self-signed certificate support, authentication header injection,
-/// multipart form-data uploads, and SSE streaming.
+/// Handles low-level HTTP networking — authentication, multipart uploads, and SSE streaming.
 final class NetworkManager: NSObject, Sendable {
     let serverConfig: ServerConfig
     private let keychain: KeychainService
     private let logger = Logger(subsystem: "com.openui", category: "Network")
 
-    /// The configured `URLSession`. Uses a custom delegate when
-    /// self-signed certificates are enabled.
     let session: URLSession
-
-    /// Retains the delegate for the lifetime of this manager.
     private let certificateDelegate: CertificateTrustDelegate?
 
-    /// Base URL derived from the server configuration.
     var baseURL: URL? { serverConfig.apiBaseURL }
 
-    /// Current authentication token, read from the Keychain.
     var authToken: String? {
         keychain.getToken(forServer: serverConfig.url)
     }
@@ -35,15 +27,11 @@ final class NetworkManager: NSObject, Sendable {
         configuration.timeoutIntervalForResource = 300
         configuration.waitsForConnectivity = true
 
-        // STORAGE FIX: Disable URLSession HTTP caching entirely.
-        // The app is API-driven with its own ImageCacheService — the default
-        // URLCache (up to 512MB per session) causes massive unbounded disk
-        // growth as every API response (conversations, file content, models)
-        // is cached by the system and never evicted.
+        // Disable URLSession HTTP caching — the app is API-driven with its own
+        // ImageCacheService, and the default URLCache causes unbounded disk growth.
         configuration.urlCache = nil
         configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
 
-        // Merge custom headers from server config into default headers
         var headers = configuration.httpAdditionalHeaders ?? [:]
         for (key, value) in serverConfig.customHeaders {
             headers[key] = value
@@ -68,7 +56,6 @@ final class NetworkManager: NSObject, Sendable {
 
     // MARK: - Request Building
 
-    /// Constructs a `URLRequest` for the given path and method.
     func buildRequest(
         path: String,
         method: HTTPMethod = .get,
@@ -83,7 +70,6 @@ final class NetworkManager: NSObject, Sendable {
         }
 
         var components = URLComponents(url: baseURL, resolvingAgainstBaseURL: false)!
-        // Append path, preserving existing base path
         let basePath = components.path.hasSuffix("/")
             ? String(components.path.dropLast())
             : components.path
@@ -109,15 +95,12 @@ final class NetworkManager: NSObject, Sendable {
         }
         request.setValue("application/json", forHTTPHeaderField: "Accept")
 
-        // Inject auth header
         if authenticated, let token = authToken {
             request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         }
 
-        // Inject custom headers from server config
         for (key, value) in serverConfig.customHeaders {
             let lower = key.lowercased()
-            // Don't override critical headers
             if lower != "authorization" && lower != "content-type" && lower != "accept" {
                 request.setValue(value, forHTTPHeaderField: key)
             }
@@ -128,7 +111,6 @@ final class NetworkManager: NSObject, Sendable {
 
     // MARK: - Simple Requests
 
-    /// Performs a request and decodes the JSON response.
     func request<T: Decodable>(
         _ type: T.Type,
         path: String,
@@ -171,7 +153,6 @@ final class NetworkManager: NSObject, Sendable {
         }
     }
 
-    /// Performs a request and returns the raw `Data` and `HTTPURLResponse`.
     func requestRaw(
         path: String,
         method: HTTPMethod = .get,
@@ -196,7 +177,6 @@ final class NetworkManager: NSObject, Sendable {
         return (data, response as! HTTPURLResponse)
     }
 
-    /// Performs a request, discarding the response body.
     func requestVoid(
         path: String,
         method: HTTPMethod = .get,
@@ -223,7 +203,6 @@ final class NetworkManager: NSObject, Sendable {
         try validateHTTPResponse(response, data: data)
     }
 
-    /// Performs a request with a JSON dictionary body, discarding the response.
     func requestVoidJSON(
         path: String,
         method: HTTPMethod = .get,
@@ -250,7 +229,6 @@ final class NetworkManager: NSObject, Sendable {
         try validateHTTPResponse(response, data: data)
     }
 
-    /// Performs a request and returns the response as a dictionary.
     func requestJSON(
         path: String,
         method: HTTPMethod = .get,
@@ -293,12 +271,8 @@ final class NetworkManager: NSObject, Sendable {
 
     // MARK: - Streaming (SSE)
 
-    /// Opens an SSE streaming connection using `URLSession.bytes` for real-time
-    /// line-by-line parsing. Preferred over the data-task variant for chat streaming.
-    ///
-    /// Uses a dedicated session with a long `timeoutIntervalForRequest` (5 min)
-    /// so that the connection survives pauses during tool execution, where the
-    /// server may not send data for tens of seconds.
+    /// Opens an SSE streaming connection. Uses a dedicated session with extended timeouts
+    /// so pauses during tool execution don't kill the connection.
     func streamRequestBytes(
         path: String,
         method: HTTPMethod = .post,
@@ -321,15 +295,11 @@ final class NetworkManager: NSObject, Sendable {
         )
         urlRequest.setValue("text/event-stream", forHTTPHeaderField: "Accept")
 
-        // Use a streaming-specific session with extended timeouts so that
-        // pauses during tool execution (no data for 30+ seconds) don't
-        // kill the connection.
         let streamSession = makeStreamingSession()
         let (bytes, response) = try await streamSession.bytes(for: urlRequest)
 
         if let httpResponse = response as? HTTPURLResponse,
            !(200..<400).contains(httpResponse.statusCode) {
-            // Read the error body
             var errorBody = Data()
             for try await byte in bytes {
                 errorBody.append(byte)
@@ -341,11 +311,7 @@ final class NetworkManager: NSObject, Sendable {
         return SSEStream(bytes: bytes)
     }
 
-    /// Thread-safe streaming session — reused across all SSE requests
-    /// to prevent URLSession leaks. Sessions with delegates are never
-    /// deallocated unless explicitly invalidated.
-    /// FIX: Replaced `lazy var` with lock-protected initialization to
-    /// prevent data races when accessed from multiple threads simultaneously.
+    /// Lock-protected lazy streaming session. Reused across all SSE requests to prevent leaks.
     private let _streamingSessionLock = NSLock()
     private var _streamingSessionBacking: URLSession?
     private var _streamingSession: URLSession {
@@ -353,16 +319,12 @@ final class NetworkManager: NSObject, Sendable {
         defer { _streamingSessionLock.unlock() }
         if let existing = _streamingSessionBacking { return existing }
         let config = URLSessionConfiguration.default
-        // Allow up to 5 minutes between data packets (tool execution can be slow)
         config.timeoutIntervalForRequest = 300
         config.timeoutIntervalForResource = 600
         config.waitsForConnectivity = true
-
-        // STORAGE FIX: Disable caching on streaming session too
         config.urlCache = nil
         config.requestCachePolicy = .reloadIgnoringLocalCacheData
 
-        // Carry over custom headers
         var headers = config.httpAdditionalHeaders ?? [:]
         for (key, value) in serverConfig.customHeaders {
             headers[key] = value
@@ -379,14 +341,12 @@ final class NetworkManager: NSObject, Sendable {
         return newSession
     }
 
-    /// Returns the shared streaming session.
     private func makeStreamingSession() -> URLSession {
         _streamingSession
     }
 
     // MARK: - Multipart Form Data Upload
 
-    /// Uploads a file using multipart/form-data encoding.
     func uploadMultipart(
         path: String,
         queryItems: [URLQueryItem]? = nil,
@@ -402,7 +362,6 @@ final class NetworkManager: NSObject, Sendable {
         let boundary = "Boundary-\(UUID().uuidString)"
         var body = Data()
 
-        // Add additional text fields
         if let fields = additionalFields {
             for (key, value) in fields {
                 body.append(Data("--\(boundary)\r\n".utf8))
@@ -411,7 +370,6 @@ final class NetworkManager: NSObject, Sendable {
             }
         }
 
-        // Add file field
         body.append(Data("--\(boundary)\r\n".utf8))
         body.append(Data(
             "Content-Disposition: form-data; name=\"\(fieldName)\"; filename=\"\(fileName)\"\r\n".utf8
@@ -449,13 +407,11 @@ final class NetworkManager: NSObject, Sendable {
 
     // MARK: - Auth Token Management
 
-    /// Saves a new auth token for the current server.
     @discardableResult
     func saveAuthToken(_ token: String) -> Bool {
         keychain.saveToken(token, forServer: serverConfig.url)
     }
 
-    /// Deletes the auth token for the current server.
     @discardableResult
     func deleteAuthToken() -> Bool {
         keychain.deleteToken(forServer: serverConfig.url)
@@ -471,16 +427,8 @@ final class NetworkManager: NSObject, Sendable {
         }
     }
 
-    /// Performs a request with automatic retry for transient errors.
-    ///
-    /// Retries up to `maxRetries` times with exponential backoff for:
-    /// - Network errors (DNS, timeout, connection lost, not connected)
-    /// - Server errors (5xx status codes: 502, 503, 504, etc.)
-    ///
-    /// Does **not** retry for:
-    /// - Client errors (4xx) — these indicate a real problem (auth, bad request)
-    /// - Cancelled requests
-    /// - SSL errors — configuration issue, not transient
+    /// Retries up to `maxRetries` times with exponential backoff for network errors and 5xx responses.
+    /// Does not retry 4xx, cancelled requests, or SSL errors.
     func performRequestWithRetry(
         _ request: URLRequest,
         maxRetries: Int = 3,
@@ -492,7 +440,6 @@ final class NetworkManager: NSObject, Sendable {
             do {
                 let (data, response) = try await performRequest(request)
 
-                // Check for retryable HTTP status codes (5xx)
                 if let httpResponse = response as? HTTPURLResponse,
                    httpResponse.statusCode >= 500 && attempt < maxRetries {
                     let delay = baseDelay * pow(2.0, Double(attempt))
@@ -507,7 +454,6 @@ final class NetworkManager: NSObject, Sendable {
                 lastError = error
                 let apiError = APIError.from(error)
 
-                // Only retry on transient/network errors
                 guard apiError.isRetryable, attempt < maxRetries else {
                     throw error
                 }
@@ -528,7 +474,6 @@ final class NetworkManager: NSObject, Sendable {
 
         let statusCode = httpResponse.statusCode
 
-        // Check for redirects that indicate proxy auth
         if [302, 307, 308].contains(statusCode) {
             let location = httpResponse.value(forHTTPHeaderField: "Location")
             throw APIError.redirectDetected(location: location)
@@ -544,7 +489,6 @@ final class NetworkManager: NSObject, Sendable {
             return .tokenExpired
         }
 
-        // Try to extract error message from JSON
         var message: String?
         if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
             message = json["detail"] as? String
@@ -571,10 +515,7 @@ enum HTTPMethod: String, Sendable {
 
 // MARK: - Certificate Trust Delegate
 
-/// Handles SSL certificate trust evaluation for self-signed certificates.
-///
-/// Extracted from `NetworkManager` to enable `session` to be an
-/// immutable `let` property, satisfying `Sendable` conformance.
+/// SSL delegate for self-signed certificate support. Extracted so `session` can be a `let`.
 private final class CertificateTrustDelegate: NSObject, URLSessionDelegate, Sendable {
     let serverConfig: ServerConfig
 
@@ -596,7 +537,6 @@ private final class CertificateTrustDelegate: NSObject, URLSessionDelegate, Send
             return
         }
 
-        // Only trust for our configured host
         guard let baseURL = serverConfig.apiBaseURL,
               challenge.protectionSpace.host.lowercased() == baseURL.host?.lowercased()
         else {
@@ -604,7 +544,6 @@ private final class CertificateTrustDelegate: NSObject, URLSessionDelegate, Send
             return
         }
 
-        // If a specific port is configured, verify it matches
         if let configPort = baseURL.port,
            challenge.protectionSpace.port != configPort {
             completionHandler(.performDefaultHandling, nil)

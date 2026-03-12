@@ -2,34 +2,16 @@ import Foundation
 import os.log
 import SwiftUI
 
-/// Notification posted when a conversation title is updated via streaming.
-/// The `userInfo` contains `"conversationId"` and `"title"` keys.
 extension Notification.Name {
     static let conversationTitleUpdated = Notification.Name("conversationTitleUpdated")
     static let conversationListNeedsRefresh = Notification.Name("conversationListNeedsRefresh")
     /// Posted by AdminConsoleView when a user's chat is cloned.
-    /// The `object` is the cloned conversation ID (String).
     static let adminClonedChat = Notification.Name("adminClonedChat")
 }
 
 /// Manages state and logic for a single chat conversation.
-///
-/// Handles sending messages, streaming assistant responses via WebSocket
-/// (Socket.IO), loading conversation history, and model selection.
-///
-/// ## WebSocket Streaming
-/// Matches the Flutter/OpenWebUI web client pattern:
-/// 1. HTTP POST to `/api/chat/completions` with `session_id`, `chat_id`,
-///    `id` (message_id), `background_tasks`, and `parent_message`.
-/// 2. Server returns immediately (with optional `task_id`).
-/// 3. All content, status updates, tool calls, and sources arrive
-///    via Socket.IO `chat-events` and `channel-events`.
-/// 4. On `done: true`, send `chatCompleted` and sync conversation.
-///
-/// ## Lifecycle
-/// Instances are held by ``ActiveChatStore`` so they survive navigation
-/// transitions.  Streaming continues in a detached task even if the
-/// chat view is popped from the navigation stack.
+/// Handles sending/streaming messages via Socket.IO, loading history, and model selection.
+/// Instances are held by `ActiveChatStore` so they survive navigation transitions.
 @MainActor @Observable
 final class ChatViewModel {
     // MARK: - Published State
@@ -3436,34 +3418,10 @@ final class ChatViewModel {
 
 // MARK: - Content Accumulator
 
-/// Thread-safe accumulator for streamed content chunks with **coalesced dispatch**.
+/// Thread-safe token accumulator with coalesced main-actor dispatch.
 ///
-/// Collects tokens on the socket's background thread (lock-protected)
-/// and dispatches updates to the main actor via the `onUpdate` callback.
-///
-/// ## Coalescing Strategy
-/// Instead of creating a new `Task { @MainActor }` for every single token
-/// (which floods the cooperative executor at 30-80 Tasks/sec), this uses a
-/// `_pendingUpdate` flag so only ONE Task is in-flight at a time. While that
-/// Task is waiting to be scheduled on the main actor, additional tokens
-/// accumulate in `_content`. When the Task finally runs, it delivers the
-/// latest accumulated content — naturally batching multiple tokens into a
-/// single UI update.
-///
-/// ## OPT 5: Minimum Dispatch Interval
-/// In addition to the pending-flag coalescing, a time-based floor prevents
-/// dispatches more frequent than ~50ms (20fps). Under low system load,
-/// the MainActor Task can complete and clear `_pendingUpdate` almost
-/// instantly, allowing the next token to dispatch immediately — defeating
-/// the coalescing. The time floor ensures that even in the best case,
-/// dispatches are capped at ~20/sec. Combined with the downstream render
-/// throttle in StreamingMarkdownView (~7fps), the total pipeline executes
-/// MarkdownView parse+layout at most ~7 times/sec.
-///
-/// This reduces MainActor hops from ~50/sec to ~15-20/sec (limited by the
-/// executor's scheduling latency + time floor), which in turn reduces
-/// SwiftUI view invalidations, O(n) string preprocessing, and layout
-/// passes by 2-3×.
+/// Uses a pending-flag + time-floor strategy to batch rapid token arrivals
+/// into ~30fps UI updates, rather than creating a new Task per token.
 final class ContentAccumulator: @unchecked Sendable {
     private let lock = NSLock()
     private nonisolated(unsafe) var _content: String = ""

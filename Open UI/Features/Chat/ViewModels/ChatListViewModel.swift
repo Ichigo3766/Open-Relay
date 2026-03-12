@@ -1,20 +1,7 @@
 import Foundation
 import os.log
 
-/// Manages the list of conversations and conversation-level actions.
-///
-/// Integrates with ``ConversationManager`` for server communication
-/// and provides local state for the conversation list UI including
-/// grouping, search, pagination, prefetching, and CRUD operations.
-///
-/// ## Pagination
-/// Conversations are loaded in pages of ``pageSize``. When the user
-/// scrolls near the bottom, ``loadMoreIfNeeded(currentItem:)`` triggers
-/// the next page fetch automatically.
-///
-/// ## Prefetching
-/// Model avatar images are prefetched in the background as
-/// conversations become visible, using ``ImageCacheService``.
+/// Manages the conversation list — grouping, search, pagination, and CRUD operations.
 @MainActor @Observable
 final class ChatListViewModel {
     // MARK: - Published State

@@ -4,37 +4,12 @@ import Charts
 
 // MARK: - Streaming Markdown View
 
-/// Renders markdown content using Lakr233/MarkdownView — a UIKit-backed
-/// renderer wrapped in SwiftUI via `UIViewRepresentable`.
+/// Renders markdown using MarkdownView (UIKit-backed).
 ///
-/// ## Performance Architecture (Streaming Pipeline)
-///
-/// ### The Problem
-/// During streaming, tokens arrive at ~15-20/sec. Each token mutates `content`,
-/// which triggers a SwiftUI body evaluation. Without throttling, each body eval
-/// feeds new text to `MarkdownView`, which runs the FULL pipeline on main thread:
-///   MarkdownParser.parse() → PreprocessedContent → TextBuilder.build() →
-///   CoreText layout → boundingSize() measurement
-/// That's two CoreText layout passes per token — catastrophic at 15-20/sec.
-///
-/// ### The Solution: Three-Layer Throttle
-///
-/// **Layer 1 — ContentAccumulator (upstream):** Coalesces rapid socket tokens
-/// into batched MainActor dispatches (~15-20/sec). [ChatViewModel.swift]
-///
-/// **Layer 2 — Render Throttle (this file):** Only passes content to
-/// `MarkdownView` at ~7fps during streaming. Uses `@State` + time check
-/// in `onChange(of: content)`. The coordinator's `lastText == renderedContent`
-/// check short-circuits the expensive parse+layout when content hasn't changed.
-///
-/// **Layer 3 — Special Block Skip (this file):** During streaming, bypasses
-/// `parseSpecialBlocks()` entirely. Charts, HTML previews, and mermaid diagrams
-/// already fall back to code blocks during streaming anyway.
-///
-/// ### Result
-/// Main thread markdown work drops from ~15-20 full parse+layout cycles/sec
-/// to ~7/sec — a **2-3× reduction** that brings frame pacing from <30fps
-/// to stable 60fps.
+/// Uses a three-layer throttle to keep streaming at 60fps:
+/// 1. **ContentAccumulator** (upstream) — batches socket tokens to ~15/sec.
+/// 2. **Render throttle** (this file) — passes content to MarkdownView at ~7fps.
+/// 3. **Special block skip** — skips `parseSpecialBlocks()` during streaming.
 struct StreamingMarkdownView: View {
     let content: String
     let isStreaming: Bool
@@ -43,19 +18,12 @@ struct StreamingMarkdownView: View {
     @Environment(\.theme) private var theme
     @Environment(\.colorScheme) private var colorScheme
 
-    // ── OPT 1: Render Throttle ──
-    // Only update the text passed to MarkdownView at ~7fps during streaming.
-    // Between updates, MarkdownView receives the same `renderedContent` string,
-    // its coordinator sees `lastText == renderedContent` → needsUpdate = false,
-    // and the expensive parse+layout pipeline is completely skipped.
+    // Throttled content: only updated at ~15fps during streaming to avoid
+    // triggering expensive MarkdownView parse+layout on every token.
     @State private var renderedContent: String = ""
     @State private var lastRenderTime: CFAbsoluteTime = 0
 
-    /// Target render rate during streaming. 15fps ≈ 67ms between renders.
-    /// At ~20 tokens/sec (~80 chars/sec), each frame shows ~5 new characters
-    /// — smooth enough to feel like fast typing rather than bursty chunks.
-    /// Still a 25% reduction from the raw ~20 updates/sec, and combined with
-    /// the other pipeline optimizations, stays well within 60fps budget.
+    // 15fps ≈ 67ms per frame — smooth enough to feel like fast typing.
     private static let renderInterval: CFAbsoluteTime = 1.0 / 15.0
 
     init(content: String, isStreaming: Bool, textColor: SwiftUI.Color? = nil) {
@@ -65,25 +33,18 @@ struct StreamingMarkdownView: View {
     }
 
     var body: some View {
-        // ── OPT 1: Use throttled content during streaming ──
-        // During streaming: `renderedContent` updates at ~7fps (controlled by onChange)
-        // After streaming: `content` is used directly (final render, no throttle)
+        // Use throttled content during streaming; direct content after.
         let displayContent = isStreaming ? renderedContent : content
 
         Group {
             if displayContent.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                // Empty content — upstream shows TypingIndicator, we show nothing
                 EmptyView()
             } else if isStreaming {
-                // ── OPT 4: Skip parseSpecialBlocks during streaming ──
-                // During streaming, charts/HTML/mermaid can't render anyway (they all
-                // fall back to code blocks). Skipping the O(n) string scan saves
-                // ~5-8% of body evaluation cost per frame.
+                // Skip parseSpecialBlocks during streaming — charts/HTML/mermaid
+                // fall back to code blocks anyway and the scan wastes main-thread time.
                 MarkdownView(displayContent)
             } else {
-                // ── NOT STREAMING: Full special block detection ──
-                // Only run the expensive parseSpecialBlocks scan on final content
-                // when streaming is complete and we need chart/HTML/mermaid rendering.
+                // Full special block detection after streaming completes.
                 let parsed = parseSpecialBlocks(displayContent)
 
                 VStack(alignment: .leading, spacing: 8) {
@@ -114,20 +75,14 @@ struct StreamingMarkdownView: View {
                 }
             }
         }
-        // ── Throttle lifecycle — self-contained inside body ──
-        // These modifiers are always applied regardless of how the view is created.
         .onAppear {
             renderedContent = content
             lastRenderTime = CFAbsoluteTimeGetCurrent()
         }
-        // ── OPT 1: Throttled content updates ──
-        // When `content` changes (new token from upstream):
-        //   - If NOT streaming: update `renderedContent` immediately (final render)
-        //   - If streaming + time check passes: update `renderedContent` (~7fps)
-        //   - If streaming + too soon: skip — next token will catch up
+        // Throttle: update renderedContent at ~15fps during streaming.
+        // Not streaming → update immediately (final content, version switch, etc.)
         .onChange(of: content) { _, newContent in
             guard isStreaming else {
-                // Not streaming — render immediately (final content, version switch, etc.)
                 renderedContent = newContent
                 return
             }
@@ -137,10 +92,7 @@ struct StreamingMarkdownView: View {
                 lastRenderTime = now
             }
         }
-        // ── OPT 1: Flush on streaming end ──
-        // When streaming transitions to false, immediately render the final
-        // content. This catches any tokens that arrived after the last
-        // throttled render but before the done signal.
+        // Flush any remaining buffered content when streaming ends.
         .onChange(of: isStreaming) { _, streaming in
             if !streaming {
                 renderedContent = content
