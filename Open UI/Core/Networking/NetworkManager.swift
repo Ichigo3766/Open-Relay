@@ -1,0 +1,617 @@
+import Foundation
+import os.log
+
+/// Handles low-level HTTP networking using `URLSession`, including
+/// self-signed certificate support, authentication header injection,
+/// multipart form-data uploads, and SSE streaming.
+final class NetworkManager: NSObject, Sendable {
+    let serverConfig: ServerConfig
+    private let keychain: KeychainService
+    private let logger = Logger(subsystem: "com.openui", category: "Network")
+
+    /// The configured `URLSession`. Uses a custom delegate when
+    /// self-signed certificates are enabled.
+    let session: URLSession
+
+    /// Retains the delegate for the lifetime of this manager.
+    private let certificateDelegate: CertificateTrustDelegate?
+
+    /// Base URL derived from the server configuration.
+    var baseURL: URL? { serverConfig.apiBaseURL }
+
+    /// Current authentication token, read from the Keychain.
+    var authToken: String? {
+        keychain.getToken(forServer: serverConfig.url)
+    }
+
+    // MARK: - Initialisation
+
+    init(serverConfig: ServerConfig, keychain: KeychainService = .shared) {
+        self.serverConfig = serverConfig
+        self.keychain = keychain
+
+        let configuration = URLSessionConfiguration.default
+        configuration.timeoutIntervalForRequest = 30
+        configuration.timeoutIntervalForResource = 300
+        configuration.waitsForConnectivity = true
+
+        // STORAGE FIX: Disable URLSession HTTP caching entirely.
+        // The app is API-driven with its own ImageCacheService — the default
+        // URLCache (up to 512MB per session) causes massive unbounded disk
+        // growth as every API response (conversations, file content, models)
+        // is cached by the system and never evicted.
+        configuration.urlCache = nil
+        configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
+
+        // Merge custom headers from server config into default headers
+        var headers = configuration.httpAdditionalHeaders ?? [:]
+        for (key, value) in serverConfig.customHeaders {
+            headers[key] = value
+        }
+        configuration.httpAdditionalHeaders = headers
+
+        if serverConfig.allowSelfSignedCertificates {
+            let delegate = CertificateTrustDelegate(serverConfig: serverConfig)
+            self.certificateDelegate = delegate
+            self.session = URLSession(
+                configuration: configuration,
+                delegate: delegate,
+                delegateQueue: nil
+            )
+        } else {
+            self.certificateDelegate = nil
+            self.session = URLSession(configuration: configuration)
+        }
+
+        super.init()
+    }
+
+    // MARK: - Request Building
+
+    /// Constructs a `URLRequest` for the given path and method.
+    func buildRequest(
+        path: String,
+        method: HTTPMethod = .get,
+        queryItems: [URLQueryItem]? = nil,
+        body: Data? = nil,
+        contentType: String? = "application/json",
+        authenticated: Bool = true,
+        timeout: TimeInterval? = nil
+    ) throws -> URLRequest {
+        guard let baseURL else {
+            throw APIError.invalidURL(serverConfig.url)
+        }
+
+        var components = URLComponents(url: baseURL, resolvingAgainstBaseURL: false)!
+        // Append path, preserving existing base path
+        let basePath = components.path.hasSuffix("/")
+            ? String(components.path.dropLast())
+            : components.path
+        components.path = basePath + path
+        if let queryItems, !queryItems.isEmpty {
+            components.queryItems = queryItems
+        }
+
+        guard let url = components.url else {
+            throw APIError.invalidURL(components.string ?? path)
+        }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = method.rawValue
+        request.httpBody = body
+
+        if let timeout {
+            request.timeoutInterval = timeout
+        }
+
+        if let contentType {
+            request.setValue(contentType, forHTTPHeaderField: "Content-Type")
+        }
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+
+        // Inject auth header
+        if authenticated, let token = authToken {
+            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        }
+
+        // Inject custom headers from server config
+        for (key, value) in serverConfig.customHeaders {
+            let lower = key.lowercased()
+            // Don't override critical headers
+            if lower != "authorization" && lower != "content-type" && lower != "accept" {
+                request.setValue(value, forHTTPHeaderField: key)
+            }
+        }
+
+        return request
+    }
+
+    // MARK: - Simple Requests
+
+    /// Performs a request and decodes the JSON response.
+    func request<T: Decodable>(
+        _ type: T.Type,
+        path: String,
+        method: HTTPMethod = .get,
+        queryItems: [URLQueryItem]? = nil,
+        body: Encodable? = nil,
+        authenticated: Bool = true,
+        timeout: TimeInterval? = nil
+    ) async throws -> T {
+        let bodyData: Data?
+        if let body {
+            do {
+                bodyData = try JSONEncoder().encode(body)
+            } catch {
+                throw APIError.requestEncoding(underlying: error)
+            }
+        } else {
+            bodyData = nil
+        }
+
+        let urlRequest = try buildRequest(
+            path: path,
+            method: method,
+            queryItems: queryItems,
+            body: bodyData,
+            authenticated: authenticated,
+            timeout: timeout
+        )
+
+        let (data, response) = try await performRequest(urlRequest)
+        try validateHTTPResponse(response, data: data)
+
+        do {
+            let decoder = JSONDecoder()
+            decoder.dateDecodingStrategy = .secondsSince1970
+            decoder.keyDecodingStrategy = .convertFromSnakeCase
+            return try decoder.decode(T.self, from: data)
+        } catch {
+            throw APIError.responseDecoding(underlying: error, data: data)
+        }
+    }
+
+    /// Performs a request and returns the raw `Data` and `HTTPURLResponse`.
+    func requestRaw(
+        path: String,
+        method: HTTPMethod = .get,
+        queryItems: [URLQueryItem]? = nil,
+        body: Data? = nil,
+        contentType: String? = "application/json",
+        authenticated: Bool = true,
+        timeout: TimeInterval? = nil
+    ) async throws -> (Data, HTTPURLResponse) {
+        let urlRequest = try buildRequest(
+            path: path,
+            method: method,
+            queryItems: queryItems,
+            body: body,
+            contentType: contentType,
+            authenticated: authenticated,
+            timeout: timeout
+        )
+
+        let (data, response) = try await performRequest(urlRequest)
+        try validateHTTPResponse(response, data: data)
+        return (data, response as! HTTPURLResponse)
+    }
+
+    /// Performs a request, discarding the response body.
+    func requestVoid(
+        path: String,
+        method: HTTPMethod = .get,
+        queryItems: [URLQueryItem]? = nil,
+        body: Encodable? = nil,
+        authenticated: Bool = true
+    ) async throws {
+        let bodyData: Data?
+        if let body {
+            bodyData = try JSONEncoder().encode(body)
+        } else {
+            bodyData = nil
+        }
+
+        let urlRequest = try buildRequest(
+            path: path,
+            method: method,
+            queryItems: queryItems,
+            body: bodyData,
+            authenticated: authenticated
+        )
+
+        let (data, response) = try await performRequest(urlRequest)
+        try validateHTTPResponse(response, data: data)
+    }
+
+    /// Performs a request with a JSON dictionary body, discarding the response.
+    func requestVoidJSON(
+        path: String,
+        method: HTTPMethod = .get,
+        queryItems: [URLQueryItem]? = nil,
+        body: [String: Any]? = nil,
+        authenticated: Bool = true
+    ) async throws {
+        let bodyData: Data?
+        if let body {
+            bodyData = try JSONSerialization.data(withJSONObject: body)
+        } else {
+            bodyData = nil
+        }
+
+        let urlRequest = try buildRequest(
+            path: path,
+            method: method,
+            queryItems: queryItems,
+            body: bodyData,
+            authenticated: authenticated
+        )
+
+        let (data, response) = try await performRequest(urlRequest)
+        try validateHTTPResponse(response, data: data)
+    }
+
+    /// Performs a request and returns the response as a dictionary.
+    func requestJSON(
+        path: String,
+        method: HTTPMethod = .get,
+        queryItems: [URLQueryItem]? = nil,
+        body: [String: Any]? = nil,
+        authenticated: Bool = true,
+        timeout: TimeInterval? = nil
+    ) async throws -> [String: Any] {
+        let bodyData: Data?
+        if let body {
+            bodyData = try JSONSerialization.data(withJSONObject: body)
+        } else {
+            bodyData = nil
+        }
+
+        let urlRequest = try buildRequest(
+            path: path,
+            method: method,
+            queryItems: queryItems,
+            body: bodyData,
+            authenticated: authenticated,
+            timeout: timeout
+        )
+
+        let (data, response) = try await performRequest(urlRequest)
+        try validateHTTPResponse(response, data: data)
+
+        guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw APIError.responseDecoding(
+                underlying: NSError(
+                    domain: "APIError",
+                    code: -1,
+                    userInfo: [NSLocalizedDescriptionKey: "Expected JSON object"]
+                ),
+                data: data
+            )
+        }
+        return json
+    }
+
+    // MARK: - Streaming (SSE)
+
+    /// Opens an SSE streaming connection using `URLSession.bytes` for real-time
+    /// line-by-line parsing. Preferred over the data-task variant for chat streaming.
+    ///
+    /// Uses a dedicated session with a long `timeoutIntervalForRequest` (5 min)
+    /// so that the connection survives pauses during tool execution, where the
+    /// server may not send data for tens of seconds.
+    func streamRequestBytes(
+        path: String,
+        method: HTTPMethod = .post,
+        body: [String: Any]? = nil,
+        authenticated: Bool = true
+    ) async throws -> SSEStream {
+        let bodyData: Data?
+        if let body {
+            bodyData = try JSONSerialization.data(withJSONObject: body)
+        } else {
+            bodyData = nil
+        }
+
+        var urlRequest = try buildRequest(
+            path: path,
+            method: method,
+            body: bodyData,
+            authenticated: authenticated,
+            timeout: 300
+        )
+        urlRequest.setValue("text/event-stream", forHTTPHeaderField: "Accept")
+
+        // Use a streaming-specific session with extended timeouts so that
+        // pauses during tool execution (no data for 30+ seconds) don't
+        // kill the connection.
+        let streamSession = makeStreamingSession()
+        let (bytes, response) = try await streamSession.bytes(for: urlRequest)
+
+        if let httpResponse = response as? HTTPURLResponse,
+           !(200..<400).contains(httpResponse.statusCode) {
+            // Read the error body
+            var errorBody = Data()
+            for try await byte in bytes {
+                errorBody.append(byte)
+                if errorBody.count > 4096 { break }
+            }
+            throw parseHTTPError(statusCode: httpResponse.statusCode, data: errorBody)
+        }
+
+        return SSEStream(bytes: bytes)
+    }
+
+    /// Thread-safe streaming session — reused across all SSE requests
+    /// to prevent URLSession leaks. Sessions with delegates are never
+    /// deallocated unless explicitly invalidated.
+    /// FIX: Replaced `lazy var` with lock-protected initialization to
+    /// prevent data races when accessed from multiple threads simultaneously.
+    private let _streamingSessionLock = NSLock()
+    private var _streamingSessionBacking: URLSession?
+    private var _streamingSession: URLSession {
+        _streamingSessionLock.lock()
+        defer { _streamingSessionLock.unlock() }
+        if let existing = _streamingSessionBacking { return existing }
+        let config = URLSessionConfiguration.default
+        // Allow up to 5 minutes between data packets (tool execution can be slow)
+        config.timeoutIntervalForRequest = 300
+        config.timeoutIntervalForResource = 600
+        config.waitsForConnectivity = true
+
+        // STORAGE FIX: Disable caching on streaming session too
+        config.urlCache = nil
+        config.requestCachePolicy = .reloadIgnoringLocalCacheData
+
+        // Carry over custom headers
+        var headers = config.httpAdditionalHeaders ?? [:]
+        for (key, value) in serverConfig.customHeaders {
+            headers[key] = value
+        }
+        config.httpAdditionalHeaders = headers
+
+        let newSession: URLSession
+        if serverConfig.allowSelfSignedCertificates, let delegate = certificateDelegate {
+            newSession = URLSession(configuration: config, delegate: delegate, delegateQueue: nil)
+        } else {
+            newSession = URLSession(configuration: config)
+        }
+        _streamingSessionBacking = newSession
+        return newSession
+    }
+
+    /// Returns the shared streaming session.
+    private func makeStreamingSession() -> URLSession {
+        _streamingSession
+    }
+
+    // MARK: - Multipart Form Data Upload
+
+    /// Uploads a file using multipart/form-data encoding.
+    func uploadMultipart(
+        path: String,
+        queryItems: [URLQueryItem]? = nil,
+        fileData: Data,
+        fileName: String,
+        mimeType: String,
+        fieldName: String = "file",
+        additionalFields: [String: String]? = nil,
+        authenticated: Bool = true,
+        timeout: TimeInterval? = nil,
+        onProgress: (@Sendable (Int64, Int64) -> Void)? = nil
+    ) async throws -> [String: Any] {
+        let boundary = "Boundary-\(UUID().uuidString)"
+        var body = Data()
+
+        // Add additional text fields
+        if let fields = additionalFields {
+            for (key, value) in fields {
+                body.append(Data("--\(boundary)\r\n".utf8))
+                body.append(Data("Content-Disposition: form-data; name=\"\(key)\"\r\n\r\n".utf8))
+                body.append(Data("\(value)\r\n".utf8))
+            }
+        }
+
+        // Add file field
+        body.append(Data("--\(boundary)\r\n".utf8))
+        body.append(Data(
+            "Content-Disposition: form-data; name=\"\(fieldName)\"; filename=\"\(fileName)\"\r\n".utf8
+        ))
+        body.append(Data("Content-Type: \(mimeType)\r\n\r\n".utf8))
+        body.append(fileData)
+        body.append(Data("\r\n".utf8))
+        body.append(Data("--\(boundary)--\r\n".utf8))
+
+        let urlRequest = try buildRequest(
+            path: path,
+            method: .post,
+            queryItems: queryItems,
+            body: body,
+            contentType: "multipart/form-data; boundary=\(boundary)",
+            authenticated: authenticated,
+            timeout: timeout
+        )
+
+        let (data, response) = try await performRequest(urlRequest)
+        try validateHTTPResponse(response, data: data)
+
+        guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw APIError.responseDecoding(
+                underlying: NSError(
+                    domain: "APIError",
+                    code: -1,
+                    userInfo: [NSLocalizedDescriptionKey: "Expected JSON response from upload"]
+                ),
+                data: data
+            )
+        }
+        return json
+    }
+
+    // MARK: - Auth Token Management
+
+    /// Saves a new auth token for the current server.
+    @discardableResult
+    func saveAuthToken(_ token: String) -> Bool {
+        keychain.saveToken(token, forServer: serverConfig.url)
+    }
+
+    /// Deletes the auth token for the current server.
+    @discardableResult
+    func deleteAuthToken() -> Bool {
+        keychain.deleteToken(forServer: serverConfig.url)
+    }
+
+    // MARK: - Internal Helpers
+
+    private func performRequest(_ request: URLRequest) async throws -> (Data, URLResponse) {
+        do {
+            return try await session.data(for: request)
+        } catch {
+            throw APIError.from(error)
+        }
+    }
+
+    /// Performs a request with automatic retry for transient errors.
+    ///
+    /// Retries up to `maxRetries` times with exponential backoff for:
+    /// - Network errors (DNS, timeout, connection lost, not connected)
+    /// - Server errors (5xx status codes: 502, 503, 504, etc.)
+    ///
+    /// Does **not** retry for:
+    /// - Client errors (4xx) — these indicate a real problem (auth, bad request)
+    /// - Cancelled requests
+    /// - SSL errors — configuration issue, not transient
+    func performRequestWithRetry(
+        _ request: URLRequest,
+        maxRetries: Int = 3,
+        baseDelay: TimeInterval = 0.5
+    ) async throws -> (Data, URLResponse) {
+        var lastError: Error?
+
+        for attempt in 0...maxRetries {
+            do {
+                let (data, response) = try await performRequest(request)
+
+                // Check for retryable HTTP status codes (5xx)
+                if let httpResponse = response as? HTTPURLResponse,
+                   httpResponse.statusCode >= 500 && attempt < maxRetries {
+                    let delay = baseDelay * pow(2.0, Double(attempt))
+                    logger.warning("Server error \(httpResponse.statusCode) on attempt \(attempt + 1)/\(maxRetries + 1), retrying in \(delay)s")
+                    try await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+                    lastError = parseHTTPError(statusCode: httpResponse.statusCode, data: data)
+                    continue
+                }
+
+                return (data, response)
+            } catch {
+                lastError = error
+                let apiError = APIError.from(error)
+
+                // Only retry on transient/network errors
+                guard apiError.isRetryable, attempt < maxRetries else {
+                    throw error
+                }
+
+                let delay = baseDelay * pow(2.0, Double(attempt))
+                logger.warning("Request failed (attempt \(attempt + 1)/\(maxRetries + 1)): \(apiError.localizedDescription), retrying in \(delay)s")
+                try await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+            }
+        }
+
+        throw lastError ?? APIError.unknown(underlying: nil)
+    }
+
+    private func validateHTTPResponse(_ response: URLResponse, data: Data) throws {
+        guard let httpResponse = response as? HTTPURLResponse else {
+            return
+        }
+
+        let statusCode = httpResponse.statusCode
+
+        // Check for redirects that indicate proxy auth
+        if [302, 307, 308].contains(statusCode) {
+            let location = httpResponse.value(forHTTPHeaderField: "Location")
+            throw APIError.redirectDetected(location: location)
+        }
+
+        guard (200..<400).contains(statusCode) else {
+            throw parseHTTPError(statusCode: statusCode, data: data)
+        }
+    }
+
+    private func parseHTTPError(statusCode: Int, data: Data) -> APIError {
+        if statusCode == 401 {
+            return .tokenExpired
+        }
+
+        // Try to extract error message from JSON
+        var message: String?
+        if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            message = json["detail"] as? String
+                ?? json["error"] as? String
+                ?? json["message"] as? String
+        }
+        if message == nil {
+            message = String(data: data, encoding: .utf8)
+        }
+
+        return .httpError(statusCode: statusCode, message: message, data: data)
+    }
+}
+
+// MARK: - HTTP Method
+
+enum HTTPMethod: String, Sendable {
+    case get = "GET"
+    case post = "POST"
+    case put = "PUT"
+    case patch = "PATCH"
+    case delete = "DELETE"
+}
+
+// MARK: - Certificate Trust Delegate
+
+/// Handles SSL certificate trust evaluation for self-signed certificates.
+///
+/// Extracted from `NetworkManager` to enable `session` to be an
+/// immutable `let` property, satisfying `Sendable` conformance.
+private final class CertificateTrustDelegate: NSObject, URLSessionDelegate, Sendable {
+    let serverConfig: ServerConfig
+
+    init(serverConfig: ServerConfig) {
+        self.serverConfig = serverConfig
+        super.init()
+    }
+
+    func urlSession(
+        _ session: URLSession,
+        didReceive challenge: URLAuthenticationChallenge,
+        completionHandler: @escaping @Sendable (URLSession.AuthChallengeDisposition, URLCredential?) -> Void
+    ) {
+        guard serverConfig.allowSelfSignedCertificates,
+              challenge.protectionSpace.authenticationMethod == NSURLAuthenticationMethodServerTrust,
+              let serverTrust = challenge.protectionSpace.serverTrust
+        else {
+            completionHandler(.performDefaultHandling, nil)
+            return
+        }
+
+        // Only trust for our configured host
+        guard let baseURL = serverConfig.apiBaseURL,
+              challenge.protectionSpace.host.lowercased() == baseURL.host?.lowercased()
+        else {
+            completionHandler(.performDefaultHandling, nil)
+            return
+        }
+
+        // If a specific port is configured, verify it matches
+        if let configPort = baseURL.port,
+           challenge.protectionSpace.port != configPort {
+            completionHandler(.performDefaultHandling, nil)
+            return
+        }
+
+        let credential = URLCredential(trust: serverTrust)
+        completionHandler(.useCredential, credential)
+    }
+}

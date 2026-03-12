@@ -1,0 +1,387 @@
+import Foundation
+import UIKit
+import SwiftUI
+
+/// Protocol defining all app-level service dependencies.
+///
+/// Note: `Sendable` conformance was removed because the concrete
+/// `AppDependencyContainer` is `@Observable` (implicitly MainActor-bound)
+/// and holds mutable state that cannot be safely sent across actors.
+protocol ServiceContainer {
+    var serverConfigStore: ServerConfigStore { get }
+}
+
+// MARK: - Active Chat Store
+
+/// Stores active ``ChatViewModel`` instances so they survive navigation
+/// transitions.  When a user leaves a chat that is still streaming,
+/// the view model persists here and continues processing.
+@MainActor @Observable
+final class ActiveChatStore {
+    /// Cached view models keyed by conversation ID (or `__new__` for new chats).
+    /// @ObservationIgnored because this is internal storage — SwiftUI views
+    /// don't directly observe this dictionary; they observe the returned VMs.
+    /// Without this, inserting a new VM during body evaluation triggers an
+    /// AttributeGraph cycle (mutation during render → re-render → mutation…).
+    @ObservationIgnored private var viewModels: [String: ChatViewModel] = [:]
+
+    /// STORAGE FIX: Maximum number of cached view models to prevent unbounded
+    /// memory growth. Each VM holds a full Conversation with all messages.
+    /// Users who browse many conversations would accumulate them all without this.
+    private let maxCachedViewModels = 5
+
+    /// Access order tracking for LRU eviction.
+    /// Marked @ObservationIgnored because this is internal bookkeeping —
+    /// mutating it during viewModel(for:) must NOT trigger SwiftUI re-renders
+    /// or it causes an AttributeGraph cycle (mutation during body evaluation).
+    @ObservationIgnored private var accessOrder: [String] = []
+
+    // MARK: - Shared Model/Tools Cache
+
+    /// Shared model list so new VMs don't need a network fetch.
+    /// Updated by the first VM that loads models.
+    var cachedModels: [AIModel] = []
+
+    /// The last-selected model ID, carried forward to new chats.
+    var cachedSelectedModelId: String?
+
+    /// Server task config shared with all ChatViewModels.
+    /// Updated by AppDependencyContainer.fetchTaskConfig().
+    var serverTaskConfig: TaskConfig = .default
+
+    /// Returns an existing view model or creates a new one for the given
+    /// conversation ID.  Pass `nil` for a brand-new conversation.
+    ///
+    /// New VMs are pre-populated with `cachedModels` and `cachedSelectedModelId`
+    /// so the model selector is instant — no network fetch needed.
+    func viewModel(for conversationId: String?) -> ChatViewModel {
+        let key = conversationId ?? "__new__"
+        if let existing = viewModels[key] {
+            // STORAGE FIX: Update access order for LRU tracking
+            accessOrder.removeAll { $0 == key }
+            accessOrder.append(key)
+            return existing
+        }
+        let vm: ChatViewModel
+        if let conversationId {
+            vm = ChatViewModel(conversationId: conversationId)
+        } else {
+            vm = ChatViewModel()
+        }
+        // Pre-populate from shared cache so UI is instant
+        if !cachedModels.isEmpty {
+            vm.availableModels = cachedModels
+            vm.selectedModelId = cachedSelectedModelId ?? cachedModels.first?.id
+        }
+        viewModels[key] = vm
+        accessOrder.append(key)
+
+        // STORAGE FIX: Evict oldest VMs when over limit (LRU).
+        // Each VM holds a full Conversation with all messages in memory.
+        evictIfNeeded()
+
+        return vm
+    }
+
+    /// Evicts the least-recently-used view models when over the cache limit.
+    /// Never evicts a VM that is currently streaming.
+    /// FIX: Added maxIterations guard to prevent infinite loop when all VMs are streaming.
+    private func evictIfNeeded() {
+        var iterations = 0
+        let maxIterations = accessOrder.count + 1
+        while viewModels.count > maxCachedViewModels && !accessOrder.isEmpty && iterations < maxIterations {
+            iterations += 1
+            let oldest = accessOrder.removeFirst()
+            // Don't evict VMs that are actively streaming
+            if let vm = viewModels[oldest], vm.isStreaming {
+                accessOrder.append(oldest) // Move to end, try next
+                continue
+            }
+            viewModels.removeValue(forKey: oldest)
+        }
+    }
+
+    /// Updates the shared cache. Called by VMs after a successful model fetch.
+    func updateModelCache(models: [AIModel], selectedId: String?) {
+        cachedModels = models
+        if let selectedId { cachedSelectedModelId = selectedId }
+    }
+
+    /// Removes the cached view model for a conversation that has finished.
+    func remove(_ conversationId: String?) {
+        viewModels.removeValue(forKey: conversationId ?? "__new__")
+    }
+
+    /// Replaces the new-chat placeholder key with the real conversation ID
+    /// once the server assigns one.
+    func promoteNewChat(to conversationId: String) {
+        guard let vm = viewModels.removeValue(forKey: "__new__") else { return }
+        viewModels[conversationId] = vm
+    }
+
+    /// Removes all cached view models (e.g. on server switch or logout).
+    func clear() {
+        viewModels.removeAll()
+    }
+}
+
+/// The live dependency container used in the production app.
+@Observable
+final class AppDependencyContainer: ServiceContainer {
+    let serverConfigStore: ServerConfigStore
+    let appearanceManager: AppearanceManager
+
+    /// The shared auth view model.
+    private(set) var authViewModel: AuthViewModel
+
+    /// The current API client, scoped to the active server.
+    private(set) var apiClient: APIClient?
+
+    /// The current Socket.IO service, scoped to the active server.
+    private(set) var socketService: SocketIOService?
+
+    /// The conversation manager, scoped to the active server.
+    private(set) var conversationManager: ConversationManager?
+
+    /// The notes manager for local note storage and server sync.
+    private(set) var notesManager: NotesManager?
+
+    /// The folder manager for organising conversations into folders.
+    private(set) var folderManager: FolderManager?
+
+    /// Persistent store for active chat view models.
+    let activeChatStore = ActiveChatStore()
+
+    // MARK: - Voice Call Services
+
+    /// Notification service for local notifications.
+    let notificationService = NotificationService.shared
+
+    /// Speech recognition service.
+    let speechRecognitionService = SpeechRecognitionService()
+
+    /// Text-to-speech service.
+    let textToSpeechService = TextToSpeechService()
+
+    /// CallKit manager for native call UI.
+    let callKitManager = CallKitManager()
+
+    /// Audio recording service for voice notes.
+    let audioRecordingService = AudioRecordingService()
+
+    /// File attachment service for managing chat/note attachments.
+    let fileAttachmentService = FileAttachmentService()
+
+    /// Qwen3 ASR service for on-device audio transcription.
+    let qwen3ASRService = Qwen3ASRService()
+
+    /// Server-side task configuration (title gen, follow-ups, autocomplete, etc.).
+    /// Cached on login/server connect and used to respect admin settings.
+    private(set) var taskConfig: TaskConfig = .default
+
+    /// Whether the server is currently reachable (updated by connection monitor).
+    var isServerReachable: Bool = true
+
+    /// Whether the socket is connected (mirrors `socketService.connectionState`).
+    var socketConnectionState: SocketConnectionState = .disconnected
+
+    /// A file received from another app via "Open In" / iOS share sheet,
+    /// waiting to be injected into the chat input by ``ChatDetailView``.
+    /// Set by ``handleIncomingFileURL`` in ``Open_UIApp``, consumed once by the view.
+    var pendingIncomingFile: ChatAttachment?
+
+    /// Incremented each time a new incoming file arrives.
+    /// ``ChatDetailView`` observes this via `onChange` to pick up files
+    /// even when the view is already visible.
+    var pendingIncomingFileVersion: Int = 0
+
+    init() {
+        self.serverConfigStore = ServerConfigStore()
+        self.appearanceManager = AppearanceManager()
+        // Create AuthViewModel once with all dependencies to avoid
+        // wasted work from double-initialization.
+        self.authViewModel = AuthViewModel(
+            serverConfigStore: serverConfigStore,
+            dependencies: nil // Set below after self is available
+        )
+        configureServicesForActiveServer()
+        // Now that `self` is fully initialized, wire the dependency reference.
+        // This avoids creating a second AuthViewModel (which would discard
+        // the first one's optimistic auth state).
+        authViewModel.dependencies = self
+        // Models load on-demand when first needed — no startup preloading
+        startConnectionMonitor()
+    }
+
+    /// Rebuilds the API client and socket service for the currently
+    /// active server configuration.
+    /// - Parameter isServerSwitch: Pass `true` when explicitly switching servers
+    ///   or logging out. When `false` (default, used during init), caches are
+    ///   preserved so the user doesn't lose their session on app launch.
+    func configureServicesForActiveServer(isServerSwitch: Bool = false) {
+        // Clear active chat view models on server switch
+        activeChatStore.clear()
+
+        // STORAGE FIX: Only clear user data caches when explicitly switching
+        // servers or logging out — NOT on every app launch (which would nuke
+        // the saved session and cause a black screen).
+        if isServerSwitch {
+            StorageManager.shared.clearAllUserData()
+        }
+
+        guard let config = serverConfigStore.activeServer else {
+            apiClient = nil
+            socketService?.dispose()
+            socketService = nil
+            conversationManager = nil
+            notesManager = NotesManager()
+            textToSpeechService.configureServerTTS(apiClient: nil)
+            return
+        }
+
+        apiClient = APIClient(serverConfig: config)
+        textToSpeechService.configureServerTTS(apiClient: apiClient)
+        conversationManager = apiClient.map { ConversationManager(apiClient: $0) }
+        folderManager = apiClient.map { FolderManager(apiClient: $0) }
+        notesManager = NotesManager(apiClient: apiClient)
+
+        // Configure file attachment service
+        if let manager = conversationManager {
+            fileAttachmentService.configure(with: manager)
+        }
+
+        // Set up 401 callback for automatic re-auth
+        apiClient?.onAuthTokenInvalid = { [weak self] in
+            Task { @MainActor in
+                self?.authViewModel.currentUser = nil
+                self?.authViewModel.phase = .authMethodSelection
+                self?.authViewModel.errorMessage = "Your session has expired. Please sign in again."
+            }
+        }
+
+        // Dispose previous socket before creating new one
+        socketService?.dispose()
+
+        let token = KeychainService.shared.getToken(forServer: config.url)
+        socketService = SocketIOService(serverConfig: config, authToken: token)
+
+        // Wire socket state to the dependency container's observable property
+        wireSocketStateTracking()
+
+        // Update shared data for widget
+        SharedDataService.shared.saveAuthState(
+            isAuthenticated: true,
+            userName: authViewModel.currentUser?.displayName,
+            serverURL: config.url
+        )
+    }
+
+    /// Convenience: refreshes services after server config changes.
+    /// Treats this as a server switch (clears user data caches).
+    func refreshServices() {
+        configureServicesForActiveServer(isServerSwitch: true)
+    }
+
+    /// Creates a configured VoiceCallViewModel ready for use.
+    func makeVoiceCallViewModel() -> VoiceCallViewModel {
+        VoiceCallViewModel(
+            speechService: speechRecognitionService,
+            ttsService: textToSpeechService,
+            callKitManager: callKitManager
+        )
+    }
+
+    /// Processes any pending shared content from the Share Extension.
+    func processPendingSharedContent() -> SharedContent? {
+        let defaults = UserDefaults(suiteName: SharedDataService.appGroupId)
+        guard let data = defaults?.data(forKey: "pending_shared_content"),
+              let content = try? JSONDecoder().decode(SharedContent.self, from: data) else {
+            return nil
+        }
+        // Clear pending content
+        defaults?.removeObject(forKey: "pending_shared_content")
+        return content
+    }
+
+    /// Updates widget data with current conversations.
+    func updateWidgetData(conversations: [Conversation]) {
+        let recent = conversations.prefix(5).map { conv in
+            SharedDataService.RecentConversation(
+                id: conv.id,
+                title: conv.title,
+                lastMessage: conv.messages.last?.content ?? "",
+                updatedAt: conv.updatedAt,
+                modelName: conv.model
+            )
+        }
+        SharedDataService.shared.saveRecentConversations(Array(recent))
+    }
+
+    // MARK: - Connection Health Monitor
+
+    private var foregroundObserver: NSObjectProtocol?
+
+    /// Starts monitoring connection health.
+    /// - Observes `willEnterForeground` to run a health check and reconnect socket if needed.
+    /// - Wires up the socket's `onConnectionStateChange` to update `socketConnectionState`.
+    private func startConnectionMonitor() {
+        // Listen for foreground transitions
+        foregroundObserver = NotificationCenter.default.addObserver(
+            forName: UIApplication.willEnterForegroundNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in
+                await self?.performForegroundHealthCheck()
+            }
+        }
+
+        // Wire up socket state changes
+        wireSocketStateTracking()
+    }
+
+    /// Called whenever a new `socketService` is created, wires its state to
+    /// the dependency container's observable `socketConnectionState`.
+    private func wireSocketStateTracking() {
+        socketService?.onConnectionStateChange = { [weak self] state in
+            Task { @MainActor in
+                self?.socketConnectionState = state
+            }
+        }
+    }
+
+    /// Runs a lightweight health check when the app enters the foreground.
+    /// If the server is reachable but the socket is dead, reconnects it.
+    private func performForegroundHealthCheck() async {
+        guard let client = apiClient else { return }
+        guard authViewModel.isAuthenticated else { return }
+
+        let healthy = await client.checkHealth()
+        isServerReachable = healthy
+
+        if healthy {
+            // Server is up — make sure socket is connected
+            if let socket = socketService, !socket.isConnected {
+                let _ = await socket.ensureConnected(timeout: 5.0)
+            }
+        }
+    }
+
+    // MARK: - Task Configuration
+
+    /// Fetches and caches the server-side task configuration.
+    ///
+    /// Called after authentication succeeds and periodically on foreground
+    /// return. The config controls which background tasks (title gen,
+    /// follow-ups, tags, autocomplete) the admin has enabled globally.
+    func fetchTaskConfig() async {
+        guard let client = apiClient else { return }
+        do {
+            taskConfig = try await client.getTaskConfig()
+            // Push to ActiveChatStore so ChatViewModels can read it
+            activeChatStore.serverTaskConfig = taskConfig
+        } catch {
+            // Non-critical — keep using default (all enabled)
+        }
+    }
+}

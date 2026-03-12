@@ -1,0 +1,541 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		3870D18B2F5C0732004FF9ED /* MarkdownParser in Frameworks */ = {isa = PBXBuildFile; productRef = 3870D18A2F5C0732004FF9ED /* MarkdownParser */; };
+		3870D18D2F5C0732004FF9ED /* MarkdownView in Frameworks */ = {isa = PBXBuildFile; productRef = 3870D18C2F5C0732004FF9ED /* MarkdownView */; };
+		3870D1902F5C1095004FF9ED /* MarkdownParser in Frameworks */ = {isa = PBXBuildFile; productRef = 3870D18F2F5C1095004FF9ED /* MarkdownParser */; };
+		3870D1922F5C1095004FF9ED /* MarkdownView in Frameworks */ = {isa = PBXBuildFile; productRef = 3870D1912F5C1095004FF9ED /* MarkdownView */; };
+		38868C2A2F5A527000FA123F /* MarkdownParser in Frameworks */ = {isa = PBXBuildFile; productRef = 38868C292F5A527000FA123F /* MarkdownParser */; };
+		38868C2C2F5A527000FA123F /* MarkdownView in Frameworks */ = {isa = PBXBuildFile; productRef = 38868C2B2F5A527000FA123F /* MarkdownView */; };
+		38868C342F5A66F300FA123F /* MarkdownParser in Frameworks */ = {isa = PBXBuildFile; productRef = 38868C332F5A66F300FA123F /* MarkdownParser */; };
+		38868C362F5A66F300FA123F /* MarkdownView in Frameworks */ = {isa = PBXBuildFile; productRef = 38868C352F5A66F300FA123F /* MarkdownView */; };
+		38AA00012FA9B00000MRMAID /* BeautifulMermaid in Frameworks */ = {isa = PBXBuildFile; productRef = 38AA00002FA9B00000MRMAID /* BeautifulMermaid */; };
+		38AA00042FA9B00000SVGDRW /* SwiftDraw in Frameworks */ = {isa = PBXBuildFile; productRef = 38AA00032FA9B00000SVGDRW /* SwiftDraw */; };
+		38C0AC0E2F5A12CF0084BC6C /* MarkdownParser in Frameworks */ = {isa = PBXBuildFile; productRef = 38C0AC0D2F5A12CF0084BC6C /* MarkdownParser */; };
+		38C0AC102F5A12CF0084BC6C /* MarkdownView in Frameworks */ = {isa = PBXBuildFile; productRef = 38C0AC0F2F5A12CF0084BC6C /* MarkdownView */; };
+		38F860CB2F52F4B400266237 /* MLXAudioCore in Frameworks */ = {isa = PBXBuildFile; productRef = 38F860CA2F52F4B400266237 /* MLXAudioCore */; };
+		38F860CD2F52F4B400266237 /* MLXAudioSTT in Frameworks */ = {isa = PBXBuildFile; productRef = 38F860CC2F52F4B400266237 /* MLXAudioSTT */; };
+		38F860D02F52F4D000266237 /* MLXAudioTTS in Frameworks */ = {isa = PBXBuildFile; productRef = 38F860CF2F52F4D000266237 /* MLXAudioTTS */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		38A141942F4B9A1A00697C6F /* Embed Foundation Extensions */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 13;
+			files = (
+			);
+			name = "Embed Foundation Extensions";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
+
+/* Begin PBXFileReference section */
+		38EB667D2F39CE5A00AED774 /* Open UI.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "Open UI.app"; sourceTree = BUILT_PRODUCTS_DIR; };
+/* End PBXFileReference section */
+
+/* Begin PBXFileSystemSynchronizedRootGroup section */
+		38EB667F2F39CE5A00AED774 /* Open UI */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = "Open UI";
+			sourceTree = "<group>";
+		};
+/* End PBXFileSystemSynchronizedRootGroup section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		38EB667A2F39CE5A00AED774 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				38868C2A2F5A527000FA123F /* MarkdownParser in Frameworks */,
+				38F860CB2F52F4B400266237 /* MLXAudioCore in Frameworks */,
+				3870D18D2F5C0732004FF9ED /* MarkdownView in Frameworks */,
+				38F860CD2F52F4B400266237 /* MLXAudioSTT in Frameworks */,
+				3870D1922F5C1095004FF9ED /* MarkdownView in Frameworks */,
+				38C0AC0E2F5A12CF0084BC6C /* MarkdownParser in Frameworks */,
+				38868C2C2F5A527000FA123F /* MarkdownView in Frameworks */,
+				3870D1902F5C1095004FF9ED /* MarkdownParser in Frameworks */,
+				3870D18B2F5C0732004FF9ED /* MarkdownParser in Frameworks */,
+				38868C362F5A66F300FA123F /* MarkdownView in Frameworks */,
+				38F860D02F52F4D000266237 /* MLXAudioTTS in Frameworks */,
+				38868C342F5A66F300FA123F /* MarkdownParser in Frameworks */,
+				38C0AC102F5A12CF0084BC6C /* MarkdownView in Frameworks */,
+				38AA00012FA9B00000MRMAID /* BeautifulMermaid in Frameworks */,
+				38AA00042FA9B00000SVGDRW /* SwiftDraw in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		38EB66742F39CE5A00AED774 = {
+			isa = PBXGroup;
+			children = (
+				38EB667F2F39CE5A00AED774 /* Open UI */,
+				38EB667E2F39CE5A00AED774 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		38EB667E2F39CE5A00AED774 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				38EB667D2F39CE5A00AED774 /* Open UI.app */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		38EB667C2F39CE5A00AED774 /* Open UI */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 38EB668D2F39CE5C00AED774 /* Build configuration list for PBXNativeTarget "Open UI" */;
+			buildPhases = (
+				38EB66792F39CE5A00AED774 /* Sources */,
+				38EB667A2F39CE5A00AED774 /* Frameworks */,
+				38EB667B2F39CE5A00AED774 /* Resources */,
+				38A141942F4B9A1A00697C6F /* Embed Foundation Extensions */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				38EB667F2F39CE5A00AED774 /* Open UI */,
+			);
+			name = "Open UI";
+			packageProductDependencies = (
+				38F860CA2F52F4B400266237 /* MLXAudioCore */,
+				38F860CC2F52F4B400266237 /* MLXAudioSTT */,
+				38F860CF2F52F4D000266237 /* MLXAudioTTS */,
+				38C0AC0D2F5A12CF0084BC6C /* MarkdownParser */,
+				38C0AC0F2F5A12CF0084BC6C /* MarkdownView */,
+				38868C292F5A527000FA123F /* MarkdownParser */,
+				38868C2B2F5A527000FA123F /* MarkdownView */,
+				38868C332F5A66F300FA123F /* MarkdownParser */,
+				38868C352F5A66F300FA123F /* MarkdownView */,
+				38AA00002FA9B00000MRMAID /* BeautifulMermaid */,
+				3870D18A2F5C0732004FF9ED /* MarkdownParser */,
+				3870D18C2F5C0732004FF9ED /* MarkdownView */,
+				3870D18F2F5C1095004FF9ED /* MarkdownParser */,
+				3870D1912F5C1095004FF9ED /* MarkdownView */,
+				38AA00032FA9B00000SVGDRW /* SwiftDraw */,
+			);
+			productName = "Open UI";
+			productReference = 38EB667D2F39CE5A00AED774 /* Open UI.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		38EB66752F39CE5A00AED774 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastSwiftUpdateCheck = 2620;
+				LastUpgradeCheck = 2620;
+				TargetAttributes = {
+					38EB667C2F39CE5A00AED774 = {
+						CreatedOnToolsVersion = 26.2;
+					};
+				};
+			};
+			buildConfigurationList = 38EB66782F39CE5A00AED774 /* Build configuration list for PBXProject "Open UI" */;
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				es,
+				Base,
+			);
+			mainGroup = 38EB66742F39CE5A00AED774;
+			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				38F860C92F52F4B400266237 /* XCRemoteSwiftPackageReference "mlx-audio-swift" */,
+				38AA00022FA9B00000MRMAID /* XCRemoteSwiftPackageReference "beautiful-mermaid-swift" */,
+				3870D18E2F5C1095004FF9ED /* XCRemoteSwiftPackageReference "MarkdownView" */,
+				38AA00052FA9B00000SVGDRW /* XCRemoteSwiftPackageReference "SwiftDraw" */,
+			);
+			preferredProjectObjectVersion = 77;
+			productRefGroup = 38EB667E2F39CE5A00AED774 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				38EB667C2F39CE5A00AED774 /* Open UI */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		38EB667B2F39CE5A00AED774 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		38EB66792F39CE5A00AED774 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin XCBuildConfiguration section */
+		38EB668B2F39CE5C00AED774 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
+				CLANG_ANALYZER_LOCALIZABILITY_NONLOCALIZED = YES;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				DEVELOPMENT_TEAM = 6ARX8PF3MT;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"DEBUG=1",
+					"$(inherited)",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.2;
+				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				SDKROOT = iphoneos;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG $(inherited)";
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+			};
+			name = Debug;
+		};
+		38EB668C2F39CE5C00AED774 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
+				CLANG_ANALYZER_LOCALIZABILITY_NONLOCALIZED = YES;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				DEVELOPMENT_TEAM = 6ARX8PF3MT;
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.2;
+				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				SDKROOT = iphoneos;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				VALIDATE_PRODUCT = YES;
+			};
+			name = Release;
+		};
+		38EB668E2F39CE5C00AED774 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ENTITLEMENTS = "Open UI/Open UI.entitlements";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 6ARX8PF3MT;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = "Open UI";
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.productivity";
+				INFOPLIST_KEY_LSSupportsOpeningDocumentsInPlace = YES;
+				INFOPLIST_KEY_NSCameraUsageDescription = "Open UI needs camera access to capture photos and documents for chat attachments.";
+				INFOPLIST_KEY_NSFaceIDUsageDescription = "Open UI uses Face ID to protect your account and conversations.";
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Open UI needs microphone access for voice input and voice calls.";
+				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "Open UI needs permission to save images generated in conversations to your photo library.";
+				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "Open UI needs photo library access to attach images to your conversations.";
+				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "Open UI uses speech recognition to convert your voice input to text.";
+				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
+				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations = UIInterfaceOrientationPortrait;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown";
+				INFOPLIST_KEY_UISupportsDocumentBrowser = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 18.1;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.openui.openui;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		38EB668F2F39CE5C00AED774 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ENTITLEMENTS = "Open UI/Open UI.entitlements";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 6ARX8PF3MT;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = "Open UI";
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.productivity";
+				INFOPLIST_KEY_LSSupportsOpeningDocumentsInPlace = YES;
+				INFOPLIST_KEY_NSCameraUsageDescription = "Open UI needs camera access to capture photos and documents for chat attachments.";
+				INFOPLIST_KEY_NSFaceIDUsageDescription = "Open UI uses Face ID to protect your account and conversations.";
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Open UI needs microphone access for voice input and voice calls.";
+				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "Open UI needs permission to save images generated in conversations to your photo library.";
+				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "Open UI needs photo library access to attach images to your conversations.";
+				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "Open UI uses speech recognition to convert your voice input to text.";
+				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
+				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations = UIInterfaceOrientationPortrait;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown";
+				INFOPLIST_KEY_UISupportsDocumentBrowser = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 18.1;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.openui.openui;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		38EB66782F39CE5A00AED774 /* Build configuration list for PBXProject "Open UI" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				38EB668B2F39CE5C00AED774 /* Debug */,
+				38EB668C2F39CE5C00AED774 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		38EB668D2F39CE5C00AED774 /* Build configuration list for PBXNativeTarget "Open UI" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				38EB668E2F39CE5C00AED774 /* Debug */,
+				38EB668F2F39CE5C00AED774 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		3870D18E2F5C1095004FF9ED /* XCRemoteSwiftPackageReference "MarkdownView" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/Ichigo3766/MarkdownView";
+			requirement = {
+				branch = main;
+				kind = branch;
+			};
+		};
+		38AA00022FA9B00000MRMAID /* XCRemoteSwiftPackageReference "beautiful-mermaid-swift" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/lukilabs/beautiful-mermaid-swift";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 0.1.0;
+			};
+		};
+		38AA00052FA9B00000SVGDRW /* XCRemoteSwiftPackageReference "SwiftDraw" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/swhitty/SwiftDraw.git";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 0.18.0;
+			};
+		};
+		38F860C92F52F4B400266237 /* XCRemoteSwiftPackageReference "mlx-audio-swift" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/Blaizzy/mlx-audio-swift.git";
+			requirement = {
+				branch = main;
+				kind = branch;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		3870D18A2F5C0732004FF9ED /* MarkdownParser */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = MarkdownParser;
+		};
+		3870D18C2F5C0732004FF9ED /* MarkdownView */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = MarkdownView;
+		};
+		3870D18F2F5C1095004FF9ED /* MarkdownParser */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 3870D18E2F5C1095004FF9ED /* XCRemoteSwiftPackageReference "MarkdownView" */;
+			productName = MarkdownParser;
+		};
+		3870D1912F5C1095004FF9ED /* MarkdownView */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 3870D18E2F5C1095004FF9ED /* XCRemoteSwiftPackageReference "MarkdownView" */;
+			productName = MarkdownView;
+		};
+		38868C292F5A527000FA123F /* MarkdownParser */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = MarkdownParser;
+		};
+		38868C2B2F5A527000FA123F /* MarkdownView */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = MarkdownView;
+		};
+		38868C332F5A66F300FA123F /* MarkdownParser */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = MarkdownParser;
+		};
+		38868C352F5A66F300FA123F /* MarkdownView */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = MarkdownView;
+		};
+		38AA00002FA9B00000MRMAID /* BeautifulMermaid */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 38AA00022FA9B00000MRMAID /* XCRemoteSwiftPackageReference "beautiful-mermaid-swift" */;
+			productName = BeautifulMermaid;
+		};
+		38AA00032FA9B00000SVGDRW /* SwiftDraw */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 38AA00052FA9B00000SVGDRW /* XCRemoteSwiftPackageReference "SwiftDraw" */;
+			productName = SwiftDraw;
+		};
+		38C0AC0D2F5A12CF0084BC6C /* MarkdownParser */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = MarkdownParser;
+		};
+		38C0AC0F2F5A12CF0084BC6C /* MarkdownView */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = MarkdownView;
+		};
+		38F860CA2F52F4B400266237 /* MLXAudioCore */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 38F860C92F52F4B400266237 /* XCRemoteSwiftPackageReference "mlx-audio-swift" */;
+			productName = MLXAudioCore;
+		};
+		38F860CC2F52F4B400266237 /* MLXAudioSTT */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 38F860C92F52F4B400266237 /* XCRemoteSwiftPackageReference "mlx-audio-swift" */;
+			productName = MLXAudioSTT;
+		};
+		38F860CF2F52F4D000266237 /* MLXAudioTTS */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 38F860C92F52F4B400266237 /* XCRemoteSwiftPackageReference "mlx-audio-swift" */;
+			productName = MLXAudioTTS;
+		};
+/* End XCSwiftPackageProductDependency section */
+	};
+	rootObject = 38EB66752F39CE5A00AED774 /* Project object */;
+}
