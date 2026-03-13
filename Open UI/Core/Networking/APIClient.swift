@@ -49,7 +49,7 @@ final class APIClient: @unchecked Sendable {
                 authenticated: false,
                 timeout: 15
             )
-            let (_, response) = try await network.session.data(for: request)
+            let (healthData, response) = try await network.session.data(for: request)
 
             guard let httpResponse = response as? HTTPURLResponse else {
                 return .unreachable
@@ -64,6 +64,10 @@ final class APIClient: @unchecked Sendable {
             if [401, 403].contains(statusCode) {
                 let contentType = httpResponse.value(forHTTPHeaderField: "Content-Type") ?? ""
                 if contentType.contains("text/html") {
+                    // Could be a Cloudflare challenge — check before flagging as proxy
+                    if isCloudflareChallenge(data: healthData, response: httpResponse) {
+                        return .cloudflareChallenge
+                    }
                     return .proxyAuthRequired
                 }
             }
@@ -71,9 +75,19 @@ final class APIClient: @unchecked Sendable {
             if statusCode == 200 {
                 let contentType = httpResponse.value(forHTTPHeaderField: "Content-Type") ?? ""
                 if contentType.contains("text/html") {
-                    return .proxyAuthRequired
+                    // Check if this is a Cloudflare JS/bot challenge page
+                    if isCloudflareChallenge(data: healthData, response: httpResponse) {
+                        return .cloudflareChallenge
+                    }
+                    // Other HTML from CDN/WAF — probe /api/config to confirm
+                    return await confirmServerReachableViaConfig()
                 }
                 return .healthy
+            }
+
+            // 407 Proxy Authentication Required
+            if statusCode == 407 {
+                return .proxyAuthRequired
             }
 
             return .unhealthy
@@ -82,6 +96,77 @@ final class APIClient: @unchecked Sendable {
             if case .sslError = apiError { return .unreachable }
             if case .networkError = apiError { return .unreachable }
             return .unreachable
+        }
+    }
+
+    /// Detects if an HTML response is a Cloudflare Bot Fight Mode / Browser Integrity Check
+    /// challenge. These pages require JavaScript execution in a real browser.
+    private func isCloudflareChallenge(data: Data, response: HTTPURLResponse) -> Bool {
+        // Cloudflare sets these response headers on challenge pages
+        let cfRay = response.value(forHTTPHeaderField: "CF-RAY")
+        let server = response.value(forHTTPHeaderField: "Server") ?? ""
+        let isCloudflareServer = server.lowercased().contains("cloudflare") || cfRay != nil
+
+        guard isCloudflareServer else { return false }
+
+        // Check the HTML body for Cloudflare challenge markers
+        if let html = String(data: data, encoding: .utf8) {
+            let challengeMarkers = [
+                "_cf_chl_opt",          // Cloudflare JS challenge opt
+                "cf-browser-verification", // Browser verification page
+                "jschl-answer",         // JS challenge answer field
+                "cf_clearance",         // Clearance cookie reference
+                "Checking your browser", // Challenge page title text
+                "Just a moment",        // Challenge page loading text
+                "cf-please-wait",       // Please wait CSS class
+                "cf-spinner",           // Spinner element
+                "challenge-running",    // Challenge state
+                "turnstile",            // Cloudflare Turnstile CAPTCHA
+            ]
+            for marker in challengeMarkers {
+                if html.contains(marker) {
+                    return true
+                }
+            }
+        }
+        return false
+    }
+
+    /// Secondary probe used when `/health` returns HTML (Cloudflare/WAF edge interference).
+    /// Hits `/api/config` which is a pure JSON endpoint — if it returns valid JSON the
+    /// server backend is reachable and the HTML from `/health` was just a CDN artefact.
+    private func confirmServerReachableViaConfig() async -> HealthCheckResult {
+        do {
+            let request = try network.buildRequest(
+                path: "/api/config",
+                authenticated: false,
+                timeout: 10
+            )
+            let (data, response) = try await network.session.data(for: request)
+
+            guard let httpResponse = response as? HTTPURLResponse else {
+                return .proxyAuthRequired
+            }
+
+            let statusCode = httpResponse.statusCode
+            let contentType = httpResponse.value(forHTTPHeaderField: "Content-Type") ?? ""
+
+            // If /api/config returns JSON with a 200, the backend is real and reachable
+            if statusCode == 200 && contentType.contains("application/json") {
+                if (try? JSONSerialization.jsonObject(with: data)) != nil {
+                    return .healthy
+                }
+            }
+
+            // Check if /api/config is also blocked by a Cloudflare challenge
+            if isCloudflareChallenge(data: data, response: httpResponse) {
+                return .cloudflareChallenge
+            }
+
+            // /api/config returned HTML too — likely a proxy/WAF blocking all endpoints.
+            return .proxyAuthRequired
+        } catch {
+            return .proxyAuthRequired
         }
     }
 

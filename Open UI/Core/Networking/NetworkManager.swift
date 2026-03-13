@@ -32,6 +32,34 @@ final class NetworkManager: NSObject, Sendable {
         configuration.urlCache = nil
         configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
 
+        // Explicitly set the cookie storage so cf_clearance cookies injected
+        // via HTTPCookieStorage.shared are sent on every request.
+        configuration.httpCookieStorage = HTTPCookieStorage.shared
+        configuration.httpCookieAcceptPolicy = .always
+        configuration.httpShouldSetCookies = true
+
+        // Re-inject persisted cf_clearance cookie on startup. Session cookies
+        // (no expiry) vanish when the app is terminated — we persist the value
+        // in ServerConfig and re-create the cookie here with the saved expiry.
+        if serverConfig.isCloudflareBotProtected,
+           let cfValue = serverConfig.cfClearanceValue, !cfValue.isEmpty,
+           let cfExpiry = serverConfig.cfClearanceExpiry, cfExpiry > Date() {
+            if let url = URL(string: serverConfig.url), let host = url.host {
+                let cookieProperties: [HTTPCookiePropertyKey: Any] = [
+                    .name: "cf_clearance",
+                    .value: cfValue,
+                    .domain: host,
+                    .path: "/",
+                    .secure: url.scheme == "https" ? "TRUE" : "FALSE",
+                    .expires: cfExpiry
+                ]
+                if let cookie = HTTPCookie(properties: cookieProperties) {
+                    HTTPCookieStorage.shared.setCookie(cookie)
+                    logger.info("☁️ Re-injected persisted cf_clearance cookie for \(host) (expires \(cfExpiry))")
+                }
+            }
+        }
+
         var headers = configuration.httpAdditionalHeaders ?? [:]
         for (key, value) in serverConfig.customHeaders {
             headers[key] = value
@@ -324,6 +352,10 @@ final class NetworkManager: NSObject, Sendable {
         config.waitsForConnectivity = true
         config.urlCache = nil
         config.requestCachePolicy = .reloadIgnoringLocalCacheData
+        // Allow cookie jar so cf_clearance is auto-sent (same as main session above)
+        config.httpCookieStorage = HTTPCookieStorage.shared
+        config.httpCookieAcceptPolicy = .always
+        config.httpShouldSetCookies = true
 
         var headers = config.httpAdditionalHeaders ?? [:]
         for (key, value) in serverConfig.customHeaders {

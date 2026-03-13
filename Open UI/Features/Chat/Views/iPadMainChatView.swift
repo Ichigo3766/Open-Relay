@@ -159,13 +159,13 @@ struct iPadMainChatView: View {
                 .frame(width: 340)
                 .background(theme.background)
                 .onAppear {
-                    // Configure the VM immediately when the column becomes visible.
-                    // Without this the VM has no apiClient/serverId so loadDirectory()
-                    // returns early and the panel stays empty.
                     configureTerminalBrowserIfNeeded()
                     terminalBrowserVM.refresh()
                 }
             }
+            // ChatDetailView handles its own keyboard via KeyboardTracker.
+            // TerminalBrowserView is a fixed side column — no keyboard adjustment needed.
+            .ignoresSafeArea(.keyboard)
         } else {
             chatDetailContent
         }

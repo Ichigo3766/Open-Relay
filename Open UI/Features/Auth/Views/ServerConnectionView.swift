@@ -365,5 +365,16 @@ struct ServerConnectionView: View {
                 appeared = true
             }
         }
+        .fullScreenCover(isPresented: $viewModel.showCloudflareChallenge) {
+            CloudflareChallengeView(
+                serverURL: viewModel.serverURL,
+                onClearance: { cookieValue, userAgent, expiry in
+                    viewModel.resumeAfterCloudflareClearance(cookieValue, userAgent: userAgent, expiry: expiry)
+                },
+                onDismiss: {
+                    viewModel.dismissCloudflareChallenge()
+                }
+            )
+        }
     }
 }

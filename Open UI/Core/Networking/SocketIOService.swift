@@ -58,6 +58,15 @@ final class SocketIOService: NSObject, @unchecked Sendable, URLSessionWebSocketD
     private var reconnectTimer: Timer?
     private var reconnectAttempt = 0
 
+    /// Whether to use HTTP long-polling transport instead of WebSocket.
+    /// Cloudflare Bot Fight Mode blocks WebSocket upgrades, so we must use
+    /// the polling transport (which the browser also uses in this scenario).
+    private var usePollingTransport: Bool { serverConfig.isCloudflareBotProtected }
+    /// Task running the long-poll receive loop.
+    private var pollingReceiveTask: Task<Void, Never>?
+    /// Tracks monotonically increasing request counter for polling (Engine.IO `t` param).
+    private var pollingRequestCounter: Int = 0
+
     /// Engine.IO session ID received from the handshake.
     private(set) var sid: String?
 
@@ -124,6 +133,8 @@ final class SocketIOService: NSObject, @unchecked Sendable, URLSessionWebSocketD
     // MARK: - Connection
 
     /// Connects to the server's Socket.IO endpoint.
+    /// Automatically selects WebSocket or HTTP long-polling transport based on
+    /// whether the server is behind Cloudflare Bot Fight Mode.
     func connect(force: Bool = false) {
         if isConnected && !force { return }
         if isConnecting && !force { return }
@@ -134,20 +145,42 @@ final class SocketIOService: NSObject, @unchecked Sendable, URLSessionWebSocketD
         stopPing()
         disconnectInternal()
 
-        // Build handshake URL
-        // OpenWebUI Socket.IO path is /ws/socket.io
+        // STORAGE FIX: Invalidate previous session to prevent leaks.
+        session?.invalidateAndCancel()
+
+        // Create session with cookie support (needed for both transports)
+        let config = URLSessionConfiguration.default
+        config.urlCache = nil
+        config.requestCachePolicy = .reloadIgnoringLocalCacheData
+        config.httpCookieStorage = HTTPCookieStorage.shared
+        config.httpCookieAcceptPolicy = .always
+        config.httpShouldSetCookies = true
+        if serverConfig.allowSelfSignedCertificates {
+            session = URLSession(configuration: config, delegate: self, delegateQueue: nil)
+        } else {
+            session = URLSession(configuration: config)
+        }
+
+        if usePollingTransport {
+            connectViaPolling()
+        } else {
+            connectViaWebSocket()
+        }
+    }
+
+    // MARK: - WebSocket Transport
+
+    private func connectViaWebSocket() {
         var base = serverConfig.url
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .replacingOccurrences(of: "/$", with: "", options: .regularExpression)
 
-        // Replace http(s):// with ws(s)://
         if base.hasPrefix("https://") {
             base = "wss://" + base.dropFirst(8)
         } else if base.hasPrefix("http://") {
             base = "ws://" + base.dropFirst(7)
         }
 
-        // Engine.IO handshake query parameters
         let handshakeURL = "\(base)/ws/socket.io/?EIO=4&transport=websocket"
 
         guard let url = URL(string: handshakeURL) else {
@@ -158,8 +191,111 @@ final class SocketIOService: NSObject, @unchecked Sendable, URLSessionWebSocketD
 
         var request = URLRequest(url: url)
         request.timeoutInterval = 20
+        applyHeaders(to: &request)
 
-        // Set auth headers
+        webSocketTask = session?.webSocketTask(with: request)
+        webSocketTask?.resume()
+        receiveMessage()
+        logger.info("Connecting via WebSocket: \(handshakeURL)")
+    }
+
+    // MARK: - HTTP Long-Polling Transport (Engine.IO v4)
+
+    /// Connects using Engine.IO HTTP long-polling transport.
+    /// This is what the browser uses when Cloudflare blocks WebSocket upgrades.
+    /// Each GET request blocks until the server has data → instant delivery.
+    private func connectViaPolling() {
+        logger.info("Connecting via HTTP long-polling transport")
+        pollingRequestCounter = 0
+
+        Task { [weak self] in
+            guard let self, let session = self.session else { return }
+
+            // Step 1: Engine.IO handshake — GET with no sid
+            let handshakeURL = self.pollingURL(sid: nil)
+            guard let url = URL(string: handshakeURL) else {
+                self.logger.error("Invalid polling URL: \(handshakeURL)")
+                self.isConnecting = false
+                return
+            }
+
+            var request = URLRequest(url: url)
+            request.timeoutInterval = 30
+            self.applyHeaders(to: &request)
+
+            do {
+                let (data, response) = try await session.data(for: request)
+                guard let httpResponse = response as? HTTPURLResponse,
+                      (200..<400).contains(httpResponse.statusCode) else {
+                    self.logger.error("Polling handshake failed: HTTP \((response as? HTTPURLResponse)?.statusCode ?? 0)")
+                    self.handleDisconnect(reason: "Polling handshake failed")
+                    return
+                }
+
+                // Parse Engine.IO handshake response.
+                // Format: "0{...json...}" where 0 = OPEN packet type
+                guard let body = String(data: data, encoding: .utf8) else {
+                    self.handleDisconnect(reason: "Empty handshake response")
+                    return
+                }
+
+                // Engine.IO polling can return multiple packets separated by \x1e (record separator)
+                // or the body might be a single packet prefixed with length
+                let packets = self.parsePollingResponse(body)
+                for packet in packets {
+                    self.handleEngineIOMessage(packet)
+                }
+
+                guard let sid = self.sid else {
+                    self.handleDisconnect(reason: "No sid in handshake")
+                    return
+                }
+
+                // Step 2: Send Socket.IO CONNECT packet via POST
+                let connectPayload: String
+                if let token = self.authToken, !token.isEmpty,
+                   let authData = try? JSONSerialization.data(withJSONObject: ["token": token]),
+                   let authStr = String(data: authData, encoding: .utf8) {
+                    connectPayload = "40\(authStr)"
+                } else {
+                    connectPayload = "40"
+                }
+                try await self.pollingSend(connectPayload, sid: sid)
+
+                // Step 3: First receive — server responds with Socket.IO CONNECT acknowledgment
+                let connectResponse = try await self.pollingReceive(sid: sid)
+                for packet in connectResponse {
+                    self.handleEngineIOMessage(packet)
+                }
+
+                // Step 4: Start continuous receive loop
+                self.pollingReceiveTask = Task { [weak self] in
+                    await self?.pollingReceiveLoop(sid: sid)
+                }
+
+            } catch {
+                self.logger.error("Polling connect failed: \(error.localizedDescription)")
+                self.handleDisconnect(reason: error.localizedDescription)
+            }
+        }
+    }
+
+    /// Builds the polling URL with query parameters.
+    private func pollingURL(sid: String?) -> String {
+        let base = serverConfig.url
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: "/$", with: "", options: .regularExpression)
+
+        pollingRequestCounter += 1
+        var url = "\(base)/ws/socket.io/?EIO=4&transport=polling&t=\(pollingRequestCounter)"
+        if let sid {
+            url += "&sid=\(sid)"
+        }
+        return url
+    }
+
+    /// Applies auth headers and custom headers to a request.
+    private func applyHeaders(to request: inout URLRequest) {
         if let token = authToken, !token.isEmpty {
             request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         }
@@ -169,30 +305,95 @@ final class SocketIOService: NSObject, @unchecked Sendable, URLSessionWebSocketD
                 request.setValue(value, forHTTPHeaderField: key)
             }
         }
+    }
 
-        // STORAGE FIX: Invalidate previous session to prevent leaks.
-        // URLSessions with delegates are never deallocated by the system
-        // unless explicitly invalidated. Each leaked session retains its
-        // internal caches and memory.
-        session?.invalidateAndCancel()
+    /// Sends a message via HTTP POST (polling transport).
+    private func pollingSend(_ message: String, sid: String) async throws {
+        guard let session else { return }
+        let urlString = pollingURL(sid: sid)
+        guard let url = URL(string: urlString) else { return }
 
-        // Create session with optional self-signed cert support
-        let config = URLSessionConfiguration.default
-        config.urlCache = nil // Prevent socket session from caching
-        config.requestCachePolicy = .reloadIgnoringLocalCacheData
-        if serverConfig.allowSelfSignedCertificates {
-            session = URLSession(configuration: config, delegate: self, delegateQueue: nil)
-        } else {
-            session = URLSession(configuration: config)
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.httpBody = message.data(using: .utf8)
+        request.setValue("text/plain;charset=UTF-8", forHTTPHeaderField: "Content-Type")
+        request.timeoutInterval = 30
+        applyHeaders(to: &request)
+
+        let (_, response) = try await session.data(for: request)
+        if let httpResponse = response as? HTTPURLResponse,
+           !(200..<400).contains(httpResponse.statusCode) {
+            logger.warning("Polling send failed: HTTP \(httpResponse.statusCode)")
+        }
+    }
+
+    /// Receives messages via HTTP GET (long-polling — server holds request open until data ready).
+    private func pollingReceive(sid: String) async throws -> [String] {
+        guard let session else { return [] }
+        let urlString = pollingURL(sid: sid)
+        guard let url = URL(string: urlString) else { return [] }
+
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 120 // Long-poll — server holds until data available
+        applyHeaders(to: &request)
+
+        let (data, response) = try await session.data(for: request)
+
+        if let httpResponse = response as? HTTPURLResponse,
+           !(200..<400).contains(httpResponse.statusCode) {
+            throw NSError(domain: "SocketIO", code: httpResponse.statusCode,
+                          userInfo: [NSLocalizedDescriptionKey: "Polling receive HTTP \(httpResponse.statusCode)"])
         }
 
-        webSocketTask = session?.webSocketTask(with: request)
-        webSocketTask?.resume()
+        guard let body = String(data: data, encoding: .utf8), !body.isEmpty else {
+            return []
+        }
 
-        // Start receiving messages
-        receiveMessage()
+        return parsePollingResponse(body)
+    }
 
-        logger.info("Connecting to socket: \(handshakeURL)")
+    /// Continuous long-poll receive loop. Each GET blocks until the server has data,
+    /// then returns immediately. We process the data and immediately issue another GET.
+    /// This gives real-time latency identical to WebSocket.
+    private func pollingReceiveLoop(sid: String) async {
+        while !Task.isCancelled && (isConnected || isConnecting) {
+            do {
+                let packets = try await pollingReceive(sid: sid)
+                for packet in packets {
+                    handleEngineIOMessage(packet)
+                }
+            } catch {
+                if Task.isCancelled { break }
+                logger.warning("Polling receive error: \(error.localizedDescription)")
+                // Brief pause before retry to avoid tight loop on transient errors
+                try? await Task.sleep(nanoseconds: 500_000_000)
+                // If we're no longer connected, break out
+                if !isConnected && !isConnecting { break }
+            }
+        }
+
+        if !Task.isCancelled {
+            handleDisconnect(reason: "Polling loop ended")
+        }
+    }
+
+    /// Parses an Engine.IO polling response body into individual packets.
+    /// Packets can be separated by \x1e (record separator) in Engine.IO v4.
+    private func parsePollingResponse(_ body: String) -> [String] {
+        // Engine.IO v4 uses \x1e as packet separator for multiple packets
+        let separator = "\u{001e}"
+        if body.contains(separator) {
+            return body.components(separatedBy: separator).filter { !$0.isEmpty }
+        }
+        return [body]
+    }
+
+    /// Override send to route through polling when using polling transport.
+    private func pollingTransportSend(_ text: String) {
+        guard let sid else { return }
+        Task { [weak self] in
+            try? await self?.pollingSend(text, sid: sid)
+        }
     }
 
     /// Disconnects from the server intentionally.
@@ -390,12 +591,16 @@ final class SocketIOService: NSObject, @unchecked Sendable, URLSessionWebSocketD
         completionHandler(.useCredential, URLCredential(trust: serverTrust))
     }
 
-    // MARK: - Private: WebSocket Messaging
+    // MARK: - Private: Messaging (routes to correct transport)
 
     private func send(_ text: String) {
-        webSocketTask?.send(.string(text)) { [weak self] error in
-            if let error {
-                self?.logger.error("Send error: \(error.localizedDescription)")
+        if usePollingTransport {
+            pollingTransportSend(text)
+        } else {
+            webSocketTask?.send(.string(text)) { [weak self] error in
+                if let error {
+                    self?.logger.error("Send error: \(error.localizedDescription)")
+                }
             }
         }
     }
@@ -444,15 +649,17 @@ final class SocketIOService: NSObject, @unchecked Sendable, URLSessionWebSocketD
                 if let pt = handshake["pingTimeout"] as? Double { pingTimeout = pt / 1000.0 }
                 logger.info("Engine.IO handshake: sid=\(self.sid ?? "nil"), ping=\(self.pingInterval)s")
 
-                // Send Socket.IO connect packet (namespace /)
-                // Include auth token if available — use proper JSON serialization
-                // to prevent injection if token contains special characters.
-                if let token = authToken, !token.isEmpty,
-                   let authData = try? JSONSerialization.data(withJSONObject: ["token": token]),
-                   let authStr = String(data: authData, encoding: .utf8) {
-                    send("40\(authStr)")
-                } else {
-                    send("40")
+                // For WebSocket transport: auto-send Socket.IO connect packet.
+                // For polling transport: connectViaPolling() sends it explicitly
+                // after the handshake (Step 2), so skip auto-send here.
+                if !usePollingTransport {
+                    if let token = authToken, !token.isEmpty,
+                       let authData = try? JSONSerialization.data(withJSONObject: ["token": token]),
+                       let authStr = String(data: authData, encoding: .utf8) {
+                        send("40\(authStr)")
+                    } else {
+                        send("40")
+                    }
                 }
             }
 
@@ -688,6 +895,8 @@ final class SocketIOService: NSObject, @unchecked Sendable, URLSessionWebSocketD
     private func disconnectInternal() {
         webSocketTask?.cancel(with: .normalClosure, reason: nil)
         webSocketTask = nil
+        pollingReceiveTask?.cancel()
+        pollingReceiveTask = nil
     }
 
     private func handleDisconnect(reason: String?) {

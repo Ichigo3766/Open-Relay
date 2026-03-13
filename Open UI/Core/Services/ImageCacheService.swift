@@ -33,6 +33,24 @@ actor ImageCacheService {
     /// Active download tasks keyed by URL string to deduplicate requests.
     private var activeTasks: [String: Task<UIImage?, Never>] = [:]
 
+    // MARK: - Cloudflare Support
+
+    /// Custom headers (e.g. User-Agent) that must be sent with image requests
+    /// to servers behind Cloudflare Bot Fight Mode. Set by DependencyContainer
+    /// when configuring services for a CF-protected server.
+    /// Thread-safe: only accessed from within the actor.
+    private var cfCustomHeaders: [String: String]?
+
+    /// The host of the CF-protected server, used to scope header injection
+    /// to only requests targeting that server (not external image URLs).
+    private var cfServerHost: String?
+
+    /// Configures CF headers for image requests. Called by DependencyContainer.
+    func configureCFHeaders(customHeaders: [String: String]?, serverHost: String?) {
+        self.cfCustomHeaders = customHeaders
+        self.cfServerHost = serverHost
+    }
+
     // MARK: - Init
 
     private init() {
@@ -79,8 +97,9 @@ actor ImageCacheService {
     ///   - url: The image URL to load.
     ///   - authToken: Optional Bearer token for authenticated endpoints
     ///     (e.g. the model avatar endpoint `/api/v1/models/model/profile/image`).
+    ///   - customHeaders: Optional custom headers to include (e.g. Cloudflare User-Agent).
     /// - Returns: The loaded `UIImage`, or `nil` on failure.
-    func loadImage(from url: URL, authToken: String? = nil) async -> UIImage? {
+    func loadImage(from url: URL, authToken: String? = nil, customHeaders: [String: String]? = nil) async -> UIImage? {
         let key = cacheKey(for: url)
 
         // Check caches first
@@ -99,7 +118,23 @@ actor ImageCacheService {
                 if let authToken, !authToken.isEmpty {
                     request.setValue("Bearer \(authToken)", forHTTPHeaderField: "Authorization")
                 }
+                // Apply custom headers (e.g. CF User-Agent) so Cloudflare
+                // doesn't reject the request due to UA mismatch.
+                // First: explicitly passed headers take priority.
+                // Second: auto-apply CF headers for requests to the CF-protected server.
+                var effectiveHeaders = customHeaders ?? [:]
+                if effectiveHeaders.isEmpty,
+                   let cfHeaders = self.cfCustomHeaders,
+                   let cfHost = self.cfServerHost,
+                   url.host?.lowercased() == cfHost.lowercased() {
+                    effectiveHeaders = cfHeaders
+                }
+                for (key, value) in effectiveHeaders {
+                    request.setValue(value, forHTTPHeaderField: key)
+                }
 
+                // Use URLSession.shared which picks up cookies from HTTPCookieStorage.shared
+                // (including cf_clearance). The custom User-Agent header ensures CF accepts it.
                 let (data, response) = try await URLSession.shared.data(for: request)
 
                 guard let httpResponse = response as? HTTPURLResponse,

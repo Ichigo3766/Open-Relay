@@ -238,6 +238,26 @@ final class AppDependencyContainer: ServiceContainer {
         folderManager = apiClient.map { FolderManager(apiClient: $0) }
         notesManager = NotesManager(apiClient: apiClient)
 
+        // Configure ImageCacheService with CF headers so model avatar images
+        // are fetched with the correct User-Agent (Cloudflare ties cf_clearance
+        // to the UA that solved the challenge).
+        if config.isCloudflareBotProtected {
+            let serverHost = URL(string: config.url)?.host
+            Task {
+                await ImageCacheService.shared.configureCFHeaders(
+                    customHeaders: config.customHeaders,
+                    serverHost: serverHost
+                )
+            }
+        } else {
+            Task {
+                await ImageCacheService.shared.configureCFHeaders(
+                    customHeaders: nil,
+                    serverHost: nil
+                )
+            }
+        }
+
         // Configure file attachment service
         if let manager = conversationManager {
             fileAttachmentService.configure(with: manager)

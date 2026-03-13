@@ -151,6 +151,9 @@ enum HealthCheckResult: Sendable {
     case unhealthy
     /// Server appears to be behind an authentication proxy.
     case proxyAuthRequired
+    /// Server is behind Cloudflare Bot Fight Mode / Browser Integrity Check.
+    /// Requires a real browser (WKWebView) to complete the JS challenge.
+    case cloudflareChallenge
     /// Server could not be reached.
     case unreachable
 }

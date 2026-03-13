@@ -50,6 +50,11 @@ final class AuthViewModel {
     var phase: AuthPhase = .serverConnection
     var allowSelfSignedCerts: Bool = false
     var hasShownOnboarding: Bool = false
+
+    /// Set to true to present the Cloudflare Browser Integrity Check WebView sheet.
+    var showCloudflareChallenge: Bool = false
+    /// The normalized URL pending connection after a Cloudflare challenge is solved.
+    private var pendingCloudflareURL: String?
     /// The OAuth provider key selected by the user (e.g. "google", "microsoft").
     /// Set before navigating to `.ssoLogin` so SSOAuthView can load the provider URL directly.
     var selectedSSOProvider: String?
@@ -257,8 +262,16 @@ final class AuthViewModel {
         switch healthResult {
         case .healthy:
             break
+        case .cloudflareChallenge:
+            // The server is behind Cloudflare Bot Fight Mode.
+            // We need a real browser to complete the JS/Turnstile challenge.
+            // Show the WKWebView sheet so the user can pass the check.
+            pendingCloudflareURL = normalizedURL
+            isConnecting = false
+            showCloudflareChallenge = true
+            return
         case .proxyAuthRequired:
-            errorMessage = "Server requires proxy authentication. Check your network settings."
+            errorMessage = "Could not connect. If your server is behind Cloudflare or a proxy, ensure the app's IP is allowed through. Otherwise, check your network settings."
             isConnecting = false
             return
         case .unhealthy:
@@ -271,8 +284,17 @@ final class AuthViewModel {
             return
         }
 
-        // Verify it's an OpenWebUI server
+        // Verify it's an OpenWebUI server. This also probes /api/config, which
+        // Cloudflare can independently challenge even if /health passed.
+        // If it fails, do a second Cloudflare check before giving up.
         guard let config_result = await client.verifyAndGetConfig() else {
+            let cfCheck = await client.checkHealthWithProxyDetection()
+            if cfCheck == .cloudflareChallenge {
+                pendingCloudflareURL = normalizedURL
+                isConnecting = false
+                showCloudflareChallenge = true
+                return
+            }
             errorMessage = "Server does not appear to be an OpenWebUI instance."
             isConnecting = false
             return
@@ -778,6 +800,144 @@ final class AuthViewModel {
             errorMessage = "Could not check approval status. \(String(describing: apiError.errorDescription))"
             logger.error("Approval status check failed: \(error.localizedDescription)")
         }
+    }
+
+    // MARK: - Cloudflare Challenge Handling
+
+    /// Called by `CloudflareChallengeView` when the `cf_clearance` cookie is obtained.
+    /// Receives the cookie value, the WKWebView's User-Agent, and the cookie's expiry date.
+    /// Cloudflare binds the clearance to the exact UA that solved the challenge, so we must
+    /// send the same UA with every subsequent URLSession request or Cloudflare will re-challenge.
+    func resumeAfterCloudflareClearance(_ clearanceValue: String, userAgent: String, expiry: Date?) {
+        showCloudflareChallenge = false
+        guard let urlString = pendingCloudflareURL else {
+            errorMessage = "Could not resume connection after security check."
+            pendingCloudflareURL = nil
+            return
+        }
+
+        logger.info("☁️ Cloudflare cf_clearance obtained — injecting cookie + UA and resuming connection to \(urlString)")
+
+        // Inject the cf_clearance cookie into URLSession's HTTPCookieStorage.
+        // If the cookie has no expiry from Cloudflare, default to 30 minutes from now
+        // so it persists across the session but isn't treated as a permanent cookie.
+        let effectiveExpiry = expiry ?? Date().addingTimeInterval(30 * 60)
+        Self.injectCFClearanceCookie(value: clearanceValue, urlString: urlString, expiry: effectiveExpiry)
+
+        serverURL = urlString
+        pendingCloudflareURL = nil
+
+        // Skip the health check — we already know the server is reachable.
+        Task { await connectSkippingHealthCheck(normalizedURL: urlString, cfClearance: clearanceValue, userAgent: userAgent, cfExpiry: effectiveExpiry) }
+    }
+
+    /// Injects (or refreshes) the `cf_clearance` cookie into `HTTPCookieStorage.shared`.
+    /// Called both after a fresh challenge AND on app startup from persisted ServerConfig.
+    static func injectCFClearanceCookie(value: String, urlString: String, expiry: Date) {
+        guard let url = URL(string: urlString), let host = url.host else { return }
+        let cookieProperties: [HTTPCookiePropertyKey: Any] = [
+            .name: "cf_clearance",
+            .value: value,
+            .domain: host,
+            .path: "/",
+            .secure: url.scheme == "https" ? "TRUE" : "FALSE",
+            .expires: expiry
+        ]
+        if let cookie = HTTPCookie(properties: cookieProperties) {
+            HTTPCookieStorage.shared.setCookie(cookie)
+        }
+    }
+
+    /// Connects to a server directly, skipping the health check.
+    /// Used after a successful Cloudflare challenge where we already know the server is up.
+    private func connectSkippingHealthCheck(normalizedURL: String, cfClearance: String, userAgent: String, cfExpiry: Date) async {
+        guard let url = URL(string: normalizedURL), url.host != nil else {
+            errorMessage = "Invalid URL after security check."
+            return
+        }
+
+        isConnecting = true
+        errorMessage = nil
+
+        // Inject the WKWebView User-Agent as a custom header.
+        // Cloudflare ties cf_clearance to the UA that solved the challenge.
+        var customHeaders: [String: String] = [:]
+        if !userAgent.isEmpty {
+            customHeaders["User-Agent"] = userAgent
+        }
+
+        // Persist all CF data in the ServerConfig so it survives app restarts.
+        // On next launch, NetworkManager re-injects the cookie from these fields.
+        let config = ServerConfig(
+            name: url.host ?? "Server",
+            url: normalizedURL,
+            apiKey: apiKey.isEmpty ? nil : apiKey,
+            customHeaders: customHeaders,
+            lastConnected: .now,
+            isActive: true,
+            allowSelfSignedCertificates: allowSelfSignedCerts,
+            cfClearanceValue: cfClearance,
+            cfClearanceExpiry: cfExpiry,
+            cfUserAgent: userAgent.isEmpty ? nil : userAgent,
+            isCloudflareBotProtected: true
+        )
+
+        let client = APIClient(serverConfig: config)
+
+        if !apiKey.isEmpty {
+            client.updateAuthToken(apiKey)
+        }
+
+        // Skip health check — go straight to verifying it's an OpenWebUI instance
+        guard let configResult = await client.verifyAndGetConfig() else {
+            errorMessage = "Server does not appear to be an OpenWebUI instance."
+            isConnecting = false
+            return
+        }
+
+        backendConfig = configResult
+        logger.info("📋 [connectSkippingHealthCheck] Connected to '\(configResult.name ?? "unknown")' at \(normalizedURL)")
+
+        // Remove any previously stored server configs so the CF-enabled config
+        // becomes the single active server. Without this, addServer() appends and
+        // the OLD server (without CF headers) is still returned as activeServer.
+        serverConfigStore.removeAllServers()
+        serverConfigStore.addServer(config)
+        dependencies?.refreshServices()
+
+        if !apiKey.isEmpty {
+            do {
+                currentUser = try await client.getCurrentUser()
+                cacheCurrentUser()
+                phase = .authenticated
+                startTokenRefreshTimer()
+                markOnboardingSeen()
+            } catch {
+                logger.warning("API key auth failed after Cloudflare: \(error.localizedDescription)")
+                phase = .authMethodSelection
+            }
+        } else {
+            phase = .authMethodSelection
+        }
+
+        isConnecting = false
+    }
+
+    /// Triggers the Cloudflare challenge sheet for the currently active server.
+    /// Used when a CF re-challenge is detected mid-session (cookie expired).
+    func triggerCloudflareChallengeForActiveServer() {
+        guard let active = serverConfigStore.activeServer else { return }
+        pendingCloudflareURL = active.url
+        serverURL = active.url
+        showCloudflareChallenge = true
+    }
+
+    /// Called when the user dismisses the Cloudflare challenge without completing it.
+    func dismissCloudflareChallenge() {
+        showCloudflareChallenge = false
+        pendingCloudflareURL = nil
+        isConnecting = false
+        errorMessage = "Security check cancelled. Please try again."
     }
 
     // MARK: - Private Helpers

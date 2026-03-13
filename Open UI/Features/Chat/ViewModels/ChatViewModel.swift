@@ -1662,50 +1662,45 @@ final class ChatViewModel {
         // conversation.messages and only invalidate the streaming message view.
         streamingStore.beginStreaming(messageId: assistantMessageId, modelId: modelId)
 
-        // Ensure socket connected with resilient retry
-        guard let socket = socketService else {
-            updateAssistantMessage(id: assistantMessageId, content: "No connection available.",
-                                   isStreaming: false, error: ChatMessageError(content: "No socket"))
-            isStreaming = false
-            selfInitiatedStream = false
-            return
-        }
-        if !socket.isConnected {
+        // Ensure socket connected with resilient retry.
+        // For Cloudflare-protected servers, WebSocket connections may be blocked
+        // entirely. In that case, we fall back to SSE streaming (normal HTTPS).
+        let socket = socketService
+        var socketConnected = socket?.isConnected ?? false
+
+        if let socket, !socketConnected {
             // Show "Reconnecting..." status while we wait
             appendStatusUpdate(id: assistantMessageId,
                 status: ChatStatusUpdate(action: "reconnecting", description: "Reconnecting to server…", done: false))
 
             // Try up to 3 times with increasing timeouts (5s, 8s, 12s)
-            var connected = false
             for (attempt, timeout) in [(1, 5.0), (2, 8.0), (3, 12.0)] as [(Int, TimeInterval)] {
-                connected = await socket.ensureConnected(timeout: timeout)
-                if connected { break }
+                socketConnected = await socket.ensureConnected(timeout: timeout)
+                if socketConnected { break }
                 logger.warning("Socket connect attempt \(attempt) failed, retrying…")
             }
 
-            if !connected {
-                // Clear the reconnecting status and show error
-                updateAssistantMessage(
-                    id: assistantMessageId,
-                    content: "Unable to connect after multiple attempts. Check your connection and try again.",
-                    isStreaming: false,
-                    error: ChatMessageError(content: "Connection failed"))
-                isStreaming = false
-                return
+            if socketConnected {
+                appendStatusUpdate(id: assistantMessageId,
+                    status: ChatStatusUpdate(action: "reconnecting", description: "Connected", done: true))
+            } else {
+                // Socket failed — will use SSE fallback below
+                appendStatusUpdate(id: assistantMessageId,
+                    status: ChatStatusUpdate(action: "reconnecting", description: "Using direct connection", done: true))
+                logger.info("Socket unavailable — falling back to SSE streaming")
             }
-
-            // Connected — mark reconnecting status as done
-            appendStatusUpdate(id: assistantMessageId,
-                status: ChatStatusUpdate(action: "reconnecting", description: "Connected", done: true))
         }
 
-        let socketSessionId = socket.sid ?? sessionId
+        let useSSEFallback = !socketConnected
+        let socketSessionId = socket?.sid ?? sessionId
 
-        // Register socket handlers BEFORE HTTP POST
-        registerSocketHandlers(
-            socket: socket, assistantMessageId: assistantMessageId,
-            modelId: modelId, socketSessionId: socketSessionId,
-            effectiveChatId: effectiveChatId)
+        // Register socket handlers BEFORE HTTP POST (only if socket is connected)
+        if socketConnected, let socket {
+            registerSocketHandlers(
+                socket: socket, assistantMessageId: assistantMessageId,
+                modelId: modelId, socketSessionId: socketSessionId,
+                effectiveChatId: effectiveChatId)
+        }
 
         // Sync conversation to server — this writes the message tree structure
         // (user message + assistant placeholder with parentId/childrenIds) so the
@@ -1721,7 +1716,10 @@ final class ChatViewModel {
             }
         }
 
-        // Send HTTP POST (returns immediately; content via socket)
+        // Send message to server. When socket is connected, use HTTP POST + socket events.
+        // When socket is unavailable (e.g., Cloudflare blocking WebSocket), fall back to
+        // SSE streaming which uses normal HTTPS and passes through CF with cookie + UA.
+        let capturedUseSSEFallback = useSSEFallback
         streamingTask = Task { [weak self] in
             guard let self else { return }
             do {
@@ -1777,28 +1775,112 @@ final class ChatViewModel {
                 if features.webSearch { bgTasks["web_search"] = true }
                 if !bgTasks.isEmpty { request.backgroundTasks = bgTasks }
 
-                let json = try await manager.sendMessageHTTP(request: request)
+                if capturedUseSSEFallback {
+                    // ── HTTP + POLLING FALLBACK ──
+                    // Socket.IO is unavailable (e.g., Cloudflare blocks WebSocket).
+                    // OpenWebUI delivers content via socket events, not SSE — so we
+                    // use HTTP POST + aggressive server polling to pick up content
+                    // in near-real-time. Poll every 1.5s with no initial delay.
+                    self.logger.info("Using HTTP + polling fallback (no socket)")
+                    let json = try await manager.sendMessageHTTP(request: request)
 
-                if let err = json["error"] as? String, !err.isEmpty {
-                    self.updateAssistantMessage(id: assistantMessageId, content: "",
-                                                 isStreaming: false, error: ChatMessageError(content: err))
+                    if let err = json["error"] as? String, !err.isEmpty {
+                        self.updateAssistantMessage(id: assistantMessageId, content: "",
+                                                     isStreaming: false, error: ChatMessageError(content: err))
+                        self.cleanupStreaming()
+                        return
+                    }
+                    if let detail = json["detail"] as? String, !detail.isEmpty, json["choices"] == nil {
+                        self.updateAssistantMessage(id: assistantMessageId, content: "",
+                                                     isStreaming: false, error: ChatMessageError(content: detail))
+                        self.cleanupStreaming()
+                        return
+                    }
+                    if let taskId = json["task_id"] as? String {
+                        self.activeTaskId = taskId
+                    }
+
+                    // Aggressive polling: start immediately, poll every 1.5s
+                    // Content is being generated server-side and persisted to DB
+                    // in real-time. Each poll picks up the latest accumulated text.
+                    self.logger.info("HTTP POST done – starting aggressive polling (no socket)")
+                    guard let chatId = effectiveChatId else {
+                        self.cleanupStreaming()
+                        return
+                    }
+                    var lastContentLength = 0
+                    var staleCount = 0
+                    for _ in 0..<40 { // up to ~60s of polling
+                        if Task.isCancelled { break }
+                        try? await Task.sleep(nanoseconds: 1_500_000_000)
+                        if Task.isCancelled { break }
+
+                        do {
+                            let refreshed = try await manager.fetchConversation(id: chatId)
+                            if let serverAssistant = refreshed.messages.last(where: { $0.role == .assistant }) {
+                                let serverContent = serverAssistant.content.trimmingCharacters(in: .whitespacesAndNewlines)
+                                if !serverContent.isEmpty {
+                                    self.updateAssistantMessage(id: assistantMessageId, content: serverAssistant.content, isStreaming: true)
+                                    // Check if content is still growing
+                                    if serverContent.count > lastContentLength {
+                                        lastContentLength = serverContent.count
+                                        staleCount = 0
+                                    } else {
+                                        staleCount += 1
+                                    }
+                                    // If content hasn't changed for 3 consecutive polls (4.5s), it's done
+                                    if staleCount >= 3 {
+                                        self.logger.info("Polling: content stable at \(serverContent.count) chars — finalizing")
+                                        self.updateAssistantMessage(id: assistantMessageId, content: serverAssistant.content, isStreaming: false)
+                                        self.hasFinishedStreaming = true
+                                        self.isStreaming = false
+                                        // Post-completion
+                                        self.adoptServerMessages(serverConversation: refreshed)
+                                        await manager.sendChatCompleted(chatId: chatId, messageId: assistantMessageId, model: modelId, sessionId: socketSessionId)
+                                        try? await self.refreshConversationMetadata(chatId: chatId, assistantMessageId: assistantMessageId)
+                                        self.cleanupStreaming()
+                                        await self.sendCompletionNotificationIfNeeded(content: serverContent)
+                                        NotificationCenter.default.post(name: .conversationListNeedsRefresh, object: nil)
+                                        return
+                                    }
+                                }
+                            }
+                        } catch {
+                            self.logger.warning("Polling failed: \(error.localizedDescription)")
+                        }
+                    }
+                    // Polling exhausted — finalize with whatever we have
+                    self.updateAssistantMessage(id: assistantMessageId,
+                        content: self.conversation?.messages.last(where: { $0.role == .assistant })?.content ?? "",
+                        isStreaming: false)
                     self.cleanupStreaming()
-                    return
-                }
-                if let detail = json["detail"] as? String, !detail.isEmpty, json["choices"] == nil {
-                    self.updateAssistantMessage(id: assistantMessageId, content: "",
-                                                 isStreaming: false, error: ChatMessageError(content: detail))
-                    self.cleanupStreaming()
-                    return
-                }
+                    NotificationCenter.default.post(name: .conversationListNeedsRefresh, object: nil)
+                } else {
+                    // ── SOCKET PATH (normal) ──
+                    // HTTP POST returns immediately; content delivered via socket events
+                    let json = try await manager.sendMessageHTTP(request: request)
 
-                // Capture the server's task_id for server-side stop
-                if let taskId = json["task_id"] as? String {
-                    self.activeTaskId = taskId
-                }
+                    if let err = json["error"] as? String, !err.isEmpty {
+                        self.updateAssistantMessage(id: assistantMessageId, content: "",
+                                                     isStreaming: false, error: ChatMessageError(content: err))
+                        self.cleanupStreaming()
+                        return
+                    }
+                    if let detail = json["detail"] as? String, !detail.isEmpty, json["choices"] == nil {
+                        self.updateAssistantMessage(id: assistantMessageId, content: "",
+                                                     isStreaming: false, error: ChatMessageError(content: detail))
+                        self.cleanupStreaming()
+                        return
+                    }
 
-                self.logger.info("HTTP POST done – waiting for socket events")
-                self.startRecoveryTimer(assistantMessageId: assistantMessageId, chatId: effectiveChatId)
+                    // Capture the server's task_id for server-side stop
+                    if let taskId = json["task_id"] as? String {
+                        self.activeTaskId = taskId
+                    }
+
+                    self.logger.info("HTTP POST done – waiting for socket events")
+                    self.startRecoveryTimer(assistantMessageId: assistantMessageId, chatId: effectiveChatId)
+                }
             } catch {
                 if !Task.isCancelled {
                     self.updateAssistantMessage(id: assistantMessageId, content: "",
