@@ -813,6 +813,15 @@ final class ChatViewModel {
                     selectedModelId = availableModels.first?.id
                 }
             }
+            // Evict cached model avatars so admin-updated images are re-fetched.
+            // Avatar URLs are stable (keyed by model ID), so without eviction
+            // the image cache returns stale images indefinitely.
+            let baseURL = serverBaseURL
+            for model in availableModels {
+                if let avatarURL = model.resolveAvatarURL(baseURL: baseURL) {
+                    await ImageCacheService.shared.evict(for: avatarURL)
+                }
+            }
             // Write back to shared cache so subsequent VMs are pre-populated
             activeChatStore?.updateModelCache(models: availableModels, selectedId: selectedModelId)
         } catch {

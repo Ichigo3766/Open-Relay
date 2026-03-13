@@ -113,9 +113,12 @@ final class ActiveChatStore {
         viewModels[conversationId] = vm
     }
 
-    /// Removes all cached view models (e.g. on server switch or logout).
+    /// Removes all cached view models and model cache (e.g. on server switch or logout).
     func clear() {
         viewModels.removeAll()
+        accessOrder.removeAll()
+        cachedModels = []
+        cachedSelectedModelId = nil
     }
 }
 
@@ -220,6 +223,9 @@ final class AppDependencyContainer: ServiceContainer {
         // not on every app launch (which would nuke the saved session).
         if isServerSwitch {
             StorageManager.shared.clearAllUserData()
+            // Clear cached model avatars so stale images from the previous
+            // server/account don't persist into the new session.
+            Task { await ImageCacheService.shared.clearAll() }
         }
 
         guard let config = serverConfigStore.activeServer else {

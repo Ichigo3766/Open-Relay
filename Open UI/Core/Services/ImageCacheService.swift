@@ -204,6 +204,19 @@ actor ImageCacheService {
         logger.info("Image cache cleared")
     }
 
+    /// Evicts the cached image for a specific URL from both memory and disk.
+    ///
+    /// Used to invalidate model avatars when models are refreshed, ensuring
+    /// admin-updated avatar images are re-fetched from the server.
+    func evict(for url: URL) {
+        let key = cacheKey(for: url)
+        memoryCache.removeObject(forKey: key as NSString)
+        if let directory = diskCacheDirectory {
+            let fileURL = directory.appendingPathComponent(key)
+            try? fileManager.removeItem(at: fileURL)
+        }
+    }
+
     /// Evicts only the memory cache, preserving disk cache.
     func clearMemory() {
         memoryCache.removeAllObjects()
