@@ -5,7 +5,7 @@
 Chat with any AI model on your self-hosted Open WebUI server — right from your iPhone. Open UI is built 100% in SwiftUI and brings a fast, polished, native experience that the PWA can't match.
 
 <p align="center">
-  <a href="https://apps.apple.com/us/app/open-ui-open-webui-client/id6759630325">
+  <a href="https://apps.apple.com/app/id6759630325">
     <img src="https://developer.apple.com/assets/elements/badges/download-on-the-app-store.svg" alt="Download on the App Store" height="50">
   </a>
 </p>
