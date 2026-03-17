@@ -4,6 +4,7 @@ import SwiftUI
 @Observable
 final class AppRouter {
     var path = NavigationPath()
+    var channelPath = NavigationPath()
     var presentedSheet: Route?
 
     /// Whether the voice call full-screen cover is presented.

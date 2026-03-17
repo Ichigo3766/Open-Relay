@@ -153,7 +153,7 @@ struct LoadingIndicator: View {
 
             if let message {
                 Text(message)
-                    .font(AppTypography.bodySmallFont)
+                    .scaledFont(size: 14)
                     .foregroundStyle(theme.textSecondary)
             }
         }
@@ -181,7 +181,7 @@ struct LoadingOverlay: View {
 
                 if let message {
                     Text(message)
-                        .font(AppTypography.bodyMediumFont)
+                        .scaledFont(size: 16)
                         .foregroundStyle(theme.textSecondary)
                 }
             }
@@ -216,7 +216,7 @@ struct LoadingButton: View {
                         .scaleEffect(0.8)
                 }
                 Text(title)
-                    .font(AppTypography.labelLargeFont)
+                    .scaledFont(size: 16, weight: .medium)
             }
             .frame(maxWidth: .infinity)
             .frame(height: TouchTarget.comfortable)

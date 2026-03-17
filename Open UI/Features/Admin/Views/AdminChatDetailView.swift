@@ -91,7 +91,7 @@ struct AdminChatDetailView: View {
                         .controlSize(.small)
                 } else {
                     Image(systemName: "doc.on.doc")
-                        .font(.system(size: 14, weight: .medium))
+                        .scaledFont(size: 14, weight: .medium)
                         .foregroundStyle(theme.brandPrimary)
                 }
             }
@@ -106,7 +106,7 @@ struct AdminChatDetailView: View {
                         .controlSize(.small)
                 } else {
                     Image(systemName: "trash")
-                        .font(.system(size: 14, weight: .medium))
+                        .scaledFont(size: 14, weight: .medium)
                         .foregroundStyle(theme.error)
                 }
             }
@@ -149,7 +149,7 @@ struct AdminChatDetailView: View {
 
             if let ownerName = viewModel.viewingChatsForUser?.displayName {
                 Text("Chat by \(ownerName)")
-                    .font(.system(size: 12, weight: .medium))
+                    .scaledFont(size: 12, weight: .medium)
                     .foregroundStyle(theme.textTertiary)
             }
         }
@@ -160,9 +160,9 @@ struct AdminChatDetailView: View {
     private func infoPill(icon: String, text: String) -> some View {
         HStack(spacing: 4) {
             Image(systemName: icon)
-                .font(.system(size: 10, weight: .medium))
+                .scaledFont(size: 10, weight: .medium)
             Text(text)
-                .font(.system(size: 11, weight: .medium))
+                .scaledFont(size: 11, weight: .medium)
         }
         .foregroundStyle(theme.textTertiary)
         .padding(.horizontal, 8)
@@ -227,7 +227,7 @@ struct AdminChatDetailView: View {
             // Timestamp for assistant messages
             if message.role == .assistant {
                 Text(message.timestamp.chatTimestamp)
-                    .font(.system(size: 10))
+                    .scaledFont(size: 10)
                     .foregroundStyle(theme.textTertiary.opacity(0.6))
                     .padding(.horizontal, Spacing.screenPadding)
                     .padding(.top, 2)
@@ -241,7 +241,7 @@ struct AdminChatDetailView: View {
         HStack(spacing: Spacing.sm) {
             ModelAvatar(size: 22, label: message.model ?? conversation.model)
             Text(modelShortName(message.model ?? conversation.model ?? "Assistant"))
-                .font(AppTypography.labelSmallFont)
+                .scaledFont(size: 12, weight: .medium)
                 .foregroundStyle(theme.textSecondary)
         }
         .padding(.horizontal, Spacing.screenPadding)
@@ -255,7 +255,7 @@ struct AdminChatDetailView: View {
     private func messageContent(for message: ChatMessage) -> some View {
         if message.role == .user {
             Text(message.content)
-                .font(.system(size: 16))
+                .scaledFont(size: 16)
                 .lineSpacing(3)
         } else {
             // Process content for display (resolve URLs, citations, hard breaks)
@@ -347,7 +347,7 @@ struct AdminChatDetailView: View {
                                 .frame(width: 80, height: 80)
                                 .overlay {
                                     Image(systemName: "photo")
-                                        .font(.system(size: 20))
+                                        .scaledFont(size: 20)
                                         .foregroundStyle(theme.textTertiary)
                                 }
                         }
@@ -370,16 +370,16 @@ struct AdminChatDetailView: View {
         let ext = (name as NSString).pathExtension.lowercased()
         return HStack(spacing: Spacing.xs) {
             Image(systemName: "doc")
-                .font(.system(size: 12))
+                .scaledFont(size: 12)
                 .foregroundStyle(theme.brandPrimary)
             Text(name)
-                .font(AppTypography.captionFont)
+                .scaledFont(size: 12, weight: .medium)
                 .foregroundStyle(theme.textSecondary)
                 .lineLimit(1)
                 .truncationMode(.middle)
             if !ext.isEmpty {
                 Text(ext.uppercased())
-                    .font(.system(size: 9, weight: .bold))
+                    .scaledFont(size: 9, weight: .bold)
                     .foregroundStyle(theme.textTertiary)
             }
         }
@@ -402,7 +402,7 @@ struct AdminChatDetailView: View {
                         .frame(height: 100)
                         .overlay {
                             Image(systemName: "photo")
-                                .font(.system(size: 24))
+                                .scaledFont(size: 24)
                                 .foregroundStyle(theme.textTertiary)
                         }
                 }
@@ -421,13 +421,13 @@ struct AdminChatDetailView: View {
                         .frame(width: 18, height: 18)
                         .overlay(
                             Text(String((source.title ?? source.url ?? "?").prefix(1)).uppercased())
-                                .font(.system(size: 8, weight: .bold))
+                                .scaledFont(size: 8, weight: .bold)
                                 .foregroundStyle(theme.brandPrimary)
                         )
                 }
             }
             Text("\(sources.count) Source\(sources.count == 1 ? "" : "s")")
-                .font(AppTypography.labelSmallFont)
+                .scaledFont(size: 12, weight: .medium)
                 .foregroundStyle(theme.textSecondary)
         }
         .padding(.horizontal, Spacing.sm)
@@ -441,10 +441,10 @@ struct AdminChatDetailView: View {
     private func messageErrorView(_ text: String) -> some View {
         HStack(spacing: Spacing.sm) {
             Image(systemName: "exclamationmark.triangle.fill")
-                .font(.system(size: 12))
+                .scaledFont(size: 12)
                 .foregroundStyle(theme.error)
             Text(text)
-                .font(AppTypography.captionFont)
+                .scaledFont(size: 12, weight: .medium)
                 .foregroundStyle(theme.error)
                 .lineLimit(2)
         }
@@ -455,8 +455,8 @@ struct AdminChatDetailView: View {
 
     private var copiedToastView: some View {
         HStack(spacing: Spacing.sm) {
-            Image(systemName: "doc.on.doc.fill").font(.system(size: 12))
-            Text("Copied to clipboard").font(AppTypography.labelSmallFont)
+            Image(systemName: "doc.on.doc.fill").scaledFont(size: 12)
+            Text("Copied to clipboard").scaledFont(size: 12, weight: .medium)
         }
         .foregroundStyle(theme.textInverse)
         .padding(.horizontal, Spacing.md)
@@ -475,7 +475,7 @@ struct AdminChatDetailView: View {
             ProgressView()
                 .controlSize(.large)
             Text("Loading conversation…")
-                .font(AppTypography.bodyMediumFont)
+                .scaledFont(size: 16)
                 .foregroundStyle(theme.textTertiary)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -485,16 +485,16 @@ struct AdminChatDetailView: View {
     private func errorState(_ message: String) -> some View {
         VStack(spacing: Spacing.md) {
             Image(systemName: "exclamationmark.triangle")
-                .font(.system(size: 40))
+                .scaledFont(size: 40)
                 .foregroundStyle(theme.error)
             Text(message)
-                .font(AppTypography.bodyMediumFont)
+                .scaledFont(size: 16)
                 .foregroundStyle(theme.textTertiary)
                 .multilineTextAlignment(.center)
             Button("Retry") {
                 Task { await viewModel.loadChatDetail(chatId: chatItem.id) }
             }
-            .font(AppTypography.bodyMediumFont)
+            .scaledFont(size: 16)
             .fontWeight(.semibold)
             .foregroundStyle(theme.brandPrimary)
         }
@@ -505,10 +505,10 @@ struct AdminChatDetailView: View {
     private var emptyState: some View {
         VStack(spacing: Spacing.md) {
             Image(systemName: "bubble.left.and.text.bubble.right")
-                .font(.system(size: 40))
+                .scaledFont(size: 40)
                 .foregroundStyle(theme.textTertiary)
             Text("No messages in this chat")
-                .font(AppTypography.bodyMediumFont)
+                .scaledFont(size: 16)
                 .foregroundStyle(theme.textTertiary)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)

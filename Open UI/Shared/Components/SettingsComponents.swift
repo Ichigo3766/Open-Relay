@@ -22,7 +22,7 @@ struct SettingsSection<Content: View>: View {
         VStack(alignment: .leading, spacing: 0) {
             if let header {
                 Text(header.uppercased())
-                    .font(AppTypography.captionFont)
+                    .scaledFont(size: 12, weight: .medium)
                     .foregroundStyle(theme.textTertiary)
                     .tracking(0.8)
                     .padding(.horizontal, Spacing.screenPadding)
@@ -42,7 +42,7 @@ struct SettingsSection<Content: View>: View {
 
             if let footer {
                 Text(footer)
-                    .font(AppTypography.captionFont)
+                    .scaledFont(size: 12, weight: .medium)
                     .foregroundStyle(theme.textTertiary)
                     .padding(.horizontal, Spacing.screenPadding + Spacing.md)
                     .padding(.top, Spacing.sm)
@@ -76,12 +76,12 @@ struct SettingsCell: View {
                     // Title & subtitle
                     VStack(alignment: .leading, spacing: Spacing.xxs) {
                         Text(title)
-                            .font(AppTypography.bodyMediumFont)
+                            .scaledFont(size: 16)
                             .foregroundStyle(theme.textPrimary)
 
                         if let subtitle {
                             Text(subtitle)
-                                .font(AppTypography.captionFont)
+                                .scaledFont(size: 12, weight: .medium)
                                 .foregroundStyle(theme.textTertiary)
                         }
                     }
@@ -108,7 +108,7 @@ struct SettingsCell: View {
 
     private var iconView: some View {
         Image(systemName: icon)
-            .font(.system(size: 16, weight: .medium))
+            .scaledFont(size: 16, weight: .medium)
             .foregroundStyle(iconColor ?? theme.brandPrimary)
             .frame(width: IconSize.lg, height: IconSize.lg)
             .background((iconColor ?? theme.brandPrimary).opacity(0.12))
@@ -120,15 +120,15 @@ struct SettingsCell: View {
         switch accessory {
         case .chevron:
             Image(systemName: "chevron.right")
-                .font(.system(size: 12, weight: .semibold))
+                .scaledFont(size: 12, weight: .semibold)
                 .foregroundStyle(theme.textTertiary)
         case .text(let value):
             Text(value)
-                .font(AppTypography.bodySmallFont)
+                .scaledFont(size: 14)
                 .foregroundStyle(theme.textTertiary)
         case .badge(let value):
             Text(value)
-                .font(AppTypography.captionFont)
+                .scaledFont(size: 12, weight: .medium)
                 .foregroundStyle(.white)
                 .padding(.horizontal, Spacing.sm)
                 .padding(.vertical, Spacing.xxs)
@@ -176,14 +176,14 @@ struct DestructiveSettingsCell: View {
         Button(action: action) {
             HStack(spacing: Spacing.md) {
                 Image(systemName: icon)
-                    .font(.system(size: 16, weight: .medium))
+                    .scaledFont(size: 16, weight: .medium)
                     .foregroundStyle(theme.error)
                     .frame(width: IconSize.lg, height: IconSize.lg)
                     .background(theme.error.opacity(0.12))
                     .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
 
                 Text(title)
-                    .font(AppTypography.bodyMediumFont)
+                    .scaledFont(size: 16)
                     .foregroundStyle(theme.error)
 
                 Spacer()
@@ -204,6 +204,7 @@ struct SettingsProfileHeader: View {
     let name: String
     var email: String? = nil
     var avatarURL: URL? = nil
+    var authToken: String? = nil
     var onTap: (() -> Void)? = nil
 
     @Environment(\.theme) private var theme
@@ -211,16 +212,16 @@ struct SettingsProfileHeader: View {
     var body: some View {
         Button(action: { onTap?() }) {
             HStack(spacing: Spacing.md) {
-                UserAvatar(size: 56, imageURL: avatarURL, name: name)
+                UserAvatar(size: 56, imageURL: avatarURL, name: name, authToken: authToken)
 
                 VStack(alignment: .leading, spacing: Spacing.xxs) {
                     Text(name)
-                        .font(AppTypography.headlineSmallFont)
+                        .scaledFont(size: 20, weight: .semibold)
                         .foregroundStyle(theme.textPrimary)
 
                     if let email {
                         Text(email)
-                            .font(AppTypography.bodySmallFont)
+                            .scaledFont(size: 14)
                             .foregroundStyle(theme.textTertiary)
                     }
                 }
@@ -229,7 +230,7 @@ struct SettingsProfileHeader: View {
 
                 if onTap != nil {
                     Image(systemName: "chevron.right")
-                        .font(.system(size: 12, weight: .semibold))
+                        .scaledFont(size: 12, weight: .semibold)
                         .foregroundStyle(theme.textTertiary)
                 }
             }

@@ -16,6 +16,39 @@ struct ChatSourceReference: Codable, Identifiable, Hashable, Sendable {
     var type: String?
     var metadata: [String: String]?
 
+    /// A short, human-readable label for inline citation badges.
+    /// Mirrors the OpenWebUI web interface which shows shortened page
+    /// titles instead of numeric IDs.
+    ///
+    /// Priority: non-URL title → domain name from URL → nil (caller
+    /// should fall back to the citation number).
+    var displayLabel: String? {
+        // 1. Use the title if it's a real title (not a raw URL)
+        if let title, !title.isEmpty, !title.hasPrefix("http") {
+            return Self.truncateTitle(title, maxLength: 24)
+        }
+        // 2. Fall back to a cleaned-up domain name
+        if let url = resolvedURL, let domain = Self.domainFromURL(url) {
+            return domain
+        }
+        return nil
+    }
+
+    /// Truncates a title to `maxLength`, adding "..." if needed.
+    private static func truncateTitle(_ title: String, maxLength: Int) -> String {
+        let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.count > maxLength else { return trimmed }
+        return String(trimmed.prefix(maxLength - 3)) + "..."
+    }
+
+    /// Extracts a display-friendly domain from a URL string.
+    private static func domainFromURL(_ url: String) -> String? {
+        guard let parsed = URL(string: url), let host = parsed.host else { return nil }
+        var domain = host
+        if domain.hasPrefix("www.") { domain = String(domain.dropFirst(4)) }
+        return domain.isEmpty ? nil : domain
+    }
+
     /// Resolves the best available URL from all possible fields,
     /// matching the Flutter app's `_getSourceUrl` logic.
     var resolvedURL: String? {

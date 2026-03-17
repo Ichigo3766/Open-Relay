@@ -202,6 +202,9 @@ final class ChatListViewModel {
 
     /// Silently refreshes conversations if enough time has passed since the last refresh.
     /// Used for automatic foreground/reconnect refreshes to avoid hammering the server.
+    ///
+    /// When the user has paginated deep (loaded multiple pages), this merges the
+    /// fresh first page into the existing data instead of truncating everything.
     func refreshIfStale() async {
         guard let manager else { return }
 
@@ -214,28 +217,60 @@ final class ChatListViewModel {
         // Skip if already loading
         guard !isLoading, !isRefreshing else { return }
 
-        currentPage = 0
-
         do {
             let fetched = try await manager.fetchConversations(
                 limit: pageSize,
                 skip: 0
             )
-            // Only update if the data actually changed (compare IDs + count)
-            let fetchedIds = Set(fetched.map(\.id))
-            let currentIds = Set(conversations.map(\.id))
-            let titlesChanged = fetched.contains { newConv in
-                conversations.first(where: { $0.id == newConv.id })?.title != newConv.title
-            }
-            let pinnedChanged = fetched.contains { newConv in
-                conversations.first(where: { $0.id == newConv.id })?.pinned != newConv.pinned
+
+            if currentPage > 0 {
+                // User has paginated deep — merge first page without truncating older pages.
+                // Replace existing entries that appear in the fresh batch, prepend truly new ones,
+                // and keep all paginated items that aren't in the first page.
+                var merged: [Conversation] = []
+                var seen = Set<String>()
+
+                // First: all items from the fresh page in order (newest first)
+                for conv in fetched {
+                    merged.append(conv)
+                    seen.insert(conv.id)
+                }
+                // Then: all existing items not in the fresh page (older paginated data)
+                for conv in conversations where !seen.contains(conv.id) {
+                    merged.append(conv)
+                    seen.insert(conv.id)
+                }
+
+                let changed = merged.map(\.id) != conversations.map(\.id)
+                    || fetched.contains { newConv in
+                        conversations.first(where: { $0.id == newConv.id })?.title != newConv.title
+                    }
+                    || fetched.contains { newConv in
+                        conversations.first(where: { $0.id == newConv.id })?.pinned != newConv.pinned
+                    }
+
+                if changed {
+                    conversations = merged
+                    logger.info("Silent refresh (deep): merged \(fetched.count) fresh + kept \(merged.count - fetched.count) paginated")
+                }
+            } else {
+                // Only on page 0 — safe to replace entirely
+                let fetchedIds = Set(fetched.map(\.id))
+                let currentIds = Set(conversations.map(\.id))
+                let titlesChanged = fetched.contains { newConv in
+                    conversations.first(where: { $0.id == newConv.id })?.title != newConv.title
+                }
+                let pinnedChanged = fetched.contains { newConv in
+                    conversations.first(where: { $0.id == newConv.id })?.pinned != newConv.pinned
+                }
+
+                if fetchedIds != currentIds || fetched.count != conversations.count || titlesChanged || pinnedChanged {
+                    conversations = fetched
+                    hasMorePages = fetched.count >= pageSize
+                    logger.info("Silent refresh: updated \(fetched.count) conversations")
+                }
             }
 
-            if fetchedIds != currentIds || fetched.count != conversations.count || titlesChanged || pinnedChanged {
-                conversations = fetched
-                hasMorePages = fetched.count >= pageSize
-                logger.info("Silent refresh: updated \(fetched.count) conversations")
-            }
             errorMessage = nil
             lastRefreshDate = Date()
         } catch {
@@ -246,12 +281,16 @@ final class ChatListViewModel {
     /// Loads the next page of conversations when scrolling near the bottom.
     ///
     /// Call this from `onAppear` of the last few visible items.
+    /// Uses the **visible** (grouped) list to decide proximity to the end,
+    /// not the raw `conversations` array, which may contain pinned/foldered
+    /// items that are rendered in separate sections.
     ///
     /// - Parameter currentItem: The conversation that just appeared.
     func loadMoreIfNeeded(currentItem: Conversation) async {
-        // Only trigger when we're near the end of the list
-        guard let lastItem = conversations.last,
-              currentItem.id == lastItem.id,
+        // Build the flat visible list from time-grouped sections (unpinned, unarchived, unfoldered).
+        let visibleItems = groupedConversations.flatMap(\.1)
+        guard let index = visibleItems.lastIndex(where: { $0.id == currentItem.id }),
+              index >= max(0, visibleItems.count - 5), // trigger within 5 items of end
               hasMorePages,
               !isLoadingMore,
               let manager

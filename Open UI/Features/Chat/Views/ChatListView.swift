@@ -211,7 +211,7 @@ struct ChatListView: View {
                         VStack(spacing: Spacing.md) {
                             ProgressView().controlSize(.large)
                             Text("Deleting…")
-                                .font(AppTypography.bodyMediumFont)
+                                .scaledFont(size: 16)
                                 .foregroundStyle(theme.textPrimary)
                         }
                         .padding(Spacing.xl)
@@ -437,7 +437,7 @@ struct ChatListView: View {
                     }
                 } header: {
                     HStack(spacing: Spacing.xs) {
-                        Image(systemName: "pin.fill").font(.system(size: 10))
+                        Image(systemName: "pin.fill").scaledFont(size: 10)
                         Text("Pinned")
                     }
                     .foregroundStyle(theme.brandPrimary)
@@ -480,14 +480,14 @@ struct ChatListView: View {
     private func chatsDropHeader(folderVM: FolderListViewModel) -> some View {
         HStack(spacing: Spacing.xs) {
             Image(systemName: "bubble.left.and.text.bubble.right")
-                .font(.system(size: 10, weight: .medium))
+                .scaledFont(size: 10, weight: .medium)
             Text("Chats")
-                .font(AppTypography.captionFont)
+                .scaledFont(size: 12, weight: .medium)
                 .fontWeight(.semibold)
 
             if chatsDropTargetActive {
                 Text("Drop to remove from folder")
-                    .font(AppTypography.captionFont)
+                    .scaledFont(size: 12, weight: .medium)
                     .foregroundStyle(theme.brandPrimary)
                     .transition(.opacity)
             }
@@ -543,7 +543,7 @@ struct ChatListView: View {
                         Image(systemName: viewModel.isSelected(conversation.id)
                             ? "checkmark.circle.fill" : "circle"
                         )
-                        .font(.system(size: 22))
+                        .scaledFont(size: 22)
                         .foregroundStyle(
                             viewModel.isSelected(conversation.id)
                                 ? theme.brandPrimary : theme.textTertiary
@@ -571,9 +571,9 @@ struct ChatListView: View {
                     currentFolderId: conversation.folderId
                 )) {
                     HStack(spacing: Spacing.xs) {
-                        Image(systemName: "bubble.left").font(.system(size: 13))
+                        Image(systemName: "bubble.left").scaledFont(size: 13)
                         Text(conversation.title)
-                            .font(AppTypography.captionFont)
+                            .scaledFont(size: 12, weight: .medium)
                             .lineLimit(1)
                     }
                     .padding(.horizontal, Spacing.sm)
@@ -652,21 +652,20 @@ private struct ConversationRow: View {
         VStack(alignment: .leading, spacing: Spacing.xs) {
             HStack {
                 Text(conversation.title)
-                    .font(AppTypography.bodyMediumFont)
-                    .fontWeight(.medium)
+                    .scaledFont(size: 16, weight: .medium, context: .list)
                     .foregroundStyle(theme.textPrimary)
                     .lineLimit(1)
 
                 Spacer()
 
                 Text(conversation.updatedAt.chatTimestamp)
-                    .font(AppTypography.captionFont)
+                    .scaledFont(size: 12, weight: .medium, context: .ui)
                     .foregroundStyle(theme.textTertiary)
             }
 
             if let lastMessage = conversation.messages.last {
                 Text(lastMessage.content)
-                    .font(AppTypography.bodySmallFont)
+                    .scaledFont(size: 14, context: .list)
                     .foregroundStyle(theme.textSecondary)
                     .lineLimit(2)
             }
@@ -675,7 +674,7 @@ private struct ConversationRow: View {
                 HStack(spacing: Spacing.xs) {
                     ForEach(conversation.tags, id: \.self) { tag in
                         Text(tag)
-                            .font(AppTypography.captionFont)
+                            .scaledFont(size: 12, weight: .medium)
                             .pillStyle(
                                 background: theme.brandPrimary.opacity(OpacityLevel.subtle),
                                 foreground: theme.brandPrimary

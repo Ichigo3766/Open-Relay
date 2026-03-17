@@ -98,6 +98,10 @@ struct ChatInputField: View {
     var onHashTrigger: ((String) -> Void)?
     var onHashDismiss: (() -> Void)?
 
+    // Prompt slash command bindings (/ trigger)
+    var onSlashTrigger: ((String) -> Void)?
+    var onSlashDismiss: (() -> Void)?
+
     // Attachment callbacks
     var onFileAttachment: (() -> Void)?
     var onPhotoAttachment: (() -> Void)?
@@ -293,7 +297,7 @@ struct ChatInputField: View {
                     .frame(width: 28, height: 28)
 
                 Image(systemName: "plus")
-                    .font(.system(size: 15, weight: .semibold))
+                    .scaledFont(size: 15, weight: .semibold)
                     .foregroundStyle(hasActiveFeatures ? theme.brandPrimary : theme.textTertiary)
                     .contentTransition(.symbolEffect(.replace))
             }
@@ -340,6 +344,8 @@ struct ChatInputField: View {
             onHashDismiss: onHashDismiss,
             onAtTrigger: onAtTrigger,
             onAtDismiss: onAtDismiss,
+            onSlashTrigger: onSlashTrigger,
+            onSlashDismiss: onSlashDismiss,
             sendOnReturn: sendOnEnter
         )
         .fixedSize(horizontal: false, vertical: true)
@@ -428,7 +434,7 @@ struct ChatInputField: View {
             .frame(width: 30, height: 30)
             .overlay(
                 Image(systemName: "terminal")
-                    .font(.system(size: 13, weight: .semibold))
+                    .scaledFont(size: 13, weight: .semibold)
                     .foregroundStyle(
                         terminalEnabled
                             ? theme.brandPrimary
@@ -464,7 +470,7 @@ struct ChatInputField: View {
                         .frame(width: 30, height: 30)
                         .overlay(
                             Image(systemName: "stop.fill")
-                                .font(.system(size: 11, weight: .bold))
+                                .scaledFont(size: 11, weight: .bold)
                                 .foregroundStyle(theme.error)
                         )
                 }
@@ -483,7 +489,7 @@ struct ChatInputField: View {
                         .frame(width: 30, height: 30)
                         .overlay(
                             Image(systemName: "arrow.up")
-                                .font(.system(size: 13, weight: .bold))
+                                .scaledFont(size: 13, weight: .bold)
                                 .foregroundStyle(theme.brandOnPrimary)
                         )
                 }
@@ -512,7 +518,7 @@ struct ChatInputField: View {
                         .frame(width: 30, height: 30)
                         .overlay(
                             Image(systemName: "waveform")
-                                .font(.system(size: 13, weight: .semibold))
+                                .scaledFont(size: 13, weight: .semibold)
                                 .foregroundStyle(theme.brandPrimary)
                         )
                 }
@@ -546,7 +552,7 @@ struct ChatInputField: View {
                     onVoiceInput()
                 } label: {
                     Image(systemName: "waveform")
-                        .font(.system(size: 13, weight: .semibold))
+                        .scaledFont(size: 13, weight: .semibold)
                         .foregroundStyle(theme.brandPrimary)
                         .frame(width: 30, height: 26)
                         .background(
@@ -642,9 +648,9 @@ struct ChatInputField: View {
         Button(action: pill.action) {
             HStack(spacing: 4) {
                 Image(systemName: pill.icon)
-                    .font(.system(size: 11, weight: .semibold))
+                    .scaledFont(size: 11, weight: .semibold)
                 Text(pill.label)
-                    .font(.system(size: 12, weight: pill.isActive ? .semibold : .medium))
+                    .scaledFont(size: 12, weight: pill.isActive ? .semibold : .medium)
             }
             .foregroundStyle(pill.isActive ? theme.brandPrimary : theme.textSecondary)
             .padding(.horizontal, 10)
@@ -686,7 +692,7 @@ struct ChatInputField: View {
                     )
                 }
                 Text(mentionedModel?.shortName ?? "")
-                    .font(.system(size: 12, weight: .semibold))
+                    .scaledFont(size: 12, weight: .semibold)
                     .foregroundStyle(theme.textPrimary)
                     .lineLimit(1)
                 Button {
@@ -696,7 +702,7 @@ struct ChatInputField: View {
                     Haptics.play(.light)
                 } label: {
                     Image(systemName: "xmark")
-                        .font(.system(size: 8, weight: .bold))
+                        .scaledFont(size: 8, weight: .bold)
                         .foregroundStyle(theme.textTertiary)
                 }
                 .buttonStyle(.plain)
@@ -731,14 +737,14 @@ struct ChatInputField: View {
     private func knowledgeChip(_ item: KnowledgeItem) -> some View {
         HStack(spacing: 5) {
             Image(systemName: item.iconName)
-                .font(.system(size: 10, weight: .semibold))
+                .scaledFont(size: 10, weight: .semibold)
                 .foregroundStyle(theme.brandPrimary)
             Text(item.name)
-                .font(.system(size: 12, weight: .medium))
+                .scaledFont(size: 12, weight: .medium)
                 .foregroundStyle(theme.textPrimary)
                 .lineLimit(1)
             Text(item.typeBadge)
-                .font(.system(size: 9, weight: .semibold))
+                .scaledFont(size: 9, weight: .semibold)
                 .foregroundStyle(theme.textTertiary)
                 .padding(.horizontal, 4)
                 .padding(.vertical, 1)
@@ -752,7 +758,7 @@ struct ChatInputField: View {
                 Haptics.play(.light)
             } label: {
                 Image(systemName: "xmark")
-                    .font(.system(size: 8, weight: .bold))
+                    .scaledFont(size: 8, weight: .bold)
                     .foregroundStyle(theme.textTertiary)
             }
             .buttonStyle(.plain)
@@ -801,15 +807,15 @@ struct ChatInputField: View {
                                     ProgressView().controlSize(.small)
                                 } else if attachment.transcribedText != nil {
                                     Image(systemName: "checkmark.circle.fill")
-                                        .font(.system(size: 16))
+                                        .scaledFont(size: 16)
                                         .foregroundStyle(theme.success)
                                 } else {
                                     Image(systemName: "waveform")
-                                        .font(.system(size: 16))
+                                        .scaledFont(size: 16)
                                         .foregroundStyle(theme.brandPrimary)
                                 }
                                 Text(attachment.name)
-                                    .font(.system(size: 7))
+                                    .scaledFont(size: 7)
                                     .foregroundStyle(theme.textTertiary)
                                     .lineLimit(1)
                             }
@@ -824,19 +830,19 @@ struct ChatInputField: View {
                                     ProgressView().controlSize(.small)
                                 } else if attachment.uploadStatus == .error {
                                     Image(systemName: "exclamationmark.triangle.fill")
-                                        .font(.system(size: 16))
+                                        .scaledFont(size: 16)
                                         .foregroundStyle(theme.error)
                                 } else if attachment.isReady {
                                     Image(systemName: "checkmark.circle.fill")
-                                        .font(.system(size: 16))
+                                        .scaledFont(size: 16)
                                         .foregroundStyle(theme.success)
                                 } else {
                                     Image(systemName: attachment.type == .image ? "photo" : "doc")
-                                        .font(.system(size: 16))
+                                        .scaledFont(size: 16)
                                         .foregroundStyle(theme.textTertiary)
                                 }
                                 Text(attachment.name)
-                                    .font(.system(size: 7))
+                                    .scaledFont(size: 7)
                                     .foregroundStyle(theme.textTertiary)
                                     .lineLimit(1)
                                     .truncationMode(.middle)
@@ -858,7 +864,7 @@ struct ChatInputField: View {
                         .frame(width: 56, height: 56)
                         .overlay(
                             Image(systemName: "exclamationmark.triangle.fill")
-                                .font(.system(size: 18))
+                                .scaledFont(size: 18)
                                 .foregroundStyle(.red)
                         )
                 }
@@ -870,7 +876,7 @@ struct ChatInputField: View {
                 }
             } label: {
                 Image(systemName: "xmark.circle.fill")
-                    .font(.system(size: 18))
+                    .scaledFont(size: 18)
                     .symbolRenderingMode(.palette)
                     .foregroundStyle(Color.white, Color.black.opacity(0.55))
             }

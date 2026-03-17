@@ -35,7 +35,7 @@ struct OnboardingView: View {
                             onComplete()
                         } label: {
                             Text("Skip")
-                                .font(.system(size: 16, weight: .medium))
+                                .scaledFont(size: 16, weight: .medium)
                                 .foregroundStyle(theme.textTertiary)
                                 .padding(.horizontal, Spacing.md)
                                 .padding(.vertical, Spacing.sm)
@@ -101,7 +101,7 @@ struct OnboardingView: View {
             }
         } label: {
             Text(currentPage == totalPages - 1 ? "Get Started" : "Continue")
-                .font(.system(size: 17, weight: .semibold))
+                .scaledFont(size: 17, weight: .semibold)
                 .foregroundStyle(theme.buttonPrimaryText)
                 .frame(maxWidth: .infinity)
                 .frame(height: 54)
@@ -173,7 +173,7 @@ struct OnboardingView: View {
                     .frame(width: 100, height: 100)
 
                 Image(systemName: "sparkles")
-                    .font(.system(size: 44, weight: .medium))
+                    .scaledFont(size: 44, weight: .medium)
                     .foregroundStyle(theme.brandPrimary)
             }
             .opacity(o0)
@@ -185,7 +185,7 @@ struct OnboardingView: View {
             // Title
             VStack(spacing: Spacing.sm) {
                 Text("Welcome, \(userName)!")
-                    .font(.system(size: 34, weight: .bold, design: .rounded))
+                    .scaledFont(size: 34, weight: .bold, design: .rounded)
                     .foregroundStyle(theme.textPrimary)
                     .multilineTextAlignment(.center)
             }
@@ -197,7 +197,7 @@ struct OnboardingView: View {
 
             // Subtitle
             Text("Your AI conversations,\nbeautifully native.")
-                .font(.system(size: 18, weight: .regular))
+                .scaledFont(size: 18, weight: .regular)
                 .foregroundStyle(theme.textSecondary)
                 .multilineTextAlignment(.center)
                 .lineSpacing(4)
@@ -237,7 +237,7 @@ struct OnboardingView: View {
 
             // Title
             Text("Chat with AI")
-                .font(.system(size: 34, weight: .bold, design: .rounded))
+                .scaledFont(size: 34, weight: .bold, design: .rounded)
                 .foregroundStyle(theme.textPrimary)
                 .opacity(o1)
                 .offset(y: y1)
@@ -246,7 +246,7 @@ struct OnboardingView: View {
             Spacer().frame(height: Spacing.sm)
 
             Text("Multiple models. One beautiful app.")
-                .font(.system(size: 18, weight: .regular))
+                .scaledFont(size: 18, weight: .regular)
                 .foregroundStyle(theme.textSecondary)
                 .multilineTextAlignment(.center)
                 .opacity(o2)
@@ -298,7 +298,7 @@ struct OnboardingView: View {
             Spacer().frame(height: Spacing.xl)
 
             Text("Voice & Audio")
-                .font(.system(size: 34, weight: .bold, design: .rounded))
+                .scaledFont(size: 34, weight: .bold, design: .rounded)
                 .foregroundStyle(theme.textPrimary)
                 .opacity(o1)
                 .offset(y: y1)
@@ -307,7 +307,7 @@ struct OnboardingView: View {
             Spacer().frame(height: Spacing.sm)
 
             Text("Speak naturally. Listen back.")
-                .font(.system(size: 18, weight: .regular))
+                .scaledFont(size: 18, weight: .regular)
                 .foregroundStyle(theme.textSecondary)
                 .multilineTextAlignment(.center)
                 .opacity(o2)
@@ -359,7 +359,7 @@ struct OnboardingView: View {
             Spacer().frame(height: Spacing.xl)
 
             Text("You're All Set")
-                .font(.system(size: 34, weight: .bold, design: .rounded))
+                .scaledFont(size: 34, weight: .bold, design: .rounded)
                 .foregroundStyle(theme.textPrimary)
                 .opacity(o1)
                 .offset(y: y1)
@@ -368,7 +368,7 @@ struct OnboardingView: View {
             Spacer().frame(height: Spacing.sm)
 
             Text("Here are a few tips to get you going.")
-                .font(.system(size: 18, weight: .regular))
+                .scaledFont(size: 18, weight: .regular)
                 .foregroundStyle(theme.textSecondary)
                 .multilineTextAlignment(.center)
                 .opacity(o2)
@@ -403,7 +403,7 @@ struct OnboardingView: View {
                 .frame(width: 140, height: 140)
 
             Image(systemName: symbol)
-                .font(.system(size: 56, weight: .medium))
+                .scaledFont(size: 56, weight: .medium)
                 .foregroundStyle(tint)
         }
     }
@@ -414,11 +414,11 @@ struct OnboardingView: View {
             ForEach(Array(items.enumerated()), id: \.offset) { _, item in
                 HStack(spacing: 6) {
                     Image(systemName: item.icon)
-                        .font(.system(size: 13, weight: .medium))
+                        .scaledFont(size: 13, weight: .medium)
                         .foregroundStyle(theme.brandPrimary)
 
                     Text(item.label)
-                        .font(.system(size: 13, weight: .medium))
+                        .scaledFont(size: 13, weight: .medium)
                         .foregroundStyle(theme.textSecondary)
                 }
                 .padding(.horizontal, 14)
@@ -435,7 +435,7 @@ struct OnboardingView: View {
     private func tipRow(icon: String, text: String) -> some View {
         HStack(spacing: Spacing.md) {
             Image(systemName: icon)
-                .font(.system(size: 18, weight: .medium))
+                .scaledFont(size: 18, weight: .medium)
                 .foregroundStyle(theme.brandPrimary)
                 .frame(width: 40, height: 40)
                 .background(
@@ -444,7 +444,7 @@ struct OnboardingView: View {
                 )
 
             Text(text)
-                .font(.system(size: 16, weight: .regular))
+                .scaledFont(size: 16, weight: .regular)
                 .foregroundStyle(theme.textSecondary)
 
             Spacer()

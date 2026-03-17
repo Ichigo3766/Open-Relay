@@ -110,7 +110,7 @@ struct TerminalBrowserView: View {
                 onDismiss()
             } label: {
                 Image(systemName: "xmark")
-                    .font(.system(size: 14, weight: .semibold))
+                    .scaledFont(size: 14, weight: .semibold)
                     .foregroundStyle(theme.textSecondary)
                     .frame(width: 32, height: 32)
                     .contentShape(Circle())
@@ -120,7 +120,7 @@ struct TerminalBrowserView: View {
             Spacer()
 
             Text("Files")
-                .font(.system(size: 16, weight: .bold))
+                .scaledFont(size: 16, weight: .bold)
                 .foregroundStyle(theme.textPrimary)
 
             Spacer()
@@ -140,7 +140,7 @@ struct TerminalBrowserView: View {
                 ForEach(Array(viewModel.pathSegments.enumerated()), id: \.element.path) { index, segment in
                     if index > 0 {
                         Image(systemName: "chevron.right")
-                            .font(.system(size: 9, weight: .bold))
+                            .scaledFont(size: 9, weight: .bold)
                             .foregroundStyle(theme.textTertiary)
                     }
 
@@ -149,7 +149,7 @@ struct TerminalBrowserView: View {
                         Haptics.play(.light)
                     } label: {
                         Text(segment.name)
-                            .font(.system(size: 13, weight: segment.path == viewModel.currentPath ? .bold : .medium))
+                            .scaledFont(size: 13, weight: segment.path == viewModel.currentPath ? .bold : .medium)
                             .foregroundStyle(segment.path == viewModel.currentPath ? theme.brandPrimary : theme.textSecondary)
                             .padding(.horizontal, 6)
                             .padding(.vertical, 3)
@@ -176,7 +176,7 @@ struct TerminalBrowserView: View {
                 Haptics.play(.light)
             } label: {
                 Image(systemName: "arrow.clockwise")
-                    .font(.system(size: 14, weight: .medium))
+                    .scaledFont(size: 14, weight: .medium)
                     .foregroundStyle(theme.textSecondary)
             }
             .buttonStyle(.plain)
@@ -187,7 +187,7 @@ struct TerminalBrowserView: View {
                 Haptics.play(.light)
             } label: {
                 Image(systemName: "folder.badge.plus")
-                    .font(.system(size: 14, weight: .medium))
+                    .scaledFont(size: 14, weight: .medium)
                     .foregroundStyle(theme.textSecondary)
             }
             .buttonStyle(.plain)
@@ -198,7 +198,7 @@ struct TerminalBrowserView: View {
                 Haptics.play(.light)
             } label: {
                 Image(systemName: "arrow.up.doc")
-                    .font(.system(size: 14, weight: .medium))
+                    .scaledFont(size: 14, weight: .medium)
                     .foregroundStyle(theme.textSecondary)
             }
             .buttonStyle(.plain)
@@ -207,7 +207,7 @@ struct TerminalBrowserView: View {
 
             // Item count
             Text("\(viewModel.items.count) items")
-                .font(.system(size: 12, weight: .medium))
+                .scaledFont(size: 12, weight: .medium)
                 .foregroundStyle(theme.textTertiary)
         }
     }
@@ -222,7 +222,7 @@ struct TerminalBrowserView: View {
                     ProgressView()
                         .controlSize(.regular)
                     Text("Loading…")
-                        .font(.system(size: 13))
+                        .scaledFont(size: 13)
                         .foregroundStyle(theme.textTertiary)
                     Spacer()
                 }
@@ -231,15 +231,15 @@ struct TerminalBrowserView: View {
                 VStack(spacing: 12) {
                     Spacer()
                     Image(systemName: "exclamationmark.triangle")
-                        .font(.system(size: 28))
+                        .scaledFont(size: 28)
                         .foregroundStyle(theme.error)
                     Text(error)
-                        .font(.system(size: 13))
+                        .scaledFont(size: 13)
                         .foregroundStyle(theme.textSecondary)
                         .multilineTextAlignment(.center)
                         .padding(.horizontal)
                     Button("Retry") { viewModel.refresh() }
-                        .font(.system(size: 13, weight: .semibold))
+                        .scaledFont(size: 13, weight: .semibold)
                         .foregroundStyle(theme.brandPrimary)
                     Spacer()
                 }
@@ -248,10 +248,10 @@ struct TerminalBrowserView: View {
                 VStack(spacing: 12) {
                     Spacer()
                     Image(systemName: "folder")
-                        .font(.system(size: 28))
+                        .scaledFont(size: 28)
                         .foregroundStyle(theme.textTertiary)
                     Text("Empty directory")
-                        .font(.system(size: 13))
+                        .scaledFont(size: 13)
                         .foregroundStyle(theme.textTertiary)
                     Spacer()
                 }
@@ -290,20 +290,20 @@ struct TerminalBrowserView: View {
             HStack(spacing: 10) {
                 // Icon
                 Image(systemName: item.iconName)
-                    .font(.system(size: 18))
+                    .scaledFont(size: 18)
                     .foregroundStyle(item.isDirectory ? theme.brandPrimary : iconColor(for: item))
                     .frame(width: 28)
 
                 // Name + details
                 VStack(alignment: .leading, spacing: 2) {
                     Text(item.name)
-                        .font(.system(size: 14, weight: item.isDirectory ? .semibold : .regular))
+                        .scaledFont(size: 14, weight: item.isDirectory ? .semibold : .regular)
                         .foregroundStyle(theme.textPrimary)
                         .lineLimit(1)
 
                     if let size = item.formattedSize {
                         Text(size)
-                            .font(.system(size: 11))
+                            .scaledFont(size: 11)
                             .foregroundStyle(theme.textTertiary)
                     }
                 }
@@ -312,7 +312,7 @@ struct TerminalBrowserView: View {
 
                 if item.isDirectory {
                     Image(systemName: "chevron.right")
-                        .font(.system(size: 11, weight: .semibold))
+                        .scaledFont(size: 11, weight: .semibold)
                         .foregroundStyle(theme.textTertiary)
                 }
             }
@@ -415,12 +415,12 @@ struct TerminalBrowserView: View {
         } label: {
             HStack(spacing: 8) {
                 Image(systemName: "terminal")
-                    .font(.system(size: 13, weight: .semibold))
+                    .scaledFont(size: 13, weight: .semibold)
                 Text("Terminal")
-                    .font(.system(size: 13, weight: .semibold))
+                    .scaledFont(size: 13, weight: .semibold)
                 Spacer()
                 Image(systemName: viewModel.isTerminalExpanded ? "chevron.down" : "chevron.up")
-                    .font(.system(size: 11, weight: .bold))
+                    .scaledFont(size: 11, weight: .bold)
             }
             .foregroundStyle(viewModel.isTerminalExpanded ? theme.brandPrimary : theme.textSecondary)
             .padding(.horizontal, 14)
@@ -447,12 +447,12 @@ struct TerminalBrowserView: View {
                                     Text(entry.command)
                                         .foregroundStyle(theme.textPrimary)
                                 }
-                                .font(.system(size: 12, design: .monospaced))
+                                .scaledFont(size: 12, design: .monospaced)
 
                                 // Output
                                 if !entry.output.isEmpty {
                                     Text(entry.output)
-                                        .font(.system(size: 11, design: .monospaced))
+                                        .scaledFont(size: 11, design: .monospaced)
                                         .foregroundStyle(theme.textSecondary)
                                         .textSelection(.enabled)
                                 }
@@ -482,7 +482,7 @@ struct TerminalBrowserView: View {
             // Return key executes the command without dismissing the keyboard.
             HStack(spacing: 8) {
                 Text("$")
-                    .font(.system(size: 14, design: .monospaced))
+                    .scaledFont(size: 14, design: .monospaced)
                     .foregroundStyle(.green)
 
                 TerminalTextField(

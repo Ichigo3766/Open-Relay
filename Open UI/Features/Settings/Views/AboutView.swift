@@ -67,7 +67,7 @@ struct AboutView: View {
                 // Credits
                 VStack(spacing: Spacing.sm) {
                     Text("Made with ❤️ for Open WebUI")
-                        .font(AppTypography.captionFont)
+                        .scaledFont(size: 12, weight: .medium)
                         .foregroundStyle(theme.textTertiary)
                 }
                 .padding(.vertical, Spacing.lg)
@@ -80,22 +80,22 @@ struct AboutView: View {
     private var appHeader: some View {
         VStack(spacing: Spacing.md) {
             Image(systemName: "bubble.left.and.bubble.right.fill")
-                .font(.system(size: 56))
+                .scaledFont(size: 56)
                 .foregroundStyle(theme.brandPrimary)
                 .frame(width: 88, height: 88)
                 .background(theme.brandPrimary.opacity(0.1))
                 .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
 
             Text("Open UI")
-                .font(AppTypography.headlineLargeFont)
+                .scaledFont(size: 28, weight: .bold)
                 .foregroundStyle(theme.textPrimary)
 
             Text("A native iOS client for Open WebUI")
-                .font(AppTypography.bodySmallFont)
+                .scaledFont(size: 14)
                 .foregroundStyle(theme.textSecondary)
 
             Text("v\(appVersion) (\(buildNumber))")
-                .font(AppTypography.captionFont)
+                .scaledFont(size: 12, weight: .medium)
                 .foregroundStyle(theme.textTertiary)
         }
         .padding(.top, Spacing.lg)
@@ -109,13 +109,13 @@ struct AboutView: View {
         VStack(spacing: 0) {
             HStack {
                 Text(label)
-                    .font(AppTypography.bodySmallFont)
+                    .scaledFont(size: 14)
                     .foregroundStyle(theme.textSecondary)
 
                 Spacer()
 
                 Text(value)
-                    .font(AppTypography.bodySmallFont)
+                    .scaledFont(size: 14)
                     .foregroundStyle(theme.textPrimary)
                     .lineLimit(1)
             }

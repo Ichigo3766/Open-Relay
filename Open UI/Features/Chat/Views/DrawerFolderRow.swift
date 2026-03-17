@@ -35,19 +35,18 @@ struct DrawerFolderRow: View {
             } label: {
                 HStack(spacing: Spacing.sm) {
                     Image(systemName: "chevron.right")
-                        .font(.system(size: 9, weight: .semibold))
+                        .scaledFont(size: 9, weight: .semibold)
                         .foregroundStyle(theme.textTertiary)
                         .rotationEffect(.degrees(folder.isExpanded ? 90 : 0))
                         .animation(.easeInOut(duration: AnimDuration.fast), value: folder.isExpanded)
                         .frame(width: 12)
 
                     Image(systemName: folder.isExpanded ? "folder.fill" : "folder")
-                        .font(.system(size: 12))
+                        .scaledFont(size: 12)
                         .foregroundStyle(theme.brandPrimary)
 
                     Text(folder.name)
-                        .font(AppTypography.bodySmallFont)
-                        .fontWeight(.medium)
+                        .scaledFont(size: 14, weight: .medium, context: .list)
                         .foregroundStyle(theme.textPrimary)
                         .lineLimit(1)
 
@@ -60,7 +59,7 @@ struct DrawerFolderRow: View {
                             .map { _ in 0 } ?? 0)
                     if folder.isExpanded && count > 0 {
                         Text("\(count)")
-                            .font(.system(size: 10, weight: .medium))
+                            .scaledFont(size: 10, weight: .medium)
                             .foregroundStyle(theme.textTertiary)
                             .monospacedDigit()
                     }
@@ -148,7 +147,7 @@ struct DrawerFolderRow: View {
                     if validChats.isEmpty && folder.chats.isEmpty {
                         // Still loading or genuinely empty
                         Text("No chats")
-                            .font(AppTypography.captionFont)
+                            .scaledFont(size: 12, weight: .medium)
                             .foregroundStyle(theme.textTertiary)
                             .padding(.leading, 36)
                             .padding(.vertical, Spacing.xs)
@@ -179,7 +178,7 @@ struct DrawerFolderRow: View {
                     .padding(.leading, 22)
 
                 Text(chat.title)
-                    .font(AppTypography.bodySmallFont)
+                    .scaledFont(size: 14)
                     .fontWeight(activeConversationId == chat.id ? .semibold : .regular)
                     .foregroundStyle(
                         activeConversationId == chat.id
@@ -207,9 +206,9 @@ struct DrawerFolderRow: View {
             currentFolderId: folder.id
         )) {
             HStack(spacing: Spacing.xs) {
-                Image(systemName: "bubble.left").font(.system(size: 12))
+                Image(systemName: "bubble.left").scaledFont(size: 12)
                 Text(chat.title)
-                    .font(AppTypography.captionFont)
+                    .scaledFont(size: 12, weight: .medium)
                     .lineLimit(1)
             }
             .padding(.horizontal, Spacing.sm)

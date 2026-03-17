@@ -119,11 +119,11 @@ struct ServerManagementView: View {
 
                 VStack(alignment: .leading, spacing: Spacing.xxs) {
                     Text(statusTitle)
-                        .font(AppTypography.bodyMediumFont)
+                        .scaledFont(size: 16)
                         .foregroundStyle(theme.textPrimary)
 
                     Text(statusSubtitle)
-                        .font(AppTypography.captionFont)
+                        .scaledFont(size: 12, weight: .medium)
                         .foregroundStyle(theme.textTertiary)
                 }
 
@@ -158,7 +158,7 @@ struct ServerManagementView: View {
 
     private var fallbackServerIcon: some View {
         Image(systemName: "server.rack")
-            .font(.system(size: 20, weight: .medium))
+            .scaledFont(size: 20, weight: .medium)
             .foregroundStyle(theme.textSecondary)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(theme.surfaceContainer)
@@ -218,18 +218,18 @@ struct ServerManagementView: View {
         VStack(spacing: 0) {
             HStack(spacing: Spacing.md) {
                 Image(systemName: icon)
-                    .font(.system(size: 14, weight: .medium))
+                    .scaledFont(size: 14, weight: .medium)
                     .foregroundStyle(theme.textTertiary)
                     .frame(width: IconSize.lg)
 
                 Text(label)
-                    .font(AppTypography.bodySmallFont)
+                    .scaledFont(size: 14)
                     .foregroundStyle(theme.textSecondary)
 
                 Spacer()
 
                 Text(value)
-                    .font(AppTypography.bodySmallFont)
+                    .scaledFont(size: 14)
                     .foregroundStyle(theme.textPrimary)
                     .lineLimit(1)
             }

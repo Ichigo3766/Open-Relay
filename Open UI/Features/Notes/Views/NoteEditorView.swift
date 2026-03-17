@@ -156,11 +156,11 @@ struct NoteEditorView: View {
                     // Title
                     if isPreviewMode {
                         Text(titleText.isEmpty ? "Untitled" : titleText)
-                            .font(AppTypography.headlineLargeFont)
+                            .scaledFont(size: 28, weight: .bold)
                             .foregroundStyle(theme.textPrimary)
                     } else {
                         TextField("Title", text: $titleText)
-                            .font(AppTypography.headlineLargeFont)
+                            .scaledFont(size: 28, weight: .bold)
                             .foregroundStyle(theme.textPrimary)
                             .onChange(of: titleText) { _, _ in scheduleAutoSave() }
                     }
@@ -168,17 +168,17 @@ struct NoteEditorView: View {
                     // Metadata
                     HStack(spacing: Spacing.md) {
                         Text("\(note.wordCount) words")
-                            .font(AppTypography.captionFont)
+                            .scaledFont(size: 12, weight: .medium)
                             .foregroundStyle(theme.textTertiary)
 
                         Text("\(contentText.count) characters")
-                            .font(AppTypography.captionFont)
+                            .scaledFont(size: 12, weight: .medium)
                             .foregroundStyle(theme.textTertiary)
 
                         Spacer()
 
                         Text("Updated \(note.updatedAt.chatTimestamp)")
-                            .font(AppTypography.captionFont)
+                            .scaledFont(size: 12, weight: .medium)
                             .foregroundStyle(theme.textTertiary)
                     }
 
@@ -215,7 +215,7 @@ struct NoteEditorView: View {
             markdownToolbar
 
             TextEditor(text: $contentText)
-                .font(AppTypography.bodyMediumFont)
+                .scaledFont(size: 16)
                 .foregroundStyle(theme.textPrimary)
                 .scrollContentBackground(.hidden)
                 .frame(minHeight: max(400, screenHeight * 0.6))
@@ -248,7 +248,7 @@ struct NoteEditorView: View {
     private func markdownButton(_ label: String, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Text(label)
-                .font(AppTypography.codeFont)
+                .scaledFont(size: 14, design: .monospaced)
                 .foregroundStyle(theme.textSecondary)
                 .padding(.horizontal, Spacing.sm)
                 .padding(.vertical, Spacing.xs)
@@ -263,7 +263,7 @@ struct NoteEditorView: View {
         VStack(alignment: .leading, spacing: Spacing.sm) {
             if contentText.isEmpty {
                 Text("Nothing to preview")
-                    .font(AppTypography.bodyMediumFont)
+                    .scaledFont(size: 16)
                     .foregroundStyle(theme.textTertiary)
                     .italic()
             } else {
@@ -283,7 +283,7 @@ struct NoteEditorView: View {
     private func audioAttachmentsSection(_ attachments: [AudioAttachment]) -> some View {
         VStack(alignment: .leading, spacing: Spacing.sm) {
             Text("Voice Notes")
-                .font(AppTypography.labelMediumFont)
+                .scaledFont(size: 14, weight: .medium)
                 .foregroundStyle(theme.textSecondary)
 
             ForEach(attachments) { attachment in
@@ -294,12 +294,12 @@ struct NoteEditorView: View {
                         Image(systemName: "waveform")
                             .foregroundStyle(theme.brandPrimary)
                         Text(attachment.fileName)
-                            .font(AppTypography.bodySmallFont)
+                            .scaledFont(size: 14)
                             .foregroundStyle(theme.textPrimary)
                             .lineLimit(1)
                         Spacer()
                         Text(formatDuration(attachment.duration))
-                            .font(AppTypography.captionFont)
+                            .scaledFont(size: 12, weight: .medium)
                             .foregroundStyle(theme.textTertiary)
                         Image(systemName: "play.circle.fill")
                             .foregroundStyle(theme.brandPrimary)
@@ -317,7 +317,7 @@ struct NoteEditorView: View {
     private func fileAttachmentsSection(_ attachments: [FileAttachmentRef]) -> some View {
         VStack(alignment: .leading, spacing: Spacing.sm) {
             Text("Attachments")
-                .font(AppTypography.labelMediumFont)
+                .scaledFont(size: 14, weight: .medium)
                 .foregroundStyle(theme.textSecondary)
 
             ForEach(attachments) { attachment in
@@ -325,12 +325,12 @@ struct NoteEditorView: View {
                     Image(systemName: iconForMimeType(attachment.mimeType))
                         .foregroundStyle(theme.brandPrimary)
                     Text(attachment.fileName)
-                        .font(AppTypography.bodySmallFont)
+                        .scaledFont(size: 14)
                         .foregroundStyle(theme.textPrimary)
                         .lineLimit(1)
                     Spacer()
                     Text(formatFileSize(attachment.fileSize))
-                        .font(AppTypography.captionFont)
+                        .scaledFont(size: 12, weight: .medium)
                         .foregroundStyle(theme.textTertiary)
                 }
                 .padding(Spacing.sm)
@@ -566,7 +566,7 @@ struct AudioRecorderSheet: View {
 
                 // Duration
                 Text(formatDuration(recordingService.duration))
-                    .font(AppTypography.displayMediumFont)
+                    .scaledFont(size: 36, weight: .bold)
                     .foregroundStyle(theme.textPrimary)
                     .monospacedDigit()
 
@@ -580,7 +580,7 @@ struct AudioRecorderSheet: View {
                         dismiss()
                     } label: {
                         Image(systemName: "xmark.circle.fill")
-                            .font(.system(size: 48))
+                            .scaledFont(size: 48)
                             .foregroundStyle(theme.textTertiary)
                     }
 
@@ -604,7 +604,7 @@ struct AudioRecorderSheet: View {
                                 Group {
                                     if case .recording = recordingService.state {
                                         Image(systemName: "pause.fill")
-                                            .font(.system(size: 32))
+                                            .scaledFont(size: 32)
                                             .foregroundStyle(.white)
                                     } else {
                                         Circle()
@@ -623,7 +623,7 @@ struct AudioRecorderSheet: View {
                         dismiss()
                     } label: {
                         Image(systemName: "checkmark.circle.fill")
-                            .font(.system(size: 48))
+                            .scaledFont(size: 48)
                             .foregroundStyle(theme.success)
                     }
                     .disabled(recordingService.state == .idle)
@@ -664,21 +664,21 @@ struct AudioPlayerSheet: View {
                 Spacer()
 
                 Image(systemName: "waveform.circle.fill")
-                    .font(.system(size: 80))
+                    .scaledFont(size: 80)
                     .foregroundStyle(theme.brandPrimary)
 
                 Text(attachment.fileName)
-                    .font(AppTypography.bodyMediumFont)
+                    .scaledFont(size: 16)
                     .foregroundStyle(theme.textPrimary)
 
                 Text(formatDuration(attachment.duration))
-                    .font(AppTypography.headlineMediumFont)
+                    .scaledFont(size: 24, weight: .semibold)
                     .foregroundStyle(theme.textSecondary)
                     .monospacedDigit()
 
                 // Playback controls placeholder
                 Text("Audio playback requires AVAudioPlayer integration")
-                    .font(AppTypography.captionFont)
+                    .scaledFont(size: 12, weight: .medium)
                     .foregroundStyle(theme.textTertiary)
                     .multilineTextAlignment(.center)
 

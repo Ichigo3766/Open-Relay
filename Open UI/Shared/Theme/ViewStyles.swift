@@ -91,7 +91,7 @@ private struct PillStyleModifier: ViewModifier {
 
     func body(content: Content) -> some View {
         content
-            .font(AppTypography.labelSmallFont)
+            .scaledFont(size: 12, weight: .medium)
             .foregroundStyle(fg ?? theme.textPrimary)
             .padding(.horizontal, Spacing.sm)
             .padding(.vertical, Spacing.xs)

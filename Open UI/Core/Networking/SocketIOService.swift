@@ -803,20 +803,41 @@ final class SocketIOService: NSObject, @unchecked Sendable, URLSessionWebSocketD
         let channelId = event["channel_id"] as? String
             ?? (event["data"] as? [String: Any])?["channel_id"] as? String
         let eventSessionId = extractSessionId(from: event)
+        
+        // Also check nested data.data for channel_id (some events nest deeply)
+        let nestedChannelId: String? = {
+            if let inner = (event["data"] as? [String: Any])?["data"] as? [String: Any] {
+                return inner["channel_id"] as? String
+            }
+            return nil
+        }()
 
         handlerLock.lock()
         let handlers = Array(channelHandlers.values)
         handlerLock.unlock()
+        
+        let eventType = (event["data"] as? [String: Any])?["type"] as? String ?? event["type"] as? String
+        logger.debug("dispatchChannelEvent: type=\(eventType ?? "nil"), chatId=\(chatId ?? "nil"), channelId=\(channelId ?? "nil"), handlers=\(handlers.count)")
 
         for reg in handlers {
             let matchesChatOrChannel = reg.conversationId == nil
                 || reg.conversationId == chatId
                 || reg.conversationId == channelId
+                || reg.conversationId == nestedChannelId
             let matchesSession = reg.sessionId != nil
                 && eventSessionId != nil
                 && reg.sessionId == eventSessionId
 
             if matchesChatOrChannel || matchesSession {
+                reg.handler(event, nil)
+            }
+        }
+        
+        // If no handler matched and we have handlers registered, deliver to all
+        // channel handlers as a fallback (the handler itself will check relevance)
+        if !handlers.isEmpty && channelId == nil && chatId == nil {
+            logger.debug("Channel event with no channel_id/chat_id — broadcasting to all \(handlers.count) channel handlers")
+            for reg in handlers {
                 reg.handler(event, nil)
             }
         }
@@ -876,7 +897,7 @@ final class SocketIOService: NSObject, @unchecked Sendable, URLSessionWebSocketD
                     timer.invalidate()
                     return
                 }
-                self.emit("heartbeat")
+                self.emit("heartbeat", data: [:] as [String: Any])
             }
         }
     }

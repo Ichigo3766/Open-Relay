@@ -28,7 +28,8 @@ struct SettingsView: View {
                             SettingsProfileHeader(
                                 name: user.displayName,
                                 email: user.email,
-                                avatarURL: profileImageURL(for: user)
+                                avatarURL: profileImageURL(for: user),
+                                authToken: dependencies.apiClient?.network.authToken
                             ) {
                                 navigationPath.append(SettingsDestination.profile)
                             }
@@ -64,16 +65,28 @@ struct SettingsView: View {
                         }
                     }
 
-                    // Display & Customization
+                                    // Display & Customization
                     SettingsSection(header: "Display") {
                         SettingsCell(
                             icon: "paintbrush",
                             title: "Appearance",
                             subtitle: appearanceManager.colorSchemeMode.displayName,
-                            showDivider: false,
+                            showDivider: true,
                             accessory: .chevron
                         ) {
                             navigationPath.append(SettingsDestination.appearance)
+                        }
+                        SettingsCell(
+                            icon: "textformat.size",
+                            title: "Accessibility",
+                            subtitle: dependencies.accessibilityManager.isCustomized
+                                ? (dependencies.accessibilityManager.matchingPreset?.displayName ?? "Custom")
+                                : "Standard",
+                            iconColor: .purple,
+                            showDivider: false,
+                            accessory: .chevron
+                        ) {
+                            navigationPath.append(SettingsDestination.accessibility)
                         }
                     }
 
@@ -205,6 +218,8 @@ struct SettingsView: View {
                     ProfileView(viewModel: viewModel)
                 case .appearance:
                     AppearanceSettingsView(manager: appearanceManager)
+                case .accessibility:
+                    AccessibilitySettingsView(manager: dependencies.accessibilityManager)
                 case .serverManagement:
                     ServerManagementView(viewModel: viewModel)
                 case .privacySecurity:
@@ -315,6 +330,7 @@ struct SettingsView: View {
 enum SettingsDestination: Hashable {
     case profile
     case appearance
+    case accessibility
     case serverManagement
     case privacySecurity
     case about
@@ -357,10 +373,10 @@ struct DefaultModelPickerView: View {
                             .foregroundStyle(theme.brandPrimary)
                         VStack(alignment: .leading, spacing: 2) {
                             Text("Auto-select")
-                                .font(AppTypography.bodyMediumFont)
+                                .scaledFont(size: 16)
                                 .fontWeight(.semibold)
                             Text("Use the server default model. ")
-                                .font(AppTypography.captionFont)
+                                .scaledFont(size: 12, weight: .medium)
                                 .foregroundStyle(theme.textTertiary)
                         }
                         Spacer()
@@ -382,12 +398,12 @@ struct DefaultModelPickerView: View {
                         HStack {
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(model.name)
-                                    .font(AppTypography.bodyMediumFont)
+                                    .scaledFont(size: 16)
                                     .fontWeight(.medium)
                                 HStack(spacing: 4) {
                                     if model.isMultimodal {
                                         Label("Vision", systemImage: "photo")
-                                            .font(.system(size: 10))
+                                            .scaledFont(size: 10)
                                             .foregroundStyle(theme.brandPrimary)
                                     }
                                 }
@@ -471,7 +487,7 @@ struct ChatSettingsView: View {
                 Toggle("Send on Enter", isOn: $sendOnEnter)
                     .tint(theme.brandPrimary)
                 Text("When enabled, pressing Enter sends the message. When disabled, Enter creates a new line.")
-                    .font(AppTypography.captionFont)
+                    .scaledFont(size: 12, weight: .medium)
                     .foregroundStyle(theme.textTertiary)
                     .listRowSeparator(.hidden)
             }
@@ -513,7 +529,7 @@ struct ChatSettingsView: View {
 
             Section {
                 Text("Choose which quick actions appear below the message input. Tap to toggle.")
-                    .font(AppTypography.captionFont)
+                    .scaledFont(size: 12, weight: .medium)
                     .foregroundStyle(theme.textTertiary)
                     .listRowSeparator(.hidden)
 
@@ -526,7 +542,7 @@ struct ChatSettingsView: View {
                     HStack {
                         ProgressView().controlSize(.small)
                         Text("Loading tools…")
-                            .font(AppTypography.captionFont)
+                            .scaledFont(size: 12, weight: .medium)
                             .foregroundStyle(theme.textTertiary)
                     }
                 } else {
@@ -565,7 +581,7 @@ struct ChatSettingsView: View {
         } label: {
             HStack(spacing: Spacing.md) {
                 Image(systemName: icon)
-                    .font(.system(size: 14, weight: .medium))
+                    .scaledFont(size: 14, weight: .medium)
                     .foregroundStyle(isSelected ? theme.brandPrimary : theme.textSecondary)
                     .frame(width: 28, height: 28)
                     .background(
@@ -574,13 +590,13 @@ struct ChatSettingsView: View {
                     .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
 
                 Text(name)
-                    .font(AppTypography.bodyMediumFont)
+                    .scaledFont(size: 16)
                     .foregroundStyle(theme.textPrimary)
 
                 Spacer()
 
                 Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
-                    .font(.system(size: 20))
+                    .scaledFont(size: 20)
                     .foregroundStyle(isSelected ? theme.brandPrimary : theme.textTertiary)
             }
         }
@@ -651,13 +667,13 @@ struct TTSSettingsView: View {
                             VStack(alignment: .leading, spacing: 2) {
                                 HStack(spacing: Spacing.xs) {
                                     Text(label)
-                                        .font(AppTypography.bodyMediumFont)
+                                        .scaledFont(size: 16)
                                         .fontWeight(.medium)
                                         .foregroundStyle(theme.textPrimary)
 
                                     if value == "marvis" {
                                         Text("NEW")
-                                            .font(.system(size: 9, weight: .heavy))
+                                            .scaledFont(size: 9, weight: .heavy)
                                             .foregroundStyle(.white)
                                             .padding(.horizontal, 5)
                                             .padding(.vertical, 2)
@@ -674,14 +690,14 @@ struct TTSSettingsView: View {
                                 }
 
                                 Text(description)
-                                    .font(AppTypography.captionFont)
+                                    .scaledFont(size: 12, weight: .medium)
                                     .foregroundStyle(theme.textTertiary)
                             }
 
                             Spacer()
 
                             Image(systemName: selectedEngine == value ? "checkmark.circle.fill" : "circle")
-                                .font(.system(size: 22))
+                                .scaledFont(size: 22)
                                 .foregroundStyle(
                                     selectedEngine == value ? theme.brandPrimary : theme.textTertiary.opacity(0.4)
                                 )
@@ -705,7 +721,7 @@ struct TTSSettingsView: View {
                     // Model status
                     HStack {
                         Text("Status")
-                            .font(AppTypography.bodyMediumFont)
+                            .scaledFont(size: 16)
                             .foregroundStyle(theme.textPrimary)
                         Spacer()
                         marvisStatusBadge
@@ -738,9 +754,9 @@ struct TTSSettingsView: View {
                         } label: {
                             HStack(spacing: Spacing.sm) {
                                 Image(systemName: "arrow.down.circle")
-                                    .font(.system(size: 16, weight: .medium))
+                                    .scaledFont(size: 16, weight: .medium)
                                 Text("Download & Load Model")
-                                    .font(AppTypography.bodyMediumFont)
+                                    .scaledFont(size: 16)
                                     .fontWeight(.medium)
                             }
                             .foregroundStyle(theme.brandPrimary)
@@ -751,18 +767,18 @@ struct TTSSettingsView: View {
                                 ProgressView()
                                     .controlSize(.small)
                                 Text("Downloading model…")
-                                    .font(AppTypography.bodyMediumFont)
+                                    .scaledFont(size: 16)
                                     .foregroundStyle(theme.textSecondary)
                                 Spacer()
                                 Text("\(Int(progress * 100))%")
-                                    .font(AppTypography.labelSmallFont)
+                                    .scaledFont(size: 12, weight: .medium)
                                     .fontWeight(.semibold)
                                     .foregroundStyle(theme.brandPrimary)
                             }
                             ProgressView(value: progress)
                                 .tint(theme.brandPrimary)
                             Text("Please keep the app open")
-                                .font(AppTypography.captionFont)
+                                .scaledFont(size: 12, weight: .medium)
                                 .foregroundStyle(theme.textTertiary)
                         }
                     } else if case .ready = ttsService.marvisState {
@@ -771,9 +787,9 @@ struct TTSSettingsView: View {
                         } label: {
                             HStack(spacing: Spacing.sm) {
                                 Image(systemName: "xmark.circle")
-                                    .font(.system(size: 16, weight: .medium))
+                                    .scaledFont(size: 16, weight: .medium)
                                 Text("Unload Model (Free Memory)")
-                                    .font(AppTypography.bodyMediumFont)
+                                    .scaledFont(size: 16)
                                     .fontWeight(.medium)
                             }
                         }
@@ -785,9 +801,9 @@ struct TTSSettingsView: View {
                         } label: {
                             HStack(spacing: Spacing.sm) {
                                 Image(systemName: "trash.circle")
-                                    .font(.system(size: 16, weight: .medium))
+                                    .scaledFont(size: 16, weight: .medium)
                                 Text("Delete Downloaded Model (~250MB)")
-                                    .font(AppTypography.bodyMediumFont)
+                                    .scaledFont(size: 16)
                                     .fontWeight(.medium)
                             }
                         }
@@ -797,9 +813,9 @@ struct TTSSettingsView: View {
                         } label: {
                             HStack(spacing: Spacing.sm) {
                                 Image(systemName: "arrow.clockwise.circle")
-                                    .font(.system(size: 16, weight: .medium))
+                                    .scaledFont(size: 16, weight: .medium)
                                 Text("Retry Download")
-                                    .font(AppTypography.bodyMediumFont)
+                                    .scaledFont(size: 16)
                                     .fontWeight(.medium)
                             }
                             .foregroundStyle(theme.warning)
@@ -831,7 +847,7 @@ struct TTSSettingsView: View {
                             Text("Speed")
                             Spacer()
                             Text("\(Int(speechRate * 100))%")
-                                .font(AppTypography.labelSmallFont)
+                                .scaledFont(size: 12, weight: .medium)
                                 .foregroundStyle(theme.brandPrimary)
                         }
                         Slider(value: $speechRate, in: 0.25...2.0, step: 0.05)
@@ -854,10 +870,10 @@ struct TTSSettingsView: View {
                 } label: {
                     HStack(spacing: Spacing.sm) {
                         Image(systemName: isSpeaking ? "stop.fill" : "play.fill")
-                            .font(.system(size: 14, weight: .medium))
+                            .scaledFont(size: 14, weight: .medium)
                             .foregroundStyle(isSpeaking ? theme.error : theme.brandPrimary)
                         Text(isSpeaking ? "Stop Preview" : "Preview Voice")
-                            .font(AppTypography.bodyMediumFont)
+                            .scaledFont(size: 16)
                             .foregroundStyle(theme.textPrimary)
                         Spacer()
                         if isSpeaking {
@@ -873,7 +889,7 @@ struct TTSSettingsView: View {
                                 }
                             }()
                             Text(engineLabel)
-                                .font(AppTypography.captionFont)
+                                .scaledFont(size: 12, weight: .medium)
                                 .foregroundStyle(theme.textTertiary)
                         }
                     }
@@ -902,7 +918,7 @@ struct TTSSettingsView: View {
                 HStack(spacing: 4) {
                     ProgressView().controlSize(.mini)
                     Text("Downloading… \(Int(progress * 100))%")
-                        .font(AppTypography.captionFont)
+                        .scaledFont(size: 12, weight: .medium)
                         .foregroundStyle(theme.warning)
                 }
                 ProgressView(value: progress)
@@ -913,7 +929,7 @@ struct TTSSettingsView: View {
             HStack(spacing: 4) {
                 ProgressView().controlSize(.mini)
                 Text("Loading…")
-                    .font(AppTypography.captionFont)
+                    .scaledFont(size: 12, weight: .medium)
                     .foregroundStyle(theme.brandPrimary)
             }
         case .ready:
@@ -928,7 +944,7 @@ struct TTSSettingsView: View {
 
     private func statusPill(_ text: String, color: Color) -> some View {
         Text(text)
-            .font(.system(size: 11, weight: .semibold))
+            .scaledFont(size: 11, weight: .semibold)
             .foregroundStyle(color)
             .padding(.horizontal, 8)
             .padding(.vertical, 3)
@@ -1067,7 +1083,7 @@ struct STTSettingsView: View {
                         Text("Silence Duration")
                         Spacer()
                         Text("\(String(format: "%.1f", silenceDuration))s")
-                            .font(AppTypography.labelSmallFont)
+                            .scaledFont(size: 12, weight: .medium)
                             .foregroundStyle(theme.brandPrimary)
                     }
                     Slider(value: $silenceDuration, in: 0.5...5.0, step: 0.5)
@@ -1083,10 +1099,10 @@ struct STTSettingsView: View {
             Section {
                 HStack {
                     Image(systemName: "mic.fill")
-                        .font(.system(size: 14))
+                        .scaledFont(size: 14)
                         .foregroundStyle(theme.brandPrimary)
                     Text("Microphone")
-                        .font(AppTypography.bodyMediumFont)
+                        .scaledFont(size: 16)
                     Spacer()
                     if micPermissionGranted {
                         statusPill("Granted", color: theme.success)
@@ -1097,10 +1113,10 @@ struct STTSettingsView: View {
 
                 HStack {
                     Image(systemName: "waveform")
-                        .font(.system(size: 14))
+                        .scaledFont(size: 14)
                         .foregroundStyle(theme.brandPrimary)
                     Text("Speech Recognition")
-                        .font(AppTypography.bodyMediumFont)
+                        .scaledFont(size: 16)
                     Spacer()
                     if speechPermissionGranted {
                         statusPill("Granted", color: theme.success)
@@ -1117,9 +1133,9 @@ struct STTSettingsView: View {
                     } label: {
                         HStack(spacing: Spacing.sm) {
                             Image(systemName: "gear")
-                                .font(.system(size: 14, weight: .medium))
+                                .scaledFont(size: 14, weight: .medium)
                             Text("Open Settings to Grant Permissions")
-                                .font(AppTypography.bodyMediumFont)
+                                .scaledFont(size: 16)
                                 .fontWeight(.medium)
                         }
                         .foregroundStyle(theme.brandPrimary)
@@ -1160,14 +1176,14 @@ struct STTSettingsView: View {
             HStack(spacing: 4) {
                 ProgressView().controlSize(.mini)
                 Text("\(Int(progress * 100))%")
-                    .font(AppTypography.captionFont)
+                    .scaledFont(size: 12, weight: .medium)
                     .foregroundStyle(theme.warning)
             }
         case .loading:
             HStack(spacing: 4) {
                 ProgressView().controlSize(.mini)
                 Text("Loading…")
-                    .font(AppTypography.captionFont)
+                    .scaledFont(size: 12, weight: .medium)
                     .foregroundStyle(theme.brandPrimary)
             }
         case .ready:
@@ -1184,23 +1200,23 @@ struct STTSettingsView: View {
         HStack(spacing: Spacing.md) {
             VStack(alignment: .leading, spacing: 2) {
                 Text(label)
-                    .font(AppTypography.bodyMediumFont)
+                    .scaledFont(size: 16)
                     .fontWeight(.medium)
                     .foregroundStyle(theme.textPrimary)
                 Text(description)
-                    .font(AppTypography.captionFont)
+                    .scaledFont(size: 12, weight: .medium)
                     .foregroundStyle(theme.textTertiary)
             }
             Spacer()
             Image(systemName: selected ? "checkmark.circle.fill" : "circle")
-                .font(.system(size: 22))
+                .scaledFont(size: 22)
                 .foregroundStyle(selected ? theme.brandPrimary : theme.textTertiary.opacity(0.4))
         }
     }
 
     private func statusPill(_ text: String, color: Color) -> some View {
         Text(text)
-            .font(.system(size: 11, weight: .semibold))
+            .scaledFont(size: 11, weight: .semibold)
             .foregroundStyle(color)
             .padding(.horizontal, 8)
             .padding(.vertical, 3)
@@ -1230,10 +1246,10 @@ struct NotificationSettingsView: View {
             Section {
                 HStack {
                     Image(systemName: "bell.fill")
-                        .font(.system(size: 14))
+                        .scaledFont(size: 14)
                         .foregroundStyle(theme.brandPrimary)
                     Text("System Permission")
-                        .font(AppTypography.bodyMediumFont)
+                        .scaledFont(size: 16)
                     Spacer()
                     if systemPermissionGranted {
                         permissionPill("Granted", color: theme.success)
@@ -1251,9 +1267,9 @@ struct NotificationSettingsView: View {
                     } label: {
                         HStack(spacing: Spacing.sm) {
                             Image(systemName: "bell.badge")
-                                .font(.system(size: 14, weight: .medium))
+                                .scaledFont(size: 14, weight: .medium)
                             Text("Request Permission")
-                                .font(AppTypography.bodyMediumFont)
+                                .scaledFont(size: 16)
                                 .fontWeight(.medium)
                         }
                         .foregroundStyle(theme.brandPrimary)
@@ -1266,9 +1282,9 @@ struct NotificationSettingsView: View {
                     } label: {
                         HStack(spacing: Spacing.sm) {
                             Image(systemName: "gear")
-                                .font(.system(size: 14, weight: .medium))
+                                .scaledFont(size: 14, weight: .medium)
                             Text("Open iOS Settings")
-                                .font(AppTypography.bodyMediumFont)
+                                .scaledFont(size: 16)
                                 .fontWeight(.medium)
                         }
                         .foregroundStyle(theme.textSecondary)
@@ -1297,7 +1313,7 @@ struct NotificationSettingsView: View {
 
     private func permissionPill(_ text: String, color: Color) -> some View {
         Text(text)
-            .font(.system(size: 11, weight: .semibold))
+            .scaledFont(size: 11, weight: .semibold)
             .foregroundStyle(color)
             .padding(.horizontal, 8)
             .padding(.vertical, 3)
@@ -1326,18 +1342,18 @@ struct SignOutConfirmationSheet: View {
                         .fill(theme.error.opacity(0.1))
                         .frame(width: 56, height: 56)
                     Image(systemName: "rectangle.portrait.and.arrow.right")
-                        .font(.system(size: 22, weight: .medium))
+                        .scaledFont(size: 22, weight: .medium)
                         .foregroundStyle(theme.error)
                 }
                 .scaleEffect(appeared ? 1 : 0.7)
                 .animation(.spring(response: 0.4, dampingFraction: 0.7).delay(0.05), value: appeared)
 
                 Text("Sign Out")
-                    .font(.system(size: 18, weight: .semibold))
+                    .scaledFont(size: 18, weight: .semibold)
                     .foregroundStyle(theme.textPrimary)
 
                 Text("Are you sure you want to sign out?")
-                    .font(AppTypography.captionFont)
+                    .scaledFont(size: 12, weight: .medium)
                     .foregroundStyle(theme.textSecondary)
                     .multilineTextAlignment(.center)
             }
@@ -1371,7 +1387,7 @@ struct SignOutConfirmationSheet: View {
                 // Cancel
                 Button(action: onCancel) {
                     Text("Cancel")
-                        .font(AppTypography.labelLargeFont)
+                        .scaledFont(size: 16, weight: .medium)
                         .foregroundStyle(theme.textSecondary)
                         .frame(maxWidth: .infinity)
                         .frame(height: 44)
@@ -1398,7 +1414,7 @@ struct SignOutConfirmationSheet: View {
         Button(action: action) {
             HStack(spacing: Spacing.md) {
                 Image(systemName: icon)
-                    .font(.system(size: 18, weight: .medium))
+                    .scaledFont(size: 18, weight: .medium)
                     .foregroundStyle(theme.error)
                     .frame(width: 36, height: 36)
                     .background(theme.error.opacity(0.1))
@@ -1406,10 +1422,10 @@ struct SignOutConfirmationSheet: View {
 
                 VStack(alignment: .leading, spacing: 2) {
                     Text(title)
-                        .font(AppTypography.labelLargeFont)
+                        .scaledFont(size: 16, weight: .medium)
                         .foregroundStyle(theme.error)
                     Text(subtitle)
-                        .font(AppTypography.captionFont)
+                        .scaledFont(size: 12, weight: .medium)
                         .foregroundStyle(theme.textTertiary)
                 }
 

@@ -26,8 +26,20 @@ struct MainChatView: View {
     /// Controls the notes sheet presentation.
     @State private var showNotes = false
 
+    /// Controls the channels list sheet presentation.
+    @State private var showChannels = false
+    
+    /// Controls the create channel sheet presentation.
+    @State private var showCreateChannel = false
+
+    /// Channel list VM for sidebar display.
+    @State private var channelListVM = ChannelListViewModel()
+
     /// The conversation currently being viewed. `nil` = new chat.
     @State private var activeConversationId: String?
+
+    /// The channel currently being viewed. When set, replaces main content with ChannelDetailView.
+    @State private var activeChannelId: String?
 
     /// Monotonically increasing counter to force new-chat view recreation.
     @State private var newChatGeneration: Int = 0
@@ -198,7 +210,7 @@ struct MainChatView: View {
                                 toggleDrawer()
                             } label: {
                                 Image(systemName: "line.3.horizontal")
-                                    .font(.system(size: 14, weight: .medium))
+                                    .scaledFont(size: 14, weight: .medium)
                                     .foregroundStyle(theme.textSecondary)
                                     .frame(width: 34, height: 34)
                                     .contentShape(Rectangle())
@@ -216,7 +228,7 @@ struct MainChatView: View {
                                 startNewChat()
                             } label: {
                                 Image(systemName: "square.and.pencil")
-                                    .font(.system(size: 14, weight: .medium))
+                                    .scaledFont(size: 14, weight: .medium)
                                     .foregroundStyle(theme.textSecondary)
                                     .frame(width: 34, height: 34)
                                     .contentShape(Rectangle())
@@ -398,7 +410,7 @@ struct MainChatView: View {
                     appearanceManager: dependencies.appearanceManager
                 )
                 .preferredColorScheme(dependencies.appearanceManager.resolvedColorScheme ?? systemColorScheme)
-                .themed(with: dependencies.appearanceManager)
+                .themed(with: dependencies.appearanceManager, accessibility: dependencies.accessibilityManager)
             }
             .sheet(isPresented: $showNotes) {
                 NavigationStack {
@@ -409,6 +421,18 @@ struct MainChatView: View {
                             }
                         }
                 }
+            }
+            .fullScreenCover(isPresented: $showChannels) {
+                NavigationStack {
+                    ChannelsListView()
+                        .toolbar {
+                            ToolbarItem(placement: .cancellationAction) {
+                                Button("Done") { showChannels = false }
+                            }
+                        }
+                }
+                .environment(dependencies)
+                .environment(router)
             }
             .sheet(isPresented: voiceCallBinding) {
                 if let voiceCallVM = router.voiceCallViewModel {
@@ -425,6 +449,29 @@ struct MainChatView: View {
                 if !isPresented {
                     router.voiceCallViewModel = nil
                 }
+            }
+            .sheet(isPresented: $showCreateChannel) {
+                CreateChannelSheet(
+                    onCreate: { name, description, type, isPrivate, memberIds in
+                        Task {
+                            let channelName = name.isEmpty ? "new-channel" : name
+                            if let channel = await channelListVM.createChannel(
+                                name: channelName, description: description, type: type,
+                                isPrivate: type == .dm ? true : isPrivate
+                            ) {
+                                if !memberIds.isEmpty {
+                                    try? await dependencies.apiClient?.addChannelMembers(
+                                        id: channel.id, userIds: memberIds
+                                    )
+                                }
+                                activeChannelId = channel.id
+                                activeConversationId = nil
+                            }
+                        }
+                    },
+                    apiClient: dependencies.apiClient,
+                    allUsers: channelListVM.allServerUsers
+                )
             }
             .sheet(isPresented: $showCreateFolderSheet) {
                 CreateFolderSheet(onCreate: { name in
@@ -471,7 +518,7 @@ struct MainChatView: View {
         NavigationStack {
             VStack(spacing: Spacing.lg) {
                 TextField("Chat title", text: $renameText)
-                    .font(AppTypography.bodyMediumFont)
+                    .scaledFont(size: 16)
                     .padding(Spacing.md)
                     .background(theme.surfaceContainer)
                     .clipShape(RoundedRectangle(cornerRadius: CornerRadius.md))
@@ -487,7 +534,7 @@ struct MainChatView: View {
                         }
                         Text(isGeneratingTitle ? "Generating…" : "Generate")
                     }
-                    .font(AppTypography.labelMediumFont)
+                    .scaledFont(size: 14, weight: .medium)
                     .fontWeight(.medium)
                 }
                 .buttonStyle(.bordered)
@@ -591,10 +638,19 @@ struct MainChatView: View {
                 if let folderManager = dependencies.folderManager {
                     listViewModel.folderViewModel.configure(with: folderManager)
                 }
+                // Configure and load channels — must pass currentUserId for DM participant filtering
+                if let apiClient = dependencies.apiClient {
+                    var userId = dependencies.authViewModel.currentUser?.id
+                    if userId == nil || userId?.isEmpty == true {
+                        userId = try? await apiClient.getCurrentUser().id
+                    }
+                    channelListVM.configure(apiClient: apiClient, socket: dependencies.socketService, currentUserId: userId)
+                }
                 await withTaskGroup(of: Void.self) { group in
                     group.addTask { await listViewModel.loadConversations() }
                     group.addTask { await listViewModel.folderViewModel.loadFolders() }
                     group.addTask { await dependencies.fetchTaskConfig() }
+                    group.addTask { await channelListVM.loadChannels() }
                 }
                 registerSocketReconnectHandler()
             }
@@ -608,6 +664,16 @@ struct MainChatView: View {
                 // so it doesn't show stale state from the previous chat
                 if showFileBrowser { closeFileBrowserAnimated() }
                 terminalBrowserVM.reset()
+            }
+            .onChange(of: activeChannelId) { _, newId in
+                // When entering a channel, the server marks it as read via GET /channels/{id}.
+                // Refresh the channel list after a short delay to clear the unread badge.
+                if newId != nil {
+                    Task {
+                        try? await Task.sleep(for: .seconds(1.5))
+                        await channelListVM.refreshChannels()
+                    }
+                }
             }
             .onReceive(NotificationCenter.default.publisher(for: .conversationTitleUpdated)) { notification in
                 guard let userInfo = notification.userInfo,
@@ -629,6 +695,13 @@ struct MainChatView: View {
                         activeConversationId = conversationId
                         SharedDataService.shared.saveLastActiveConversationId(conversationId)
                     }
+                }
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .navigateToChannel)) { notification in
+                if let channelId = notification.object as? String {
+                    activeChannelId = channelId
+                    activeConversationId = nil
+                    Haptics.play(.light)
                 }
             }
             .onReceive(NotificationCenter.default.publisher(for: .conversationListNeedsRefresh)) { _ in
@@ -655,7 +728,7 @@ struct MainChatView: View {
                                 .controlSize(.large)
                                 .tint(.white)
                             Text("Preparing export…")
-                                .font(AppTypography.bodyMediumFont)
+                                .scaledFont(size: 16)
                                 .foregroundStyle(.white)
                         }
                         .padding(Spacing.xl)
@@ -674,7 +747,7 @@ struct MainChatView: View {
                                 .controlSize(.large)
                                 .tint(.white)
                             Text("Deleting…")
-                                .font(AppTypography.bodyMediumFont)
+                                .scaledFont(size: 16)
                                 .foregroundStyle(.white)
                         }
                         .padding(Spacing.xl)
@@ -713,6 +786,7 @@ struct MainChatView: View {
             await withTaskGroup(of: Void.self) { group in
                 group.addTask { await listViewModel.refreshIfStale() }
                 group.addTask { await listViewModel.folderViewModel.refreshFolders() }
+                group.addTask { await channelListVM.refreshChannels() }
             }
         }
     }
@@ -761,6 +835,7 @@ struct MainChatView: View {
     private func startNewChat() {
         dependencies.activeChatStore.remove(nil)
         activeConversationId = nil
+        activeChannelId = nil
         newChatGeneration += 1
         // Reset terminal file browser state so it starts fresh in the new chat
         closeFileBrowserAnimated()
@@ -772,7 +847,12 @@ struct MainChatView: View {
 
     @ViewBuilder
     private var chatContent: some View {
-        if let conversationId = activeConversationId {
+        if let channelId = activeChannelId {
+            // Show channel detail inline (same as how chats work)
+            ChannelDetailView(channelId: channelId)
+                .id("channel-\(channelId)")
+                .transition(.opacity)
+        } else if let conversationId = activeConversationId {
             ChatDetailView(
                 conversationId: conversationId,
                 viewModel: dependencies.activeChatStore.viewModel(for: conversationId)
@@ -819,14 +899,105 @@ struct MainChatView: View {
                         drawerFoldersSection(folderVM: folderVM)
                     }
 
-                    // ── DIVIDER between Folders & Chats ──────────────
-                    if !folderVM.folders.isEmpty {
+                    // ── DIVIDER between Folders & Channels ──────────────
+                    if !folderVM.folders.isEmpty || !channelListVM.channels.isEmpty {
                         Rectangle()
                             .fill(theme.textTertiary.opacity(0.15))
                             .frame(height: 1)
                             .padding(.horizontal, Spacing.md)
                             .padding(.vertical, Spacing.sm)
                     }
+
+                    // ── CHANNELS SECTION (always visible — channels are accessible from drawer) ──
+                    VStack(alignment: .leading, spacing: 0) {
+                        HStack(spacing: 6) {
+                            Image(systemName: "bubble.left.and.bubble.right")
+                                .scaledFont(size: 10, weight: .semibold)
+                                .foregroundStyle(theme.textTertiary)
+                            Text("Channels")
+                                .scaledFont(size: 12, weight: .medium)
+                                .fontWeight(.bold)
+                                .foregroundStyle(theme.textTertiary)
+                                .textCase(.uppercase)
+                                .tracking(0.5)
+                            Spacer()
+                            
+                            // Create new channel directly
+                            Button {
+                                closeDrawer()
+                                showCreateChannel = true
+                            } label: {
+                                Image(systemName: "plus.bubble")
+                                    .scaledFont(size: 13)
+                                    .foregroundStyle(theme.textTertiary)
+                            }
+                            .buttonStyle(.plain)
+                        }
+                        .padding(.horizontal, Spacing.md)
+                        .padding(.vertical, Spacing.sm)
+
+                        if channelListVM.channels.isEmpty {
+                            Text("No channels yet")
+                                .scaledFont(size: 13)
+                                .foregroundStyle(theme.textTertiary)
+                                .padding(.horizontal, Spacing.md)
+                                .padding(.vertical, 4)
+                        } else {
+                            ForEach(channelListVM.channels) { channel in
+                                Button {
+                                    activeChannelId = channel.id
+                                    activeConversationId = nil
+                                    closeDrawer()
+                                } label: {
+                                    HStack(spacing: 6) {
+                                        // DM: show participant avatar; others: show icon
+                                        if channel.type == .dm, let participant = channel.dmParticipants.first {
+                                            UserAvatar(
+                                                size: 22,
+                                                imageURL: participant.resolveAvatarURL(serverBaseURL: dependencies.apiClient?.baseURL ?? ""),
+                                                name: participant.displayName,
+                                                authToken: dependencies.apiClient?.network.authToken
+                                            )
+                                        } else {
+                                            Image(systemName: channel.sidebarIcon)
+                                                .scaledFont(size: 11)
+                                                .foregroundStyle(activeChannelId == channel.id ? theme.brandPrimary : theme.textTertiary)
+                                        }
+                                        Text(channel.displayName)
+                                            .scaledFont(size: 14)
+                                            .fontWeight(activeChannelId == channel.id || channel.unreadCount > 0 ? .semibold : .regular)
+                                            .foregroundStyle(activeChannelId == channel.id ? theme.textPrimary : theme.textSecondary)
+                                            .lineLimit(1)
+                                        Spacer()
+                                        if channel.unreadCount > 0 {
+                                            Text("\(channel.unreadCount)")
+                                                .scaledFont(size: 11, weight: .bold)
+                                                .foregroundStyle(.white)
+                                                .padding(.horizontal, 6)
+                                                .padding(.vertical, 2)
+                                                .background(theme.brandPrimary)
+                                                .clipShape(Capsule())
+                                        }
+                                    }
+                                    .padding(.horizontal, Spacing.md)
+                                    .padding(.vertical, 7)
+                                    .background(
+                                        activeChannelId == channel.id
+                                            ? theme.brandPrimary.opacity(0.08)
+                                            : Color.clear
+                                    )
+                                    .clipShape(RoundedRectangle(cornerRadius: CornerRadius.sm))
+                                }
+                                .buttonStyle(.plain)
+                            }
+                        }
+                    }
+
+                    Rectangle()
+                        .fill(theme.textTertiary.opacity(0.15))
+                        .frame(height: 1)
+                        .padding(.horizontal, Spacing.md)
+                        .padding(.vertical, Spacing.sm)
 
                     // ── CHATS SECTION (entire section is a drop zone) ─
                     let hasAnyChats = !listViewModel.pinnedConversations.isEmpty
@@ -837,17 +1008,17 @@ struct MainChatView: View {
                             // Header
                             HStack(spacing: 6) {
                                 Image(systemName: "bubble.left.and.text.bubble.right")
-                                    .font(.system(size: 10, weight: .semibold))
+                                    .scaledFont(size: 10, weight: .semibold)
                                     .foregroundStyle(drawerChatsDropActive ? theme.brandPrimary : theme.textTertiary)
                                 Text("Chats")
-                                    .font(AppTypography.captionFont)
+                                    .scaledFont(size: 12, weight: .medium)
                                     .fontWeight(.bold)
                                     .foregroundStyle(drawerChatsDropActive ? theme.brandPrimary : theme.textTertiary)
                                     .textCase(.uppercase)
                                     .tracking(0.5)
                                 if drawerChatsDropActive {
                                     Text("Drop here")
-                                        .font(AppTypography.captionFont)
+                                        .scaledFont(size: 12, weight: .medium)
                                         .foregroundStyle(theme.brandPrimary)
                                         .transition(.opacity)
                                 }
@@ -940,14 +1111,14 @@ struct MainChatView: View {
                 }
             } label: {
                 Text("Cancel")
-                    .font(AppTypography.bodyMediumFont)
+                    .scaledFont(size: 16)
                     .foregroundStyle(theme.brandPrimary)
             }
 
             Spacer()
 
             Text("\(listViewModel.selectedCount) selected")
-                .font(AppTypography.labelMediumFont)
+                .scaledFont(size: 14, weight: .medium)
                 .fontWeight(.semibold)
                 .foregroundStyle(theme.textPrimary)
 
@@ -961,7 +1132,7 @@ struct MainChatView: View {
                 }
             } label: {
                 Text(listViewModel.selectedCount == listViewModel.filteredConversations.count ? "Deselect All" : "Select All")
-                    .font(AppTypography.captionFont)
+                    .scaledFont(size: 12, weight: .medium)
                     .fontWeight(.medium)
                     .foregroundStyle(theme.brandPrimary)
             }
@@ -980,11 +1151,11 @@ struct MainChatView: View {
     private var searchBar: some View {
         HStack(spacing: Spacing.sm) {
             Image(systemName: "magnifyingglass")
-                .font(.system(size: 14))
+                .scaledFont(size: 14)
                 .foregroundStyle(theme.textTertiary)
 
             TextField("Search conversations...", text: $listViewModel.searchText)
-                .font(AppTypography.bodyMediumFont)
+                .scaledFont(size: 16)
                 .foregroundStyle(theme.textPrimary)
 
             if !listViewModel.searchText.isEmpty {
@@ -992,7 +1163,7 @@ struct MainChatView: View {
                     listViewModel.searchText = ""
                 } label: {
                     Image(systemName: "xmark.circle.fill")
-                        .font(.system(size: 14))
+                        .scaledFont(size: 14)
                         .foregroundStyle(theme.textTertiary)
                 }
             }
@@ -1020,7 +1191,7 @@ struct MainChatView: View {
                     }
                 } label: {
                     Image(systemName: "ellipsis.circle")
-                        .font(.system(size: 16, weight: .medium))
+                        .scaledFont(size: 16, weight: .medium)
                         .foregroundStyle(theme.textSecondary)
                         .frame(width: 44, height: 44)
                         .contentShape(Rectangle())
@@ -1031,7 +1202,7 @@ struct MainChatView: View {
                 closeDrawer()
             } label: {
                 Image(systemName: "line.3.horizontal")
-                    .font(.system(size: 16, weight: .medium))
+                    .scaledFont(size: 16, weight: .medium)
                     .foregroundStyle(theme.textSecondary)
                     .frame(width: 44, height: 44)
                     .contentShape(Rectangle())
@@ -1058,17 +1229,17 @@ struct MainChatView: View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: Spacing.xs) {
                 Image(systemName: "chevron.down")
-                    .font(.system(size: 10, weight: .semibold))
+                    .scaledFont(size: 10, weight: .semibold)
                     .foregroundStyle(theme.textTertiary)
 
                 Text(title)
-                    .font(AppTypography.labelMediumFont)
+                    .scaledFont(size: 14, weight: .medium)
                     .fontWeight(.semibold)
                     .foregroundStyle(theme.textSecondary)
 
                 if let count {
                     Text("\(count)")
-                        .font(AppTypography.captionFont)
+                        .scaledFont(size: 12, weight: .medium)
                         .fontWeight(.medium)
                         .foregroundStyle(theme.textTertiary)
                         .padding(.horizontal, 6)
@@ -1082,7 +1253,7 @@ struct MainChatView: View {
                 if systemImage == "folder" {
                     Button {} label: {
                         Image(systemName: "folder.badge.plus")
-                            .font(.system(size: 14))
+                            .scaledFont(size: 14)
                             .foregroundStyle(theme.textTertiary)
                     }
                 }
@@ -1102,11 +1273,11 @@ struct MainChatView: View {
             // Section header with "New Folder" button
             HStack(spacing: 6) {
                 Image(systemName: "folder")
-                    .font(.system(size: 10, weight: .semibold))
+                    .scaledFont(size: 10, weight: .semibold)
                     .foregroundStyle(theme.textTertiary)
 
                 Text("Folders")
-                    .font(AppTypography.captionFont)
+                    .scaledFont(size: 12, weight: .medium)
                     .fontWeight(.bold)
                     .foregroundStyle(theme.textTertiary)
                     .textCase(.uppercase)
@@ -1118,7 +1289,7 @@ struct MainChatView: View {
                     showCreateFolderSheet = true
                 } label: {
                     Image(systemName: "folder.badge.plus")
-                        .font(.system(size: 13))
+                        .scaledFont(size: 13)
                         .foregroundStyle(theme.textTertiary)
                 }
                 .buttonStyle(.plain)
@@ -1190,7 +1361,7 @@ struct MainChatView: View {
                             ? "checkmark.circle.fill"
                             : "circle"
                         )
-                        .font(.system(size: 18))
+                        .scaledFont(size: 18)
                         .foregroundStyle(
                             listViewModel.isSelected(conversation.id)
                                 ? theme.brandPrimary
@@ -1198,7 +1369,7 @@ struct MainChatView: View {
                         )
 
                         Text(conversation.title)
-                            .font(AppTypography.bodySmallFont)
+                            .scaledFont(size: 14)
                             .foregroundStyle(theme.textPrimary)
                             .lineLimit(1)
 
@@ -1217,12 +1388,13 @@ struct MainChatView: View {
             } else {
                 Button {
                     activeConversationId = conversation.id
+                    activeChannelId = nil  // Clear channel when opening a chat
                     SharedDataService.shared.saveLastActiveConversationId(conversation.id)
                     closeDrawer()
                 } label: {
                     HStack {
                         Text(conversation.title)
-                            .font(AppTypography.bodySmallFont)
+                            .scaledFont(size: 14)
                             .fontWeight(activeConversationId == conversation.id ? .semibold : .regular)
                             .foregroundStyle(
                                 activeConversationId == conversation.id
@@ -1248,9 +1420,9 @@ struct MainChatView: View {
                     currentFolderId: conversation.folderId
                 )) {
                     HStack(spacing: Spacing.xs) {
-                        Image(systemName: "bubble.left").font(.system(size: 12))
+                        Image(systemName: "bubble.left").scaledFont(size: 12)
                         Text(conversation.title)
-                            .font(AppTypography.captionFont)
+                            .scaledFont(size: 12, weight: .medium)
                             .lineLimit(1)
                     }
                     .padding(.horizontal, Spacing.sm)
@@ -1395,7 +1567,7 @@ struct MainChatView: View {
                 Image(systemName: "trash")
                 Text("Delete Selected (\(listViewModel.selectedCount))")
             }
-            .font(AppTypography.labelMediumFont)
+            .scaledFont(size: 14, weight: .medium)
             .fontWeight(.semibold)
             .foregroundStyle(.white)
             .frame(maxWidth: .infinity)
@@ -1423,17 +1595,20 @@ struct MainChatView: View {
                 showSettings = true
             } label: {
                 HStack(spacing: Spacing.sm) {
-                    Circle()
-                        .fill(theme.brandPrimary.opacity(0.2))
-                        .frame(width: 32, height: 32)
-                        .overlay(
-                            Text(String((dependencies.authViewModel.currentUser?.displayName ?? "U").prefix(1)).uppercased())
-                                .font(.system(size: 14, weight: .bold))
-                                .foregroundStyle(theme.brandPrimary)
-                        )
+                    UserAvatar(
+                        size: 32,
+                        imageURL: {
+                            guard let userId = dependencies.authViewModel.currentUser?.id,
+                                  let baseURL = dependencies.apiClient?.baseURL,
+                                  !userId.isEmpty, !baseURL.isEmpty else { return nil }
+                            return URL(string: "\(baseURL)/api/v1/users/\(userId)/profile/image")
+                        }(),
+                        name: dependencies.authViewModel.currentUser?.displayName ?? "User",
+                        authToken: dependencies.apiClient?.network.authToken
+                    )
 
                     Text(dependencies.authViewModel.currentUser?.displayName ?? "User")
-                        .font(AppTypography.labelMediumFont)
+                        .scaledFont(size: 14, weight: .medium)
                         .foregroundStyle(theme.textPrimary)
                         .lineLimit(1)
                 }
@@ -1448,7 +1623,7 @@ struct MainChatView: View {
                 showNotes = true
             } label: {
                 Image(systemName: "note.text")
-                    .font(.system(size: 16, weight: .medium))
+                    .scaledFont(size: 16, weight: .medium)
                     .foregroundStyle(theme.textTertiary)
                     .frame(width: 44, height: 44)
                     .contentShape(Rectangle())
@@ -1460,7 +1635,7 @@ struct MainChatView: View {
                 showSettings = true
             } label: {
                 Image(systemName: "gearshape")
-                    .font(.system(size: 16, weight: .medium))
+                    .scaledFont(size: 16, weight: .medium)
                     .foregroundStyle(theme.textTertiary)
                     .frame(width: 44, height: 44)
                     .contentShape(Rectangle())
@@ -1636,7 +1811,7 @@ private struct ModelSelectorLabel: View {
         Group {
             if vm.availableModels.isEmpty {
                 Text("New Chat")
-                    .font(AppTypography.labelMediumFont)
+                    .scaledFont(size: 14, weight: .medium)
                     .foregroundStyle(theme.textPrimary)
                     .lineLimit(1)
             } else {
@@ -1665,13 +1840,13 @@ private struct ModelSelectorLabel: View {
                             .fixedSize()
                         }
                         Text(vm.selectedModel?.shortName ?? "Select Model")
-                            .font(AppTypography.labelMediumFont)
+                            .scaledFont(size: 14, weight: .medium)
                             .foregroundStyle(theme.textPrimary)
                             .lineLimit(1)
                             .truncationMode(.tail)
                             .frame(maxWidth: 160)
                         Image(systemName: "chevron.down")
-                            .font(.system(size: 10, weight: .semibold))
+                            .scaledFont(size: 10, weight: .semibold)
                             .foregroundStyle(theme.textTertiary)
                             .fixedSize()
                     }

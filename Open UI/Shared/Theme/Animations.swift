@@ -169,7 +169,7 @@ struct SuccessCheckmark: View {
 
                 // Checkmark
                 Image(systemName: "checkmark")
-                    .font(.system(size: 20, weight: .bold))
+                    .scaledFont(size: 20, weight: .bold)
                     .foregroundStyle(theme.success)
                     .scaleEffect(drawProgress)
                     .opacity(drawProgress)

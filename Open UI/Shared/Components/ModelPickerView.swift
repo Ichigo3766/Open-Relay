@@ -72,7 +72,7 @@ struct ModelPickerView: View {
             ProgressView()
                 .controlSize(.small)
             Text("Loading models…")
-                .font(.system(size: 13, weight: .medium))
+                .scaledFont(size: 13, weight: .medium)
                 .foregroundStyle(theme.textSecondary)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -83,10 +83,10 @@ struct ModelPickerView: View {
     private var emptyView: some View {
         VStack(spacing: Spacing.xs) {
             Image(systemName: "magnifyingglass")
-                .font(.system(size: 24))
+                .scaledFont(size: 24)
                 .foregroundStyle(theme.textTertiary)
             Text("No models match \"\(query)\"")
-                .font(.system(size: 14, weight: .medium))
+                .scaledFont(size: 14, weight: .medium)
                 .foregroundStyle(theme.textSecondary)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -111,7 +111,7 @@ struct ModelPickerView: View {
 
     private func sectionHeader(_ title: String) -> some View {
         Text(title)
-            .font(.system(size: 11, weight: .semibold))
+            .scaledFont(size: 11, weight: .semibold)
             .textCase(.uppercase)
             .foregroundStyle(theme.textTertiary)
             .padding(.horizontal, 16)
@@ -138,13 +138,13 @@ struct ModelPickerView: View {
                 // Name + description
                 VStack(alignment: .leading, spacing: 2) {
                     Text(model.shortName)
-                        .font(.system(size: 15, weight: .medium))
+                        .scaledFont(size: 15, weight: .medium)
                         .foregroundStyle(theme.textPrimary)
                         .lineLimit(1)
 
                     if let desc = model.description, !desc.isEmpty {
                         Text(desc)
-                            .font(.system(size: 12, weight: .regular))
+                            .scaledFont(size: 12, weight: .regular)
                             .foregroundStyle(theme.textTertiary)
                             .lineLimit(1)
                     }

@@ -636,7 +636,7 @@ struct ChartPreviewView: View {
                 // Chart type label
                 HStack(spacing: 4) {
                     Image(systemName: chartIcon)
-                        .font(.system(size: 10, weight: .semibold))
+                        .scaledFont(size: 10, weight: .semibold)
                     Text(spec.kind.rawValue)
                         .font(.system(.caption, design: .monospaced))
                         .fontWeight(.semibold)
@@ -654,9 +654,9 @@ struct ChartPreviewView: View {
                 } label: {
                     HStack(spacing: 4) {
                         Image(systemName: showSource ? "chart.bar" : "chevron.left.forwardslash.chevron.right")
-                            .font(.system(size: 11, weight: .medium))
+                            .scaledFont(size: 11, weight: .medium)
                         Text(showSource ? "Chart" : "Source")
-                            .font(.system(size: 12, weight: .medium))
+                            .scaledFont(size: 12, weight: .medium)
                     }
                     .foregroundStyle(.secondary)
                 }
@@ -681,7 +681,7 @@ struct ChartPreviewView: View {
                                 .transition(.opacity.combined(with: .scale))
                         }
                     }
-                    .font(.system(size: 11, weight: .medium))
+                    .scaledFont(size: 11, weight: .medium)
                     .foregroundStyle(.secondary)
                     .labelStyle(.iconOnly)
                 }
@@ -746,7 +746,7 @@ struct USpecChartView: View {
         VStack(alignment: .leading, spacing: 8) {
             if let title = spec.title {
                 Text(title)
-                    .font(.system(size: 14, weight: .semibold))
+                    .scaledFont(size: 14, weight: .semibold)
                     .foregroundStyle(theme.textPrimary)
             }
 
@@ -860,7 +860,7 @@ struct USpecChartView: View {
                 .annotation(position: .overlay, alignment: .center) {
                     if d.pct >= 0.08 {
                         Text("\(d.label)\n\(Int(round(d.pct * 100)))%")
-                            .font(.system(size: 10, weight: .semibold))
+                            .scaledFont(size: 10, weight: .semibold)
                             .multilineTextAlignment(.center)
                     }
                 }
@@ -987,7 +987,7 @@ struct HighlightedSourceView: View {
                         .foregroundStyle(.primary)
                 }
             }
-            .font(.system(size: 13, design: .monospaced))
+            .scaledFont(size: 13, design: .monospaced)
             .lineSpacing(4)
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(16)

@@ -25,7 +25,7 @@ struct MemoriesView: View {
                 VStack(spacing: Spacing.lg) {
                     ProgressView()
                     Text("Loading memories…")
-                        .font(AppTypography.captionFont)
+                        .scaledFont(size: 12, weight: .medium)
                         .foregroundStyle(theme.textTertiary)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -88,7 +88,7 @@ struct MemoriesView: View {
                     VStack(spacing: Spacing.sm) {
                         TextField("What should the AI remember?", text: $newMemoryText, axis: .vertical)
                             .lineLimit(3...6)
-                            .font(AppTypography.bodyMediumFont)
+                            .scaledFont(size: 16)
 
                         HStack {
                             Button("Cancel") {
@@ -121,7 +121,7 @@ struct MemoriesView: View {
             if let error = errorMessage {
                 Section {
                     Text(error)
-                        .font(AppTypography.captionFont)
+                        .scaledFont(size: 12, weight: .medium)
                         .foregroundStyle(theme.error)
                 }
             }
@@ -137,7 +137,7 @@ struct MemoriesView: View {
                         VStack(spacing: Spacing.sm) {
                             TextField("Memory content", text: $editText, axis: .vertical)
                                 .lineLimit(3...6)
-                                .font(AppTypography.bodyMediumFont)
+                                .scaledFont(size: 16)
 
                             HStack {
                                 Button("Cancel") {
@@ -163,12 +163,12 @@ struct MemoriesView: View {
                         // Display mode
                         VStack(alignment: .leading, spacing: Spacing.xs) {
                             Text(content)
-                                .font(AppTypography.bodyMediumFont)
+                                .scaledFont(size: 16)
                                 .foregroundStyle(theme.textPrimary)
 
                             if let createdAt = memory["created_at"] as? Double {
                                 Text(Date(timeIntervalSince1970: createdAt).formatted(.relative(presentation: .named)))
-                                    .font(AppTypography.captionFont)
+                                    .scaledFont(size: 12, weight: .medium)
                                     .foregroundStyle(theme.textTertiary)
                             }
                         }

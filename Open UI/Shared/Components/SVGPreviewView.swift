@@ -70,7 +70,7 @@ struct SVGPreviewView: View {
             // Language label with icon
             HStack(spacing: 5) {
                 Image(systemName: "skew")
-                    .font(.system(size: 10, weight: .semibold))
+                    .scaledFont(size: 10, weight: .semibold)
                 Text("svg")
                     .font(.system(.caption, design: .monospaced))
                     .fontWeight(.semibold)
@@ -88,9 +88,9 @@ struct SVGPreviewView: View {
             } label: {
                 HStack(spacing: 4) {
                     Image(systemName: showSource ? "skew" : "chevron.left.forwardslash.chevron.right")
-                        .font(.system(size: 11, weight: .medium))
+                        .scaledFont(size: 11, weight: .medium)
                     Text(showSource ? "Image" : "Source")
-                        .font(.system(size: 12, weight: .medium))
+                        .scaledFont(size: 12, weight: .medium)
                 }
                 .foregroundStyle(.secondary)
             }
@@ -115,7 +115,7 @@ struct SVGPreviewView: View {
                             .transition(.opacity.combined(with: .scale))
                     }
                 }
-                .font(.system(size: 11, weight: .medium))
+                .scaledFont(size: 11, weight: .medium)
                 .foregroundStyle(.secondary)
                 .labelStyle(.iconOnly)
             }
@@ -128,7 +128,7 @@ struct SVGPreviewView: View {
                     Haptics.play(.light)
                 } label: {
                     Image(systemName: "arrow.up.left.and.arrow.down.right")
-                        .font(.system(size: 11, weight: .medium))
+                        .scaledFont(size: 11, weight: .medium)
                         .foregroundStyle(.secondary)
                 }
                 .buttonStyle(.plain)
@@ -153,7 +153,7 @@ struct SVGPreviewView: View {
                         .controlSize(.small)
                         .tint(.secondary)
                     Text("Rendering SVG…")
-                        .font(.system(size: 12))
+                        .scaledFont(size: 12)
                         .foregroundStyle(.tertiary)
                 }
                 .frame(maxWidth: .infinity)
@@ -169,13 +169,13 @@ struct SVGPreviewView: View {
                 // Error — show brief message and fall back to source automatically
                 VStack(spacing: 8) {
                     Image(systemName: "exclamationmark.triangle")
-                        .font(.system(size: 20))
+                        .scaledFont(size: 20)
                         .foregroundStyle(.orange)
                     Text("SVG rendering failed")
-                        .font(.system(size: 13, weight: .medium))
+                        .scaledFont(size: 13, weight: .medium)
                         .foregroundStyle(.secondary)
                     Text(error)
-                        .font(.system(size: 11))
+                        .scaledFont(size: 11)
                         .foregroundStyle(.tertiary)
                         .lineLimit(2)
                         .multilineTextAlignment(.center)
@@ -284,7 +284,7 @@ struct SVGFullscreenView: View {
                         Haptics.play(.light)
                     } label: {
                         Image(systemName: showSource ? "skew" : "chevron.left.forwardslash.chevron.right")
-                            .font(.system(size: 14, weight: .medium))
+                            .scaledFont(size: 14, weight: .medium)
                     }
 
                     // Copy SVG source or rendered image
@@ -302,7 +302,7 @@ struct SVGFullscreenView: View {
                         }
                     } label: {
                         Image(systemName: codeCopied ? "checkmark" : "doc.on.doc")
-                            .font(.system(size: 14, weight: .medium))
+                            .scaledFont(size: 14, weight: .medium)
                     }
 
                     // Share rendered image
@@ -312,7 +312,7 @@ struct SVGFullscreenView: View {
                             preview: SharePreview("SVG Image")
                         ) {
                             Image(systemName: "square.and.arrow.up")
-                                .font(.system(size: 14, weight: .medium))
+                                .scaledFont(size: 14, weight: .medium)
                         }
                     }
                 }

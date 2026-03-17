@@ -31,7 +31,7 @@ struct SourcesDetailSheet: View {
                         dismiss()
                     } label: {
                         Image(systemName: "xmark.circle.fill")
-                            .font(.system(size: 20))
+                            .scaledFont(size: 20)
                             .foregroundStyle(theme.textTertiary)
                     }
                 }
@@ -55,7 +55,7 @@ struct SourcesDetailSheet: View {
             HStack(spacing: Spacing.sm) {
                 // Number badge
                 Text("\(index)")
-                    .font(.system(size: 12, weight: .bold))
+                    .scaledFont(size: 12, weight: .bold)
                     .foregroundStyle(theme.textPrimary)
                     .frame(width: 24, height: 24)
                     .background(theme.surfaceContainer)
@@ -72,14 +72,14 @@ struct SourcesDetailSheet: View {
                                 .clipShape(RoundedRectangle(cornerRadius: 4))
                         default:
                             Image(systemName: "globe")
-                                .font(.system(size: 12))
+                                .scaledFont(size: 12)
                                 .foregroundStyle(theme.textTertiary)
                                 .frame(width: 16, height: 16)
                         }
                     }
                 } else {
                     Image(systemName: "doc.text")
-                        .font(.system(size: 12))
+                        .scaledFont(size: 12)
                         .foregroundStyle(theme.textTertiary)
                         .frame(width: 16, height: 16)
                 }
@@ -88,7 +88,7 @@ struct SourcesDetailSheet: View {
                 VStack(alignment: .leading, spacing: 2) {
                     if let title = source.title, !title.isEmpty, !title.hasPrefix("http") {
                         Text(title)
-                            .font(AppTypography.bodySmallFont)
+                            .scaledFont(size: 14)
                             .fontWeight(.medium)
                             .foregroundStyle(theme.textPrimary)
                             .lineLimit(1)
@@ -96,24 +96,24 @@ struct SourcesDetailSheet: View {
 
                     if let url {
                         Text(url)
-                            .font(AppTypography.captionFont)
+                            .scaledFont(size: 12, weight: .medium)
                             .foregroundStyle(isLink ? theme.brandPrimary : theme.textSecondary)
                             .lineLimit(1)
                             .truncationMode(.middle)
                     } else if let title = source.title, !title.isEmpty {
                         Text(title)
-                            .font(AppTypography.bodySmallFont)
+                            .scaledFont(size: 14)
                             .foregroundStyle(theme.textSecondary)
                             .lineLimit(1)
                     } else {
                         Text("Source \(index)")
-                            .font(AppTypography.bodySmallFont)
+                            .scaledFont(size: 14)
                             .foregroundStyle(theme.textTertiary)
                     }
 
                     if let snippet = source.snippet, !snippet.isEmpty {
                         Text(snippet)
-                            .font(AppTypography.captionFont)
+                            .scaledFont(size: 12, weight: .medium)
                             .foregroundStyle(theme.textTertiary)
                             .lineLimit(2)
                     }
@@ -123,7 +123,7 @@ struct SourcesDetailSheet: View {
 
                 if isLink {
                     Image(systemName: "arrow.up.right")
-                        .font(.system(size: 10, weight: .medium))
+                        .scaledFont(size: 10, weight: .medium)
                         .foregroundStyle(theme.textTertiary)
                 }
             }
