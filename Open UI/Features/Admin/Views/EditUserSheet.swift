@@ -28,7 +28,7 @@ struct EditUserSheet: View {
                         VStack(spacing: 0) {
                             fieldRow(label: "Name") {
                                 TextField("Name", text: $viewModel.editName)
-                                    .font(AppTypography.bodyMediumFont)
+                                    .scaledFont(size: 16)
                                     .textContentType(.name)
                             }
 
@@ -36,7 +36,7 @@ struct EditUserSheet: View {
 
                             fieldRow(label: "Email") {
                                 TextField("Email", text: $viewModel.editEmail)
-                                    .font(AppTypography.bodyMediumFont)
+                                    .scaledFont(size: 16)
                                     .textContentType(.emailAddress)
                                     .textInputAutocapitalization(.never)
                                     .keyboardType(.emailAddress)
@@ -52,10 +52,10 @@ struct EditUserSheet: View {
                             HStack {
                                 VStack(alignment: .leading, spacing: 2) {
                                     Text("OAuth ID")
-                                        .font(AppTypography.captionFont)
+                                        .scaledFont(size: 12, weight: .medium)
                                         .foregroundStyle(theme.textTertiary)
                                     Text("\(provider) \(providerId)")
-                                        .font(AppTypography.bodyMediumFont)
+                                        .scaledFont(size: 16)
                                         .foregroundStyle(theme.textPrimary)
                                 }
                                 Spacer()
@@ -70,11 +70,11 @@ struct EditUserSheet: View {
                             HStack {
                                 if showPassword {
                                     TextField("Enter New Password", text: $viewModel.editPassword)
-                                        .font(AppTypography.bodyMediumFont)
+                                        .scaledFont(size: 16)
                                         .textContentType(.newPassword)
                                 } else {
                                     SecureField("Enter New Password", text: $viewModel.editPassword)
-                                        .font(AppTypography.bodyMediumFont)
+                                        .scaledFont(size: 16)
                                         .textContentType(.newPassword)
                                 }
 
@@ -82,7 +82,7 @@ struct EditUserSheet: View {
                                     showPassword.toggle()
                                 } label: {
                                     Image(systemName: showPassword ? "eye.slash" : "eye")
-                                        .font(.system(size: 15))
+                                        .scaledFont(size: 15)
                                         .foregroundStyle(theme.textTertiary)
                                 }
                             }
@@ -95,7 +95,7 @@ struct EditUserSheet: View {
                             Image(systemName: "exclamationmark.triangle.fill")
                                 .foregroundStyle(theme.error)
                             Text(error)
-                                .font(AppTypography.captionFont)
+                                .scaledFont(size: 12, weight: .medium)
                                 .foregroundStyle(theme.error)
                         }
                         .padding(.horizontal, Spacing.screenPadding)
@@ -106,7 +106,7 @@ struct EditUserSheet: View {
                             Image(systemName: "checkmark.circle.fill")
                                 .foregroundStyle(Color.green)
                             Text("Changes saved successfully!")
-                                .font(AppTypography.captionFont)
+                                .scaledFont(size: 12, weight: .medium)
                                 .foregroundStyle(Color.green)
                         }
                         .padding(.horizontal, Spacing.screenPadding)
@@ -152,7 +152,7 @@ struct EditUserSheet: View {
                         dismiss()
                     } label: {
                         Image(systemName: "xmark")
-                            .font(.system(size: 14, weight: .semibold))
+                            .scaledFont(size: 14, weight: .semibold)
                             .foregroundStyle(theme.textSecondary)
                             .frame(width: 30, height: 30)
                             .background(theme.surfaceContainer)
@@ -175,11 +175,11 @@ struct EditUserSheet: View {
 
             VStack(alignment: .leading, spacing: 4) {
                 Text(user.displayName)
-                    .font(AppTypography.headlineSmallFont)
+                    .scaledFont(size: 20, weight: .semibold)
                     .foregroundStyle(theme.textPrimary)
 
                 Text("Created at \(user.createdDateString)")
-                    .font(AppTypography.captionFont)
+                    .scaledFont(size: 12, weight: .medium)
                     .foregroundStyle(theme.textTertiary)
 
                 HStack(spacing: Spacing.xs) {
@@ -191,7 +191,7 @@ struct EditUserSheet: View {
                                 .fill(Color.green)
                                 .frame(width: 6, height: 6)
                             Text("Active now")
-                                .font(.system(size: 10, weight: .medium))
+                                .scaledFont(size: 10, weight: .medium)
                                 .foregroundStyle(Color.green)
                         }
                     }
@@ -218,13 +218,13 @@ struct EditUserSheet: View {
                         RoleBadge(role: role)
 
                         Text(roleDescription(role))
-                            .font(AppTypography.captionFont)
+                            .scaledFont(size: 12, weight: .medium)
                             .foregroundStyle(theme.textTertiary)
 
                         Spacer()
 
                         Image(systemName: viewModel.editRole == role ? "checkmark.circle.fill" : "circle")
-                            .font(.system(size: 20))
+                            .scaledFont(size: 20)
                             .foregroundStyle(
                                 viewModel.editRole == role ? theme.brandPrimary : theme.textTertiary.opacity(0.4)
                             )
@@ -247,7 +247,7 @@ struct EditUserSheet: View {
     private func fieldRow<Content: View>(label: String, @ViewBuilder content: () -> Content) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             Text(label)
-                .font(AppTypography.captionFont)
+                .scaledFont(size: 12, weight: .medium)
                 .foregroundStyle(theme.textTertiary)
             content()
         }

@@ -34,12 +34,12 @@ struct NetworkErrorRecoveryView: View {
             // Error details
             VStack(spacing: Spacing.sm) {
                 Text(errorTitle)
-                    .font(AppTypography.headlineSmallFont)
+                    .scaledFont(size: 20, weight: .semibold)
                     .foregroundStyle(theme.textPrimary)
                     .multilineTextAlignment(.center)
 
                 Text(errorDescription)
-                    .font(AppTypography.bodySmallFont)
+                    .scaledFont(size: 14)
                     .foregroundStyle(theme.textSecondary)
                     .multilineTextAlignment(.center)
                     .lineSpacing(3)
@@ -66,7 +66,7 @@ struct NetworkErrorRecoveryView: View {
                         HStack(spacing: Spacing.sm) {
                             Image(systemName: "person.crop.circle")
                             Text("Sign In Again")
-                                .font(AppTypography.labelLargeFont)
+                                .scaledFont(size: 16, weight: .medium)
                         }
                         .frame(maxWidth: .infinity)
                         .frame(height: TouchTarget.comfortable)
@@ -80,7 +80,7 @@ struct NetworkErrorRecoveryView: View {
                         HStack(spacing: Spacing.sm) {
                             Image(systemName: "gear")
                             Text("Open Settings")
-                                .font(AppTypography.labelLargeFont)
+                                .scaledFont(size: 16, weight: .medium)
                         }
                         .frame(maxWidth: .infinity)
                         .frame(height: TouchTarget.comfortable)
@@ -105,7 +105,7 @@ struct NetworkErrorRecoveryView: View {
                 .frame(width: 80, height: 80)
 
             Image(systemName: iconName)
-                .font(.system(size: 32, weight: .medium))
+                .scaledFont(size: 32, weight: .medium)
                 .foregroundStyle(iconColor)
         }
     }
@@ -210,17 +210,17 @@ struct InlineErrorBanner: View {
     var body: some View {
         HStack(spacing: Spacing.sm) {
             Image(systemName: "exclamationmark.circle.fill")
-                .font(.system(size: 16))
+                .scaledFont(size: 16)
                 .foregroundStyle(theme.error)
 
             VStack(alignment: .leading, spacing: Spacing.xxs) {
                 Text(message)
-                    .font(AppTypography.labelSmallFont)
+                    .scaledFont(size: 12, weight: .medium)
                     .foregroundStyle(theme.textPrimary)
 
                 if let detail {
                     Text(detail)
-                        .font(AppTypography.captionFont)
+                        .scaledFont(size: 12, weight: .medium)
                         .foregroundStyle(theme.textSecondary)
                         .lineLimit(2)
                 }
@@ -241,7 +241,7 @@ struct InlineErrorBanner: View {
                             .controlSize(.small)
                     } else {
                         Text("Retry")
-                            .font(AppTypography.labelSmallFont)
+                            .scaledFont(size: 12, weight: .medium)
                             .foregroundStyle(theme.brandPrimary)
                     }
                 }
@@ -252,7 +252,7 @@ struct InlineErrorBanner: View {
             if let onDismiss {
                 Button(action: onDismiss) {
                     Image(systemName: "xmark")
-                        .font(.system(size: 11, weight: .semibold))
+                        .scaledFont(size: 11, weight: .semibold)
                         .foregroundStyle(theme.textTertiary)
                         .frame(width: 24, height: 24)
                         .contentShape(Circle())

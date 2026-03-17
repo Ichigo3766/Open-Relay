@@ -48,11 +48,11 @@ struct ModelAvatar: View {
 
             if let initial = label?.trimmingCharacters(in: .whitespacesAndNewlines).first {
                 Text(String(initial).uppercased())
-                    .font(.system(size: size * 0.38, weight: .semibold, design: .rounded))
+                    .scaledFont(size: size * 0.38, weight: .semibold, design: .rounded)
                     .foregroundStyle(theme.brandPrimary)
             } else {
                 Image(systemName: "brain")
-                    .font(.system(size: size * 0.4, weight: .medium))
+                    .scaledFont(size: size * 0.4, weight: .medium)
                     .foregroundStyle(theme.brandPrimary)
             }
         }
@@ -77,12 +77,15 @@ struct UserAvatar: View {
     let size: CGFloat
     var imageURL: URL?
     var name: String?
+    /// Optional Bearer token for authenticated user avatar endpoints.
+    var authToken: String?
 
     @Environment(\.theme) private var theme
 
     var body: some View {
         if let imageURL {
-            CachedAsyncImage(url: imageURL) { image in
+            let _ = print("[UserAvatar] Loading image for '\(name ?? "?")' from: \(imageURL.absoluteString.prefix(100)), authToken: \(authToken != nil ? "YES" : "NO")")
+            CachedAsyncImage(url: imageURL, authToken: authToken) { image in
                 image
                     .resizable()
                     .aspectRatio(contentMode: .fill)
@@ -96,6 +99,7 @@ struct UserAvatar: View {
             }
             .accessibilityLabel(Text(name ?? String(localized: "User")))
         } else {
+            let _ = print("[UserAvatar] No imageURL for '\(name ?? "?")' — showing initials")
             initialsView
         }
     }
@@ -109,11 +113,11 @@ struct UserAvatar: View {
 
             if let initial = name?.trimmingCharacters(in: .whitespacesAndNewlines).first {
                 Text(String(initial).uppercased())
-                    .font(.system(size: size * 0.4, weight: .semibold, design: .rounded))
+                    .scaledFont(size: size * 0.4, weight: .semibold, design: .rounded)
                     .foregroundStyle(theme.brandPrimary)
             } else {
                 Image(systemName: "person.fill")
-                    .font(.system(size: size * 0.4, weight: .medium))
+                    .scaledFont(size: size * 0.4, weight: .medium)
                     .foregroundStyle(theme.brandPrimary)
             }
         }

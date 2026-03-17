@@ -73,7 +73,7 @@ struct MermaidPreviewView: View {
             // Language label with icon
             HStack(spacing: 5) {
                 Image(systemName: "point.3.connected.trianglepath.dotted")
-                    .font(.system(size: 10, weight: .semibold))
+                    .scaledFont(size: 10, weight: .semibold)
                 Text("mermaid")
                     .font(.system(.caption, design: .monospaced))
                     .fontWeight(.semibold)
@@ -91,9 +91,9 @@ struct MermaidPreviewView: View {
             } label: {
                 HStack(spacing: 4) {
                     Image(systemName: showSource ? "point.3.connected.trianglepath.dotted" : "chevron.left.forwardslash.chevron.right")
-                        .font(.system(size: 11, weight: .medium))
+                        .scaledFont(size: 11, weight: .medium)
                     Text(showSource ? "Diagram" : "Source")
-                        .font(.system(size: 12, weight: .medium))
+                        .scaledFont(size: 12, weight: .medium)
                 }
                 .foregroundStyle(.secondary)
             }
@@ -118,7 +118,7 @@ struct MermaidPreviewView: View {
                             .transition(.opacity.combined(with: .scale))
                     }
                 }
-                .font(.system(size: 11, weight: .medium))
+                .scaledFont(size: 11, weight: .medium)
                 .foregroundStyle(.secondary)
                 .labelStyle(.iconOnly)
             }
@@ -131,7 +131,7 @@ struct MermaidPreviewView: View {
                     Haptics.play(.light)
                 } label: {
                     Image(systemName: "arrow.up.left.and.arrow.down.right")
-                        .font(.system(size: 11, weight: .medium))
+                        .scaledFont(size: 11, weight: .medium)
                         .foregroundStyle(.secondary)
                 }
                 .buttonStyle(.plain)
@@ -161,7 +161,7 @@ struct MermaidPreviewView: View {
                         .controlSize(.small)
                         .tint(.secondary)
                     Text("Rendering diagram…")
-                        .font(.system(size: 12))
+                        .scaledFont(size: 12)
                         .foregroundStyle(.tertiary)
                 }
                 .frame(maxWidth: .infinity)
@@ -177,13 +177,13 @@ struct MermaidPreviewView: View {
                 // Error — show error message + fallback to source
                 VStack(spacing: 8) {
                     Image(systemName: "exclamationmark.triangle")
-                        .font(.system(size: 20))
+                        .scaledFont(size: 20)
                         .foregroundStyle(.orange)
                     Text("Diagram rendering failed")
-                        .font(.system(size: 13, weight: .medium))
+                        .scaledFont(size: 13, weight: .medium)
                         .foregroundStyle(.secondary)
                     Text(error)
-                        .font(.system(size: 11))
+                        .scaledFont(size: 11)
                         .foregroundStyle(.tertiary)
                         .lineLimit(2)
                         .multilineTextAlignment(.center)
@@ -200,6 +200,42 @@ struct MermaidPreviewView: View {
         HighlightedSourceView(code: code, language: "mermaid")
     }
 
+    // MARK: - Source Preprocessing
+
+    /// Sanitize mermaid source before rendering.
+    ///
+    /// The BeautifulMermaid library doesn't support:
+    /// 1. `\n` escape sequences inside node labels — causes NSAttributedString to
+    ///    measure only the first "line", producing undersized nodes and clipped text.
+    /// 2. `**bold**` markdown inside labels — rendered literally as `**text**`.
+    ///
+    /// Strategy: scan each line and replace these patterns only inside the
+    /// label portion of node definitions and edge declarations, leaving the
+    /// structural mermaid syntax (arrows, IDs, etc.) intact.
+    private func sanitizeSource(_ source: String) -> String {
+        let lines = source.components(separatedBy: "\n")
+        let sanitized = lines.map { line -> String in
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            // Skip comment lines, directive lines, and empty lines
+            if trimmed.isEmpty || trimmed.hasPrefix("%%") || trimmed.hasPrefix("%%{") {
+                return line
+            }
+            var result = line
+            // 1. Replace literal \n escape sequences inside labels with a space.
+            result = result.replacingOccurrences(of: #"\n"#, with: " ")
+            // 2. Strip **bold** markdown markers (replace **text** with text).
+            result = result.replacingOccurrences(of: #"\*\*([^*]+)\*\*"#, with: "$1", options: .regularExpression)
+            // 3. Strip surrounding quotes from ["quoted label"] node syntax.
+            //    BeautifulMermaid's parser captures the content literally including quotes,
+            //    causing the node to display with quotes or fall back to showing the node ID.
+            //    Convert: ID["label"] → ID[label]  and  ID("label") → ID(label)
+            result = result.replacingOccurrences(of: #"\[\"([^\"]+)\"\]"#, with: "[$1]", options: .regularExpression)
+            result = result.replacingOccurrences(of: #"\(\"([^\"]+)\"\)"#, with: "($1)", options: .regularExpression)
+            return result
+        }
+        return sanitized.joined(separator: "\n")
+    }
+
     // MARK: - Rendering
 
     private func renderDiagram() async {
@@ -211,10 +247,12 @@ struct MermaidPreviewView: View {
             ? .tokyoNight
             : .zincLight
 
+        let processedCode = sanitizeSource(code)
+
         do {
             let image = try await Task.detached(priority: .userInitiated) {
                 try MermaidRenderer.renderImage(
-                    source: code,
+                    source: processedCode,
                     theme: diagramTheme,
                     scale: 2.0
                 )
@@ -276,7 +314,7 @@ private struct MermaidFullscreenView: View {
                         Image(systemName: showSource
                             ? "point.3.connected.trianglepath.dotted"
                             : "chevron.left.forwardslash.chevron.right")
-                            .font(.system(size: 14, weight: .medium))
+                            .scaledFont(size: 14, weight: .medium)
                     }
 
                     // Copy
@@ -294,14 +332,14 @@ private struct MermaidFullscreenView: View {
                         }
                     } label: {
                         Image(systemName: codeCopied ? "checkmark" : "doc.on.doc")
-                            .font(.system(size: 14, weight: .medium))
+                            .scaledFont(size: 14, weight: .medium)
                     }
 
                     // Share image
                     if let image, !showSource {
                         ShareLink(item: Image(uiImage: image), preview: SharePreview("Mermaid Diagram")) {
                             Image(systemName: "square.and.arrow.up")
-                                .font(.system(size: 14, weight: .medium))
+                                .scaledFont(size: 14, weight: .medium)
                         }
                     }
                 }

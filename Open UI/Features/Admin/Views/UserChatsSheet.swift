@@ -43,7 +43,7 @@ struct UserChatsSheet: View {
                         dismiss()
                     } label: {
                         Image(systemName: "xmark")
-                            .font(.system(size: 14, weight: .semibold))
+                            .scaledFont(size: 14, weight: .semibold)
                             .foregroundStyle(theme.textSecondary)
                             .frame(width: 30, height: 30)
                             .background(theme.surfaceContainer)
@@ -92,11 +92,11 @@ struct UserChatsSheet: View {
     private var chatSearchBar: some View {
         HStack(spacing: Spacing.sm) {
             Image(systemName: "magnifyingglass")
-                .font(.system(size: 15, weight: .medium))
+                .scaledFont(size: 15, weight: .medium)
                 .foregroundStyle(theme.textTertiary)
 
             TextField("Search Chats", text: $viewModel.chatSearchQuery)
-                .font(AppTypography.bodyMediumFont)
+                .scaledFont(size: 16)
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
                 .onChange(of: viewModel.chatSearchQuery) { _, _ in
@@ -114,7 +114,7 @@ struct UserChatsSheet: View {
                     Task { await viewModel.searchUserChats() }
                 } label: {
                     Image(systemName: "xmark.circle.fill")
-                        .font(.system(size: 16))
+                        .scaledFont(size: 16)
                         .foregroundStyle(theme.textTertiary)
                 }
             }
@@ -139,7 +139,7 @@ struct UserChatsSheet: View {
                 ForEach(groupedChats, id: \.title) { group in
                     // Section header
                     Text(group.title)
-                        .font(.system(size: 13, weight: .semibold))
+                        .scaledFont(size: 13, weight: .semibold)
                         .foregroundStyle(theme.textTertiary)
                         .padding(.horizontal, Spacing.screenPadding)
                         .padding(.top, Spacing.md)
@@ -176,7 +176,7 @@ struct UserChatsSheet: View {
             // Chat title
             VStack(alignment: .leading, spacing: 2) {
                 Text(chat.title.isEmpty ? "Untitled Chat" : chat.title)
-                    .font(AppTypography.bodyMediumFont)
+                    .scaledFont(size: 16)
                     .foregroundStyle(theme.textPrimary)
                     .lineLimit(1)
             }
@@ -185,12 +185,12 @@ struct UserChatsSheet: View {
 
             // Date
             Text(chat.updatedDate.chatTimestamp)
-                .font(AppTypography.captionFont)
+                .scaledFont(size: 12, weight: .medium)
                 .foregroundStyle(theme.textTertiary)
 
             // Chevron indicator
             Image(systemName: "chevron.right")
-                .font(.system(size: 12, weight: .semibold))
+                .scaledFont(size: 12, weight: .semibold)
                 .foregroundStyle(theme.textTertiary.opacity(0.5))
         }
         .padding(.horizontal, Spacing.screenPadding)
@@ -250,7 +250,7 @@ struct UserChatsSheet: View {
             ProgressView()
                 .controlSize(.large)
             Text("Loading chats…")
-                .font(AppTypography.bodyMediumFont)
+                .scaledFont(size: 16)
                 .foregroundStyle(theme.textTertiary)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -260,10 +260,10 @@ struct UserChatsSheet: View {
     private var emptyState: some View {
         VStack(spacing: Spacing.md) {
             Image(systemName: "bubble.left.and.text.bubble.right")
-                .font(.system(size: 40))
+                .scaledFont(size: 40)
                 .foregroundStyle(theme.textTertiary)
             Text("No chats found")
-                .font(AppTypography.bodyMediumFont)
+                .scaledFont(size: 16)
                 .foregroundStyle(theme.textTertiary)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -273,17 +273,17 @@ struct UserChatsSheet: View {
     private func errorState(_ message: String) -> some View {
         VStack(spacing: Spacing.md) {
             Image(systemName: "exclamationmark.triangle")
-                .font(.system(size: 40))
+                .scaledFont(size: 40)
                 .foregroundStyle(theme.error)
             Text(message)
-                .font(AppTypography.bodyMediumFont)
+                .scaledFont(size: 16)
                 .foregroundStyle(theme.textTertiary)
             Button("Retry") {
                 if let user = viewModel.viewingChatsForUser {
                     Task { await viewModel.loadUserChats(for: user) }
                 }
             }
-            .font(AppTypography.bodyMediumFont)
+            .scaledFont(size: 16)
             .fontWeight(.semibold)
             .foregroundStyle(theme.brandPrimary)
         }

@@ -62,7 +62,7 @@ struct ChatMessageBubble<Content: View>: View {
 
                 if showTimestamp, let ts = timestamp {
                     Text(ts, style: .time)
-                        .font(.system(size: 11))
+                        .scaledFont(size: 11)
                         .foregroundStyle(theme.textTertiary)
                         .padding(.trailing, 4)
                         .transition(.opacity.combined(with: .scale(scale: 0.9, anchor: .trailing)))
@@ -84,7 +84,7 @@ struct ChatMessageBubble<Content: View>: View {
 
             if showTimestamp, let ts = timestamp {
                 Text(ts, style: .time)
-                    .font(.system(size: 11))
+                    .scaledFont(size: 11)
                     .foregroundStyle(theme.textTertiary)
                     .transition(.opacity.combined(with: .scale(scale: 0.9, anchor: .leading)))
             }
@@ -100,7 +100,7 @@ struct ChatMessageBubble<Content: View>: View {
             Spacer()
             content()
                 .foregroundStyle(theme.textTertiary)
-                .font(.system(size: 12))
+                .scaledFont(size: 12)
                 .multilineTextAlignment(.center)
                 .padding(.horizontal, Spacing.md)
                 .padding(.vertical, Spacing.xs)
@@ -233,7 +233,7 @@ struct MessageActionBar: View {
     ) -> some View {
         Button(action: action) {
             Image(systemName: systemImage)
-                .font(.system(size: 13, weight: .medium))
+                .scaledFont(size: 13, weight: .medium)
                 .foregroundStyle(theme.textTertiary)
                 .frame(width: 32, height: 32)
                 .contentShape(Rectangle())

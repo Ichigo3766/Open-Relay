@@ -32,7 +32,7 @@ struct Open_UIApp: App {
                 .environment(router)
                 .environment(dependencies)
                 .preferredColorScheme(dependencies.appearanceManager.resolvedColorScheme)
-                .themed(with: dependencies.appearanceManager)
+                .themed(with: dependencies.appearanceManager, accessibility: dependencies.accessibilityManager)
                 .onChange(of: scenePhase) { _, newPhase in
                     if newPhase == .inactive || newPhase == .background {
                         // Stop MarvisTTS and unload model before backgrounding to prevent
@@ -51,6 +51,10 @@ struct Open_UIApp: App {
                     // STORAGE FIX: Run cleanup on app launch to handle accumulated
                     // data from previous sessions (orphaned files, stale caches, etc.)
                     StorageManager.shared.performRoutineCleanup()
+                    
+                    // Evict profile image cache on startup so avatars refresh
+                    // if the user changed them on the web UI since last launch.
+                    await ImageCacheService.shared.evictProfileImages()
 
                     // Initialize notification service: registers categories and
                     // requests permission if not yet determined. Also acts as a
@@ -248,7 +252,7 @@ struct RootView: View {
             if let error = viewModel.errorMessage {
                 // Connection failed — show error + retry
                 Image(systemName: "wifi.exclamationmark")
-                    .font(.system(size: 44))
+                    .scaledFont(size: 44)
                     .foregroundStyle(.secondary)
 
                 Text("Connection Issue")

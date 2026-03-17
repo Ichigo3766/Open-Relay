@@ -62,6 +62,27 @@ struct ColorTokens: Sendable {
     let codeBorder: Color
     let codeText: Color
     let codeAccent: Color
+
+    // MARK: Channel Mentions
+
+    let mentionUserBg: Color
+    let mentionUserText: Color
+    let mentionModelBg: Color
+    let mentionModelText: Color
+    let mentionSelfBg: Color
+    let mentionSelfText: Color
+
+    // MARK: Reply Threads
+
+    let replyBorder: Color
+    let replyBackground: Color
+    let replyText: Color
+
+    // MARK: File Attachments
+
+    let fileCardBg: Color
+    let fileCardBorder: Color
+    let fileCardText: Color
 }
 
 // MARK: - Light / Dark Factories
@@ -102,7 +123,22 @@ extension ColorTokens {
         codeBackground: Color(hex: 0xFAFAFA),
         codeBorder: Color(hex: 0xE5E5E5),
         codeText: Color(hex: 0x0A0A0A),
-        codeAccent: Color(hex: 0x171717)
+        codeAccent: Color(hex: 0x171717),
+        // Channel mentions — light
+        mentionUserBg: Color(hex: 0x3B82F6, opacity: 0.15),
+        mentionUserText: Color(hex: 0x1D4ED8),
+        mentionModelBg: Color(hex: 0x8B5CF6, opacity: 0.15),
+        mentionModelText: Color(hex: 0x6D28D9),
+        mentionSelfBg: Color(hex: 0xF59E0B, opacity: 0.18),
+        mentionSelfText: Color(hex: 0xB45309),
+        // Reply threads — light
+        replyBorder: Color(hex: 0x3B82F6),
+        replyBackground: Color(hex: 0x3B82F6, opacity: 0.06),
+        replyText: Color(hex: 0x6B7280),
+        // File attachments — light
+        fileCardBg: Color(hex: 0xF3F4F6),
+        fileCardBorder: Color(hex: 0xE5E7EB),
+        fileCardText: Color(hex: 0x374151)
     )
 
     /// Dark-mode token set matching the Conduit theme.
@@ -139,7 +175,22 @@ extension ColorTokens {
         codeBackground: Color(hex: 0x1A1A1A),
         codeBorder: Color(hex: 0x333333),
         codeText: Color(hex: 0xFAFAFA),
-        codeAccent: Color(hex: 0xE5E5E5)
+        codeAccent: Color(hex: 0xE5E5E5),
+        // Channel mentions — dark
+        mentionUserBg: Color(hex: 0x3B82F6, opacity: 0.22),
+        mentionUserText: Color(hex: 0x93C5FD),
+        mentionModelBg: Color(hex: 0x8B5CF6, opacity: 0.22),
+        mentionModelText: Color(hex: 0xC4B5FD),
+        mentionSelfBg: Color(hex: 0xF59E0B, opacity: 0.25),
+        mentionSelfText: Color(hex: 0xFCD34D),
+        // Reply threads — dark
+        replyBorder: Color(hex: 0x60A5FA),
+        replyBackground: Color(hex: 0x3B82F6, opacity: 0.10),
+        replyText: Color(hex: 0x9CA3AF),
+        // File attachments — dark
+        fileCardBg: Color(hex: 0x1F2937),
+        fileCardBorder: Color(hex: 0x374151),
+        fileCardText: Color(hex: 0xD1D5DB)
     )
 
     /// Resolves light or dark tokens based on the current color scheme.

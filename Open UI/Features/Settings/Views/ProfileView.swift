@@ -23,7 +23,7 @@ struct ProfileView: View {
                         VStack(spacing: Spacing.md) {
                             HStack(spacing: Spacing.md) {
                                 Image(systemName: "person")
-                                    .font(.system(size: 16, weight: .medium))
+                                    .scaledFont(size: 16, weight: .medium)
                                     .foregroundStyle(theme.brandPrimary)
                                     .frame(width: IconSize.lg, height: IconSize.lg)
                                     .background(theme.brandPrimary.opacity(0.12))
@@ -31,10 +31,10 @@ struct ProfileView: View {
 
                                 VStack(alignment: .leading, spacing: Spacing.xxs) {
                                     Text("Name")
-                                        .font(AppTypography.captionFont)
+                                        .scaledFont(size: 12, weight: .medium)
                                         .foregroundStyle(theme.textTertiary)
                                     TextField("Your name", text: $editName)
-                                        .font(AppTypography.bodyMediumFont)
+                                        .scaledFont(size: 16)
                                         .textFieldStyle(.plain)
                                 }
                             }
@@ -43,7 +43,7 @@ struct ProfileView: View {
 
                             if let error = saveError {
                                 Text(error)
-                                    .font(AppTypography.captionFont)
+                                    .scaledFont(size: 12, weight: .medium)
                                     .foregroundStyle(theme.error)
                                     .padding(.horizontal, Spacing.md)
                             }
@@ -53,7 +53,7 @@ struct ProfileView: View {
                                     Image(systemName: "checkmark.circle.fill")
                                         .foregroundStyle(theme.success)
                                     Text("Profile updated")
-                                        .font(AppTypography.captionFont)
+                                        .scaledFont(size: 12, weight: .medium)
                                         .foregroundStyle(theme.success)
                                 }
                                 .padding(.horizontal, Spacing.md)
@@ -118,17 +118,17 @@ struct ProfileView: View {
                         HStack(spacing: Spacing.md) {
                             Image(systemName: user.isActive ? "checkmark.circle.fill" : "xmark.circle.fill")
                                 .foregroundStyle(user.isActive ? theme.success : theme.error)
-                                .font(.system(size: 20))
+                                .scaledFont(size: 20)
 
                             VStack(alignment: .leading, spacing: Spacing.xxs) {
                                 Text(user.isActive ? "Account Active" : "Account Inactive")
-                                    .font(AppTypography.bodyMediumFont)
+                                    .scaledFont(size: 16)
                                     .foregroundStyle(theme.textPrimary)
 
                                 Text(user.isActive
                                     ? "Your account is in good standing"
                                     : "Contact your administrator for access")
-                                    .font(AppTypography.captionFont)
+                                    .scaledFont(size: 12, weight: .medium)
                                     .foregroundStyle(theme.textTertiary)
                             }
 
@@ -195,16 +195,16 @@ struct ProfileView: View {
 
             VStack(spacing: Spacing.xs) {
                 Text(user?.displayName ?? "User")
-                    .font(AppTypography.headlineMediumFont)
+                    .scaledFont(size: 24, weight: .semibold)
                     .foregroundStyle(theme.textPrimary)
 
                 Text(user?.email ?? "")
-                    .font(AppTypography.bodySmallFont)
+                    .scaledFont(size: 14)
                     .foregroundStyle(theme.textSecondary)
 
                 if let role = user?.role {
                     Text(role.rawValue.capitalized)
-                        .font(AppTypography.captionFont)
+                        .scaledFont(size: 12, weight: .medium)
                         .foregroundStyle(theme.brandPrimary)
                         .padding(.horizontal, Spacing.sm)
                         .padding(.vertical, Spacing.xxs)
@@ -233,7 +233,7 @@ struct ProfileView: View {
         VStack(spacing: 0) {
             HStack(spacing: Spacing.md) {
                 Image(systemName: icon)
-                    .font(.system(size: 16, weight: .medium))
+                    .scaledFont(size: 16, weight: .medium)
                     .foregroundStyle(theme.brandPrimary)
                     .frame(width: IconSize.lg, height: IconSize.lg)
                     .background(theme.brandPrimary.opacity(0.12))
@@ -241,11 +241,11 @@ struct ProfileView: View {
 
                 VStack(alignment: .leading, spacing: Spacing.xxs) {
                     Text(label)
-                        .font(AppTypography.captionFont)
+                        .scaledFont(size: 12, weight: .medium)
                         .foregroundStyle(theme.textTertiary)
 
                     Text(value)
-                        .font(AppTypography.bodyMediumFont)
+                        .scaledFont(size: 16)
                         .foregroundStyle(theme.textPrimary)
                 }
 

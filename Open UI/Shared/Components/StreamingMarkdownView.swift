@@ -269,7 +269,7 @@ private struct StreamingHTMLCodeView: View {
             Divider()
 
             Text(code)
-                .font(.system(size: 12.5, design: .monospaced))
+                .scaledFont(size: 12.5, design: .monospaced)
                 .lineSpacing(3)
                 .foregroundStyle(colorScheme == .dark ? Color(.systemGray) : Color(.darkGray))
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -320,7 +320,7 @@ struct FullCodeView: View {
                             }
                         } label: {
                             Image(systemName: codeCopied ? "checkmark" : "doc.on.doc")
-                                .font(.system(size: 14, weight: .medium))
+                                .scaledFont(size: 14, weight: .medium)
                         }
                     }
                 }

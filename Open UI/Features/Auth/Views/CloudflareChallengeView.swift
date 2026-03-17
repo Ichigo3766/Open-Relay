@@ -189,7 +189,7 @@ struct CloudflareChallengeView: View {
                             ProgressView()
                                 .tint(theme.brandPrimary)
                             Text("Complete the security check to continue…")
-                                .font(AppTypography.captionFont)
+                                .scaledFont(size: 12, weight: .medium)
                                 .foregroundStyle(theme.textSecondary)
                         }
                         .padding(.horizontal, Spacing.md)

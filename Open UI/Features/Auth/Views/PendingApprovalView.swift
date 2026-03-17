@@ -48,7 +48,7 @@ struct PendingApprovalView: View {
                             .frame(width: 90, height: 90)
 
                         Image(systemName: "clock.badge.checkmark")
-                            .font(.system(size: 42, weight: .medium))
+                            .scaledFont(size: 42, weight: .medium)
                             .foregroundStyle(theme.warning)
                             .scaleEffect(appeared ? 1.0 : 0.4)
                     }
@@ -57,14 +57,14 @@ struct PendingApprovalView: View {
                     // Title & message
                     VStack(spacing: Spacing.md) {
                         Text("Account Pending")
-                            .font(.system(size: 28, weight: .bold, design: .rounded))
+                            .scaledFont(size: 28, weight: .bold, design: .rounded)
                             .foregroundStyle(theme.textPrimary)
                             .opacity(appeared ? 1 : 0)
                             .offset(y: appeared ? 0 : 10)
                             .animation(.spring(response: 0.4, dampingFraction: 0.8).delay(0.2), value: appeared)
 
                         Text("Hi \(userName)! Your account has been created and is awaiting approval from an administrator.")
-                            .font(AppTypography.bodyMediumFont)
+                            .scaledFont(size: 16)
                             .foregroundStyle(theme.textSecondary)
                             .multilineTextAlignment(.center)
                             .padding(.horizontal, Spacing.md)
@@ -111,9 +111,9 @@ struct PendingApprovalView: View {
                         HStack(spacing: Spacing.sm) {
                             Image(systemName: "exclamationmark.triangle.fill")
                                 .foregroundStyle(theme.warning)
-                                .font(.system(size: 14))
+                                .scaledFont(size: 14)
                             Text(error)
-                                .font(AppTypography.captionFont)
+                                .scaledFont(size: 12, weight: .medium)
                                 .foregroundStyle(theme.warning)
                                 .fixedSize(horizontal: false, vertical: true)
                         }
@@ -149,9 +149,9 @@ struct PendingApprovalView: View {
                         } label: {
                             HStack(spacing: Spacing.xs) {
                                 Image(systemName: "arrow.left.circle")
-                                    .font(.system(size: 14))
+                                    .scaledFont(size: 14)
                                 Text("Use a different account")
-                                    .font(AppTypography.bodySmallFont)
+                                    .scaledFont(size: 14)
                             }
                             .foregroundStyle(theme.textTertiary)
                         }
@@ -179,7 +179,7 @@ struct PendingApprovalView: View {
     ) -> some View {
         HStack(alignment: .top, spacing: Spacing.md) {
             Image(systemName: icon)
-                .font(.system(size: 18, weight: .medium))
+                .scaledFont(size: 18, weight: .medium)
                 .foregroundStyle(iconColor)
                 .frame(width: 36, height: 36)
                 .background(iconColor.opacity(0.12))
@@ -187,11 +187,11 @@ struct PendingApprovalView: View {
 
             VStack(alignment: .leading, spacing: Spacing.xxs) {
                 Text(title)
-                    .font(AppTypography.labelLargeFont)
+                    .scaledFont(size: 16, weight: .medium)
                     .foregroundStyle(theme.textPrimary)
 
                 Text(subtitle)
-                    .font(AppTypography.captionFont)
+                    .scaledFont(size: 12, weight: .medium)
                     .foregroundStyle(theme.textSecondary)
                     .fixedSize(horizontal: false, vertical: true)
             }

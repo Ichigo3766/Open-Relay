@@ -127,6 +127,7 @@ final class ActiveChatStore {
 final class AppDependencyContainer: ServiceContainer {
     let serverConfigStore: ServerConfigStore
     let appearanceManager: AppearanceManager
+    let accessibilityManager: AccessibilityManager
 
     /// The shared auth view model.
     private(set) var authViewModel: AuthViewModel
@@ -195,6 +196,7 @@ final class AppDependencyContainer: ServiceContainer {
     init() {
         self.serverConfigStore = ServerConfigStore()
         self.appearanceManager = AppearanceManager()
+        self.accessibilityManager = AccessibilityManager()
         // Create AuthViewModel once with all dependencies to avoid
         // wasted work from double-initialization.
         self.authViewModel = AuthViewModel(

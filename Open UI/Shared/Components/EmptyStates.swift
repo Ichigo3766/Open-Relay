@@ -40,7 +40,7 @@ struct EmptyStateView: View {
 
     private var iconView: some View {
         Image(systemName: icon)
-            .font(.system(size: 48, weight: .light))
+            .scaledFont(size: 48, weight: .light)
             .foregroundStyle(theme.textTertiary.opacity(0.6))
             .frame(width: 80, height: 80)
     }
@@ -48,13 +48,13 @@ struct EmptyStateView: View {
     private var textContent: some View {
         VStack(spacing: Spacing.sm) {
             Text(title)
-                .font(AppTypography.headlineSmallFont)
+                .scaledFont(size: 20, weight: .semibold)
                 .foregroundStyle(theme.textPrimary)
                 .multilineTextAlignment(.center)
 
             if let description {
                 Text(description)
-                    .font(AppTypography.bodyMediumFont)
+                    .scaledFont(size: 16)
                     .foregroundStyle(theme.textSecondary)
                     .multilineTextAlignment(.center)
                     .lineSpacing(3)
@@ -65,7 +65,7 @@ struct EmptyStateView: View {
     private func actionButton(title: String, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Text(title)
-                .font(AppTypography.labelLargeFont)
+                .scaledFont(size: 16, weight: .medium)
                 .foregroundStyle(theme.buttonPrimaryText)
                 .padding(.horizontal, Spacing.lg)
                 .frame(height: TouchTarget.comfortable)
@@ -94,12 +94,12 @@ struct ChatEmptyState: View {
                     ModelAvatar(size: 48, label: modelName)
                 } else {
                     Image(systemName: "sparkles")
-                        .font(.system(size: 36, weight: .light))
+                        .scaledFont(size: 36, weight: .light)
                         .foregroundStyle(theme.brandPrimary.opacity(0.7))
                 }
 
                 Text(modelName != nil ? "Chat with \(modelName!)" : "How can I help you?")
-                    .font(AppTypography.headlineMediumFont)
+                    .scaledFont(size: 24, weight: .semibold)
                     .foregroundStyle(theme.textPrimary)
             }
 
@@ -122,11 +122,11 @@ struct ChatEmptyState: View {
         } label: {
             HStack(spacing: Spacing.sm) {
                 Image(systemName: "text.bubble")
-                    .font(.system(size: 14, weight: .medium))
+                    .scaledFont(size: 14, weight: .medium)
                     .foregroundStyle(theme.textTertiary)
 
                 Text(text)
-                    .font(AppTypography.bodySmallFont)
+                    .scaledFont(size: 14)
                     .foregroundStyle(theme.textSecondary)
                     .lineLimit(2)
                     .multilineTextAlignment(.leading)
@@ -134,7 +134,7 @@ struct ChatEmptyState: View {
                 Spacer()
 
                 Image(systemName: "arrow.up.right")
-                    .font(.system(size: 11, weight: .medium))
+                    .scaledFont(size: 11, weight: .medium)
                     .foregroundStyle(theme.textTertiary)
             }
             .padding(.horizontal, Spacing.md)
@@ -163,17 +163,17 @@ struct ErrorStateView: View {
     var body: some View {
         VStack(spacing: Spacing.lg) {
             Image(systemName: "exclamationmark.triangle")
-                .font(.system(size: 40, weight: .light))
+                .scaledFont(size: 40, weight: .light)
                 .foregroundStyle(theme.error)
 
             VStack(spacing: Spacing.sm) {
                 Text(message)
-                    .font(AppTypography.headlineSmallFont)
+                    .scaledFont(size: 20, weight: .semibold)
                     .foregroundStyle(theme.textPrimary)
 
                 if let detail {
                     Text(detail)
-                        .font(AppTypography.bodySmallFont)
+                        .scaledFont(size: 14)
                         .foregroundStyle(theme.textSecondary)
                         .multilineTextAlignment(.center)
                 }

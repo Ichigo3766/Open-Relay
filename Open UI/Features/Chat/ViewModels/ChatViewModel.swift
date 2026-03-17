@@ -4,6 +4,7 @@ import SwiftUI
 
 extension Notification.Name {
     static let conversationTitleUpdated = Notification.Name("conversationTitleUpdated")
+    static let navigateToChannel = Notification.Name("navigateToChannel")
     static let conversationListNeedsRefresh = Notification.Name("conversationListNeedsRefresh")
     /// Posted by AdminConsoleView when a user's chat is cloned.
     static let adminClonedChat = Notification.Name("adminClonedChat")
@@ -62,6 +63,21 @@ final class ChatViewModel {
     var isLoadingKnowledge: Bool = false
     var isShowingKnowledgePicker: Bool = false
     var knowledgeSearchQuery: String = ""
+
+    // Prompt slash command state
+    /// Cached prompts from the server. Fetched lazily on first `/` trigger.
+    var availablePrompts: [PromptItem] = []
+    /// Whether the prompt picker overlay is visible.
+    var isShowingPromptPicker: Bool = false
+    /// The current filter query (text typed after `/`).
+    var promptSearchQuery: String = ""
+    /// Whether prompts are currently being loaded from the server.
+    var isLoadingPrompts: Bool = false
+    /// The prompt selected by the user that has variables requiring input.
+    /// When set, the variable input sheet is presented.
+    var pendingPromptForVariables: PromptItem?
+    /// The parsed variables for the pending prompt.
+    var pendingPromptVariables: [PromptVariable] = []
     /// The model ID selected via `@` mention in the chat input.
     /// Persists across messages until the user explicitly clears it.
     var mentionedModelId: String?
@@ -1044,6 +1060,127 @@ final class ChatViewModel {
         knowledgeSearchQuery = ""
     }
 
+    // MARK: - Prompt Slash Commands
+
+    /// Fetches the prompt library from the server.
+    ///
+    /// Uses a **stale-while-revalidate** strategy like knowledge items:
+    /// - If cache exists, shows it instantly and refreshes in the background.
+    /// - If no cache, shows a loading state while fetching.
+    /// - Only fetches active prompts (is_active == true) from `GET /api/v1/prompts/`.
+    func loadPrompts() {
+        if !availablePrompts.isEmpty {
+            // Background refresh — no loading indicator
+            Task { await fetchPromptsFromServer() }
+            return
+        }
+
+        // No cache — show loading state
+        isLoadingPrompts = true
+        Task {
+            await fetchPromptsFromServer()
+            isLoadingPrompts = false
+        }
+    }
+
+    /// Fetches prompts from the server API.
+    private func fetchPromptsFromServer() async {
+        guard let apiClient = manager?.apiClient else { return }
+        do {
+            let raw = try await apiClient.getPrompts()
+            let parsed = raw.compactMap { PromptItem(json: $0) }
+            // Only cache active prompts — disabled prompts don't appear in slash commands
+            availablePrompts = parsed.filter(\.isActive)
+            logger.info("Loaded \(self.availablePrompts.count) active prompts")
+        } catch {
+            logger.warning("Failed to load prompts: \(error.localizedDescription)")
+        }
+    }
+
+    /// Called when the user selects a prompt from the `/` picker.
+    ///
+    /// 1. Removes the `/query` token from the input text
+    /// 2. Dismisses the picker
+    /// 3. Extracts custom variables from the prompt content
+    /// 4. If variables exist → presents the variable input sheet
+    /// 5. If no variables → processes and inserts the prompt directly
+    func selectPrompt(_ prompt: PromptItem) {
+        // Remove the `/command` token from input text
+        removeSlashToken()
+        dismissPromptPicker()
+
+        // Extract custom input variables (skips system variables)
+        let variables = PromptService.extractCustomVariables(from: prompt.content)
+
+        if variables.isEmpty {
+            // No variables — process system variables and insert directly
+            let processed = PromptService.resolveSystemVariables(
+                in: prompt.content,
+                userName: nil,
+                userEmail: nil
+            )
+            inputText = processed
+        } else {
+            // Has variables — present the variable input sheet
+            pendingPromptForVariables = prompt
+            pendingPromptVariables = variables
+        }
+
+        Haptics.play(.light)
+    }
+
+    /// Called when the user submits variable values from the PromptVariableSheet.
+    func submitPromptVariables(values: [String: String]) {
+        guard let prompt = pendingPromptForVariables else { return }
+        let variables = pendingPromptVariables
+
+        let processed = PromptService.processPrompt(
+            content: prompt.content,
+            userValues: values,
+            variables: variables,
+            userName: nil,
+            userEmail: nil
+        )
+
+        inputText = processed
+        pendingPromptForVariables = nil
+        pendingPromptVariables = []
+
+        Haptics.play(.light)
+    }
+
+    /// Called when the user cancels the variable input sheet.
+    func cancelPromptVariables() {
+        pendingPromptForVariables = nil
+        pendingPromptVariables = []
+    }
+
+    /// Removes the `/...` token from the input text (the text from the last `/`
+    /// at a word boundary up to the cursor position).
+    private func removeSlashToken() {
+        let text = inputText
+        guard let slashIndex = text.lastIndex(of: "/") else { return }
+        let slashPos = text.distance(from: text.startIndex, to: slashIndex)
+        let isAtStart = slashPos == 0
+        let precededBySpace = slashPos > 0 && {
+            let beforeIdx = text.index(before: slashIndex)
+            return text[beforeIdx].isWhitespace || text[beforeIdx].isNewline
+        }()
+
+        if isAtStart || precededBySpace {
+            let afterSlash = text[slashIndex...]
+            let tokenEnd = afterSlash.firstIndex(where: { $0.isWhitespace || $0.isNewline }) ?? text.endIndex
+            let newText = String(text[text.startIndex..<slashIndex]) + String(text[tokenEnd...])
+            inputText = newText
+        }
+    }
+
+    /// Dismisses the prompt picker popup.
+    func dismissPromptPicker() {
+        isShowingPromptPicker = false
+        promptSearchQuery = ""
+    }
+
     /// Restores `selectedKnowledgeItems` from the conversation's user messages.
     ///
     /// When loading an existing conversation, scans user messages for files
@@ -1845,7 +1982,7 @@ final class ChatViewModel {
                                         self.isStreaming = false
                                         // Post-completion
                                         self.adoptServerMessages(serverConversation: refreshed)
-                                        await manager.sendChatCompleted(chatId: chatId, messageId: assistantMessageId, model: modelId, sessionId: socketSessionId)
+                                        await manager.sendChatCompleted(chatId: chatId, messageId: assistantMessageId, model: modelId, sessionId: socketSessionId, messages: self.buildSimpleAPIMessages())
                                         try? await self.refreshConversationMetadata(chatId: chatId, assistantMessageId: assistantMessageId)
                                         self.cleanupStreaming()
                                         await self.sendCompletionNotificationIfNeeded(content: serverContent)
@@ -2626,7 +2763,8 @@ final class ChatViewModel {
             if let chatId = effectiveChatId {
                 await manager?.sendChatCompleted(
                     chatId: chatId, messageId: assistantMessageId,
-                    model: modelId, sessionId: socketSessionId)
+                    model: modelId, sessionId: socketSessionId,
+                    messages: buildSimpleAPIMessages())
 
                 // Immediately refresh metadata to pick up tool-generated files/images
                 try? await refreshConversationMetadata(
@@ -2740,7 +2878,8 @@ final class ChatViewModel {
 
         await manager.sendChatCompleted(
             chatId: chatId, messageId: assistantMessageId,
-            model: modelId, sessionId: socketSessionId)
+            model: modelId, sessionId: socketSessionId,
+            messages: buildSimpleAPIMessages())
 
         // Refresh metadata to pick up tool-generated files/images.
         // Poll with retries since tool outputs may take time to process.
@@ -3019,30 +3158,22 @@ final class ChatViewModel {
     /// types (e.g., `code_interpreter`), they'll be picked up automatically.
     private func buildChatFeatures() -> ChatCompletionRequest.ChatFeatures {
         var features = ChatCompletionRequest.ChatFeatures()
-        let model = selectedModel
-        let defaults = model?.defaultFeatureIds ?? []
-        let caps = model?.capabilities ?? [:]
 
-        /// Returns true if the model's capability for the given key is truthy.
-        /// The API serialises booleans as "1"/"0" via `compactMapValues { "\($0)" }`.
-        func isCapabilityEnabled(_ key: String) -> Bool {
-            guard let value = caps[key] else { return false }
-            return ["1", "true"].contains(value.lowercased())
-        }
-
-        // Web search: user toggle OR model default (if capability enabled)
-        if webSearchEnabled || (defaults.contains("web_search") && isCapabilityEnabled("web_search")) {
+        // Use ONLY the current toggle state. Server defaults are already applied
+        // to these toggles at init time via syncUIWithModelDefaults() — which runs
+        // on model load, model switch, and new-conversation. By the time we build
+        // the request, the toggle reflects either the server default OR the user's
+        // explicit override. Checking server defaults again here would ignore the
+        // user toggling a feature OFF mid-chat (the original bug).
+        if webSearchEnabled {
             features.webSearch = true
         }
-        // Image generation: user toggle OR model default (if capability enabled)
-        if imageGenerationEnabled || (defaults.contains("image_generation") && isCapabilityEnabled("image_generation")) {
+        if imageGenerationEnabled {
             features.imageGeneration = true
         }
-        // Code interpreter: user toggle OR model default (if capability enabled)
-        if codeInterpreterEnabled || (defaults.contains("code_interpreter") && isCapabilityEnabled("code_interpreter")) {
+        if codeInterpreterEnabled {
             features.codeInterpreter = true
         }
-        // Native tool calling: user toggle
         if nativeFunctionCalling {
             features.nativeToolCalling = true
         }
@@ -3053,6 +3184,22 @@ final class ChatViewModel {
     /// Builds API messages array, fetching image base64 from server for vision.
     /// Matches Flutter's `_buildMessagePayloadWithAttachments` which calls
     /// `api.getFileContent(fileId)` to get base64 data URLs for the LLM.
+    /// Builds a lightweight `[{role, content}]` message array from the current
+    /// conversation without fetching image data from the server.
+    /// Used for `/api/chat/completed` so filter outlets receive the full
+    /// conversation history and can run their post-processing logic.
+    private func buildSimpleAPIMessages() -> [[String: Any]] {
+        guard let conversation else { return [] }
+        var msgs: [[String: Any]] = []
+        if let sp = conversation.systemPrompt, !sp.trimmingCharacters(in: .whitespaces).isEmpty {
+            msgs.append(["role": "system", "content": sp])
+        }
+        for msg in conversation.messages where !msg.isStreaming {
+            msgs.append(["role": msg.role.rawValue, "content": msg.content])
+        }
+        return msgs
+    }
+
     private func buildAPIMessagesAsync() async -> [[String: Any]] {
         guard let conversation else { return [] }
         var apiMessages: [[String: Any]] = []

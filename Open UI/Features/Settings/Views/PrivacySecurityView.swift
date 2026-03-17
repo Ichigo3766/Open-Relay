@@ -44,7 +44,7 @@ struct PrivacySecurityView: View {
 
                         if let error = passwordChangeError {
                             Text(error)
-                                .font(AppTypography.captionFont)
+                                .scaledFont(size: 12, weight: .medium)
                                 .foregroundStyle(theme.error)
                         }
 
@@ -53,7 +53,7 @@ struct PrivacySecurityView: View {
                                 Image(systemName: "checkmark.circle.fill")
                                     .foregroundStyle(theme.success)
                                 Text("Password changed successfully")
-                                    .font(AppTypography.captionFont)
+                                    .scaledFont(size: 12, weight: .medium)
                                     .foregroundStyle(theme.success)
                             }
                         }
@@ -66,7 +66,7 @@ struct PrivacySecurityView: View {
                                     ProgressView().controlSize(.small)
                                 }
                                 Text("Change Password")
-                                    .font(AppTypography.labelLargeFont)
+                                    .scaledFont(size: 16, weight: .medium)
                                     .fontWeight(.semibold)
                             }
                             .frame(maxWidth: .infinity)

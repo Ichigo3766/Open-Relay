@@ -37,6 +37,14 @@ struct PasteableTextView: UIViewRepresentable {
     /// backspace deleted the `@`, or whitespace ended the token).
     var onAtDismiss: (() -> Void)?
 
+    /// Called when the user types `/` at a word boundary. The parameter is
+    /// the filter query text after the `/` (may be empty on initial trigger).
+    var onSlashTrigger: ((String) -> Void)?
+
+    /// Called when the `/` context is dismissed (e.g., cursor moved away,
+    /// backspace deleted the `/`, or whitespace ended the token).
+    var onSlashDismiss: (() -> Void)?
+
     /// Whether pressing Return sends the message (vs inserting a newline).
     var sendOnReturn: Bool
 
@@ -158,6 +166,9 @@ struct PasteableTextView: UIViewRepresentable {
 
             // Detect `@` trigger for model mention picker
             detectAtTrigger(in: textView)
+
+            // Detect `/` trigger for prompt library picker
+            detectSlashTrigger(in: textView)
         }
 
         /// Scans backwards from the cursor to find a `#` token.
@@ -242,6 +253,51 @@ struct PasteableTextView: UIViewRepresentable {
             }
 
             parent.onAtDismiss?()
+        }
+
+        /// Scans backwards from the cursor to find a `/` token.
+        ///
+        /// Triggers `onSlashTrigger` with the filter query (text after `/`)
+        /// when the cursor is inside a `/word` token at a word boundary.
+        /// Triggers `onSlashDismiss` when the `/` context is lost.
+        ///
+        /// This enables the slash command feature for the prompt library,
+        /// following the same pattern as `#` (knowledge) and `@` (model) triggers.
+        private func detectSlashTrigger(in textView: UITextView) {
+            guard parent.onSlashTrigger != nil else { return }
+
+            let text = textView.text ?? ""
+            guard let selectedRange = textView.selectedTextRange else {
+                parent.onSlashDismiss?()
+                return
+            }
+
+            let cursorOffset = textView.offset(from: textView.beginningOfDocument, to: selectedRange.start)
+            let prefix = String(text.prefix(cursorOffset))
+
+            // Find the last `/` that's at a word boundary (start of text, or preceded by whitespace)
+            if let slashIndex = prefix.lastIndex(of: "/") {
+                let slashPos = prefix.distance(from: prefix.startIndex, to: slashIndex)
+
+                // Check word boundary: `/` must be at start or preceded by whitespace/newline
+                let isAtStart = slashPos == 0
+                let precededBySpace = slashPos > 0 && {
+                    let beforeIdx = prefix.index(before: slashIndex)
+                    let ch = prefix[beforeIdx]
+                    return ch.isWhitespace || ch.isNewline
+                }()
+
+                if isAtStart || precededBySpace {
+                    let afterSlash = String(prefix[prefix.index(after: slashIndex)...])
+                    // The query must not contain whitespace (it's a single token)
+                    if !afterSlash.contains(where: { $0.isWhitespace || $0.isNewline }) {
+                        parent.onSlashTrigger?(afterSlash)
+                        return
+                    }
+                }
+            }
+
+            parent.onSlashDismiss?()
         }
 
         func textViewDidBeginEditing(_ textView: UITextView) {

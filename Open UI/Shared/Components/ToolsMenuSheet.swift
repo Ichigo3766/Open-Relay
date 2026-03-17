@@ -186,7 +186,7 @@ struct ToolsMenuSheet: View {
                         .frame(width: 36, height: 36)
 
                     Image(systemName: icon)
-                        .font(.system(size: 16, weight: .medium))
+                        .scaledFont(size: 16, weight: .medium)
                         .foregroundStyle(
                             isEnabled
                                 ? theme.brandPrimary
@@ -195,7 +195,7 @@ struct ToolsMenuSheet: View {
                 }
 
                 Text(label)
-                    .font(AppTypography.captionFont)
+                    .scaledFont(size: 12, weight: .medium)
                     .fontWeight(.semibold)
                     .foregroundStyle(
                         isEnabled
@@ -274,13 +274,13 @@ struct ToolsMenuSheet: View {
                 // Title and subtitle
                 VStack(alignment: .leading, spacing: Spacing.xs) {
                     Text(title)
-                        .font(AppTypography.bodySmallFont)
+                        .scaledFont(size: 14)
                         .fontWeight(isOn.wrappedValue ? .semibold : .medium)
                         .foregroundStyle(theme.textPrimary)
 
                     if let subtitle, !subtitle.isEmpty {
                         Text(subtitle)
-                            .font(AppTypography.captionFont)
+                            .scaledFont(size: 12, weight: .medium)
                             .foregroundStyle(theme.textSecondary)
                             .lineLimit(2)
                     }
@@ -322,14 +322,14 @@ struct ToolsMenuSheet: View {
             } label: {
                 HStack {
                     Text("Tools")
-                        .font(AppTypography.labelMediumFont)
+                        .scaledFont(size: 14, weight: .medium)
                         .fontWeight(.semibold)
                         .foregroundStyle(theme.textSecondary)
 
                     Spacer()
 
                     Image(systemName: toolsExpanded ? "chevron.up" : "chevron.down")
-                        .font(.system(size: 12, weight: .semibold))
+                        .scaledFont(size: 12, weight: .semibold)
                         .foregroundStyle(theme.textTertiary)
                 }
             }
@@ -341,7 +341,7 @@ struct ToolsMenuSheet: View {
                         ProgressView()
                             .controlSize(.small)
                         Text("Loading tools…")
-                            .font(AppTypography.bodySmallFont)
+                            .scaledFont(size: 14)
                             .foregroundStyle(theme.textSecondary)
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -386,14 +386,14 @@ struct ToolsMenuSheet: View {
 
                 VStack(alignment: .leading, spacing: Spacing.xs) {
                     Text(tool.name)
-                        .font(AppTypography.bodySmallFont)
+                        .scaledFont(size: 14)
                         .fontWeight(isSelected ? .semibold : .medium)
                         .foregroundStyle(theme.textPrimary)
                         .lineLimit(1)
 
                     if let desc = tool.description, !desc.isEmpty {
                         Text(desc)
-                            .font(AppTypography.captionFont)
+                            .scaledFont(size: 12, weight: .medium)
                             .foregroundStyle(theme.textSecondary)
                             .lineLimit(2)
                     }
@@ -447,7 +447,7 @@ struct ToolsMenuSheet: View {
                 .frame(width: 36, height: 36)
 
             Image(systemName: systemImage)
-                .font(.system(size: 16, weight: .medium))
+                .scaledFont(size: 16, weight: .medium)
                 .foregroundStyle(iconColor)
         }
     }
@@ -492,7 +492,7 @@ struct ToolsMenuSheet: View {
 
     private func infoCard(message: String) -> some View {
         Text(message)
-            .font(AppTypography.bodySmallFont)
+            .scaledFont(size: 14)
             .foregroundStyle(theme.textSecondary)
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(Spacing.md)

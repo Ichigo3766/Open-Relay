@@ -137,11 +137,22 @@ actor ImageCacheService {
                 // (including cf_clearance). The custom User-Agent header ensures CF accepts it.
                 let (data, response) = try await URLSession.shared.data(for: request)
 
-                guard let httpResponse = response as? HTTPURLResponse,
+                let httpResponse = response as? HTTPURLResponse
+                let statusCode = httpResponse?.statusCode ?? -1
+                let contentType = httpResponse?.value(forHTTPHeaderField: "Content-Type") ?? "unknown"
+                
+                print("[ImageCache] Response for \(url.lastPathComponent): status=\(statusCode), contentType=\(contentType), dataSize=\(data.count), authToken=\(authToken != nil ? "YES" : "NO")")
+                
+                guard let httpResponse,
                       (200...399).contains(httpResponse.statusCode),
                       let image = UIImage(data: data),
                       image.size.width > 0 && image.size.height > 0
                 else {
+                    if let httpResponse {
+                        print("[ImageCache] FAILED for \(url.lastPathComponent): status=\(httpResponse.statusCode), body=\(String(data: data.prefix(200), encoding: .utf8) ?? "non-utf8")")
+                    } else {
+                        print("[ImageCache] FAILED for \(url.lastPathComponent): no HTTP response")
+                    }
                     return nil
                 }
 
@@ -220,6 +231,31 @@ actor ImageCacheService {
     /// Evicts only the memory cache, preserving disk cache.
     func clearMemory() {
         memoryCache.removeAllObjects()
+    }
+    
+    /// Evicts all cached profile images (user/model avatars) from both memory and disk.
+    /// Call on app startup and logout/login to ensure fresh avatars.
+    func evictProfileImages() {
+        // Clear memory cache entirely — profile images reload quickly
+        memoryCache.removeAllObjects()
+        
+        // Also remove profile images from disk cache
+        guard let directory = diskCacheDirectory else { return }
+        if let files = try? fileManager.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil) {
+            // We can't reverse the hash to check the URL, so clear the entire disk cache
+            // on login/startup. This is acceptable since it only happens on explicit events.
+            for file in files {
+                try? fileManager.removeItem(at: file)
+            }
+        }
+        logger.info("Profile image cache invalidated — will re-fetch on next access")
+    }
+    
+    /// Whether this URL points to a user or model profile image.
+    /// Matches: `/api/v1/users/{id}/profile/image` and `/api/v1/models/{id}/profile/image`
+    private func isProfileImageURL(_ url: URL) -> Bool {
+        let path = url.path
+        return path.contains("/profile/image")
     }
 
     /// STORAGE FIX: Proactively runs disk eviction without requiring a save.

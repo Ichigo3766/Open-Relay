@@ -376,13 +376,13 @@ struct ToolCallView: View {
             } label: {
                 HStack(spacing: Spacing.sm) {
                     Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
-                        .font(.system(size: 10, weight: .semibold))
+                        .scaledFont(size: 10, weight: .semibold)
                         .foregroundStyle(theme.textTertiary)
                         .frame(width: 14)
 
                     if toolCall.isDone {
                         Image(systemName: "checkmark.circle.fill")
-                            .font(.system(size: 13))
+                            .scaledFont(size: 13)
                             .foregroundStyle(.green)
                     } else {
                         ProgressView()
@@ -390,7 +390,7 @@ struct ToolCallView: View {
                     }
 
                     Text("Used \(toolCall.displayName)")
-                        .font(AppTypography.labelSmallFont)
+                        .scaledFont(size: 12, weight: .medium)
                         .fontWeight(.medium)
                         .foregroundStyle(theme.textSecondary)
 
@@ -407,12 +407,12 @@ struct ToolCallView: View {
                     if let args = toolCall.arguments, !args.isEmpty {
                         VStack(alignment: .leading, spacing: Spacing.xxs) {
                             Text("Arguments")
-                                .font(AppTypography.captionFont)
+                                .scaledFont(size: 12, weight: .medium)
                                 .fontWeight(.semibold)
                                 .foregroundStyle(theme.textTertiary)
 
                             Text(formatJSON(args))
-                                .font(.system(size: 12, design: .monospaced))
+                                .scaledFont(size: 12, design: .monospaced)
                                 .foregroundStyle(theme.textSecondary)
                                 .lineLimit(10)
                                 .padding(Spacing.sm)
@@ -425,12 +425,12 @@ struct ToolCallView: View {
                     if let result = toolCall.result, !result.isEmpty {
                         VStack(alignment: .leading, spacing: Spacing.xxs) {
                             Text("Result")
-                                .font(AppTypography.captionFont)
+                                .scaledFont(size: 12, weight: .medium)
                                 .fontWeight(.semibold)
                                 .foregroundStyle(theme.textTertiary)
 
                             Text(formatJSON(result))
-                                .font(.system(size: 12, design: .monospaced))
+                                .scaledFont(size: 12, design: .monospaced)
                                 .foregroundStyle(theme.textSecondary)
                                 .lineLimit(20)
                                 .padding(Spacing.sm)
@@ -511,16 +511,16 @@ struct ReasoningView: View {
             } label: {
                 HStack(spacing: Spacing.sm) {
                     Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
-                        .font(.system(size: 9, weight: .bold))
+                        .scaledFont(size: 9, weight: .bold)
                         .foregroundStyle(theme.textTertiary)
                         .frame(width: 12)
 
                     Image(systemName: "brain.head.profile")
-                        .font(.system(size: 12, weight: .medium))
+                        .scaledFont(size: 12, weight: .medium)
                         .foregroundStyle(theme.brandPrimary.opacity(0.7))
 
                     Text(reasoning.summary)
-                        .font(.system(size: 12, weight: .medium))
+                        .scaledFont(size: 12, weight: .medium)
                         .foregroundStyle(theme.textTertiary)
                         .lineLimit(1)
 
@@ -534,7 +534,7 @@ struct ReasoningView: View {
             // Expanded reasoning content
             if isExpanded {
                 Text(reasoning.content)
-                    .font(.system(size: 12, weight: .regular))
+                    .scaledFont(size: 12, weight: .regular)
                     .foregroundStyle(theme.textTertiary)
                     .lineSpacing(3)
                     .padding(.leading, 22)

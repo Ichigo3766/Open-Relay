@@ -70,7 +70,7 @@ struct CreateFolderSheet: View {
                 // Name field
                 VStack(alignment: .leading, spacing: Spacing.xs) {
                     Text("Folder Name")
-                        .font(AppTypography.captionFont)
+                        .scaledFont(size: 12, weight: .medium)
                         .foregroundStyle(theme.textSecondary)
                         .padding(.horizontal, Spacing.md)
 
@@ -79,7 +79,7 @@ struct CreateFolderSheet: View {
                         text: $folderName
                     )
                     .focused($isFocused)
-                    .font(AppTypography.bodyMediumFont)
+                    .scaledFont(size: 16)
                     .padding(Spacing.md)
                     .background(theme.inputBackground, in: RoundedRectangle(cornerRadius: 12))
                     .overlay(
@@ -132,13 +132,13 @@ struct CreateFolderSheet: View {
     private var folderPreview: some View {
         ZStack {
             Image(systemName: folderName.isEmpty ? "folder" : "folder.fill")
-                .font(.system(size: 56, weight: .light))
+                .scaledFont(size: 56, weight: .light)
                 .foregroundStyle(theme.brandPrimary)
                 .symbolEffect(.bounce, value: folderName)
 
             if !folderName.isEmpty {
                 Text(String(folderName.prefix(1)).uppercased())
-                    .font(.system(size: 18, weight: .bold, design: .rounded))
+                    .scaledFont(size: 18, weight: .bold, design: .rounded)
                     .foregroundStyle(.white)
                     .offset(y: 6)
             }

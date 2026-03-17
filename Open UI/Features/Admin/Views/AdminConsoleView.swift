@@ -34,7 +34,7 @@ struct AdminConsoleView: View {
                 if !viewModel.isLoading && !viewModel.users.isEmpty {
                     HStack {
                         Text("Users \(viewModel.userCount)")
-                            .font(.system(size: 13, weight: .semibold))
+                            .scaledFont(size: 13, weight: .semibold)
                             .foregroundStyle(theme.textTertiary)
                         Spacer()
                     }
@@ -63,7 +63,7 @@ struct AdminConsoleView: View {
                     showAddUserSheet = true
                 } label: {
                     Image(systemName: "person.badge.plus")
-                        .font(.system(size: 16, weight: .medium))
+                        .scaledFont(size: 16, weight: .medium)
                         .foregroundStyle(theme.brandPrimary)
                 }
             }
@@ -136,11 +136,11 @@ struct AdminConsoleView: View {
     private var searchBar: some View {
         HStack(spacing: Spacing.sm) {
             Image(systemName: "magnifyingglass")
-                .font(.system(size: 15, weight: .medium))
+                .scaledFont(size: 15, weight: .medium)
                 .foregroundStyle(theme.textTertiary)
 
             TextField("Search users…", text: $viewModel.searchQuery)
-                .font(AppTypography.bodyMediumFont)
+                .scaledFont(size: 16)
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
                 .onChange(of: viewModel.searchQuery) { _, _ in
@@ -153,7 +153,7 @@ struct AdminConsoleView: View {
                     viewModel.performSearch()
                 } label: {
                     Image(systemName: "xmark.circle.fill")
-                        .font(.system(size: 16))
+                        .scaledFont(size: 16)
                         .foregroundStyle(theme.textTertiary)
                 }
             }
@@ -188,11 +188,11 @@ struct AdminConsoleView: View {
                     } label: {
                         HStack(spacing: 4) {
                             Text(field.displayName)
-                                .font(.system(size: 12, weight: .medium))
+                                .scaledFont(size: 12, weight: .medium)
 
                             if viewModel.sortField == field {
                                 Image(systemName: viewModel.sortDirection.icon)
-                                    .font(.system(size: 10, weight: .bold))
+                                    .scaledFont(size: 10, weight: .bold)
                             }
                         }
                         .foregroundStyle(
@@ -269,7 +269,7 @@ struct AdminConsoleView: View {
             ProgressView()
                 .controlSize(.large)
             Text("Loading users…")
-                .font(AppTypography.bodyMediumFont)
+                .scaledFont(size: 16)
                 .foregroundStyle(theme.textTertiary)
         }
         .frame(maxWidth: .infinity)
@@ -279,10 +279,10 @@ struct AdminConsoleView: View {
     private var emptyState: some View {
         VStack(spacing: Spacing.md) {
             Image(systemName: "person.2.slash")
-                .font(.system(size: 40))
+                .scaledFont(size: 40)
                 .foregroundStyle(theme.textTertiary)
             Text(viewModel.searchQuery.isEmpty ? "No users found" : "No results for \"\(viewModel.searchQuery)\"")
-                .font(AppTypography.bodyMediumFont)
+                .scaledFont(size: 16)
                 .foregroundStyle(theme.textTertiary)
         }
         .frame(maxWidth: .infinity)
@@ -292,16 +292,16 @@ struct AdminConsoleView: View {
     private func errorBanner(_ message: String) -> some View {
         HStack(spacing: Spacing.sm) {
             Image(systemName: "exclamationmark.triangle.fill")
-                .font(.system(size: 14))
+                .scaledFont(size: 14)
                 .foregroundStyle(theme.error)
             Text(message)
-                .font(AppTypography.captionFont)
+                .scaledFont(size: 12, weight: .medium)
                 .foregroundStyle(theme.error)
             Spacer()
             Button("Retry") {
                 Task { await viewModel.loadUsers() }
             }
-            .font(AppTypography.captionFont)
+            .scaledFont(size: 12, weight: .medium)
             .fontWeight(.semibold)
             .foregroundStyle(theme.brandPrimary)
         }
@@ -352,14 +352,14 @@ struct AdminUserRow: View {
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: Spacing.xs) {
                     Text(user.displayName)
-                        .font(AppTypography.bodyMediumFont)
+                        .scaledFont(size: 16)
                         .fontWeight(.medium)
                         .foregroundStyle(theme.textPrimary)
                         .lineLimit(1)
 
                     if isSelf {
                         Text("YOU")
-                            .font(.system(size: 8, weight: .heavy))
+                            .scaledFont(size: 8, weight: .heavy)
                             .foregroundStyle(theme.brandPrimary)
                             .padding(.horizontal, 4)
                             .padding(.vertical, 1)
@@ -369,12 +369,12 @@ struct AdminUserRow: View {
                 }
 
                 Text(user.email)
-                    .font(AppTypography.captionFont)
+                    .scaledFont(size: 12, weight: .medium)
                     .foregroundStyle(theme.textTertiary)
                     .lineLimit(1)
 
                 Text(user.lastActiveString)
-                    .font(.system(size: 11))
+                    .scaledFont(size: 11)
                     .foregroundStyle(
                         user.isCurrentlyActive ? Color.green : theme.textTertiary
                     )
@@ -421,7 +421,7 @@ struct AdminUserRow: View {
     private func adminActionButton(icon: String, color: Color? = nil, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Image(systemName: icon)
-                .font(.system(size: 13, weight: .medium))
+                .scaledFont(size: 13, weight: .medium)
                 .foregroundStyle(color ?? theme.textTertiary)
                 .frame(width: 30, height: 30)
                 .contentShape(Rectangle())
@@ -437,7 +437,7 @@ struct RoleBadge: View {
 
     var body: some View {
         Text(role.rawValue.uppercased())
-            .font(.system(size: 10, weight: .heavy))
+            .scaledFont(size: 10, weight: .heavy)
             .foregroundStyle(roleColor)
             .padding(.horizontal, 6)
             .padding(.vertical, 3)
@@ -488,7 +488,7 @@ struct AddUserSheet: View {
                 if let error = viewModel.addError {
                     Section {
                         Text(error)
-                            .font(AppTypography.captionFont)
+                            .scaledFont(size: 12, weight: .medium)
                             .foregroundStyle(theme.error)
                     }
                 }

@@ -118,6 +118,27 @@ struct ChatDetailView: View {
                 .animation(.easeOut(duration: 0.2), value: vm.isShowingKnowledgePicker)
             }
         }
+        // Prompt picker — overlays content (floats over welcome cards / messages)
+        .overlay(alignment: .bottom) {
+            if vm.isShowingPromptPicker {
+                PromptPickerView(
+                    query: vm.promptSearchQuery,
+                    prompts: vm.availablePrompts,
+                    isLoading: vm.isLoadingPrompts,
+                    onSelect: { prompt in
+                        viewModel.selectPrompt(prompt)
+                    },
+                    onDismiss: {
+                        viewModel.dismissPromptPicker()
+                    }
+                )
+                .transition(.asymmetric(
+                    insertion: .move(edge: .bottom).combined(with: .opacity),
+                    removal: .opacity
+                ))
+                .animation(.easeOut(duration: 0.2), value: vm.isShowingPromptPicker)
+            }
+        }
         // Model picker — overlays content (floats over welcome cards / messages)
         .overlay(alignment: .bottom) {
             if isShowingModelPicker {
@@ -239,6 +260,24 @@ struct ChatDetailView: View {
         .sheet(item: $sourcesSheetMessage) { message in
             SourcesDetailSheet(sources: message.sources)
         }
+        // Prompt variable input sheet — shown when a selected prompt has {{variables}}
+        .sheet(isPresented: Binding<Bool>(
+            get: { viewModel.pendingPromptForVariables != nil },
+            set: { if !$0 { viewModel.cancelPromptVariables() } }
+        )) {
+            if let prompt = viewModel.pendingPromptForVariables {
+                PromptVariableSheet(
+                    promptName: prompt.name,
+                    variables: viewModel.pendingPromptVariables,
+                    onSave: { values in
+                        viewModel.submitPromptVariables(values: values)
+                    },
+                    onCancel: {
+                        viewModel.cancelPromptVariables()
+                    }
+                )
+            }
+        }
         // Intercept link taps from MarkdownView: download server file URLs
         // with auth instead of opening Safari (the user may not be logged in
         // to the browser). MarkdownView posts a notification instead of
@@ -273,7 +312,7 @@ struct ChatDetailView: View {
                             .controlSize(.large)
                             .tint(.white)
                         Text("Downloading…")
-                            .font(AppTypography.labelMediumFont)
+                            .scaledFont(size: 14, weight: .medium)
                             .foregroundStyle(.white)
                     }
                     .padding(Spacing.lg)
@@ -314,7 +353,7 @@ struct ChatDetailView: View {
                 modelSelectorButton
                 if viewModel.isTemporaryChat {
                     Image(systemName: "eye.slash.fill")
-                        .font(.system(size: 12, weight: .semibold))
+                        .scaledFont(size: 12, weight: .semibold)
                         .foregroundStyle(theme.warning)
                 }
             }
@@ -328,7 +367,7 @@ struct ChatDetailView: View {
                     Haptics.play(.light)
                 } label: {
                     Image(systemName: viewModel.isTemporaryChat ? "eye.slash.fill" : "eye")
-                        .font(.system(size: 13, weight: .medium))
+                        .scaledFont(size: 13, weight: .medium)
                         .foregroundStyle(viewModel.isTemporaryChat ? theme.warning : theme.textTertiary)
                         .frame(width: 30, height: 30)
                         .contentShape(Rectangle())
@@ -343,7 +382,7 @@ struct ChatDetailView: View {
         Group {
             if viewModel.availableModels.isEmpty {
                 Text(viewModel.conversation?.title ?? String(localized: "New Chat"))
-                    .font(AppTypography.labelMediumFont)
+                    .scaledFont(size: 14, weight: .medium)
                     .foregroundStyle(theme.textPrimary)
                     .lineLimit(1)
                     .truncationMode(.tail)
@@ -373,12 +412,12 @@ struct ChatDetailView: View {
                             .fixedSize()
                         }
                         Text(viewModel.selectedModel?.shortName ?? String(localized: "Select Model"))
-                            .font(AppTypography.labelMediumFont)
+                            .scaledFont(size: 14, weight: .medium)
                             .foregroundStyle(theme.textPrimary)
                             .lineLimit(1)
                             .truncationMode(.tail)
                         Image(systemName: "chevron.down")
-                            .font(.system(size: 10, weight: .semibold))
+                            .scaledFont(size: 10, weight: .semibold)
                             .foregroundStyle(theme.textTertiary)
                             .fixedSize()
                     }
@@ -460,6 +499,22 @@ struct ChatDetailView: View {
                         }
                     }
                 },
+                onSlashTrigger: { query in
+                    viewModel.promptSearchQuery = query
+                    if !viewModel.isShowingPromptPicker {
+                        withAnimation(.easeOut(duration: 0.2)) {
+                            viewModel.isShowingPromptPicker = true
+                        }
+                        viewModel.loadPrompts()
+                    }
+                },
+                onSlashDismiss: {
+                    if viewModel.isShowingPromptPicker {
+                        withAnimation(.easeOut(duration: 0.15)) {
+                            viewModel.dismissPromptPicker()
+                        }
+                    }
+                },
                 onFileAttachment: { showFilePicker = true },
                 onPhotoAttachment: nil,
                 onCameraCapture: { showCameraPicker = true },
@@ -499,11 +554,11 @@ struct ChatDetailView: View {
                     ))
                     .frame(width: 36, height: 36)
                 Image(systemName: "photo")
-                    .font(.system(size: 16, weight: .medium))
+                    .scaledFont(size: 16, weight: .medium)
                     .foregroundStyle(theme.brandPrimary)
             }
             Text("Photo")
-                .font(AppTypography.captionFont)
+                .scaledFont(size: 12, weight: .medium)
                 .fontWeight(.semibold)
                 .foregroundStyle(theme.textPrimary)
         }
@@ -688,7 +743,7 @@ struct ChatDetailView: View {
                     .strokeBorder(theme.cardBorder.opacity(0.35), lineWidth: 0.5)
                     .frame(width: 38, height: 38)
                 Image(systemName: "chevron.down")
-                    .font(.system(size: 13, weight: .bold))
+                    .scaledFont(size: 13, weight: .bold)
                     .foregroundStyle(theme.textSecondary)
             }
             .contentShape(Circle())
@@ -858,7 +913,7 @@ struct ChatDetailView: View {
                 ModelAvatar(size: 22, label: message.model)
             }
             Text(model?.shortName ?? message.model ?? String(localized: "Assistant"))
-                .font(AppTypography.labelSmallFont)
+                .scaledFont(size: 12, weight: .medium)
                 .foregroundStyle(theme.textSecondary)
         }
         .padding(.horizontal, Spacing.screenPadding)
@@ -950,7 +1005,7 @@ struct ChatDetailView: View {
                     // Text content
                     if !message.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                         Text(message.content)
-                            .font(.system(size: 15))
+                            .scaledFont(size: 15, context: .content)
                             .lineSpacing(2)
                     }
                 }
@@ -987,7 +1042,9 @@ struct ChatDetailView: View {
             let sourceIdx = index - 1
             if sourceIdx >= 0 && sourceIdx < sources.count,
                let url = sources[sourceIdx].resolvedURL, !url.isEmpty {
-                result += " [\(index)](\(url)) "
+                let label = sources[sourceIdx].displayLabel ?? "\(index)"
+                // #cite suffix triggers small pill badge rendering in MarkdownView
+                result += " [\(label)](\(url)#cite) "
             } else {
                 result += content[fullRange]
             }
@@ -1047,7 +1104,7 @@ struct ChatDetailView: View {
     private var inlineEditContent: some View {
         VStack(alignment: .trailing, spacing: Spacing.sm) {
             TextField("Edit message…", text: $editingMessageText, axis: .vertical)
-                .font(.system(size: 14))
+                .scaledFont(size: 14)
                 .foregroundStyle(theme.chatBubbleUserText)
                 .tint(theme.chatBubbleUserText)
                 .lineLimit(1...20)
@@ -1060,7 +1117,7 @@ struct ChatDetailView: View {
                 .overlay(alignment: .leading) {
                     if editingMessageText.isEmpty {
                         Text("Edit message…")
-                            .font(.system(size: 14))
+                            .scaledFont(size: 14)
                             .foregroundStyle(theme.chatBubbleUserText.opacity(0.5))
                             .allowsHitTesting(false)
                     }
@@ -1069,7 +1126,7 @@ struct ChatDetailView: View {
             HStack(spacing: Spacing.sm) {
                 Button { cancelInlineEdit() } label: {
                     Text("Cancel")
-                        .font(AppTypography.captionFont)
+                        .scaledFont(size: 12, weight: .medium)
                         .fontWeight(.medium)
                         .foregroundStyle(theme.chatBubbleUserText.opacity(0.7))
                 }
@@ -1077,8 +1134,8 @@ struct ChatDetailView: View {
 
                 Button { submitInlineEdit() } label: {
                     HStack(spacing: 4) {
-                        Image(systemName: "checkmark").font(.system(size: 11, weight: .bold))
-                        Text("Save & Resend").font(AppTypography.captionFont).fontWeight(.semibold)
+                        Image(systemName: "checkmark").scaledFont(size: 11, weight: .bold)
+                        Text("Save & Resend").scaledFont(size: 12, weight: .medium).fontWeight(.semibold)
                     }
                     .foregroundStyle(theme.chatBubbleUserText)
                     .padding(.horizontal, Spacing.sm)
@@ -1179,12 +1236,12 @@ struct ChatDetailView: View {
 
                 VStack(spacing: 4) {
                     Text("How can I help?")
-                        .font(.system(size: 24, weight: .bold))
+                        .scaledFont(size: 24, weight: .bold)
                         .foregroundStyle(theme.textPrimary)
 
                     if let model = viewModel.selectedModel {
                         Text(model.shortName)
-                            .font(.system(size: 13, weight: .medium))
+                            .scaledFont(size: 13, weight: .medium)
                             .foregroundStyle(theme.textTertiary)
                     }
                 }
@@ -1192,9 +1249,9 @@ struct ChatDetailView: View {
                 if viewModel.isTemporaryChat {
                     HStack(spacing: 5) {
                         Image(systemName: "eye.slash.fill")
-                            .font(.system(size: 10, weight: .semibold))
+                            .scaledFont(size: 10, weight: .semibold)
                         Text("Temporary Chat")
-                            .font(.system(size: 11, weight: .semibold))
+                            .scaledFont(size: 11, weight: .semibold)
                     }
                     .foregroundStyle(theme.warning)
                     .padding(.horizontal, 10)
@@ -1248,13 +1305,13 @@ struct ChatDetailView: View {
         } label: {
             VStack(alignment: .leading, spacing: 5) {
                 Text(prompt.title)
-                    .font(.system(size: 14, weight: .semibold))
+                    .scaledFont(size: 14, weight: .semibold)
                     .foregroundStyle(theme.textPrimary)
                     .lineLimit(2)
                     .multilineTextAlignment(.leading)
                     .fixedSize(horizontal: false, vertical: true)
                 Text(prompt.subtitle)
-                    .font(.system(size: 12, weight: .regular))
+                    .scaledFont(size: 12, weight: .regular)
                     .foregroundStyle(theme.textSecondary.opacity(0.7))
                     .lineLimit(2)
                     .multilineTextAlignment(.leading)
@@ -1328,7 +1385,7 @@ struct ChatDetailView: View {
                     .opacity(currentIdx == 0 ? 0.35 : 1)
 
                     Text("\(displayIndex)/\(totalVersions)")
-                        .font(.system(size: 11, weight: .semibold))
+                        .scaledFont(size: 11, weight: .semibold)
                         .foregroundStyle(theme.textSecondary)
                         .frame(minWidth: 28)
 
@@ -1397,7 +1454,7 @@ struct ChatDetailView: View {
     /// Compact action icon for the always-visible action bar.
     private func compactActionIcon(icon: String, isActive: Bool, size: CGFloat = 12) -> some View {
         Image(systemName: icon)
-            .font(.system(size: size, weight: .medium))
+            .scaledFont(size: size, weight: .medium)
             .foregroundStyle(isActive ? theme.brandPrimary : theme.textTertiary.opacity(0.7))
             .frame(width: 28, height: 28)
             .contentShape(Circle())
@@ -1411,7 +1468,7 @@ struct ChatDetailView: View {
             HStack(spacing: Spacing.xs) {
                 Button { copyMessage(message) } label: {
                     Image(systemName: "doc.on.doc")
-                        .font(.system(size: 13, weight: .medium))
+                        .scaledFont(size: 13, weight: .medium)
                         .foregroundStyle(theme.textTertiary)
                         .frame(width: 32, height: 32)
                 }
@@ -1420,7 +1477,7 @@ struct ChatDetailView: View {
                 if !viewModel.isStreaming {
                     Button { beginInlineEdit(message: message) } label: {
                         Image(systemName: "pencil")
-                            .font(.system(size: 13, weight: .medium))
+                            .scaledFont(size: 13, weight: .medium)
                             .foregroundStyle(theme.textTertiary)
                             .frame(width: 32, height: 32)
                     }
@@ -1476,7 +1533,7 @@ struct ChatDetailView: View {
         } label: {
             HStack(spacing: Spacing.sm) {
                 Image(systemName: icon)
-                    .font(.system(size: 18))
+                    .scaledFont(size: 18)
                     .foregroundStyle(theme.brandPrimary)
                     .frame(width: 32, height: 32)
                     .background(theme.brandPrimary.opacity(0.1))
@@ -1484,13 +1541,13 @@ struct ChatDetailView: View {
 
                 VStack(alignment: .leading, spacing: 2) {
                     Text(fileName)
-                        .font(AppTypography.bodySmallFont)
+                        .scaledFont(size: 14)
                         .fontWeight(.medium)
                         .foregroundStyle(theme.textPrimary)
                         .lineLimit(1)
                         .truncationMode(.middle)
                     Text(fileExt.uppercased())
-                        .font(AppTypography.captionFont)
+                        .scaledFont(size: 12, weight: .medium)
                         .foregroundStyle(theme.textTertiary)
                 }
             }
@@ -1569,13 +1626,13 @@ struct ChatDetailView: View {
                             .frame(width: 18, height: 18)
                             .overlay(
                                 Text(String((source.title ?? source.url ?? "?").prefix(1)).uppercased())
-                                    .font(.system(size: 8, weight: .bold))
+                                    .scaledFont(size: 8, weight: .bold)
                                     .foregroundStyle(theme.brandPrimary)
                             )
                     }
                 }
                 Text("\(sources.count) Source\(sources.count == 1 ? "" : "s")")
-                    .font(AppTypography.labelSmallFont)
+                    .scaledFont(size: 12, weight: .medium)
                     .foregroundStyle(theme.textSecondary)
             }
             .padding(.horizontal, Spacing.sm)
@@ -1591,9 +1648,9 @@ struct ChatDetailView: View {
     private func followUpSuggestions(for message: ChatMessage) -> some View {
         VStack(alignment: .leading, spacing: Spacing.sm) {
             HStack(spacing: Spacing.xs) {
-                Image(systemName: "lightbulb").font(.system(size: 12)).foregroundStyle(theme.brandPrimary)
+                Image(systemName: "lightbulb").scaledFont(size: 12).foregroundStyle(theme.brandPrimary)
                 Text("Continue with")
-                    .font(AppTypography.labelSmallFont)
+                    .scaledFont(size: 12, weight: .medium)
                     .fontWeight(.medium)
                     .foregroundStyle(theme.textTertiary)
             }
@@ -1605,10 +1662,10 @@ struct ChatDetailView: View {
                 } label: {
                     HStack(spacing: Spacing.sm) {
                         Image(systemName: "arrow.right")
-                            .font(.system(size: 11, weight: .medium))
+                            .scaledFont(size: 11, weight: .medium)
                             .foregroundStyle(theme.brandPrimary)
                         Text(suggestion)
-                            .font(AppTypography.bodySmallFont)
+                            .scaledFont(size: 14)
                             .foregroundStyle(theme.brandPrimary)
                             .lineLimit(2)
                             .multilineTextAlignment(.leading)
@@ -1633,16 +1690,16 @@ struct ChatDetailView: View {
     private func messageErrorView(_ text: String) -> some View {
         HStack(spacing: Spacing.sm) {
             Image(systemName: "exclamationmark.triangle.fill")
-                .font(.system(size: 12))
+                .scaledFont(size: 12)
                 .foregroundStyle(theme.error)
             Text(text)
-                .font(AppTypography.captionFont)
+                .scaledFont(size: 12, weight: .medium)
                 .foregroundStyle(theme.error)
                 .lineLimit(2)
             Spacer()
             if !viewModel.isStreaming {
                 Button { Task { await viewModel.regenerateLastResponse() } } label: {
-                    Text("Retry").font(AppTypography.labelSmallFont).foregroundStyle(theme.brandPrimary)
+                    Text("Retry").scaledFont(size: 12, weight: .medium).foregroundStyle(theme.brandPrimary)
                 }
             }
         }
@@ -1655,7 +1712,7 @@ struct ChatDetailView: View {
         HStack(spacing: Spacing.sm) {
             Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(theme.error)
             Text(message)
-                .font(AppTypography.bodySmallFont)
+                .scaledFont(size: 14)
                 .foregroundStyle(theme.textPrimary)
                 .lineLimit(3)
             Spacer()
@@ -1663,7 +1720,7 @@ struct ChatDetailView: View {
                 withAnimation(MicroAnimation.snappy) { viewModel.errorMessage = nil }
             } label: {
                 Image(systemName: "xmark")
-                    .font(.system(size: 12, weight: .semibold))
+                    .scaledFont(size: 12, weight: .semibold)
                     .foregroundStyle(theme.textTertiary)
                     .frame(width: 28, height: 28)
                     .contentShape(Circle())
@@ -1682,8 +1739,8 @@ struct ChatDetailView: View {
 
     private var copiedToastView: some View {
         HStack(spacing: Spacing.sm) {
-            Image(systemName: "doc.on.doc.fill").font(.system(size: 12))
-            Text("Copied to clipboard").font(AppTypography.labelSmallFont)
+            Image(systemName: "doc.on.doc.fill").scaledFont(size: 12)
+            Text("Copied to clipboard").scaledFont(size: 12, weight: .medium)
         }
         .foregroundStyle(theme.textInverse)
         .padding(.horizontal, Spacing.md)
@@ -2075,7 +2132,9 @@ private struct IsolatedAssistantMessage: View {
             let sourceIdx = index - 1
             if sourceIdx >= 0 && sourceIdx < sources.count,
                let url = sources[sourceIdx].resolvedURL, !url.isEmpty {
-                result += " [\(index)](\(url)) "
+                let label = sources[sourceIdx].displayLabel ?? "\(index)"
+                // #cite suffix triggers small pill badge rendering in MarkdownView
+                result += " [\(label)](\(url)#cite) "
             } else {
                 result += content[fullRange]
             }

@@ -75,7 +75,7 @@ struct NotesListView: View {
             ProgressView()
                 .controlSize(.large)
             Text("Loading notes…")
-                .font(AppTypography.bodyMediumFont)
+                .scaledFont(size: 16)
                 .foregroundStyle(theme.textSecondary)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -115,7 +115,7 @@ struct NotesListView: View {
                 } header: {
                     HStack(spacing: Spacing.xs) {
                         Image(systemName: "pin.fill")
-                            .font(.system(size: 10))
+                            .scaledFont(size: 10)
                         Text("Pinned")
                     }
                     .foregroundStyle(theme.brandPrimary)
@@ -187,7 +187,7 @@ private struct NoteRowView: View {
         VStack(alignment: .leading, spacing: Spacing.xs) {
             HStack {
                 Text(note.title.isEmpty ? "Untitled" : note.title)
-                    .font(AppTypography.bodyMediumFont)
+                    .scaledFont(size: 16)
                     .fontWeight(.medium)
                     .foregroundStyle(theme.textPrimary)
                     .lineLimit(1)
@@ -195,13 +195,13 @@ private struct NoteRowView: View {
                 Spacer()
 
                 Text(note.updatedAt.chatTimestamp)
-                    .font(AppTypography.captionFont)
+                    .scaledFont(size: 12, weight: .medium)
                     .foregroundStyle(theme.textTertiary)
             }
 
             if !note.contentPreview.isEmpty {
                 Text(note.contentPreview)
-                    .font(AppTypography.bodySmallFont)
+                    .scaledFont(size: 14)
                     .foregroundStyle(theme.textSecondary)
                     .lineLimit(2)
             }
@@ -209,17 +209,17 @@ private struct NoteRowView: View {
             HStack(spacing: Spacing.sm) {
                 // Word count
                 Text("\(note.wordCount) words")
-                    .font(AppTypography.captionFont)
+                    .scaledFont(size: 12, weight: .medium)
                     .foregroundStyle(theme.textTertiary)
 
                 // Audio indicator
                 if !note.audioAttachments.isEmpty {
                     HStack(spacing: 2) {
                         Image(systemName: "waveform")
-                            .font(.system(size: 10))
+                            .scaledFont(size: 10)
                         Text("\(note.audioAttachments.count)")
                     }
-                    .font(AppTypography.captionFont)
+                    .scaledFont(size: 12, weight: .medium)
                     .foregroundStyle(theme.brandPrimary)
                 }
 
@@ -227,10 +227,10 @@ private struct NoteRowView: View {
                 if !note.fileAttachments.isEmpty {
                     HStack(spacing: 2) {
                         Image(systemName: "paperclip")
-                            .font(.system(size: 10))
+                            .scaledFont(size: 10)
                         Text("\(note.fileAttachments.count)")
                     }
-                    .font(AppTypography.captionFont)
+                    .scaledFont(size: 12, weight: .medium)
                     .foregroundStyle(theme.textTertiary)
                 }
 
@@ -239,7 +239,7 @@ private struct NoteRowView: View {
                 // Tags
                 ForEach(note.tags.prefix(2), id: \.self) { tag in
                     Text(tag)
-                        .font(AppTypography.captionFont)
+                        .scaledFont(size: 12, weight: .medium)
                         .pillStyle(
                             background: theme.brandPrimary.opacity(OpacityLevel.subtle),
                             foreground: theme.brandPrimary

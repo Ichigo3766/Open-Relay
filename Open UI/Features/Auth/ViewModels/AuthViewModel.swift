@@ -655,6 +655,9 @@ final class AuthViewModel {
         // SECURITY FIX: Clear SSO/OAuth cookies so the next user can't
         // auto-authenticate with the previous user's SSO session.
         clearSSOCookies()
+        
+        // Clear cached profile images so the next user gets fresh avatars
+        Task { await ImageCacheService.shared.evictProfileImages() }
 
         currentUser = nil
         email = ""

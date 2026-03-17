@@ -150,13 +150,17 @@ final class ConversationManager: @unchecked Sendable {
         chatId: String,
         messageId: String,
         model: String,
-        sessionId: String
+        sessionId: String,
+        messages: [[String: Any]] = [],
+        filterIds: [String] = []
     ) async {
         await apiClient.sendChatCompleted(
             chatId: chatId,
             messageId: messageId,
             model: model,
-            sessionId: sessionId
+            sessionId: sessionId,
+            messages: messages,
+            filterIds: filterIds
         )
     }
 

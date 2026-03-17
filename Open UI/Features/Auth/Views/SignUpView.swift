@@ -45,7 +45,7 @@ private struct PasswordStrengthIndicator: View {
             // Label
             if !strengthLabel.isEmpty {
                 Text(strengthLabel)
-                    .font(AppTypography.captionFont)
+                    .scaledFont(size: 12, weight: .medium)
                     .foregroundStyle(strengthColor)
                     .animation(.easeOut(duration: 0.2), value: strengthLabel)
             }
@@ -64,13 +64,13 @@ private struct PasswordRequirement: View {
     var body: some View {
         HStack(spacing: Spacing.sm) {
             Image(systemName: isMet ? "checkmark.circle.fill" : "circle")
-                .font(.system(size: 14))
+                .scaledFont(size: 14)
                 .foregroundStyle(isMet ? theme.success : theme.textTertiary)
                 .contentTransition(.symbolEffect(.replace))
                 .animation(.spring(response: 0.3, dampingFraction: 0.7), value: isMet)
 
             Text(text)
-                .font(AppTypography.captionFont)
+                .scaledFont(size: 12, weight: .medium)
                 .foregroundStyle(isMet ? theme.textSecondary : theme.textTertiary)
                 .animation(.easeOut(duration: 0.2), value: isMet)
         }
@@ -118,9 +118,9 @@ struct SignUpView: View {
                     if !viewModel.signUpEmail.isEmpty && !viewModel.isSignUpEmailValid {
                         HStack(spacing: Spacing.xs) {
                             Image(systemName: "exclamationmark.circle")
-                                .font(.system(size: 12))
+                                .scaledFont(size: 12)
                             Text("Please enter a valid email address")
-                                .font(AppTypography.captionFont)
+                                .scaledFont(size: 12, weight: .medium)
                         }
                         .foregroundStyle(theme.warning)
                         .frame(maxWidth: .infinity, alignment: .leading)
@@ -185,10 +185,10 @@ struct SignUpView: View {
                         if !viewModel.signUpConfirmPassword.isEmpty {
                             HStack(spacing: Spacing.xs) {
                                 Image(systemName: viewModel.doPasswordsMatch ? "checkmark.circle.fill" : "xmark.circle.fill")
-                                    .font(.system(size: 12))
+                                    .scaledFont(size: 12)
                                     .contentTransition(.symbolEffect(.replace))
                                 Text(viewModel.doPasswordsMatch ? "Passwords match" : "Passwords don't match")
-                                    .font(AppTypography.captionFont)
+                                    .scaledFont(size: 12, weight: .medium)
                             }
                             .foregroundStyle(viewModel.doPasswordsMatch ? theme.success : theme.error)
                             .frame(maxWidth: .infinity, alignment: .leading)
@@ -202,9 +202,9 @@ struct SignUpView: View {
                         HStack(spacing: Spacing.sm) {
                             Image(systemName: "exclamationmark.triangle.fill")
                                 .foregroundStyle(theme.error)
-                                .font(.system(size: 14))
+                                .scaledFont(size: 14)
                             Text(error)
-                                .font(AppTypography.captionFont)
+                                .scaledFont(size: 12, weight: .medium)
                                 .foregroundStyle(theme.error)
                                 .fixedSize(horizontal: false, vertical: true)
                         }
@@ -239,7 +239,7 @@ struct SignUpView: View {
                     // Already have account link
                     HStack(spacing: Spacing.xs) {
                         Text("Already have an account?")
-                            .font(AppTypography.bodySmallFont)
+                            .scaledFont(size: 14)
                             .foregroundStyle(theme.textTertiary)
 
                         Button {
@@ -248,7 +248,7 @@ struct SignUpView: View {
                             }
                         } label: {
                             Text("Sign In")
-                                .font(AppTypography.labelMediumFont)
+                                .scaledFont(size: 14, weight: .medium)
                                 .foregroundStyle(theme.brandPrimary)
                         }
                     }
@@ -281,9 +281,9 @@ struct SignUpView: View {
                 } label: {
                     HStack(spacing: Spacing.xs) {
                         Image(systemName: "chevron.left")
-                            .font(.system(size: 14, weight: .semibold))
+                            .scaledFont(size: 14, weight: .semibold)
                         Text("Back")
-                            .font(AppTypography.bodySmallFont)
+                            .scaledFont(size: 14)
                     }
                     .foregroundStyle(theme.textSecondary)
                 }
@@ -307,20 +307,20 @@ struct SignUpView: View {
                     .scaleEffect(formAppeared ? 1.0 : 0.6)
 
                 Image(systemName: "person.badge.plus")
-                    .font(.system(size: 32, weight: .medium))
+                    .scaledFont(size: 32, weight: .medium)
                     .foregroundStyle(theme.brandPrimary)
                     .scaleEffect(formAppeared ? 1.0 : 0.5)
             }
             .animation(.spring(response: 0.5, dampingFraction: 0.7).delay(0.1), value: formAppeared)
 
             Text("Create Account")
-                .font(.system(size: 28, weight: .bold, design: .rounded))
+                .scaledFont(size: 28, weight: .bold, design: .rounded)
                 .foregroundStyle(theme.textPrimary)
                 .opacity(formAppeared ? 1 : 0)
                 .offset(y: formAppeared ? 0 : 8)
 
             Text("Join \(viewModel.serverName)")
-                .font(AppTypography.bodySmallFont)
+                .scaledFont(size: 14)
                 .foregroundStyle(theme.textSecondary)
                 .opacity(formAppeared ? 1 : 0)
                 .offset(y: formAppeared ? 0 : 8)

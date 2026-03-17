@@ -44,6 +44,15 @@ struct iPadMainChatView: View {
     /// Whether socket reconnect handler has been registered.
     @State private var hasRegisteredSocketHandlers = false
 
+    /// The channel currently being viewed. When set, replaces detail with ChannelDetailView.
+    @State private var activeChannelId: String?
+
+    /// Channel list view model for sidebar display.
+    @State private var channelListVM = ChannelListViewModel()
+
+    /// Whether the "create channel" sheet is visible.
+    @State private var showCreateChannel = false
+
     /// Rename conversation state.
     @State private var renamingConversation: Conversation?
     @State private var renameText = ""
@@ -108,6 +117,58 @@ struct iPadMainChatView: View {
             hasRegisteredSocketHandlers: $hasRegisteredSocketHandlers,
             onSocketSetup: { registerSocketReconnectHandler() }
         )
+        // Channel-specific lifecycle wiring
+        .task {
+            // Configure and load channels — must pass currentUserId for DM participant filtering
+            if let apiClient = dependencies.apiClient {
+                var userId = dependencies.authViewModel.currentUser?.id
+                if userId == nil || userId?.isEmpty == true {
+                    userId = try? await apiClient.getCurrentUser().id
+                }
+                channelListVM.configure(apiClient: apiClient, socket: dependencies.socketService, currentUserId: userId)
+            }
+            await channelListVM.loadChannels()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .navigateToChannel)) { notification in
+            if let channelId = notification.object as? String {
+                activeChannelId = channelId
+                activeConversationId = nil
+                Haptics.play(.light)
+            }
+        }
+        .onChange(of: activeChannelId) { _, newId in
+            // When entering a channel, the server marks it as read via GET /channels/{id}.
+            // Refresh the channel list after a short delay to clear the unread badge.
+            if newId != nil {
+                Task {
+                    try? await Task.sleep(for: .seconds(1.5))
+                    await channelListVM.refreshChannels()
+                }
+            }
+        }
+        .sheet(isPresented: $showCreateChannel) {
+            CreateChannelSheet(
+                onCreate: { name, description, type, isPrivate, memberIds in
+                    Task {
+                        let channelName = name.isEmpty ? "new-channel" : name
+                        if let channel = await channelListVM.createChannel(
+                            name: channelName, description: description, type: type,
+                            isPrivate: type == .dm ? true : isPrivate
+                        ) {
+                            if !memberIds.isEmpty {
+                                try? await dependencies.apiClient?.addChannelMembers(
+                                    id: channel.id, userIds: memberIds
+                                )
+                            }
+                            activeChannelId = channel.id
+                            activeConversationId = nil
+                        }
+                    }
+                },
+                apiClient: dependencies.apiClient,
+                allUsers: channelListVM.allServerUsers
+            )
+        }
         .overlay {
             if isExporting {
                 exportingOverlay
@@ -123,8 +184,11 @@ struct iPadMainChatView: View {
     private var sidebarContent: some View {
         iPadSidebarContent(
             listViewModel: listViewModel,
+            channelListVM: channelListVM,
             activeConversationId: $activeConversationId,
+            activeChannelId: $activeChannelId,
             showCreateFolderSheet: $showCreateFolderSheet,
+            showCreateChannel: $showCreateChannel,
             showSettings: $showSettings,
             showNotes: $showNotes,
             showDeleteAllConfirmation: $showDeleteAllConfirmation,
@@ -173,7 +237,25 @@ struct iPadMainChatView: View {
 
     @ViewBuilder
     private var chatDetailContent: some View {
-        if let conversationId = activeConversationId {
+        if let channelId = activeChannelId {
+            // Show channel detail inline (same as how chats work)
+            ChannelDetailView(channelId: channelId)
+                .id("channel-\(channelId)")
+                .transition(.opacity)
+                .toolbar {
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Button {
+                            startNewChat()
+                        } label: {
+                            Image(systemName: "square.and.pencil")
+                                .scaledFont(size: 14, weight: .medium)
+                                .foregroundStyle(theme.textSecondary)
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("New Chat")
+                    }
+                }
+        } else if let conversationId = activeConversationId {
             ChatDetailView(
                 conversationId: conversationId,
                 viewModel: dependencies.activeChatStore.viewModel(for: conversationId)
@@ -186,7 +268,7 @@ struct iPadMainChatView: View {
                         startNewChat()
                     } label: {
                         Image(systemName: "square.and.pencil")
-                            .font(.system(size: 14, weight: .medium))
+                            .scaledFont(size: 14, weight: .medium)
                             .foregroundStyle(theme.textSecondary)
                     }
                     .buttonStyle(.plain)
@@ -205,7 +287,7 @@ struct iPadMainChatView: View {
                         startNewChat()
                     } label: {
                         Image(systemName: "square.and.pencil")
-                            .font(.system(size: 14, weight: .medium))
+                            .scaledFont(size: 14, weight: .medium)
                             .foregroundStyle(theme.textSecondary)
                     }
                     .buttonStyle(.plain)
@@ -223,7 +305,7 @@ struct iPadMainChatView: View {
             VStack(spacing: Spacing.md) {
                 ProgressView().controlSize(.large).tint(.white)
                 Text("Preparing export…")
-                    .font(AppTypography.bodyMediumFont)
+                    .scaledFont(size: 16)
                     .foregroundStyle(.white)
             }
             .padding(Spacing.xl)
@@ -238,7 +320,7 @@ struct iPadMainChatView: View {
             VStack(spacing: Spacing.md) {
                 ProgressView().controlSize(.large).tint(.white)
                 Text("Deleting…")
-                    .font(AppTypography.bodyMediumFont)
+                    .scaledFont(size: 16)
                     .foregroundStyle(.white)
             }
             .padding(Spacing.xl)
@@ -271,6 +353,7 @@ struct iPadMainChatView: View {
     private func startNewChat() {
         dependencies.activeChatStore.remove(nil)
         activeConversationId = nil
+        activeChannelId = nil
         newChatGeneration += 1
         terminalBrowserVM.reset()
         Haptics.play(.light)
@@ -348,6 +431,7 @@ struct iPadMainChatView: View {
                 await withTaskGroup(of: Void.self) { group in
                     group.addTask { await listViewModel.refreshIfStale() }
                     group.addTask { await listViewModel.folderViewModel.refreshFolders() }
+                    group.addTask { await channelListVM.refreshChannels() }
                 }
                 if let activeId = activeConversationId {
                     let vm = dependencies.activeChatStore.viewModel(for: activeId)
@@ -361,6 +445,7 @@ struct iPadMainChatView: View {
                 await withTaskGroup(of: Void.self) { group in
                     group.addTask { await listViewModel.refreshIfStale() }
                     group.addTask { await listViewModel.folderViewModel.refreshFolders() }
+                    group.addTask { await channelListVM.refreshChannels() }
                 }
             }
         }
@@ -371,8 +456,11 @@ struct iPadMainChatView: View {
 
 struct iPadSidebarContent: View {
     @Bindable var listViewModel: ChatListViewModel
+    var channelListVM: ChannelListViewModel
     @Binding var activeConversationId: String?
+    @Binding var activeChannelId: String?
     @Binding var showCreateFolderSheet: Bool
+    @Binding var showCreateChannel: Bool
     @Binding var showSettings: Bool
     @Binding var showNotes: Bool
     @Binding var showDeleteAllConfirmation: Bool
@@ -405,8 +493,20 @@ struct iPadSidebarContent: View {
                         foldersSection(folderVM: folderVM)
                     }
 
-                    // Divider between folders and chats
-                    if !folderVM.folders.isEmpty {
+                    // Divider between folders and channels
+                    if !folderVM.folders.isEmpty || !channelListVM.channels.isEmpty {
+                        Rectangle()
+                            .fill(theme.textTertiary.opacity(0.12))
+                            .frame(height: 1)
+                            .padding(.horizontal, Spacing.md)
+                            .padding(.vertical, Spacing.sm)
+                    }
+
+                    // Channels section
+                    channelsSection
+
+                    // Divider between channels and chats
+                    if !channelListVM.channels.isEmpty {
                         Rectangle()
                             .fill(theme.textTertiary.opacity(0.12))
                             .frame(height: 1)
@@ -473,7 +573,7 @@ struct iPadSidebarContent: View {
                         }
                     } label: {
                         Image(systemName: "ellipsis.circle")
-                            .font(.system(size: 15, weight: .medium))
+                            .scaledFont(size: 15, weight: .medium)
                             .foregroundStyle(theme.textSecondary)
                     }
                 }
@@ -481,7 +581,7 @@ struct iPadSidebarContent: View {
             ToolbarItem(placement: .topBarTrailing) {
                 Button(action: onNewChat) {
                     Image(systemName: "square.and.pencil")
-                        .font(.system(size: 15, weight: .medium))
+                        .scaledFont(size: 15, weight: .medium)
                         .foregroundStyle(theme.textSecondary)
                 }
                 .buttonStyle(.plain)
@@ -495,11 +595,11 @@ struct iPadSidebarContent: View {
     private var sidebarSearchBar: some View {
         HStack(spacing: Spacing.sm) {
             Image(systemName: "magnifyingglass")
-                .font(.system(size: 13))
+                .scaledFont(size: 13)
                 .foregroundStyle(theme.textTertiary)
 
             TextField("Search conversations…", text: $listViewModel.searchText)
-                .font(AppTypography.bodySmallFont)
+                .scaledFont(size: 14)
                 .foregroundStyle(theme.textPrimary)
 
             if !listViewModel.searchText.isEmpty {
@@ -507,7 +607,7 @@ struct iPadSidebarContent: View {
                     listViewModel.searchText = ""
                 } label: {
                     Image(systemName: "xmark.circle.fill")
-                        .font(.system(size: 13))
+                        .scaledFont(size: 13)
                         .foregroundStyle(theme.textTertiary)
                 }
             }
@@ -527,7 +627,7 @@ struct iPadSidebarContent: View {
         HStack(spacing: Spacing.sm) {
             Spacer()
             Text("\(listViewModel.selectedCount) selected")
-                .font(AppTypography.labelMediumFont)
+                .scaledFont(size: 14, weight: .medium)
                 .fontWeight(.semibold)
                 .foregroundStyle(theme.textPrimary)
             Spacer()
@@ -539,7 +639,7 @@ struct iPadSidebarContent: View {
                 }
             } label: {
                 Text(listViewModel.selectedCount == listViewModel.filteredConversations.count ? "Deselect All" : "Select All")
-                    .font(AppTypography.captionFont)
+                    .scaledFont(size: 12, weight: .medium)
                     .fontWeight(.medium)
                     .foregroundStyle(theme.brandPrimary)
             }
@@ -558,10 +658,10 @@ struct iPadSidebarContent: View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 6) {
                 Image(systemName: "folder")
-                    .font(.system(size: 9, weight: .semibold))
+                    .scaledFont(size: 9, weight: .semibold)
                     .foregroundStyle(theme.textTertiary)
                 Text("Folders")
-                    .font(AppTypography.captionFont)
+                    .scaledFont(size: 12, weight: .medium)
                     .fontWeight(.bold)
                     .foregroundStyle(theme.textTertiary)
                     .textCase(.uppercase)
@@ -569,7 +669,7 @@ struct iPadSidebarContent: View {
                 Spacer()
                 Button { showCreateFolderSheet = true } label: {
                     Image(systemName: "folder.badge.plus")
-                        .font(.system(size: 13))
+                        .scaledFont(size: 13)
                         .foregroundStyle(theme.textTertiary)
                 }
                 .buttonStyle(.plain)
@@ -619,6 +719,96 @@ struct iPadSidebarContent: View {
         .animation(.easeInOut(duration: AnimDuration.medium), value: folderVM.folders.map(\.id))
     }
 
+    // MARK: - Channels Section
+
+    private var channelsSection: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 6) {
+                Image(systemName: "bubble.left.and.bubble.right")
+                    .scaledFont(size: 9, weight: .semibold)
+                    .foregroundStyle(theme.textTertiary)
+                Text("Channels")
+                    .scaledFont(size: 12, weight: .medium)
+                    .fontWeight(.bold)
+                    .foregroundStyle(theme.textTertiary)
+                    .textCase(.uppercase)
+                    .tracking(0.5)
+                Spacer()
+
+                // Create new channel
+                Button {
+                    showCreateChannel = true
+                } label: {
+                    Image(systemName: "plus.bubble")
+                        .scaledFont(size: 13)
+                        .foregroundStyle(theme.textTertiary)
+                }
+                .buttonStyle(.plain)
+            }
+            .padding(.horizontal, Spacing.md)
+            .padding(.vertical, Spacing.sm)
+
+            if channelListVM.channels.isEmpty {
+                Text("No channels yet")
+                    .scaledFont(size: 13)
+                    .foregroundStyle(theme.textTertiary)
+                    .padding(.horizontal, Spacing.md)
+                    .padding(.vertical, 4)
+            } else {
+                ForEach(channelListVM.channels) { channel in
+                    Button {
+                        activeChannelId = channel.id
+                        activeConversationId = nil
+                    } label: {
+                        HStack(spacing: 6) {
+                            // DM: show participant avatar; others: show icon
+                            if channel.type == .dm, let participant = channel.dmParticipants.first {
+                                UserAvatar(
+                                    size: 22,
+                                    imageURL: participant.resolveAvatarURL(serverBaseURL: dependencies.apiClient?.baseURL ?? ""),
+                                    name: participant.displayName,
+                                    authToken: dependencies.apiClient?.network.authToken
+                                )
+                            } else {
+                                Image(systemName: channel.sidebarIcon)
+                                    .scaledFont(size: 11)
+                                    .foregroundStyle(activeChannelId == channel.id ? theme.brandPrimary : theme.textTertiary)
+                            }
+                            Text(channel.displayName)
+                                .scaledFont(size: 14)
+                                .fontWeight(activeChannelId == channel.id || channel.unreadCount > 0 ? .semibold : .regular)
+                                .foregroundStyle(activeChannelId == channel.id ? theme.textPrimary : theme.textSecondary)
+                                .lineLimit(1)
+                            Spacer()
+                            if activeChannelId == channel.id {
+                                Circle()
+                                    .fill(theme.brandPrimary)
+                                    .frame(width: 6, height: 6)
+                            } else if channel.unreadCount > 0 {
+                                Text("\(channel.unreadCount)")
+                                    .scaledFont(size: 11, weight: .bold)
+                                    .foregroundStyle(.white)
+                                    .padding(.horizontal, 6)
+                                    .padding(.vertical, 2)
+                                    .background(theme.brandPrimary)
+                                    .clipShape(Capsule())
+                            }
+                        }
+                        .padding(.horizontal, Spacing.md)
+                        .padding(.vertical, 7)
+                        .background(
+                            activeChannelId == channel.id
+                                ? theme.brandPrimary.opacity(0.1)
+                                : Color.clear
+                        )
+                        .clipShape(RoundedRectangle(cornerRadius: CornerRadius.sm, style: .continuous))
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+        }
+    }
+
     // MARK: - Chats Section
 
     @ViewBuilder
@@ -626,17 +816,17 @@ struct iPadSidebarContent: View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 6) {
                 Image(systemName: "bubble.left.and.text.bubble.right")
-                    .font(.system(size: 9, weight: .semibold))
+                    .scaledFont(size: 9, weight: .semibold)
                     .foregroundStyle(drawerChatsDropActive ? theme.brandPrimary : theme.textTertiary)
                 Text("Chats")
-                    .font(AppTypography.captionFont)
+                    .scaledFont(size: 12, weight: .medium)
                     .fontWeight(.bold)
                     .foregroundStyle(drawerChatsDropActive ? theme.brandPrimary : theme.textTertiary)
                     .textCase(.uppercase)
                     .tracking(0.5)
                 if drawerChatsDropActive {
                     Text("Drop here")
-                        .font(AppTypography.captionFont)
+                        .scaledFont(size: 12, weight: .medium)
                         .foregroundStyle(theme.brandPrimary)
                         .transition(.opacity)
                 }
@@ -708,11 +898,11 @@ struct iPadSidebarContent: View {
                     HStack(spacing: Spacing.sm) {
                         Image(systemName: listViewModel.isSelected(conversation.id)
                             ? "checkmark.circle.fill" : "circle")
-                            .font(.system(size: 18))
+                            .scaledFont(size: 18)
                             .foregroundStyle(listViewModel.isSelected(conversation.id)
                                 ? theme.brandPrimary : theme.textTertiary)
                         Text(conversation.title)
-                            .font(AppTypography.bodySmallFont)
+                            .scaledFont(size: 14)
                             .foregroundStyle(theme.textPrimary)
                             .lineLimit(1)
                         Spacer()
@@ -727,13 +917,14 @@ struct iPadSidebarContent: View {
             } else {
                 Button {
                     activeConversationId = conversation.id
+                    activeChannelId = nil  // Clear channel when opening a chat
                     SharedDataService.shared.saveLastActiveConversationId(conversation.id)
                     // Sidebar stays open on iPad — no dismissal needed
                 } label: {
                     HStack {
                         VStack(alignment: .leading, spacing: 2) {
                             Text(conversation.title)
-                                .font(AppTypography.bodySmallFont)
+                                .scaledFont(size: 14)
                                 .fontWeight(activeConversationId == conversation.id ? .semibold : .regular)
                                 .foregroundStyle(activeConversationId == conversation.id
                                     ? theme.textPrimary : theme.textSecondary)
@@ -762,9 +953,9 @@ struct iPadSidebarContent: View {
                     currentFolderId: conversation.folderId
                 )) {
                     HStack(spacing: Spacing.xs) {
-                        Image(systemName: "bubble.left").font(.system(size: 12))
+                        Image(systemName: "bubble.left").scaledFont(size: 12)
                         Text(conversation.title)
-                            .font(AppTypography.captionFont)
+                            .scaledFont(size: 12, weight: .medium)
                             .lineLimit(1)
                     }
                     .padding(.horizontal, Spacing.sm)
@@ -796,7 +987,7 @@ struct iPadSidebarContent: View {
                 Image(systemName: "trash")
                 Text("Delete (\(listViewModel.selectedCount))")
             }
-            .font(AppTypography.labelMediumFont)
+            .scaledFont(size: 14, weight: .medium)
             .fontWeight(.semibold)
             .foregroundStyle(.white)
             .frame(maxWidth: .infinity)
@@ -822,11 +1013,11 @@ struct iPadSidebarContent: View {
                         .frame(width: 30, height: 30)
                         .overlay(
                             Text(String((dependencies.authViewModel.currentUser?.displayName ?? "U").prefix(1)).uppercased())
-                                .font(.system(size: 13, weight: .bold))
+                                .scaledFont(size: 13, weight: .bold)
                                 .foregroundStyle(theme.brandPrimary)
                         )
                     Text(dependencies.authViewModel.currentUser?.displayName ?? "User")
-                        .font(AppTypography.labelSmallFont)
+                        .scaledFont(size: 12, weight: .medium)
                         .fontWeight(.medium)
                         .foregroundStyle(theme.textPrimary)
                         .lineLimit(1)
@@ -839,7 +1030,7 @@ struct iPadSidebarContent: View {
             // Notes
             Button { showNotes = true } label: {
                 Image(systemName: "note.text")
-                    .font(.system(size: 15, weight: .medium))
+                    .scaledFont(size: 15, weight: .medium)
                     .foregroundStyle(theme.textTertiary)
                     .frame(width: 36, height: 36)
                     .contentShape(Rectangle())
@@ -848,7 +1039,7 @@ struct iPadSidebarContent: View {
             // Settings
             Button { showSettings = true } label: {
                 Image(systemName: "gearshape")
-                    .font(.system(size: 15, weight: .medium))
+                    .scaledFont(size: 15, weight: .medium)
                     .foregroundStyle(theme.textTertiary)
                     .frame(width: 36, height: 36)
                     .contentShape(Rectangle())
@@ -981,7 +1172,7 @@ private extension View {
                     appearanceManager: dependencies.appearanceManager
                 )
                 .preferredColorScheme(dependencies.appearanceManager.resolvedColorScheme ?? systemColorScheme)
-                .themed(with: dependencies.appearanceManager)
+                .themed(with: dependencies.appearanceManager, accessibility: dependencies.accessibilityManager)
                 .presentationCornerRadius(20)
             }
             .sheet(isPresented: showNotes) {
@@ -1181,7 +1372,7 @@ private struct iPadRenameSheet: View {
         NavigationStack {
             VStack(spacing: Spacing.lg) {
                 TextField("Chat title", text: $renameText)
-                    .font(AppTypography.bodyMediumFont)
+                    .scaledFont(size: 16)
                     .padding(Spacing.md)
                     .background(theme.surfaceContainer)
                     .clipShape(RoundedRectangle(cornerRadius: CornerRadius.md))
@@ -1197,7 +1388,7 @@ private struct iPadRenameSheet: View {
                         }
                         Text(isGeneratingTitle ? "Generating…" : "Generate Title")
                     }
-                    .font(AppTypography.labelMediumFont)
+                    .scaledFont(size: 14, weight: .medium)
                     .fontWeight(.medium)
                 }
                 .buttonStyle(.bordered)

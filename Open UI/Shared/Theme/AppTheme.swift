@@ -227,6 +227,27 @@ struct AppTheme: Equatable, Sendable {
     var codeText: Color { tokens.codeText }
     var codeAccent: Color { accentColor }
 
+    // MARK: - Channel Mentions
+
+    var mentionUserBackground: Color { tokens.mentionUserBg }
+    var mentionUserText: Color { tokens.mentionUserText }
+    var mentionModelBackground: Color { tokens.mentionModelBg }
+    var mentionModelText: Color { tokens.mentionModelText }
+    var mentionSelfBackground: Color { tokens.mentionSelfBg }
+    var mentionSelfText: Color { tokens.mentionSelfText }
+
+    // MARK: - Reply Threads
+
+    var replyBorder: Color { tokens.replyBorder }
+    var replyBackground: Color { tokens.replyBackground }
+    var replyText: Color { tokens.replyText }
+
+    // MARK: - File Attachments
+
+    var fileCardBackground: Color { tokens.fileCardBg }
+    var fileCardBorder: Color { tokens.fileCardBorder }
+    var fileCardText: Color { tokens.fileCardText }
+
     // MARK: - Sidebar
 
     var sidebarBackground: Color {
@@ -283,6 +304,7 @@ extension EnvironmentValues {
 struct ThemedViewModifier: ViewModifier {
     @Environment(\.colorScheme) private var colorScheme
     var appearanceManager: AppearanceManager?
+    var accessibilityManager: AccessibilityManager?
 
     func body(content: Content) -> some View {
         let accent = appearanceManager?.accentColorPreset ?? .blue
@@ -302,13 +324,20 @@ struct ThemedViewModifier: ViewModifier {
 
         content
             .environment(\.theme, theme)
+            .environment(\.accessibilityScale, accessibilityManager ?? AccessibilityManager())
             .tint(resolvedTint)
     }
 }
 
 extension View {
     /// Applies the Conduit design system theme to this view hierarchy.
-    func themed(with manager: AppearanceManager? = nil) -> some View {
-        modifier(ThemedViewModifier(appearanceManager: manager))
+    func themed(
+        with manager: AppearanceManager? = nil,
+        accessibility: AccessibilityManager? = nil
+    ) -> some View {
+        modifier(ThemedViewModifier(
+            appearanceManager: manager,
+            accessibilityManager: accessibility
+        ))
     }
 }

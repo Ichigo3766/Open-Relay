@@ -78,17 +78,17 @@ struct AppearanceSettingsView: View {
                         .frame(width: 28, height: 28)
                         .overlay {
                             Image(systemName: "sparkles")
-                                .font(.system(size: 12, weight: .semibold))
+                                .scaledFont(size: 12, weight: .semibold)
                                 .foregroundStyle(theme.accentColor)
                         }
 
                     VStack(alignment: .leading, spacing: 4) {
                         Text("AI Assistant")
-                            .font(.system(size: 11, weight: .semibold))
+                            .scaledFont(size: 11, weight: .semibold)
                             .foregroundStyle(theme.textTertiary)
 
                         Text("Here's how your theme looks! Try different accent colors to find your style.")
-                            .font(.system(size: 13))
+                            .scaledFont(size: 13)
                             .foregroundStyle(theme.chatBubbleAssistantText)
                             .padding(.horizontal, 12)
                             .padding(.vertical, 8)
@@ -108,7 +108,7 @@ struct AppearanceSettingsView: View {
                     Spacer(minLength: 60)
 
                     Text("Looks great! 🎨")
-                        .font(.system(size: 13))
+                        .scaledFont(size: 13)
                         .foregroundStyle(theme.chatBubbleUserText)
                         .padding(.horizontal, 12)
                         .padding(.vertical, 8)
@@ -120,11 +120,11 @@ struct AppearanceSettingsView: View {
                 HStack(spacing: Spacing.sm) {
                     HStack(spacing: 6) {
                         Image(systemName: "plus.circle.fill")
-                            .font(.system(size: 18))
+                            .scaledFont(size: 18)
                             .foregroundStyle(theme.textTertiary)
 
                         Text("Message…")
-                            .font(.system(size: 13))
+                            .scaledFont(size: 13)
                             .foregroundStyle(theme.inputPlaceholder)
 
                         Spacer()
@@ -143,7 +143,7 @@ struct AppearanceSettingsView: View {
                         .frame(width: 32, height: 32)
                         .overlay {
                             Image(systemName: "arrow.up")
-                                .font(.system(size: 14, weight: .bold))
+                                .scaledFont(size: 14, weight: .bold)
                                 .foregroundStyle(theme.onAccentColor)
                         }
                 }
@@ -178,12 +178,12 @@ struct AppearanceSettingsView: View {
                 } label: {
                     VStack(spacing: 6) {
                         Image(systemName: mode.icon)
-                            .font(.system(size: 18, weight: .medium))
+                            .scaledFont(size: 18, weight: .medium)
                             .foregroundStyle(isSelected ? theme.accentColor : theme.textTertiary)
                             .frame(height: 24)
 
                         Text(mode.displayName)
-                            .font(.system(size: 12, weight: isSelected ? .semibold : .medium))
+                            .scaledFont(size: 12, weight: isSelected ? .semibold : .medium)
                             .foregroundStyle(isSelected ? theme.textPrimary : theme.textTertiary)
                     }
                     .frame(maxWidth: .infinity)
@@ -282,7 +282,7 @@ struct AppearanceSettingsView: View {
                 .frame(width: 48, height: 48)
 
                 Text("Custom")
-                    .font(.system(size: 10, weight: isSelected ? .semibold : .medium))
+                    .scaledFont(size: 10, weight: isSelected ? .semibold : .medium)
                     .foregroundStyle(isSelected ? theme.textPrimary : theme.textTertiary)
                     .lineLimit(1)
             }
@@ -333,7 +333,7 @@ struct AppearanceSettingsView: View {
                     // Checkmark
                     if isSelected {
                         Image(systemName: "checkmark")
-                            .font(.system(size: 13, weight: .bold))
+                            .scaledFont(size: 13, weight: .bold)
                             .foregroundStyle(preset.resolvedOnAccent(for: colorScheme))
                             .transition(.scale.combined(with: .opacity))
                     }
@@ -341,7 +341,7 @@ struct AppearanceSettingsView: View {
                 .frame(width: 48, height: 48)
 
                 Text(preset.displayName)
-                    .font(.system(size: 10, weight: isSelected ? .semibold : .medium))
+                    .scaledFont(size: 10, weight: isSelected ? .semibold : .medium)
                     .foregroundStyle(isSelected ? theme.textPrimary : theme.textTertiary)
                     .lineLimit(1)
             }
@@ -377,7 +377,7 @@ struct AppearanceSettingsView: View {
                         .shadow(color: wheelColor.opacity(0.3), radius: 12, y: 4)
 
                     Text("Preview")
-                        .font(.system(size: 13, weight: .medium))
+                        .scaledFont(size: 13, weight: .medium)
                         .foregroundStyle(theme.textTertiary)
                 }
                 .padding(.horizontal, Spacing.screenPadding * 2)
@@ -386,7 +386,7 @@ struct AppearanceSettingsView: View {
                 HStack(spacing: Spacing.md) {
                     // Primary button preview
                     Text("Primary")
-                        .font(.system(size: 14, weight: .semibold))
+                        .scaledFont(size: 14, weight: .semibold)
                         .foregroundStyle(.white)
                         .padding(.horizontal, 20)
                         .padding(.vertical, 10)
@@ -394,7 +394,7 @@ struct AppearanceSettingsView: View {
 
                     // Tinted button preview
                     Text("Tinted")
-                        .font(.system(size: 14, weight: .semibold))
+                        .scaledFont(size: 14, weight: .semibold)
                         .foregroundStyle(wheelColor)
                         .padding(.horizontal, 20)
                         .padding(.vertical, 10)

@@ -80,10 +80,10 @@ struct AuthenticatedImageView: View {
                 // which causes the `.task(id:)` to re-fire and attempt loading again.
                 VStack(spacing: Spacing.xs) {
                     Image(systemName: "arrow.clockwise.circle")
-                        .font(.system(size: 28))
+                        .scaledFont(size: 28)
                         .foregroundStyle(theme.brandPrimary.opacity(0.7))
                     Text("Tap to retry")
-                        .font(AppTypography.captionFont)
+                        .scaledFont(size: 12, weight: .medium)
                         .foregroundStyle(theme.textTertiary)
                 }
                 .frame(height: placeholderHeight)
@@ -231,7 +231,7 @@ struct FullScreenImageView: View {
                         shareImage()
                     } label: {
                         Image(systemName: "square.and.arrow.up")
-                            .font(.system(size: 18, weight: .medium))
+                            .scaledFont(size: 18, weight: .medium)
                             .foregroundStyle(.white)
                             .frame(width: 44, height: 44)
                             .background(.ultraThinMaterial)
@@ -243,7 +243,7 @@ struct FullScreenImageView: View {
                         dismiss()
                     } label: {
                         Image(systemName: "xmark")
-                            .font(.system(size: 16, weight: .bold))
+                            .scaledFont(size: 16, weight: .bold)
                             .foregroundStyle(.white)
                             .frame(width: 44, height: 44)
                             .background(.ultraThinMaterial)

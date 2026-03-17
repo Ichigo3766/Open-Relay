@@ -6,15 +6,14 @@ import SwiftUI
 ///
 /// Uses the SF system fonts with carefully chosen sizes, weights, and
 /// line heights that support Dynamic Type.
+///
+/// ## Accessibility Scaling
+/// All fonts support context-aware scaling via `AccessibilityManager`.
+/// Use the `.scaled()` variants or the `.scaledFont()` view modifier
+/// to get fonts that respect the user's accessibility preferences.
 enum AppTypography {
 
-    // MARK: - Display
-
-    static func displayLarge(_ theme: AppTheme) -> some View {
-        EmptyView() // placeholder; use the modifiers below
-    }
-
-    // MARK: - Font Definitions
+    // MARK: - Font Definitions (Base Sizes)
 
     static let displayLargeFont: Font = .system(size: 48, weight: .bold, design: .default)
     static let displayMediumFont: Font = .system(size: 36, weight: .bold, design: .default)
@@ -35,6 +34,32 @@ enum AppTypography {
     static let captionFont: Font = .system(size: 12, weight: .medium, design: .default)
     static let codeFont: Font = .system(size: 14, weight: .regular, design: .monospaced)
     static let codeLargeFont: Font = .system(size: 16, weight: .regular, design: .monospaced)
+
+    // MARK: - Scaled Font Factory
+
+    /// Returns a font scaled by the given factor.
+    /// Preserves weight and design while adjusting the point size.
+    static func scaled(
+        baseSize: CGFloat,
+        weight: Font.Weight = .regular,
+        design: Font.Design = .default,
+        scale: CGFloat
+    ) -> Font {
+        .system(size: round(baseSize * scale * 10) / 10, weight: weight, design: design)
+    }
+
+    /// Returns a system font scaled by the accessibility manager's factor
+    /// for the given context.
+    static func scaled(
+        baseSize: CGFloat,
+        weight: Font.Weight = .regular,
+        design: Font.Design = .default,
+        context: AccessibilityManager.FontContext,
+        manager: AccessibilityManager
+    ) -> Font {
+        let scale = manager.scale(for: context)
+        return .system(size: round(baseSize * scale * 10) / 10, weight: weight, design: design)
+    }
 }
 
 // MARK: - Text Style View Modifiers
@@ -172,7 +197,7 @@ struct CodeStyle: ViewModifier {
     }
 }
 
-// MARK: - View Extensions
+// MARK: - View Extensions (Original — Unscaled)
 
 extension View {
     func displayLargeStyle() -> some View { modifier(DisplayLargeStyle()) }
@@ -186,4 +211,96 @@ extension View {
     func labelStyle() -> some View { modifier(LabelStyle()) }
     func captionTextStyle() -> some View { modifier(CaptionStyle()) }
     func codeStyle() -> some View { modifier(CodeStyle()) }
+}
+
+// MARK: - Scaled Font View Modifier
+
+/// A view modifier that applies a scaled font based on the user's
+/// accessibility preferences. Reads the ``AccessibilityManager``
+/// from the environment and applies the appropriate scale factor.
+struct ScaledFontModifier: ViewModifier {
+    let baseSize: CGFloat
+    let weight: Font.Weight
+    let design: Font.Design
+    let context: AccessibilityManager.FontContext
+
+    @Environment(\.accessibilityScale) private var accessibilityScale
+
+    func body(content: Content) -> some View {
+        let scale = accessibilityScale.scale(for: context)
+        content.font(.system(
+            size: round(baseSize * scale * 10) / 10,
+            weight: weight,
+            design: design
+        ))
+    }
+}
+
+/// A view modifier that scales an icon's font size.
+struct ScaledIconModifier: ViewModifier {
+    let baseSize: CGFloat
+    let weight: Font.Weight
+
+    @Environment(\.accessibilityScale) private var accessibilityScale
+
+    func body(content: Content) -> some View {
+        let scale = accessibilityScale.uiScale
+        content.font(.system(
+            size: round(baseSize * scale * 10) / 10,
+            weight: weight
+        ))
+    }
+}
+
+// MARK: - View Extensions (Scaled)
+
+extension View {
+    /// Applies a scaled font that respects accessibility preferences.
+    ///
+    /// ```swift
+    /// Text("Hello")
+    ///     .scaledFont(size: 16, weight: .medium, context: .content)
+    /// ```
+    func scaledFont(
+        size: CGFloat,
+        weight: Font.Weight = .regular,
+        design: Font.Design = .default,
+        context: AccessibilityManager.FontContext = .ui
+    ) -> some View {
+        modifier(ScaledFontModifier(
+            baseSize: size,
+            weight: weight,
+            design: design,
+            context: context
+        ))
+    }
+
+    /// Applies a scaled icon font that respects the UI scale.
+    func scaledIcon(size: CGFloat, weight: Font.Weight = .medium) -> some View {
+        modifier(ScaledIconModifier(baseSize: size, weight: weight))
+    }
+}
+
+// MARK: - CGFloat Scaling Extension
+
+extension CGFloat {
+    /// Returns this value scaled by the UI scale factor from the accessibility manager.
+    func scaled(by manager: AccessibilityManager) -> CGFloat {
+        self * manager.uiScale
+    }
+}
+
+// MARK: - Accessibility Scale Environment Key
+
+/// Environment key to propagate the ``AccessibilityManager`` down the view tree.
+private struct AccessibilityScaleEnvironmentKey: EnvironmentKey {
+    static let defaultValue = AccessibilityManager()
+}
+
+extension EnvironmentValues {
+    /// The current accessibility scaling manager.
+    var accessibilityScale: AccessibilityManager {
+        get { self[AccessibilityScaleEnvironmentKey.self] }
+        set { self[AccessibilityScaleEnvironmentKey.self] = newValue }
+    }
 }

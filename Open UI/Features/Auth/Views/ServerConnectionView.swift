@@ -104,13 +104,13 @@ struct ModernTextField: View {
                             }
                         } label: {
                             Image(systemName: isPasswordVisible ? "eye.slash.fill" : "eye.fill")
-                                .font(.system(size: 16))
+                                .scaledFont(size: 16)
                                 .foregroundStyle(theme.textTertiary)
                                 .contentTransition(.symbolEffect(.replace))
                         }
                     }
                 }
-                .font(AppTypography.bodyMediumFont)
+                .scaledFont(size: 16)
                 .foregroundStyle(theme.textPrimary)
             }
             .padding(.top, 16)
@@ -163,10 +163,10 @@ struct AuthPrimaryButton: View {
                 } else {
                     if let icon {
                         Image(systemName: icon)
-                            .font(.system(size: 16, weight: .semibold))
+                            .scaledFont(size: 16, weight: .semibold)
                     }
                     Text(title)
-                        .font(AppTypography.labelLargeFont)
+                        .scaledFont(size: 16, weight: .medium)
                 }
             }
             .foregroundStyle(theme.buttonPrimaryText)
@@ -223,20 +223,20 @@ struct ServerConnectionView: View {
                                 .scaleEffect(logoScale * 1.1)
 
                             Image(systemName: "bubble.left.and.bubble.right.fill")
-                                .font(.system(size: 40, weight: .medium))
+                                .scaledFont(size: 40, weight: .medium)
                                 .foregroundStyle(theme.brandPrimary)
                                 .scaleEffect(logoScale)
                         }
                         .opacity(logoOpacity)
 
                         Text("Open UI")
-                            .font(.system(size: 36, weight: .bold, design: .rounded))
+                            .scaledFont(size: 36, weight: .bold, design: .rounded)
                             .foregroundStyle(theme.textPrimary)
                             .opacity(appeared ? 1 : 0)
                             .offset(y: appeared ? 0 : 10)
 
                         Text("Connect to your OpenWebUI server")
-                            .font(AppTypography.bodyMediumFont)
+                            .scaledFont(size: 16)
                             .foregroundStyle(theme.textSecondary)
                             .opacity(appeared ? 1 : 0)
                             .offset(y: appeared ? 0 : 10)
@@ -270,11 +270,11 @@ struct ServerConnectionView: View {
                                 HStack {
                                     VStack(alignment: .leading, spacing: Spacing.xxs) {
                                         Text("Self-Signed Certificates")
-                                            .font(AppTypography.bodySmallFont)
+                                            .scaledFont(size: 14)
                                             .foregroundStyle(theme.textPrimary)
 
                                         Text("For private servers with custom certs")
-                                            .font(AppTypography.captionFont)
+                                            .scaledFont(size: 12, weight: .medium)
                                             .foregroundStyle(theme.textTertiary)
                                     }
 
@@ -289,9 +289,9 @@ struct ServerConnectionView: View {
                         } label: {
                             HStack(spacing: Spacing.sm) {
                                 Image(systemName: "gearshape")
-                                    .font(.system(size: 14))
+                                    .scaledFont(size: 14)
                                 Text("Advanced")
-                                    .font(AppTypography.labelMediumFont)
+                                    .scaledFont(size: 14, weight: .medium)
                             }
                             .foregroundStyle(theme.textTertiary)
                         }
@@ -302,7 +302,7 @@ struct ServerConnectionView: View {
                                 Image(systemName: "exclamationmark.triangle.fill")
                                     .foregroundStyle(theme.error)
                                 Text(error)
-                                    .font(AppTypography.captionFont)
+                                    .scaledFont(size: 12, weight: .medium)
                                     .foregroundStyle(theme.error)
                             }
                             .frame(maxWidth: .infinity, alignment: .leading)
@@ -343,11 +343,11 @@ struct ServerConnectionView: View {
                     // Help text
                     VStack(spacing: Spacing.sm) {
                         Text("Need help?")
-                            .font(AppTypography.labelMediumFont)
+                            .scaledFont(size: 14, weight: .medium)
                             .foregroundStyle(theme.textSecondary)
 
                         Text("Enter the URL of your OpenWebUI server.\nUse https:// or http:// — direct URLs and IP:port supported.")
-                            .font(AppTypography.captionFont)
+                            .scaledFont(size: 12, weight: .medium)
                             .foregroundStyle(theme.textTertiary)
                             .multilineTextAlignment(.center)
                     }

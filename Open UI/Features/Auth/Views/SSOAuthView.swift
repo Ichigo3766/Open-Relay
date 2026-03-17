@@ -80,7 +80,7 @@ struct SSOAuthView: View {
                     .scaleEffect(1.2)
 
                 Text(ssoState.tokenCaptured ? "Authenticating..." : "Loading login page...")
-                    .font(AppTypography.bodySmallFont)
+                    .scaledFont(size: 14)
                     .foregroundStyle(theme.textSecondary)
             }
         }
@@ -91,15 +91,15 @@ struct SSOAuthView: View {
             Spacer()
 
             Image(systemName: "exclamationmark.circle")
-                .font(.system(size: 48))
+                .scaledFont(size: 48)
                 .foregroundStyle(theme.error)
 
             Text("Sign In Failed")
-                .font(AppTypography.headlineSmallFont)
+                .scaledFont(size: 20, weight: .semibold)
                 .foregroundStyle(theme.textPrimary)
 
             Text(error)
-                .font(AppTypography.bodySmallFont)
+                .scaledFont(size: 14)
                 .foregroundStyle(theme.textSecondary)
                 .multilineTextAlignment(.center)
 
@@ -109,7 +109,7 @@ struct SSOAuthView: View {
                     ssoState.shouldReload = true
                 } label: {
                     Text("Retry")
-                        .font(AppTypography.labelLargeFont)
+                        .scaledFont(size: 16, weight: .medium)
                         .foregroundStyle(theme.buttonPrimaryText)
                         .frame(maxWidth: .infinity)
                         .frame(height: TouchTarget.comfortable)
@@ -122,7 +122,7 @@ struct SSOAuthView: View {
                     viewModel.goBack()
                 } label: {
                     Text("Back")
-                        .font(AppTypography.labelLargeFont)
+                        .scaledFont(size: 16, weight: .medium)
                         .foregroundStyle(theme.textSecondary)
                         .frame(maxWidth: .infinity)
                         .frame(height: TouchTarget.comfortable)

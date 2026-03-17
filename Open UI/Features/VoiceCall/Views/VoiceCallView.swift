@@ -111,18 +111,18 @@ struct VoiceCallView: View {
                     .frame(width: 44, height: 44)
 
                 Image(systemName: "waveform")
-                    .font(.system(size: 18, weight: .medium))
+                    .scaledFont(size: 18, weight: .medium)
                     .foregroundStyle(.white)
             }
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(viewModel.modelName.isEmpty ? "AI Assistant" : viewModel.modelName)
-                    .font(.system(size: 17, weight: .semibold))
+                    .scaledFont(size: 17, weight: .semibold)
                     .foregroundStyle(.white)
                     .lineLimit(1)
 
                 Text(viewModel.formattedDuration)
-                    .font(.system(size: 13, weight: .medium, design: .monospaced))
+                    .scaledFont(size: 13, weight: .medium, design: .monospaced)
                     .foregroundStyle(.white.opacity(0.5))
                     .contentTransition(.numericText())
             }
@@ -137,7 +137,7 @@ struct VoiceCallView: View {
                 }
             } label: {
                 Image(systemName: "xmark")
-                    .font(.system(size: 14, weight: .bold))
+                    .scaledFont(size: 14, weight: .bold)
                     .foregroundStyle(.white.opacity(0.6))
                     .frame(width: 32, height: 32)
                     .background(.white.opacity(0.1))
@@ -198,7 +198,7 @@ struct VoiceCallView: View {
                 Text("Ready")
             }
         }
-        .font(.system(size: 12, weight: .medium))
+        .scaledFont(size: 12, weight: .medium)
         .foregroundStyle(.white.opacity(0.5))
         .padding(.horizontal, 12)
         .padding(.vertical, 5)
@@ -212,7 +212,7 @@ struct VoiceCallView: View {
         Group {
             if !viewModel.currentTranscript.isEmpty && viewModel.callState == .listening {
                 Text(viewModel.currentTranscript)
-                    .font(.system(size: 15))
+                    .scaledFont(size: 15)
                     .foregroundStyle(.white.opacity(0.6))
                     .lineLimit(3)
                     .multilineTextAlignment(.center)
@@ -220,7 +220,7 @@ struct VoiceCallView: View {
                     .transition(.opacity.combined(with: .move(edge: .bottom)))
             } else if case .error(let msg) = viewModel.callState {
                 Text(msg)
-                    .font(.system(size: 13))
+                    .scaledFont(size: 13)
                     .foregroundStyle(.red.opacity(0.7))
                     .multilineTextAlignment(.center)
                     .padding(.horizontal, 32)
@@ -309,7 +309,7 @@ struct VoiceCallView: View {
                 .frame(width: size, height: size)
                 .overlay(
                     Image(systemName: icon)
-                        .font(.system(size: size * 0.38, weight: .semibold))
+                        .scaledFont(size: size * 0.38, weight: .semibold)
                         .foregroundStyle(isActive ? .white : .white.opacity(0.8))
                 )
         }

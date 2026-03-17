@@ -71,13 +71,13 @@ struct StreamingStatusView: View {
                 VStack(alignment: .leading, spacing: 0) {
                     if let latest = latestStatus {
                         Text(statusTitle(for: latest))
-                            .font(AppTypography.labelSmallFont)
+                            .scaledFont(size: 12, weight: .medium)
                             .foregroundStyle(theme.textSecondary)
                             .lineLimit(1)
 
                         if let desc = latest.description, !desc.isEmpty {
                             Text(desc)
-                                .font(AppTypography.captionFont)
+                                .scaledFont(size: 12, weight: .medium)
                                 .foregroundStyle(theme.textTertiary)
                                 .lineLimit(1)
                         }
@@ -88,7 +88,7 @@ struct StreamingStatusView: View {
 
                 if visibleStatuses.count > 1 {
                     Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
-                        .font(.system(size: 10, weight: .semibold))
+                        .scaledFont(size: 10, weight: .semibold)
                         .foregroundStyle(theme.textTertiary)
                 }
             }
@@ -116,7 +116,7 @@ struct StreamingStatusView: View {
 
             VStack(alignment: .leading, spacing: 0) {
                 Text(statusTitle(for: status))
-                    .font(AppTypography.captionFont)
+                    .scaledFont(size: 12, weight: .medium)
                     .foregroundStyle(
                         status.done == true
                             ? theme.textTertiary
@@ -129,7 +129,7 @@ struct StreamingStatusView: View {
                 if !status.urls.isEmpty {
                     ForEach(status.urls, id: \.self) { url in
                         Text(url)
-                            .font(AppTypography.captionFont)
+                            .scaledFont(size: 12, weight: .medium)
                             .foregroundStyle(theme.brandPrimary)
                             .lineLimit(1)
                             .truncationMode(.middle)
@@ -145,7 +145,7 @@ struct StreamingStatusView: View {
     private func statusIndicator(for status: ChatStatusUpdate?) -> some View {
         if let status, status.done == true {
             Image(systemName: "checkmark.circle.fill")
-                .font(.system(size: 14))
+                .scaledFont(size: 14)
                 .foregroundStyle(theme.success)
                 .transition(.scale.combined(with: .opacity))
         } else if isStreaming {
@@ -154,7 +154,7 @@ struct StreamingStatusView: View {
                 .tint(theme.brandPrimary)
         } else {
             Image(systemName: "circle")
-                .font(.system(size: 14))
+                .scaledFont(size: 14)
                 .foregroundStyle(theme.textTertiary)
         }
     }
@@ -201,7 +201,7 @@ struct ToolCallBadge: View {
         HStack(spacing: Spacing.xs) {
             if isDone {
                 Image(systemName: "checkmark.circle.fill")
-                    .font(.system(size: 12))
+                    .scaledFont(size: 12)
                     .foregroundStyle(theme.success)
             } else {
                 ProgressView()
@@ -210,7 +210,7 @@ struct ToolCallBadge: View {
             }
 
             Text(action)
-                .font(AppTypography.captionFont)
+                .scaledFont(size: 12, weight: .medium)
                 .fontWeight(.medium)
                 .foregroundStyle(theme.textSecondary)
         }

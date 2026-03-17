@@ -89,9 +89,9 @@ struct HTMLPreviewView: View {
             } label: {
                 HStack(spacing: 4) {
                     Image(systemName: showSource ? "eye" : "chevron.left.forwardslash.chevron.right")
-                        .font(.system(size: 11, weight: .medium))
+                        .scaledFont(size: 11, weight: .medium)
                     Text(showSource ? "Preview" : "Source")
-                        .font(.system(size: 12, weight: .medium))
+                        .scaledFont(size: 12, weight: .medium)
                 }
                 .foregroundStyle(.secondary)
             }
@@ -116,7 +116,7 @@ struct HTMLPreviewView: View {
                             .transition(.opacity.combined(with: .scale))
                     }
                 }
-                .font(.system(size: 11, weight: .medium))
+                .scaledFont(size: 11, weight: .medium)
                 .foregroundStyle(.secondary)
                 .labelStyle(.iconOnly)
             }
@@ -128,7 +128,7 @@ struct HTMLPreviewView: View {
                 Haptics.play(.light)
             } label: {
                 Image(systemName: "arrow.up.left.and.arrow.down.right")
-                    .font(.system(size: 11, weight: .medium))
+                    .scaledFont(size: 11, weight: .medium)
                     .foregroundStyle(.secondary)
             }
             .buttonStyle(.plain)
@@ -181,18 +181,18 @@ struct HTMLPreviewView: View {
             } label: {
                 HStack(spacing: 6) {
                     Text("\(lineCount) lines")
-                        .font(.system(size: 12, weight: .medium))
+                        .scaledFont(size: 12, weight: .medium)
                         .foregroundStyle(.tertiary)
 
                     Text("·")
-                        .font(.system(size: 12, weight: .medium))
+                        .scaledFont(size: 12, weight: .medium)
                         .foregroundStyle(.quaternary)
 
                     HStack(spacing: 3) {
                         Text("Open fullscreen")
-                            .font(.system(size: 12, weight: .medium))
+                            .scaledFont(size: 12, weight: .medium)
                         Image(systemName: "arrow.up.right")
-                            .font(.system(size: 9, weight: .semibold))
+                            .scaledFont(size: 9, weight: .semibold)
                     }
                     .foregroundStyle(theme.brandPrimary)
                 }
@@ -368,7 +368,7 @@ private struct HTMLFullscreenView: View {
                         Haptics.play(.light)
                     } label: {
                         Image(systemName: showSource ? "eye" : "chevron.left.forwardslash.chevron.right")
-                            .font(.system(size: 14, weight: .medium))
+                            .scaledFont(size: 14, weight: .medium)
                     }
 
                     // Copy
@@ -382,7 +382,7 @@ private struct HTMLFullscreenView: View {
                         }
                     } label: {
                         Image(systemName: codeCopied ? "checkmark" : "doc.on.doc")
-                            .font(.system(size: 14, weight: .medium))
+                            .scaledFont(size: 14, weight: .medium)
                     }
 
                     // Share / Open externally
@@ -391,7 +391,7 @@ private struct HTMLFullscreenView: View {
                         Haptics.play(.light)
                     } label: {
                         Image(systemName: "square.and.arrow.up")
-                            .font(.system(size: 14, weight: .medium))
+                            .scaledFont(size: 14, weight: .medium)
                     }
                 }
             }
@@ -578,7 +578,7 @@ struct HTMLSourceCodeView: View {
                                 .transition(.opacity.combined(with: .scale))
                         }
                     }
-                    .font(.system(size: 12, weight: .medium))
+                    .scaledFont(size: 12, weight: .medium)
                     .foregroundStyle(.secondary)
                 }
                 .buttonStyle(.plain)
@@ -599,7 +599,7 @@ struct HTMLSourceCodeView: View {
                             .foregroundStyle(.primary)
                     }
                 }
-                .font(.system(size: 13, design: .monospaced))
+                .scaledFont(size: 13, design: .monospaced)
                 .lineSpacing(4)
                 .padding(16)
                 .textSelection(.enabled)

@@ -617,15 +617,20 @@ final class APIClient: @unchecked Sendable {
         chatId: String,
         messageId: String,
         model: String,
-        sessionId: String
+        sessionId: String,
+        messages: [[String: Any]] = [],
+        filterIds: [String] = []
     ) async {
-        let body: [String: Any] = [
+        var body: [String: Any] = [
             "model": model,
-            "messages": [] as [[String: Any]],
+            "messages": messages,
             "chat_id": chatId,
             "session_id": sessionId,
             "id": messageId
         ]
+        if !filterIds.isEmpty {
+            body["filter_ids"] = filterIds
+        }
 
         try? await network.requestVoidJSON(
             path: "/api/chat/completed",
@@ -2502,6 +2507,375 @@ final class APIClient: @unchecked Sendable {
             else { createdAt = 0 }
             return AdminChatItem(id: id, title: title, updatedAt: updatedAt, createdAt: createdAt)
         }
+    }
+
+    // MARK: - Channels
+
+    /// Fetches channels accessible to the current user.
+    func getChannels() async throws -> [Channel] {
+        let (data, _) = try await network.requestRaw(path: "/api/v1/channels/")
+        guard let array = try JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
+            return []
+        }
+        return array.compactMap { Channel.fromJSON($0) }
+    }
+
+    /// Fetches all channels (admin endpoint).
+    func getAllChannels() async throws -> [Channel] {
+        let (data, _) = try await network.requestRaw(path: "/api/v1/channels/list")
+        guard let array = try JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
+            return []
+        }
+        return array.compactMap { Channel.fromJSON($0) }
+    }
+
+    /// Fetches full channel details by ID.
+    func getChannel(id: String) async throws -> Channel {
+        let (data, _) = try await network.requestRaw(path: "/api/v1/channels/\(id)")
+        guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let channel = Channel.fromJSON(json) else {
+            throw APIError.responseDecoding(
+                underlying: NSError(domain: "APIError", code: -1,
+                    userInfo: [NSLocalizedDescriptionKey: "Failed to decode channel"]),
+                data: data
+            )
+        }
+        return channel
+    }
+
+    /// Creates a new channel.
+    /// Matches `CreateChannelForm` schema and web UI wire format:
+    /// - Standard: type="" (empty string), is_private=null
+    /// - DM: type="dm", is_private=null
+    /// - Group: type="group", is_private=true/false
+    func createChannel(
+        name: String,
+        description: String? = nil,
+        type: String = "",
+        isPrivate: Bool? = nil,
+        data channelData: [String: Any]? = nil,
+        meta: [String: Any]? = nil,
+        accessGrants: [[String: Any]]? = nil,
+        groupIds: [String]? = nil,
+        userIds: [String]? = nil
+    ) async throws -> Channel {
+        var body: [String: Any] = ["name": name, "type": type]
+        if let description { body["description"] = description }
+        // Only include is_private when explicitly set — null matches web UI default
+        if let isPrivate { body["is_private"] = isPrivate }
+        if let channelData { body["data"] = channelData }
+        if let meta { body["meta"] = meta }
+        
+        // Server requires these arrays to be present (even empty) for DM/Group types.
+        // Match the exact web UI payload: {"type":"dm","name":"","is_private":null,"access_grants":[],"group_ids":[],"user_ids":["..."]}
+        body["access_grants"] = accessGrants ?? []
+        body["group_ids"] = groupIds ?? []
+        body["user_ids"] = userIds ?? []
+
+        let bodyData = try JSONSerialization.data(withJSONObject: body)
+        let (data, _) = try await network.requestRaw(
+            path: "/api/v1/channels/create",
+            method: .post,
+            body: bodyData
+        )
+        guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let channel = Channel.fromJSON(json) else {
+            throw APIError.responseDecoding(
+                underlying: NSError(domain: "APIError", code: -1,
+                    userInfo: [NSLocalizedDescriptionKey: "Failed to decode created channel"]),
+                data: data
+            )
+        }
+        return channel
+    }
+
+    /// Updates a channel.
+    func updateChannel(id: String, name: String? = nil, description: String? = nil, isPrivate: Bool? = nil, data channelData: [String: Any]? = nil, accessControl: [String: Any]? = nil, accessGrants: [[String: Any]]? = nil) async throws -> Channel {
+        var body: [String: Any] = [:]
+        if let name { body["name"] = name }
+        if let description { body["description"] = description }
+        if let isPrivate { body["is_private"] = isPrivate }
+        if let channelData { body["data"] = channelData }
+        if let accessControl { body["access_control"] = accessControl }
+        if let accessGrants { body["access_grants"] = accessGrants }
+
+        let bodyData = try JSONSerialization.data(withJSONObject: body)
+        let (data, _) = try await network.requestRaw(
+            path: "/api/v1/channels/\(id)/update",
+            method: .post,
+            body: bodyData
+        )
+        
+        guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let channel = Channel.fromJSON(json) else {
+            throw APIError.responseDecoding(
+                underlying: NSError(domain: "APIError", code: -1,
+                    userInfo: [NSLocalizedDescriptionKey: "Failed to decode updated channel"]),
+                data: data
+            )
+        }
+        return channel
+    }
+
+    /// Deletes a channel.
+    func deleteChannel(id: String) async throws {
+        try await network.requestVoid(path: "/api/v1/channels/\(id)/delete", method: .delete)
+    }
+
+    /// Gets or creates a DM channel with the specified user.
+    func getDMChannel(userId: String) async throws -> Channel? {
+        let (data, _) = try await network.requestRaw(path: "/api/v1/channels/users/\(userId)")
+        guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return nil
+        }
+        return Channel.fromJSON(json)
+    }
+
+    // MARK: - Channel Members
+
+    /// Fetches members of a channel with pagination.
+    /// API returns `UserListResponse`: `{users: UserModelResponse[], total: int}`
+    func getChannelMembers(id: String, query: String? = nil, page: Int = 1) async throws -> [ChannelMember] {
+        var queryItems: [URLQueryItem] = [URLQueryItem(name: "page", value: "\(page)")]
+        if let query, !query.isEmpty {
+            queryItems.append(URLQueryItem(name: "query", value: query))
+        }
+        let (data, _) = try await network.requestRaw(
+            path: "/api/v1/channels/\(id)/members",
+            queryItems: queryItems
+        )
+        // UserListResponse schema: {users: [...], total: N}
+        if let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            if let usersArray = json["users"] as? [[String: Any]] {
+                return usersArray.compactMap { ChannelMember.fromJSON($0) }
+            }
+            // Fallback: try "data" wrapper
+            if let usersArray = json["data"] as? [[String: Any]] {
+                return usersArray.compactMap { ChannelMember.fromJSON($0) }
+            }
+        }
+        // Fallback: direct array
+        if let array = try JSONSerialization.jsonObject(with: data) as? [[String: Any]] {
+            return array.compactMap { ChannelMember.fromJSON($0) }
+        }
+        return []
+    }
+
+    /// Adds members to a channel.
+    func addChannelMembers(id: String, userIds: [String]) async throws {
+        try await network.requestVoidJSON(
+            path: "/api/v1/channels/\(id)/update/members/add",
+            method: .post,
+            body: ["user_ids": userIds]
+        )
+    }
+
+    /// Removes members from a channel.
+    func removeChannelMembers(id: String, userIds: [String]) async throws {
+        try await network.requestVoidJSON(
+            path: "/api/v1/channels/\(id)/update/members/remove",
+            method: .post,
+            body: ["user_ids": userIds]
+        )
+    }
+
+    /// Updates a member's active status in a channel.
+    func updateMemberActiveStatus(channelId: String, isActive: Bool) async throws {
+        try await network.requestVoidJSON(
+            path: "/api/v1/channels/\(channelId)/members/active",
+            method: .post,
+            body: ["is_active": isActive]
+        )
+    }
+
+    // MARK: - Channel Messages
+
+    /// Fetches channel messages with pagination.
+    func getChannelMessages(id: String, skip: Int = 0, limit: Int = 50) async throws -> [ChannelMessage] {
+        let queryItems = [
+            URLQueryItem(name: "skip", value: "\(skip)"),
+            URLQueryItem(name: "limit", value: "\(limit)")
+        ]
+        let (data, _) = try await network.requestRaw(
+            path: "/api/v1/channels/\(id)/messages",
+            queryItems: queryItems
+        )
+        guard let array = try JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
+            return []
+        }
+        return array.compactMap { ChannelMessage.fromJSON($0) }
+    }
+
+    /// Posts a new message to a channel.
+    func postChannelMessage(
+        channelId: String,
+        content: String,
+        replyToId: String? = nil,
+        parentId: String? = nil,
+        data msgData: [String: Any]? = nil
+    ) async throws -> ChannelMessage? {
+        var body: [String: Any] = ["content": content]
+        if let replyToId { body["reply_to_id"] = replyToId }
+        if let parentId { body["parent_id"] = parentId }
+        if let msgData { body["data"] = msgData }
+
+        let bodyData = try JSONSerialization.data(withJSONObject: body)
+        let (data, _) = try await network.requestRaw(
+            path: "/api/v1/channels/\(channelId)/messages/post",
+            method: .post,
+            body: bodyData
+        )
+        guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return nil
+        }
+        return ChannelMessage.fromJSON(json)
+    }
+
+    /// Gets a single channel message.
+    func getChannelMessage(channelId: String, messageId: String) async throws -> ChannelMessage? {
+        let (data, _) = try await network.requestRaw(
+            path: "/api/v1/channels/\(channelId)/messages/\(messageId)"
+        )
+        guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return nil
+        }
+        return ChannelMessage.fromJSON(json)
+    }
+
+    /// Gets message data/metadata.
+    func getChannelMessageData(channelId: String, messageId: String) async throws -> [String: Any]? {
+        let (data, _) = try await network.requestRaw(
+            path: "/api/v1/channels/\(channelId)/messages/\(messageId)/data"
+        )
+        return try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+    }
+
+    /// Updates a channel message.
+    func updateChannelMessage(channelId: String, messageId: String, content: String, data msgData: [String: Any]? = nil) async throws -> ChannelMessage? {
+        var body: [String: Any] = ["content": content]
+        if let msgData { body["data"] = msgData }
+        let bodyData = try JSONSerialization.data(withJSONObject: body)
+        let (data, _) = try await network.requestRaw(
+            path: "/api/v1/channels/\(channelId)/messages/\(messageId)/update",
+            method: .post,
+            body: bodyData
+        )
+        guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return nil
+        }
+        return ChannelMessage.fromJSON(json)
+    }
+
+    /// Deletes a channel message.
+    func deleteChannelMessage(channelId: String, messageId: String) async throws {
+        try await network.requestVoid(
+            path: "/api/v1/channels/\(channelId)/messages/\(messageId)/delete",
+            method: .delete
+        )
+    }
+
+    /// Pins or unpins a channel message.
+    func pinChannelMessage(channelId: String, messageId: String, isPinned: Bool) async throws -> ChannelMessage? {
+        let bodyData = try JSONSerialization.data(withJSONObject: ["is_pinned": isPinned])
+        let (data, _) = try await network.requestRaw(
+            path: "/api/v1/channels/\(channelId)/messages/\(messageId)/pin",
+            method: .post,
+            body: bodyData
+        )
+        guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return nil
+        }
+        return ChannelMessage.fromJSON(json)
+    }
+
+    /// Gets pinned messages for a channel.
+    func getPinnedChannelMessages(channelId: String, page: Int = 1) async throws -> [ChannelMessage] {
+        let queryItems = [URLQueryItem(name: "page", value: "\(page)")]
+        let (data, _) = try await network.requestRaw(
+            path: "/api/v1/channels/\(channelId)/messages/pinned",
+            queryItems: queryItems
+        )
+        guard let array = try JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
+            return []
+        }
+        return array.compactMap { ChannelMessage.fromJSON($0) }
+    }
+
+    // MARK: - Channel Threads
+
+    /// Gets thread replies for a message.
+    func getChannelThreadMessages(channelId: String, messageId: String, skip: Int = 0, limit: Int = 50) async throws -> [ChannelMessage] {
+        let queryItems = [
+            URLQueryItem(name: "skip", value: "\(skip)"),
+            URLQueryItem(name: "limit", value: "\(limit)")
+        ]
+        let (data, _) = try await network.requestRaw(
+            path: "/api/v1/channels/\(channelId)/messages/\(messageId)/thread",
+            queryItems: queryItems
+        )
+        guard let array = try JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
+            return []
+        }
+        return array.compactMap { ChannelMessage.fromJSON($0) }
+    }
+
+    // MARK: - Channel Reactions
+
+    /// Adds an emoji reaction to a message.
+    func addChannelReaction(channelId: String, messageId: String, emoji: String) async throws {
+        try await network.requestVoidJSON(
+            path: "/api/v1/channels/\(channelId)/messages/\(messageId)/reactions/add",
+            method: .post,
+            body: ["name": emoji]
+        )
+    }
+
+    /// Removes an emoji reaction from a message.
+    func removeChannelReaction(channelId: String, messageId: String, emoji: String) async throws {
+        try await network.requestVoidJSON(
+            path: "/api/v1/channels/\(channelId)/messages/\(messageId)/reactions/remove",
+            method: .post,
+            body: ["name": emoji]
+        )
+    }
+
+    // MARK: - Channel Webhooks
+
+    /// Gets webhooks for a channel.
+    func getChannelWebhooks(channelId: String) async throws -> [[String: Any]] {
+        let (data, _) = try await network.requestRaw(
+            path: "/api/v1/channels/\(channelId)/webhooks"
+        )
+        guard let array = try JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
+            return []
+        }
+        return array
+    }
+
+    /// Searches users (for @mention picker and access management).
+    func searchUsers(query: String? = nil, page: Int = 1) async throws -> [ChannelMember] {
+        var queryItems: [URLQueryItem] = [URLQueryItem(name: "page", value: "\(page)")]
+        if let query, !query.isEmpty {
+            queryItems.append(URLQueryItem(name: "query", value: query))
+        }
+        let (data, _) = try await network.requestRaw(
+            path: "/api/v1/users/search",
+            queryItems: queryItems
+        )
+        // Server returns: {"users": [...], "total": N}
+        if let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            if let usersArray = json["users"] as? [[String: Any]] {
+                return usersArray.compactMap { ChannelMember.fromJSON($0) }
+            }
+            if let usersArray = json["data"] as? [[String: Any]] {
+                return usersArray.compactMap { ChannelMember.fromJSON($0) }
+            }
+        }
+        // Fallback: direct array
+        if let array = try JSONSerialization.jsonObject(with: data) as? [[String: Any]] {
+            return array.compactMap { ChannelMember.fromJSON($0) }
+        }
+        return []
     }
 
     func addAdminUser(form: AdminAddUserForm) async throws -> AdminUser {

@@ -23,13 +23,13 @@ struct CollapsibleDrawerSection<Content: View>: View {
             } label: {
                 HStack(spacing: 6) {
                     Image(systemName: "chevron.down")
-                        .font(.system(size: 8, weight: .bold))
+                        .scaledFont(size: 8, weight: .bold)
                         .foregroundStyle(theme.textTertiary)
                         .rotationEffect(.degrees(isExpanded ? 0 : -90))
                         .animation(.easeInOut(duration: AnimDuration.fast), value: isExpanded)
 
                     Text(title)
-                        .font(AppTypography.captionFont)
+                        .scaledFont(size: 12, weight: .medium)
                         .fontWeight(.semibold)
                         .foregroundStyle(theme.textTertiary)
                         .textCase(.uppercase)
@@ -37,7 +37,7 @@ struct CollapsibleDrawerSection<Content: View>: View {
 
                     if let count {
                         Text("\(count)")
-                            .font(.system(size: 10, weight: .medium))
+                            .scaledFont(size: 10, weight: .medium)
                             .foregroundStyle(theme.textTertiary)
                             .padding(.horizontal, 5)
                             .padding(.vertical, 1)

@@ -25,6 +25,20 @@ extension Date {
         f.timeStyle = .none
         return f
     }()
+    
+    /// Day-of-week formatter for recent dates within the past week.
+    private static let _dayOfWeekFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "EEEE"  // "Monday", "Tuesday", etc.
+        return f
+    }()
+    
+    /// Date separator formatter for older dates.
+    private static let _dateSeparatorFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "MMM d, yyyy"  // "Mar 14, 2026"
+        return f
+    }()
 
     // MARK: - Public API
 
@@ -42,5 +56,26 @@ extension Date {
         } else {
             return Self._dateFormatter.string(from: self)
         }
+    }
+    
+    /// Time-only string for channel inline timestamps: "2:29 AM"
+    var channelTime: String {
+        Self._timeFormatter.string(from: self)
+    }
+    
+    /// Date separator string for grouping channel messages by day.
+    /// - Today → "Today"
+    /// - Yesterday → "Yesterday"
+    /// - This week → "Monday" (day name)
+    /// - Older → "Mar 14, 2026"
+    var channelDateSeparator: String {
+        let cal = Calendar.current
+        if cal.isDateInToday(self) { return "Today" }
+        if cal.isDateInYesterday(self) { return "Yesterday" }
+        let daysAgo = cal.dateComponents([.day], from: self, to: .now).day ?? 0
+        if daysAgo < 7 {
+            return Self._dayOfWeekFormatter.string(from: self)
+        }
+        return Self._dateSeparatorFormatter.string(from: self)
     }
 }

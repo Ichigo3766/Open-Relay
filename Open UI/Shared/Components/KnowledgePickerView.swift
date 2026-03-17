@@ -93,7 +93,7 @@ struct KnowledgePickerView: View {
             ProgressView()
                 .controlSize(.small)
             Text("Loading knowledge…")
-                .font(.system(size: 13, weight: .medium))
+                .scaledFont(size: 13, weight: .medium)
                 .foregroundStyle(theme.textSecondary)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -104,10 +104,10 @@ struct KnowledgePickerView: View {
     private var emptyView: some View {
         VStack(spacing: Spacing.xs) {
             Image(systemName: "magnifyingglass")
-                .font(.system(size: 24))
+                .scaledFont(size: 24)
                 .foregroundStyle(theme.textTertiary)
             Text(query.isEmpty ? "No knowledge sources" : "No results for \"\(query)\"")
-                .font(.system(size: 14, weight: .medium))
+                .scaledFont(size: 14, weight: .medium)
                 .foregroundStyle(theme.textSecondary)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -151,7 +151,7 @@ struct KnowledgePickerView: View {
 
     private func sectionHeader(_ title: String) -> some View {
         Text(title)
-            .font(.system(size: 11, weight: .semibold))
+            .scaledFont(size: 11, weight: .semibold)
             .textCase(.uppercase)
             .foregroundStyle(theme.textTertiary)
             .padding(.horizontal, 16)
@@ -173,25 +173,25 @@ struct KnowledgePickerView: View {
                         .fill(iconColor(for: item.type).opacity(0.12))
                         .frame(width: 36, height: 36)
                     Image(systemName: item.iconName)
-                        .font(.system(size: 15, weight: .medium))
+                        .scaledFont(size: 15, weight: .medium)
                         .foregroundStyle(iconColor(for: item.type))
                 }
 
                 // Name + subtitle
                 VStack(alignment: .leading, spacing: 2) {
                     Text(item.name)
-                        .font(.system(size: 15, weight: .medium))
+                        .scaledFont(size: 15, weight: .medium)
                         .foregroundStyle(theme.textPrimary)
                         .lineLimit(1)
 
                     if let description = item.description, !description.isEmpty {
                         Text(description)
-                            .font(.system(size: 12, weight: .regular))
+                            .scaledFont(size: 12, weight: .regular)
                             .foregroundStyle(theme.textTertiary)
                             .lineLimit(1)
                     } else if let count = item.fileCount, count > 0 {
                         Text("\(count) file\(count == 1 ? "" : "s")")
-                            .font(.system(size: 12, weight: .regular))
+                            .scaledFont(size: 12, weight: .regular)
                             .foregroundStyle(theme.textTertiary)
                     }
                 }

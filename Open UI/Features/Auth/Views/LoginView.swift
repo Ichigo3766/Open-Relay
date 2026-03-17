@@ -19,21 +19,21 @@ private struct AuthScreenHeader: View {
                     .scaleEffect(appeared ? 1.0 : 0.6)
 
                 Image(systemName: icon)
-                    .font(.system(size: 32, weight: .medium))
+                    .scaledFont(size: 32, weight: .medium)
                     .foregroundStyle(theme.brandPrimary)
                     .scaleEffect(appeared ? 1.0 : 0.5)
             }
             .animation(.spring(response: 0.5, dampingFraction: 0.7).delay(0.1), value: appeared)
 
             Text(title)
-                .font(.system(size: 28, weight: .bold, design: .rounded))
+                .scaledFont(size: 28, weight: .bold, design: .rounded)
                 .foregroundStyle(theme.textPrimary)
                 .opacity(appeared ? 1 : 0)
                 .offset(y: appeared ? 0 : 8)
                 .animation(.spring(response: 0.4, dampingFraction: 0.8).delay(0.2), value: appeared)
 
             Text(subtitle)
-                .font(AppTypography.bodySmallFont)
+                .scaledFont(size: 14)
                 .foregroundStyle(theme.textSecondary)
                 .multilineTextAlignment(.center)
                 .opacity(appeared ? 1 : 0)
@@ -55,9 +55,9 @@ private struct AuthErrorBanner: View {
         HStack(spacing: Spacing.sm) {
             Image(systemName: "exclamationmark.triangle.fill")
                 .foregroundStyle(theme.error)
-                .font(.system(size: 14))
+                .scaledFont(size: 14)
             Text(message)
-                .font(AppTypography.captionFont)
+                .scaledFont(size: 12, weight: .medium)
                 .foregroundStyle(theme.error)
                 .fixedSize(horizontal: false, vertical: true)
         }
@@ -142,7 +142,7 @@ struct LoginView: View {
                     if viewModel.isSignupEnabled {
                         HStack(spacing: Spacing.xs) {
                             Text("Don't have an account?")
-                                .font(AppTypography.bodySmallFont)
+                                .scaledFont(size: 14)
                                 .foregroundStyle(theme.textTertiary)
 
                             Button {
@@ -151,7 +151,7 @@ struct LoginView: View {
                                 }
                             } label: {
                                 Text("Create one")
-                                    .font(AppTypography.labelMediumFont)
+                                    .scaledFont(size: 14, weight: .medium)
                                     .foregroundStyle(theme.brandPrimary)
                             }
                         }
@@ -183,9 +183,9 @@ struct LoginView: View {
                 } label: {
                     HStack(spacing: Spacing.xs) {
                         Image(systemName: "chevron.left")
-                            .font(.system(size: 14, weight: .semibold))
+                            .scaledFont(size: 14, weight: .semibold)
                         Text("Back")
-                            .font(AppTypography.bodySmallFont)
+                            .scaledFont(size: 14)
                     }
                     .foregroundStyle(theme.textSecondary)
                 }
@@ -289,9 +289,9 @@ struct LDAPLoginView: View {
                 } label: {
                     HStack(spacing: Spacing.xs) {
                         Image(systemName: "chevron.left")
-                            .font(.system(size: 14, weight: .semibold))
+                            .scaledFont(size: 14, weight: .semibold)
                         Text("Back")
-                            .font(AppTypography.bodySmallFont)
+                            .scaledFont(size: 14)
                     }
                     .foregroundStyle(theme.textSecondary)
                 }
@@ -332,14 +332,14 @@ struct AuthMethodSelectionView: View {
                             .scaleEffect(appeared ? 1 : 0.5)
 
                         Image(systemName: "checkmark.circle.fill")
-                            .font(.system(size: 36))
+                            .scaledFont(size: 36)
                             .foregroundStyle(theme.success)
                             .scaleEffect(appeared ? 1 : 0)
                     }
                     .animation(.spring(response: 0.5, dampingFraction: 0.6).delay(0.1), value: appeared)
 
                     Text(viewModel.serverName)
-                        .font(.system(size: 28, weight: .bold, design: .rounded))
+                        .scaledFont(size: 28, weight: .bold, design: .rounded)
                         .foregroundStyle(theme.textPrimary)
                         .opacity(appeared ? 1 : 0)
                         .offset(y: appeared ? 0 : 8)
@@ -347,7 +347,7 @@ struct AuthMethodSelectionView: View {
 
                     if let version = viewModel.serverVersion {
                         Text("Version \(version)")
-                            .font(AppTypography.captionFont)
+                            .scaledFont(size: 12, weight: .medium)
                             .foregroundStyle(theme.textTertiary)
                             .padding(.horizontal, Spacing.md)
                             .padding(.vertical, Spacing.xs)
@@ -358,7 +358,7 @@ struct AuthMethodSelectionView: View {
                     }
 
                     Text("Choose how you'd like to sign in")
-                        .font(AppTypography.bodySmallFont)
+                        .scaledFont(size: 14)
                         .foregroundStyle(theme.textSecondary)
                         .padding(.top, Spacing.xs)
                         .opacity(appeared ? 1 : 0)
@@ -451,9 +451,9 @@ struct AuthMethodSelectionView: View {
                 } label: {
                     HStack(spacing: Spacing.sm) {
                         Image(systemName: "arrow.left.circle")
-                            .font(.system(size: 14))
+                            .scaledFont(size: 14)
                         Text("Connect to a different server")
-                            .font(AppTypography.bodySmallFont)
+                            .scaledFont(size: 14)
                     }
                     .foregroundStyle(theme.textTertiary)
                 }
@@ -479,18 +479,18 @@ struct AuthMethodSelectionView: View {
         } label: {
             HStack(spacing: Spacing.md) {
                 Image(systemName: iconName)
-                    .font(.system(size: 18, weight: .semibold))
+                    .scaledFont(size: 18, weight: .semibold)
                     .foregroundStyle(theme.buttonPrimaryText)
                     .frame(width: 24, height: 24)
 
                 Text("Continue with \(displayName)")
-                    .font(AppTypography.labelLargeFont)
+                    .scaledFont(size: 16, weight: .medium)
                     .foregroundStyle(theme.buttonPrimaryText)
 
                 Spacer()
 
                 Image(systemName: "arrow.right")
-                    .font(.system(size: 12, weight: .semibold))
+                    .scaledFont(size: 12, weight: .semibold)
                     .foregroundStyle(theme.buttonPrimaryText.opacity(0.7))
             }
             .padding(.horizontal, Spacing.md)
@@ -515,7 +515,7 @@ struct AuthMethodSelectionView: View {
                 .fill(theme.divider)
                 .frame(height: 0.5)
             Text(text)
-                .font(AppTypography.captionFont)
+                .scaledFont(size: 12, weight: .medium)
                 .foregroundStyle(theme.textTertiary)
                 .padding(.horizontal, Spacing.sm)
             Rectangle()
@@ -541,24 +541,24 @@ struct AuthMethodSelectionView: View {
                         .frame(width: 44, height: 44)
 
                     Image(systemName: icon)
-                        .font(.system(size: 18, weight: .medium))
+                        .scaledFont(size: 18, weight: .medium)
                         .foregroundStyle(theme.brandPrimary)
                 }
 
                 VStack(alignment: .leading, spacing: Spacing.xxs) {
                     Text(title)
-                        .font(AppTypography.labelLargeFont)
+                        .scaledFont(size: 16, weight: .medium)
                         .foregroundStyle(theme.textPrimary)
 
                     Text(subtitle)
-                        .font(AppTypography.captionFont)
+                        .scaledFont(size: 12, weight: .medium)
                         .foregroundStyle(theme.textTertiary)
                 }
 
                 Spacer()
 
                 Image(systemName: "chevron.right")
-                    .font(.system(size: 12, weight: .semibold))
+                    .scaledFont(size: 12, weight: .semibold)
                     .foregroundStyle(theme.textTertiary)
             }
             .padding(Spacing.md)

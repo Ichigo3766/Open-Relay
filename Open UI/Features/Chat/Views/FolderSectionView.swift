@@ -35,9 +35,9 @@ struct FolderSectionView: View {
             } header: {
                 HStack(spacing: Spacing.xs) {
                     Image(systemName: "folder")
-                        .font(.system(size: 10, weight: .medium))
+                        .scaledFont(size: 10, weight: .medium)
                     Text("Folders")
-                        .font(AppTypography.captionFont)
+                        .scaledFont(size: 12, weight: .medium)
                         .fontWeight(.semibold)
                 }
                 .foregroundStyle(theme.textSecondary)
@@ -154,7 +154,7 @@ struct FolderRow: View {
             HStack(spacing: Spacing.sm) {
                 // Chevron
                 Image(systemName: "chevron.right")
-                    .font(.system(size: 11, weight: .semibold))
+                    .scaledFont(size: 11, weight: .semibold)
                     .foregroundStyle(theme.textTertiary)
                     .rotationEffect(.degrees(folder.isExpanded ? 90 : 0))
                     .animation(.easeInOut(duration: AnimDuration.fast), value: folder.isExpanded)
@@ -162,11 +162,11 @@ struct FolderRow: View {
 
                 // Folder icon + name
                 Image(systemName: folder.isExpanded ? "folder.fill" : "folder")
-                    .font(.system(size: 15))
+                    .scaledFont(size: 15)
                     .foregroundStyle(theme.brandPrimary)
 
                 Text(folder.name)
-                    .font(AppTypography.bodyMediumFont)
+                    .scaledFont(size: 16)
                     .fontWeight(.medium)
                     .foregroundStyle(theme.textPrimary)
                     .lineLimit(1)
@@ -179,7 +179,7 @@ struct FolderRow: View {
                     : (allConversations.filter { $0.folderId == folder.id }.count)
                 if count > 0 {
                     Text("\(count)")
-                        .font(AppTypography.captionFont)
+                        .scaledFont(size: 12, weight: .medium)
                         .foregroundStyle(theme.textTertiary)
                         .monospacedDigit()
                 }
@@ -201,7 +201,7 @@ struct FolderRow: View {
             HStack {
                 Spacer()
                 Text("No chats in this folder")
-                    .font(AppTypography.captionFont)
+                    .scaledFont(size: 12, weight: .medium)
                     .foregroundStyle(theme.textTertiary)
                     .padding(.vertical, Spacing.sm)
                 Spacer()
@@ -260,13 +260,13 @@ private struct FolderChatRow: View {
 
                 VStack(alignment: .leading, spacing: 2) {
                     Text(conversation.title)
-                        .font(AppTypography.bodySmallFont)
+                        .scaledFont(size: 14)
                         .fontWeight(.medium)
                         .foregroundStyle(theme.textPrimary)
                         .lineLimit(1)
 
                     Text(conversation.updatedAt.chatTimestamp)
-                        .font(AppTypography.captionFont)
+                        .scaledFont(size: 12, weight: .medium)
                         .foregroundStyle(theme.textTertiary)
                 }
 
@@ -284,9 +284,9 @@ private struct FolderChatRow: View {
             // Drag preview
             HStack(spacing: Spacing.xs) {
                 Image(systemName: "bubble.left")
-                    .font(.system(size: 13))
+                    .scaledFont(size: 13)
                 Text(conversation.title)
-                    .font(AppTypography.captionFont)
+                    .scaledFont(size: 12, weight: .medium)
                     .lineLimit(1)
             }
             .padding(.horizontal, Spacing.sm)
