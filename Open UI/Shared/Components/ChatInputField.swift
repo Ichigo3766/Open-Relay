@@ -117,6 +117,7 @@ struct ChatInputField: View {
     @Environment(\.theme) private var theme
     @FocusState private var isFocused: Bool
     @State private var showToolsSheet = false
+    @State private var previewingTranscript: ChatAttachment? = nil
 
     /// Quick pills preference from UserDefaults
     @AppStorage("quickPills") private var quickPillsData: String = ""
@@ -198,6 +199,9 @@ struct ChatInputField: View {
             if isPresented { onToolsSheetPresented?() }
         }
         .animation(.easeOut(duration: 0.2), value: attachments.count)
+        .sheet(item: $previewingTranscript) { attachment in
+            TranscriptPreviewSheet(attachment: attachment)
+        }
     }
 
     // MARK: - Composer Shell
@@ -798,28 +802,90 @@ struct ChatInputField: View {
                         .frame(width: 56, height: 56)
                         .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
                 } else if attachment.type == .audio {
+                    // Determine audio mode: server or on-device
+                    let audioFileMode = UserDefaults.standard.string(forKey: "audioFileTranscriptionMode") ?? "server"
+                    let isServerMode = audioFileMode == "server"
+                    let hasTranscript = attachment.transcribedText != nil
+                    let isError = attachment.uploadStatus == .error
+                    let isComplete = attachment.uploadStatus == .completed || hasTranscript
+
                     RoundedRectangle(cornerRadius: 10, style: .continuous)
-                        .fill(theme.brandPrimary.opacity(0.1))
+                        .fill(
+                            isError
+                                ? theme.error.opacity(0.12)
+                                : isComplete
+                                    ? theme.brandPrimary.opacity(0.15)
+                                    : theme.brandPrimary.opacity(0.1)
+                        )
                         .frame(width: 56, height: 56)
                         .overlay(
                             VStack(spacing: 3) {
-                                if attachment.isTranscribing {
-                                    ProgressView().controlSize(.small)
-                                } else if attachment.transcribedText != nil {
-                                    Image(systemName: "checkmark.circle.fill")
-                                        .scaledFont(size: 16)
-                                        .foregroundStyle(theme.success)
+                                if isServerMode {
+                                    // Server mode: show upload/processing status
+                                    if attachment.isUploading {
+                                        ProgressView().controlSize(.small)
+                                            .tint(theme.brandPrimary)
+                                    } else if isError {
+                                        Button {
+                                            // Retry upload by posting notification
+                                            NotificationCenter.default.post(
+                                                name: .retryAttachmentUpload,
+                                                object: attachment.id
+                                            )
+                                            Haptics.play(.light)
+                                        } label: {
+                                            Image(systemName: "arrow.clockwise.circle.fill")
+                                                .scaledFont(size: 16)
+                                                .foregroundStyle(theme.error)
+                                        }
+                                        .buttonStyle(.plain)
+                                    } else if attachment.uploadStatus == .completed {
+                                        Image(systemName: "checkmark.circle.fill")
+                                            .scaledFont(size: 16)
+                                            .foregroundStyle(theme.success)
+                                    } else {
+                                        Image(systemName: "waveform")
+                                            .scaledFont(size: 16)
+                                            .foregroundStyle(theme.brandPrimary)
+                                    }
                                 } else {
-                                    Image(systemName: "waveform")
-                                        .scaledFont(size: 16)
-                                        .foregroundStyle(theme.brandPrimary)
+                                    // On-device mode: show transcription status
+                                    if attachment.isTranscribing {
+                                        ProgressView().controlSize(.small)
+                                    } else if hasTranscript {
+                                        Image(systemName: "checkmark.circle.fill")
+                                            .scaledFont(size: 16)
+                                            .foregroundStyle(theme.success)
+                                    } else {
+                                        Image(systemName: "waveform")
+                                            .scaledFont(size: 16)
+                                            .foregroundStyle(theme.brandPrimary)
+                                    }
                                 }
                                 Text(attachment.name)
                                     .scaledFont(size: 7)
-                                    .foregroundStyle(theme.textTertiary)
+                                    .foregroundStyle(isError ? theme.error : theme.textTertiary)
                                     .lineLimit(1)
                             }
                         )
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                .strokeBorder(
+                                    isError
+                                        ? theme.error.opacity(0.5)
+                                        : isComplete
+                                            ? theme.success.opacity(0.4)
+                                            : Color.clear,
+                                    lineWidth: 1
+                                )
+                        )
+                        .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                        .onTapGesture {
+                            if hasTranscript {
+                                Haptics.play(.light)
+                                previewingTranscript = attachment
+                            }
+                        }
                 } else {
                     RoundedRectangle(cornerRadius: 10, style: .continuous)
                         .fill(theme.surfaceContainer)
@@ -894,4 +960,58 @@ private struct QuickPill: Identifiable {
     let label: String
     let isActive: Bool
     let action: () -> Void
+}
+
+// MARK: - Transcript Preview Sheet
+
+struct TranscriptPreviewSheet: View {
+    let attachment: ChatAttachment
+    @Environment(\.dismiss) private var dismiss
+    @Environment(\.theme) private var theme
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 0) {
+                    if let text = attachment.transcribedText, !text.isEmpty {
+                        Text(text)
+                            .scaledFont(size: 15)
+                            .foregroundStyle(theme.textPrimary)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(20)
+                            .textSelection(.enabled)
+                    } else {
+                        ContentUnavailableView(
+                            "No Transcript",
+                            systemImage: "waveform.slash",
+                            description: Text("This audio file has no transcribed text.")
+                        )
+                        .padding(.top, 60)
+                    }
+                }
+            }
+            .background(theme.background)
+            .navigationTitle(attachment.name)
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") { dismiss() }
+                        .foregroundStyle(theme.brandPrimary)
+                }
+                if let text = attachment.transcribedText, !text.isEmpty {
+                    ToolbarItem(placement: .navigationBarLeading) {
+                        Button {
+                            UIPasteboard.general.string = text
+                            Haptics.play(.light)
+                        } label: {
+                            Label("Copy", systemImage: "doc.on.doc")
+                        }
+                        .foregroundStyle(theme.brandPrimary)
+                    }
+                }
+            }
+        }
+        .presentationDetents([.medium, .large])
+        .presentationDragIndicator(.visible)
+    }
 }

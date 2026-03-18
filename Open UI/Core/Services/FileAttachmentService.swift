@@ -144,6 +144,11 @@ final class FileAttachmentService {
     /// Uploads a single attachment to the server immediately.
     /// Updates the attachment's status as it progresses through
     /// uploading → processing → completed (or error).
+    ///
+    /// For non-image files, two phases are shown:
+    /// 1. `.uploading` — multipart POST in progress
+    /// 2. `.processing` — file is on server, SSE polling for completion
+    /// 3. `.completed` or `.error` — done
     private func uploadAttachment(id: UUID) async {
         guard let manager = conversationManager else {
             updateAttachmentStatus(id: id, status: .error, error: "Not connected to server")
@@ -156,28 +161,38 @@ final class FileAttachmentService {
         }
 
         let fileName = pendingAttachments[index].name
-        let isImage = pendingAttachments[index].type == .image
 
         // Mark as uploading
         updateAttachmentStatus(id: id, status: .uploading)
 
         do {
-            // Upload file — for non-images, this also waits for processing
-            // (the APIClient.uploadFile method handles ?process=true + SSE polling)
-            if !isImage {
-                // For documents: show "processing" after upload starts
-                // We split this into two phases for better UI feedback
-                let fileId = try await manager.uploadFile(data: data, fileName: fileName)
-                updateAttachmentStatus(id: id, status: .completed, fileId: fileId)
-            } else {
-                let fileId = try await manager.uploadFile(data: data, fileName: fileName)
-                updateAttachmentStatus(id: id, status: .completed, fileId: fileId)
-            }
-
-            logger.info("Attachment \(fileName) uploaded successfully")
+            // For non-images: transition to .processing once upload completes,
+            // while waiting for the server's SSE processing poll.
+            let fileId = try await manager.uploadFile(
+                data: data,
+                fileName: fileName,
+                onUploaded: { [weak self] _ in
+                    // Called on the calling task's thread (non-isolated);
+                    // dispatch back to MainActor to update @Observable state.
+                    Task { @MainActor [weak self] in
+                        self?.updateAttachmentStatus(id: id, status: .processing)
+                    }
+                }
+            )
+            updateAttachmentStatus(id: id, status: .completed, fileId: fileId)
+            logger.info("Attachment \(fileName) uploaded and processed successfully")
         } catch {
-            logger.error("Failed to upload \(fileName): \(error.localizedDescription)")
-            updateAttachmentStatus(id: id, status: .error, error: error.localizedDescription)
+            // Surface the server error message (e.g. transcription failure) to the user.
+            let message: String
+            if let apiError = error as? APIError,
+               case .httpError(_, let msg, _) = apiError,
+               let msg {
+                message = msg
+            } else {
+                message = error.localizedDescription
+            }
+            logger.error("Failed to upload/process \(fileName): \(message)")
+            updateAttachmentStatus(id: id, status: .error, error: message)
         }
     }
 

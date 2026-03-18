@@ -8,6 +8,9 @@ extension Notification.Name {
     static let conversationListNeedsRefresh = Notification.Name("conversationListNeedsRefresh")
     /// Posted by AdminConsoleView when a user's chat is cloned.
     static let adminClonedChat = Notification.Name("adminClonedChat")
+    /// Posted by the audio attachment thumbnail's retry button.
+    /// `object` is the `UUID` of the attachment to retry uploading.
+    static let retryAttachmentUpload = Notification.Name("retryAttachmentUpload")
 }
 
 /// Manages state and logic for a single chat conversation.
@@ -36,7 +39,6 @@ final class ChatViewModel {
     var webSearchEnabled: Bool = false
     var imageGenerationEnabled: Bool = false
     var codeInterpreterEnabled: Bool = false
-    var nativeFunctionCalling: Bool = false
     var isTemporaryChat: Bool = false
     var availableTools: [ToolItem] = []
     var selectedToolIds: Set<String> = [] {
@@ -100,7 +102,13 @@ final class ChatViewModel {
     let conversationId: String?
     private var manager: ConversationManager?
     private var socketService: SocketIOService?
+    /// Weak reference to the shared ASR service, set via configure().
+    private weak var asrService: OnDeviceASRService?
     private var streamingTask: Task<Void, Never>?
+    /// Active transcription tasks keyed by attachment ID.
+    /// Stored here so they survive navigation — the VM lives in ActiveChatStore
+    /// and is never destroyed when the user switches chats.
+    private var transcriptionTasks: [UUID: Task<Void, Never>] = [:]
     /// The post-streaming completion task (chatCompleted + file polling + metadata refresh).
     /// Cancelled when a new message is sent so it doesn't overwrite newer messages.
     private var completionTask: Task<Void, Never>?
@@ -133,6 +141,14 @@ final class ChatViewModel {
     @ObservationIgnored nonisolated(unsafe) private var foregroundObserver: NSObjectProtocol?
     @ObservationIgnored nonisolated(unsafe) private var backgroundObserver: NSObjectProtocol?
     @ObservationIgnored nonisolated(unsafe) private var backgroundTaskId: UIBackgroundTaskIdentifier = .invalid
+    /// Separate background task assertion for on-device ASR transcription.
+    /// Independent from backgroundTaskId (which covers streaming completion).
+    @ObservationIgnored nonisolated(unsafe) private var transcriptionBackgroundTaskId: UIBackgroundTaskIdentifier = .invalid
+
+    /// Pending transcriptions that were interrupted when the app moved to the background
+    /// (iOS < 26 only — no GPU access in background). Keyed by attachment ID.
+    /// Re-started automatically when the app returns to foreground.
+    private var pendingResumeTranscriptions: [UUID: (audioData: Data, fileName: String)] = [:]
 
     /// Timestamp of the last successful server sync. Used to debounce
     /// redundant syncs when the app rapidly transitions foreground ↔ background.
@@ -167,6 +183,12 @@ final class ChatViewModel {
                 || !attachments.isEmpty)
     }
 
+    /// True if any transcription Task is currently running.
+    /// Used by ActiveChatStore to prevent evicting a VM that is still working.
+    var hasActiveTranscriptions: Bool {
+        !transcriptionTasks.isEmpty
+    }
+
     /// Whether any attachment is still uploading or being processed.
     var hasUploadingAttachments: Bool {
         attachments.contains { $0.isUploading }
@@ -184,8 +206,9 @@ final class ChatViewModel {
     /// The send button is blocked while any attachment has `isUploading == true`.
     func uploadAttachmentImmediately(attachmentId: UUID) {
         guard let index = attachments.firstIndex(where: { $0.id == attachmentId }) else { return }
-        // Skip audio — those use transcription, not file upload
-        guard attachments[index].type != .audio else { return }
+        // Skip audio only when in on-device transcription mode — server mode uploads audio like any file
+        let audioFileMode = UserDefaults.standard.string(forKey: "audioFileTranscriptionMode") ?? "server"
+        guard !(attachments[index].type == .audio && audioFileMode == "device") else { return }
 
         attachments[index].uploadStatus = .uploading
 
@@ -204,8 +227,22 @@ final class ChatViewModel {
             let fileName = attachments[idx].name
 
             do {
-                // APIClient.uploadFile handles ?process=true + SSE polling
-                let fileId = try await manager.uploadFile(data: data, fileName: fileName)
+                // APIClient.uploadFile handles ?process=true + SSE polling.
+                // onUploaded fires after the file is stored on the server but BEFORE
+                // SSE processing completes — we switch the chip from "uploading" to
+                // "processing" so the user sees the two-phase status.
+                let fileId = try await manager.uploadFile(
+                    data: data,
+                    fileName: fileName,
+                    onUploaded: { [weak self] _ in
+                        Task { @MainActor [weak self] in
+                            guard let self else { return }
+                            if let idx = self.attachments.firstIndex(where: { $0.id == attachmentId }) {
+                                self.attachments[idx].uploadStatus = .processing
+                            }
+                        }
+                    }
+                )
                 // Update on success
                 if let idx = attachments.firstIndex(where: { $0.id == attachmentId }) {
                     attachments[idx].uploadStatus = .completed
@@ -218,11 +255,23 @@ final class ChatViewModel {
 
                 logger.info("Attachment \(fileName) uploaded + processed: \(fileId)")
             } catch {
+                // Extract the clean server error message when available.
+                // APIClient.waitForFileProcessing throws APIError.httpError with
+                // the stripped server error text (e.g. "Error transcribing chunk…"
+                // cleaned to just the relevant message).
+                let errorMessage: String
+                if let apiError = error as? APIError,
+                   case .httpError(_, let msg, _) = apiError,
+                   let msg, !msg.isEmpty {
+                    errorMessage = msg
+                } else {
+                    errorMessage = error.localizedDescription
+                }
                 if let idx = attachments.firstIndex(where: { $0.id == attachmentId }) {
                     attachments[idx].uploadStatus = .error
-                    attachments[idx].uploadError = error.localizedDescription
+                    attachments[idx].uploadError = errorMessage
                 }
-                logger.error("Attachment upload failed for \(fileName): \(error.localizedDescription)")
+                logger.error("Attachment upload failed for \(fileName): \(errorMessage)")
             }
         }
     }
@@ -242,11 +291,146 @@ final class ChatViewModel {
     /// Weak reference to the shared store — used to write back model cache.
     private weak var activeChatStore: ActiveChatStore?
 
-    func configure(with manager: ConversationManager, socket: SocketIOService? = nil, store: ActiveChatStore? = nil) {
+    func configure(with manager: ConversationManager, socket: SocketIOService? = nil, store: ActiveChatStore? = nil, asr: OnDeviceASRService? = nil) {
         self.manager = manager
         self.socketService = socket
         self.serverBaseURL = manager.baseURL
         self.activeChatStore = store
+        self.asrService = asr
+        setupRetryAttachmentObserver()
+    }
+
+    /// Registers the observer that handles retry requests posted by the
+    /// audio attachment thumbnail's retry button.
+    ///
+    /// When the user taps the retry button on a failed audio upload chip,
+    /// `ChatInputField` posts `.retryAttachmentUpload` with the attachment
+    /// UUID as the `object`. This observer picks it up and re-runs
+    /// `uploadAttachmentImmediately` so the status cycles back through
+    /// uploading → processing → completed/error without requiring a new configure().
+    private func setupRetryAttachmentObserver() {
+        NotificationCenter.default.addObserver(
+            forName: .retryAttachmentUpload,
+            object: nil,
+            queue: .main
+        ) { [weak self] notification in
+            guard let self, let attachmentId = notification.object as? UUID else { return }
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                // Reset to pending so the thumbnail immediately shows a spinner
+                if let idx = self.attachments.firstIndex(where: { $0.id == attachmentId }) {
+                    self.attachments[idx].uploadStatus = .pending
+                    self.attachments[idx].uploadError = nil
+                }
+                self.uploadAttachmentImmediately(attachmentId: attachmentId)
+            }
+        }
+    }
+
+    // MARK: - Audio Transcription (Navigation-Persistent)
+
+    /// Starts transcription for an audio attachment and stores the Task on the VM.
+    ///
+    /// Because the VM lives in `ActiveChatStore` and survives navigation, the Task
+    /// stored here will NOT be cancelled when the user navigates to another chat,
+    /// the welcome screen, or anywhere else in the app. When the user returns to
+    /// this chat, the attachment's `isTranscribing` state reflects the live status
+    /// and `transcribedText` is populated as soon as the model finishes.
+    ///
+    /// - Parameters:
+    ///   - attachmentId: The UUID of the `ChatAttachment` to transcribe.
+    ///   - audioData: Raw audio file bytes.
+    ///   - fileName: Original filename (used for the temp file extension).
+    func transcribeAudioAttachment(attachmentId: UUID, audioData: Data, fileName: String) {
+        guard let asr = asrService, asr.isAvailable, asr.autoTranscribeEnabled else { return }
+
+        // Cancel any existing task for this attachment (e.g., user re-added the same file)
+        transcriptionTasks[attachmentId]?.cancel()
+
+        // Begin a background task the first time transcription starts (if not already running).
+        // This requests ~30 seconds of extra CPU time from iOS when the app moves to the
+        // background. If transcription finishes before the time expires, we end it early.
+        // If it takes longer (e.g. large file), iOS will suspend (NOT terminate) the process
+        // after the grant expires, and the Task resumes naturally when the user returns.
+        if transcriptionBackgroundTaskId == .invalid {
+            transcriptionBackgroundTaskId = UIApplication.shared.beginBackgroundTask(
+                withName: "OnDeviceASRTranscription"
+            ) { [weak self] in
+                // Expiry handler — iOS is about to suspend us; end the assertion gracefully.
+                // The Task itself is NOT cancelled — it will resume when the app foregrounds.
+                guard let self else { return }
+                Task { @MainActor in self.endTranscriptionBackgroundTask() }
+            }
+        }
+
+        let task = Task { @MainActor [weak self] in
+            guard let self else { return }
+
+            // Mark as transcribing
+            if let idx = self.attachments.firstIndex(where: { $0.id == attachmentId }) {
+                self.attachments[idx].isTranscribing = true
+            }
+
+            do {
+                let transcript = try await asr.transcribe(audioData: audioData, fileName: fileName)
+
+                // Only update if attachment still exists (user may have removed it)
+                if let idx = self.attachments.firstIndex(where: { $0.id == attachmentId }) {
+                    self.attachments[idx].transcribedText = transcript
+                    self.attachments[idx].isTranscribing = false
+                }
+                // Clear any pending resume record — transcription succeeded
+                self.pendingResumeTranscriptions.removeValue(forKey: attachmentId)
+                self.logger.info("Transcription complete for \(fileName): \(transcript.count) chars")
+            } catch ASRError.backgroundInterrupted {
+                // iOS < 26: The app moved to the background and Metal GPU access
+                // was revoked. The task was cancelled gracefully (no crash).
+                // Keep the attachment in "transcribing" state and store the audio
+                // data so we can restart automatically when the app foregrounds.
+                self.logger.info("Transcription paused for background: \(fileName) — will auto-resume on foreground")
+                if let idx = self.attachments.firstIndex(where: { $0.id == attachmentId }) {
+                    // Keep isTranscribing = true so the chip still shows a spinner
+                    // (transcription resumes; user doesn't need to do anything).
+                    self.attachments[idx].isTranscribing = true
+                }
+                // Store audio data + filename so foreground sync can restart it
+                self.pendingResumeTranscriptions[attachmentId] = (audioData: audioData, fileName: fileName)
+                // Remove from active tasks — the task has ended; a new one will be started on resume
+                self.transcriptionTasks.removeValue(forKey: attachmentId)
+                self.endTranscriptionBackgroundTask()
+                return
+            } catch {
+                if let idx = self.attachments.firstIndex(where: { $0.id == attachmentId }) {
+                    self.attachments[idx].isTranscribing = false
+                }
+                // Only surface the error if the task wasn't explicitly cancelled
+                if !Task.isCancelled {
+                    self.errorMessage = "Transcription failed: \(error.localizedDescription)"
+                    self.logger.error("Transcription failed for \(fileName): \(error.localizedDescription)")
+                }
+            }
+
+            // Clean up the task reference once complete
+            self.transcriptionTasks.removeValue(forKey: attachmentId)
+
+            // If all transcriptions are done, unload the model to free ~400-600 MB of RAM.
+            // The model will reload automatically on the next transcription request.
+            // Also end the iOS background task assertion (no more CPU work needed).
+            if self.transcriptionTasks.isEmpty {
+                asr.unloadModel()
+                self.logger.info("All transcriptions complete — ASR model unloaded to free memory")
+                self.endTranscriptionBackgroundTask()
+            }
+        }
+
+        transcriptionTasks[attachmentId] = task
+    }
+
+    /// Ends the iOS background task assertion for on-device transcription.
+    private func endTranscriptionBackgroundTask() {
+        guard transcriptionBackgroundTaskId != .invalid else { return }
+        UIApplication.shared.endBackgroundTask(transcriptionBackgroundTaskId)
+        transcriptionBackgroundTaskId = .invalid
     }
 
     func resolvedImageURL(for model: AIModel?) -> URL? {
@@ -667,6 +851,23 @@ final class ChatViewModel {
                     await self.syncWithServer()
                 } else {
                     self.logger.debug("Foreground sync skipped — background duration \(bgDuration)s < 10s")
+                }
+
+                // Auto-resume any transcriptions that were paused when the app
+                // went to background on iOS < 26 (where GPU access is forbidden
+                // in the background). The audio data was saved in
+                // pendingResumeTranscriptions at pause time; restart them now.
+                if !self.pendingResumeTranscriptions.isEmpty {
+                    let pending = self.pendingResumeTranscriptions
+                    self.pendingResumeTranscriptions = [:]
+                    self.logger.info("Resuming \(pending.count) paused transcription(s) after foreground return")
+                    for (attachmentId, info) in pending {
+                        self.transcribeAudioAttachment(
+                            attachmentId: attachmentId,
+                            audioData: info.audioData,
+                            fileName: info.fileName
+                        )
+                    }
                 }
             }
         }
@@ -1612,12 +1813,11 @@ final class ChatViewModel {
         webSearchEnabled = false
         imageGenerationEnabled = false
         codeInterpreterEnabled = false
-        nativeFunctionCalling = UserDefaults.standard.bool(forKey: "nativeFunctionCallingDefault")
         isTemporaryChat = UserDefaults.standard.bool(forKey: "temporaryChatDefault")
         userDisabledToolIds = []
         selectedToolIds = []
         selectedKnowledgeItems = []
-        // Sync UI toggles with the selected model's server-configured defaults
+        // Sync UI toggles with the selected model's server-configured defaults.
         syncUIWithModelDefaults()
     }
 
@@ -1654,29 +1854,37 @@ final class ChatViewModel {
             return
         }
 
-        // Process audio attachments — convert transcribed audio into text file
-        // attachments so the model can reference them as context (like a text
-        // document), rather than putting the text inline in the message.
+        // Process audio attachments depending on transcription mode.
+        // Server mode: audio was already uploaded via /api/v1/files/?process=true —
+        //   treat it like any other uploaded file (pass through with its uploadedFileId).
+        // Device mode: on-device transcription produced transcribedText — convert that
+        //   to a .txt file attachment so the model can read it as a document.
+        let audioFileMode = UserDefaults.standard.string(forKey: "audioFileTranscriptionMode") ?? "server"
         var processedAttachments: [ChatAttachment] = []
 
         for attachment in attachments {
             if attachment.type == .audio {
-                if let transcript = attachment.transcribedText, !transcript.isEmpty {
-                    // Convert the transcription into a text file attachment
-                    // The server treats it like any uploaded document
-                    let baseName = (attachment.name as NSString).deletingPathExtension
-                    let transcriptFileName = "\(baseName)_transcript.txt"
-                    let transcriptData = transcript.data(using: .utf8) ?? Data()
+                if audioFileMode == "server" {
+                    // Server already transcribed the file — pass it through so
+                    // the uploadedFileId is included in the message payload.
+                    processedAttachments.append(attachment)
+                } else {
+                    // On-device mode: convert transcription to a text file attachment.
+                    if let transcript = attachment.transcribedText, !transcript.isEmpty {
+                        let baseName = (attachment.name as NSString).deletingPathExtension
+                        let transcriptFileName = "\(baseName)_transcript.txt"
+                        let transcriptData = transcript.data(using: .utf8) ?? Data()
 
-                    let textAttachment = ChatAttachment(
-                        type: .file,
-                        name: transcriptFileName,
-                        thumbnail: nil,
-                        data: transcriptData
-                    )
-                    processedAttachments.append(textAttachment)
+                        let textAttachment = ChatAttachment(
+                            type: .file,
+                            name: transcriptFileName,
+                            thumbnail: nil,
+                            data: transcriptData
+                        )
+                        processedAttachments.append(textAttachment)
+                    }
+                    // Don't include the raw audio file in device mode — only the transcript
                 }
-                // Don't upload the raw audio file — only the transcription
             } else {
                 processedAttachments.append(attachment)
             }
@@ -1707,8 +1915,10 @@ final class ChatViewModel {
                     "id": fileId,
                     "name": attachment.name
                 ])
-            } else if let data = attachment.data {
-                // Fallback: upload now (e.g., audio transcript text files)
+            } else if let data = attachment.data, attachment.uploadStatus != .error {
+                // Fallback: upload now (e.g., audio transcript text files that don't go
+                // through uploadAttachmentImmediately). Skip attachments that previously
+                // failed — the error chip is already shown; the user must retry or remove.
                 do {
                     let fileId = try await manager.uploadFile(data: data, fileName: attachment.name)
                     fileRefs.append([
@@ -1720,6 +1930,8 @@ final class ChatViewModel {
                     logger.error("Upload failed: \(error.localizedDescription)")
                 }
             }
+            // Note: attachments with uploadStatus == .error and no uploadedFileId are
+            // intentionally skipped — they failed at attach-time and must be retried or removed.
         }
 
         // Create user message - store file IDs (not base64) matching Flutter behavior
@@ -1885,11 +2097,21 @@ final class ChatViewModel {
                 // (e.g., enabling/disabling web search, image gen, tools)
                 await self.refreshSelectedModelMetadata()
 
-                // Build features from user toggles + model's admin-configured defaults
-                let features = self.buildChatFeatures()
-                if features.hasAnyEnabled {
-                    request.features = features
-                }
+                // Always send the full features object with explicit true/false for
+                // each feature. Omitting features (or only sending true ones) causes
+                // the server to fall back to the model's defaultFeatureIds, ignoring
+                // toggles the user explicitly turned OFF.
+                request.features = self.buildChatFeatures()
+
+                // Always explicitly send the server's function_calling mode.
+                // The server reads params["function_calling"] to decide between
+                // native and default tool calling. Omitting it or sending empty {}
+                // causes the server to fall back to whatever its global default is,
+                // which may differ from the per-model setting. Sending "default"
+                // explicitly forces the server to use the non-native path even when
+                // its global default is "native".
+                let functionCallingMode = self.selectedModel?.functionCallingMode ?? "default"
+                request.params = ["function_calling": functionCallingMode.isEmpty ? "default" : functionCallingMode]
 
                 // Use only selectedToolIds — model-assigned and globally-enabled
                 // tools are already synced into selectedToolIds by
@@ -1918,7 +2140,7 @@ final class ChatViewModel {
                 if suggestionsEnabled { bgTasks["follow_up_generation"] = true }
                 if isFirst && titleGenEnabled { bgTasks["title_generation"] = true }
                 if isFirst && tagsEnabled { bgTasks["tags_generation"] = true }
-                if features.webSearch { bgTasks["web_search"] = true }
+                if self.webSearchEnabled { bgTasks["web_search"] = true }
                 if !bgTasks.isEmpty { request.backgroundTasks = bgTasks }
 
                 if capturedUseSSEFallback {
@@ -2228,11 +2450,13 @@ final class ChatViewModel {
                 // Refresh model metadata to pick up live admin changes
                 await self.refreshSelectedModelMetadata()
 
-                // Build features from user toggles + model's admin-configured defaults
-                let features = self.buildChatFeatures()
-                if features.hasAnyEnabled {
-                    request.features = features
-                }
+                // Always send the full features object with explicit true/false.
+                let regenFeatures = self.buildChatFeatures()
+                request.features = regenFeatures
+
+                // Always explicitly send the server's function_calling mode.
+                let functionCallingMode = self.selectedModel?.functionCallingMode ?? "default"
+                request.params = ["function_calling": functionCallingMode.isEmpty ? "default" : functionCallingMode]
 
                 // Use only selectedToolIds — respects user's in-session disabling
                 let allToolIds = Array(self.selectedToolIds)
@@ -2246,7 +2470,7 @@ final class ChatViewModel {
                 let suggestionsEnabled = UserDefaults.standard.object(forKey: "suggestionsEnabled") as? Bool ?? true
                 var bgTasks: [String: Any] = [:]
                 if suggestionsEnabled { bgTasks["follow_up_generation"] = true }
-                if features.webSearch { bgTasks["web_search"] = true }
+                if regenFeatures.webSearch { bgTasks["web_search"] = true }
                 request.backgroundTasks = bgTasks
 
                 let json = try await manager.sendMessageHTTP(request: request)
@@ -2284,6 +2508,11 @@ final class ChatViewModel {
         userDisabledToolIds = []
         syncUIWithModelDefaults()
         conversation?.model = modelId
+        // Fetch full model config from single-model endpoint to get params.function_calling,
+        // toolIds, defaultFeatureIds, and capabilities — which /api/models doesn't return.
+        Task { [weak self] in
+            await self?.refreshSelectedModelConfig()
+        }
     }
 
     // MARK: - Edit & Delete Messages
@@ -3085,22 +3314,52 @@ final class ChatViewModel {
     /// to every message when the models haven't changed.
     private var lastModelMetadataRefreshTime: Date = .distantPast
 
+    /// Fetches full model config from `/api/v1/models/model?id={id}` for the selected model.
+    ///
+    /// This is the authoritative source for:
+    /// - `params.function_calling` ("native" | absent) — which /api/models never returns
+    /// - `meta.capabilities`, `meta.toolIds`, `meta.defaultFeatureIds`
+    ///
+    /// Called when a model is selected (selectModel) so the UI always reflects
+    /// the server's actual config. Updates the model in `availableModels` and
+    /// re-syncs UI defaults.
+    private func refreshSelectedModelConfig() async {
+        guard let modelId = selectedModelId, let manager else { return }
+        do {
+            if let fullModel = try await manager.apiClient.fetchModelConfig(modelId: modelId) {
+                if let idx = availableModels.firstIndex(where: { $0.id == modelId }) {
+                    availableModels[idx] = fullModel
+                } else {
+                    availableModels.append(fullModel)
+                }
+                lastModelMetadataRefreshTime = Date()
+                syncUIWithModelDefaults()
+                logger.info("Model config loaded: \(modelId) function_calling=\(fullModel.functionCallingMode ?? "default")")
+            }
+        } catch {
+            logger.debug("Model config fetch failed for \(modelId): \(error.localizedDescription)")
+        }
+    }
+
     /// Refreshes the selected model's metadata (capabilities, defaultFeatureIds, toolIds)
     /// from the server. Called before each message send to pick up live admin changes
     /// without requiring the user to restart the chat.
     ///
     /// Throttled to at most once per 60 seconds to avoid adding unnecessary
-    /// network latency to every send operation.
+    /// network latency to every send operation. Uses the single-model endpoint
+    /// (/api/v1/models/model) which also returns params.function_calling.
     private func refreshSelectedModelMetadata() async {
         guard let modelId = selectedModelId, let manager else { return }
         // Skip if we refreshed recently (< 60s) — model admin changes are rare
         guard Date().timeIntervalSince(lastModelMetadataRefreshTime) > 60 else { return }
         do {
-            let freshModels = try await manager.fetchModels()
-            lastModelMetadataRefreshTime = Date()
-            if let updated = freshModels.first(where: { $0.id == modelId }),
-               let idx = availableModels.firstIndex(where: { $0.id == modelId }) {
-                availableModels[idx] = updated
+            if let fullModel = try await manager.apiClient.fetchModelConfig(modelId: modelId) {
+                lastModelMetadataRefreshTime = Date()
+                if let idx = availableModels.firstIndex(where: { $0.id == modelId }) {
+                    availableModels[idx] = fullModel
+                }
+                // Re-sync to apply any admin changes (e.g., function_calling mode change)
+                syncUIWithModelDefaults()
             }
         } catch {
             // Non-critical — proceed with cached model data
@@ -3173,9 +3432,6 @@ final class ChatViewModel {
         }
         if codeInterpreterEnabled {
             features.codeInterpreter = true
-        }
-        if nativeFunctionCalling {
-            features.nativeToolCalling = true
         }
 
         return features

@@ -120,9 +120,9 @@ final class ChannelViewModel {
     }
     
     /// Whether the current user has write access to this channel (MF-005).
+    /// Determined solely by the server-returned `write_access` field.
     var hasWriteAccess: Bool {
-        guard let channel, let userId = currentUserId else { return true }
-        return channel.hasWriteAccess(userId: userId)
+        channel?.canWrite ?? true
     }
     
     /// Whether the current user can access channel settings.

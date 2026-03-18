@@ -1,4 +1,5 @@
 import SwiftUI
+import Speech
 
 /// Modern compact voice call interface presented as a sheet.
 /// Minimal, sleek design inspired by iOS Live Activities and Dynamic Island.
@@ -10,6 +11,10 @@ struct VoiceCallView: View {
 
     /// Whether to start a new conversation for this call.
     var startNewConversation: Bool = false
+
+    @AppStorage("sttLocale") private var sttLocale: String = ""
+    @AppStorage("ttsVoiceIdentifier") private var ttsVoiceIdentifier: String = ""
+    @State private var showVoiceSettings = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -251,6 +256,13 @@ struct VoiceCallView: View {
 
             Spacer()
 
+            // Voice / language settings
+            compactControl(icon: "globe", isActive: false) {
+                showVoiceSettings = true
+            }
+
+            Spacer()
+
             // End call
             compactControl(
                 icon: "phone.down.fill",
@@ -265,6 +277,16 @@ struct VoiceCallView: View {
             }
 
             Spacer()
+        }
+        .sheet(isPresented: $showVoiceSettings) {
+            VoiceCallSettingsSheet(
+                sttLocale: $sttLocale,
+                ttsVoiceIdentifier: $ttsVoiceIdentifier,
+                speechService: dependencies.speechRecognitionService,
+                ttsService: dependencies.textToSpeechService
+            )
+            .presentationDetents([.medium])
+            .presentationDragIndicator(.visible)
         }
     }
 
@@ -440,6 +462,84 @@ struct CompactOrbView: View {
     private func stopPulse() {
         withAnimation(.easeOut(duration: 0.3)) {
             pulse = 1.0
+        }
+    }
+}
+
+// MARK: - Voice Call Settings Sheet
+
+/// Compact in-call sheet for quickly switching STT language and TTS voice.
+struct VoiceCallSettingsSheet: View {
+    @Binding var sttLocale: String
+    @Binding var ttsVoiceIdentifier: String
+    let speechService: SpeechRecognitionService
+    let ttsService: TextToSpeechService
+    @Environment(\.dismiss) private var dismiss
+
+    private var supportedSTTLocales: [Locale] {
+        SFSpeechRecognizer.supportedLocales()
+            .sorted {
+                (Locale.current.localizedString(forIdentifier: $0.identifier) ?? $0.identifier)
+                    < (Locale.current.localizedString(forIdentifier: $1.identifier) ?? $1.identifier)
+            }
+    }
+
+    private var availableTTSVoices: [AVSpeechSynthesisVoice] {
+        ttsService.availableVoices()
+    }
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Section("Speech Recognition Language") {
+                    NavigationLink {
+                        STTLanguagePickerView(sttLocale: $sttLocale, locales: supportedSTTLocales)
+                            .onChange(of: sttLocale) { _, newValue in
+                                speechService.updateLocale(newValue)
+                            }
+                    } label: {
+                        HStack {
+                            Text("Language")
+                            Spacer()
+                            Text(
+                                sttLocale.isEmpty
+                                    ? "Auto"
+                                    : (Locale.current.localizedString(forIdentifier: sttLocale) ?? sttLocale)
+                            )
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                        }
+                    }
+                }
+
+                Section("Text-to-Speech Voice") {
+                    NavigationLink {
+                        TTSVoicePickerView(voiceIdentifier: $ttsVoiceIdentifier, voices: availableTTSVoices)
+                            .onChange(of: ttsVoiceIdentifier) { _, newValue in
+                                ttsService.voiceIdentifier = newValue.isEmpty ? nil : newValue
+                            }
+                    } label: {
+                        HStack {
+                            Text("Voice")
+                            Spacer()
+                            Text(
+                                ttsVoiceIdentifier.isEmpty
+                                    ? "Auto (detect language)"
+                                    : (AVSpeechSynthesisVoice(identifier: ttsVoiceIdentifier)?.name ?? ttsVoiceIdentifier)
+                            )
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                        }
+                    }
+                }
+            }
+            .navigationTitle("Voice Settings")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") { dismiss() }
+                }
+            }
         }
     }
 }

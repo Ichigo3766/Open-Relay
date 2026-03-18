@@ -79,15 +79,16 @@ final class ActiveChatStore {
     }
 
     /// Evicts least-recently-used VMs when over the limit.
-    /// Never evicts a VM that is streaming. Guarded against infinite loops.
+    /// Never evicts a VM that is streaming or has active transcriptions.
+    /// Guarded against infinite loops.
     private func evictIfNeeded() {
         var iterations = 0
         let maxIterations = accessOrder.count + 1
         while viewModels.count > maxCachedViewModels && !accessOrder.isEmpty && iterations < maxIterations {
             iterations += 1
             let oldest = accessOrder.removeFirst()
-            // Don't evict VMs that are actively streaming
-            if let vm = viewModels[oldest], vm.isStreaming {
+            // Don't evict VMs that are actively streaming or transcribing
+            if let vm = viewModels[oldest], vm.isStreaming || vm.hasActiveTranscriptions {
                 accessOrder.append(oldest) // Move to end, try next
                 continue
             }
@@ -170,8 +171,8 @@ final class AppDependencyContainer: ServiceContainer {
     /// File attachment service for managing chat/note attachments.
     let fileAttachmentService = FileAttachmentService()
 
-    /// Qwen3 ASR service for on-device audio transcription.
-    let qwen3ASRService = Qwen3ASRService()
+    /// On-device ASR service — Parakeet TDT 1.7B.
+    let asrService = OnDeviceASRService()
 
     /// Server-side task configuration (title gen, follow-ups, autocomplete, etc.).
     /// Cached on login/server connect and used to respect admin settings.
@@ -341,9 +342,13 @@ final class AppDependencyContainer: ServiceContainer {
     // MARK: - Connection Health Monitor
 
     private var foregroundObserver: NSObjectProtocol?
+    private var backgroundObserver: NSObjectProtocol?
 
     /// Starts monitoring connection health.
     /// - Observes `willEnterForeground` to run a health check and reconnect socket if needed.
+    /// - Observes `didEnterBackground` to unload all MLX GPU models before iOS suspends
+    ///   the process — Metal command buffer execution is not permitted from the background
+    ///   and causes an unrecoverable crash (`kIOGPUCommandBufferCallbackErrorBackgroundExecutionNotPermitted`).
     /// - Wires up the socket's `onConnectionStateChange` to update `socketConnectionState`.
     private func startConnectionMonitor() {
         // Listen for foreground transitions
@@ -357,8 +362,34 @@ final class AppDependencyContainer: ServiceContainer {
             }
         }
 
+        // Unload all MLX GPU models before iOS suspends the app.
+        // MLX uses Metal under the hood — any in-flight GPU work submitted from
+        // a suspended process is immediately aborted with a fatal error.
+        backgroundObserver = NotificationCenter.default.addObserver(
+            forName: UIApplication.didEnterBackgroundNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            guard let self else { return }
+            Task { @MainActor [self] in
+                self.unloadMLXModelsForBackground()
+            }
+        }
+
         // Wire up socket state changes
         wireSocketStateTracking()
+    }
+
+    /// Unloads all in-memory MLX models so Metal GPU resources are released before
+    /// the app is suspended. Models reload automatically on next use.
+    private func unloadMLXModelsForBackground() {
+        // ASR — unload regardless of state (ready or mid-transcription)
+        switch asrService.state {
+        case .ready, .transcribing: asrService.unloadModel()
+        default: break
+        }
+        // Marvis TTS — stop playback and unload GPU model
+        textToSpeechService.unloadMarvisModel()
     }
 
     /// Called whenever a new `socketService` is created, wires its state to

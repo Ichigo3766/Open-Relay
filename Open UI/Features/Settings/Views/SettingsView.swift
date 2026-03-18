@@ -626,6 +626,7 @@ struct TTSSettingsView: View {
     @State private var isSpeaking = false
     @State private var availableVoices: [AVSpeechSynthesisVoice] = []
     @State private var isDownloadingModel = false
+    @State private var marvisModelSize: String = "–"
 
     private var ttsService: TextToSpeechService {
         dependencies.textToSpeechService
@@ -831,15 +832,26 @@ struct TTSSettingsView: View {
             // System Voice Settings (only when system engine is selected)
             if selectedEngine == "system" || selectedEngine == "auto" {
                 Section {
-                    Picker("Voice", selection: $voiceIdentifier) {
-                        Text("System Default").tag("")
-                        ForEach(availableVoices, id: \.identifier) { voice in
-                            Text("\(voice.name) (\(voice.language))")
-                                .tag(voice.identifier)
+                    NavigationLink {
+                        TTSVoicePickerView(
+                            voiceIdentifier: $voiceIdentifier,
+                            voices: availableVoices
+                        )
+                        .onChange(of: voiceIdentifier) { _, _ in
+                            syncSettingsToService()
                         }
-                    }
-                    .onChange(of: voiceIdentifier) { _, _ in
-                        syncSettingsToService()
+                    } label: {
+                        HStack {
+                            Text("Voice")
+                            Spacer()
+                            Text(
+                                voiceIdentifier.isEmpty
+                                    ? "Auto (detect language)"
+                                    : (AVSpeechSynthesisVoice(identifier: voiceIdentifier)?.name ?? voiceIdentifier)
+                            )
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                        }
                     }
 
                     VStack(alignment: .leading) {
@@ -896,6 +908,31 @@ struct TTSSettingsView: View {
                 }
             }
         }
+
+        // Model Storage Management
+        Section {
+            HStack {
+                Text("Marvis TTS")
+                    .scaledFont(size: 16)
+                    .foregroundStyle(theme.textPrimary)
+                Spacer()
+                Text(marvisModelSize)
+                    .scaledFont(size: 14)
+                    .foregroundStyle(theme.textSecondary)
+            }
+            .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                Button(role: .destructive) {
+                    ttsService.marvisService.unloadAndDeleteModel()
+                    refreshMarvisModelSize()
+                } label: {
+                    Label("Delete", systemImage: "trash")
+                }
+            }
+        } header: {
+            Text("Model Storage")
+        } footer: {
+            Text("Swipe left on a model row to delete it from disk and free storage.")
+        }
         .navigationTitle("Text-to-Speech")
         .navigationBarTitleDisplayMode(.inline)
         .onAppear {
@@ -903,6 +940,7 @@ struct TTSSettingsView: View {
             syncSettingsToService()
             syncEngineToService()
             syncMarvisConfig()
+            refreshMarvisModelSize()
         }
     }
 
@@ -1015,17 +1053,41 @@ struct TTSSettingsView: View {
             )
         }
     }
+
+    private func refreshMarvisModelSize() {
+        let size = StorageManager.shared.marvisTTSModelSize()
+        if size > 0 {
+            marvisModelSize = ByteCountFormatter.string(fromByteCount: size, countStyle: .file)
+        } else {
+            marvisModelSize = "Not downloaded"
+        }
+    }
+
 }
 
 // MARK: - STT Settings View
 
 struct STTSettingsView: View {
-    @Environment(\.theme) private var theme
+@Environment(\.theme) private var theme
     @Environment(AppDependencyContainer.self) private var dependencies
     @AppStorage("sttEngine") private var selectedSTTEngine: String = "device"
+    @AppStorage("audioFileTranscriptionMode") private var audioFileMode: String = "server"
     @AppStorage("voiceSilenceDuration") private var silenceDuration: Double = 2.0
+    @AppStorage("sttLocale") private var sttLocale: String = ""
     @State private var micPermissionGranted = false
     @State private var speechPermissionGranted = false
+    @State private var parakeetModelSize: String = "–"
+
+    private var asr: OnDeviceASRService { dependencies.asrService }
+
+    /// All locales supported by Apple's on-device speech recognizer, sorted by display name.
+    private var supportedSTTLocales: [Locale] {
+        SFSpeechRecognizer.supportedLocales()
+            .sorted {
+                (Locale.current.localizedString(forIdentifier: $0.identifier) ?? $0.identifier)
+                    < (Locale.current.localizedString(forIdentifier: $1.identifier) ?? $1.identifier)
+            }
+    }
 
     private var hasServerSTT: Bool {
         dependencies.apiClient != nil
@@ -1033,7 +1095,7 @@ struct STTSettingsView: View {
 
     var body: some View {
         List {
-            // STT Engine Selection
+            // Live Voice Transcription (microphone / call)
             Section {
                 Button {
                     withAnimation(.easeOut(duration: 0.15)) {
@@ -1067,12 +1129,211 @@ struct STTSettingsView: View {
                     .buttonStyle(.plain)
                 }
             } header: {
-                Text("STT Engine")
+                Text("Voice Transcription Engine")
             } footer: {
                 if selectedSTTEngine == "device" {
-                    Text("On-device speech recognition uses Apple's Speech framework. Works offline with no data sent to external servers.")
+                    Text("Used for live microphone input. Apple's Speech framework works offline with no data sent to external servers.")
+                } else if selectedSTTEngine == "server" {
+                    Text("Used for live microphone input. Sends audio to your OpenWebUI server for transcription. Requires internet.")
                 } else {
-                    Text("Server STT sends audio to your OpenWebUI server for transcription. Requires internet but may support more languages.")
+                    Text("Select the engine used for live microphone input and voice calls.")
+                }
+            }
+
+            // Audio File Transcription (attach audio file in chat)
+            Section {
+                // Server option (default)
+                Button {
+                    withAnimation(.easeOut(duration: 0.15)) {
+                        audioFileMode = "server"
+                    }
+                    Haptics.play(.light)
+                } label: {
+                    engineRow(
+                        value: "server",
+                        label: "Server",
+                        description: "Uploads audio to your OpenWebUI server — transcription happens automatically",
+                        selected: audioFileMode == "server"
+                    )
+                }
+                .buttonStyle(.plain)
+
+                // On-device option (only shown if Parakeet is available)
+                if asr.isAvailable {
+                    Button {
+                        withAnimation(.easeOut(duration: 0.15)) {
+                            audioFileMode = "device"
+                            asr.switchVariant(.parakeet)
+                        }
+                        Haptics.play(.light)
+                    } label: {
+                        HStack(spacing: Spacing.md) {
+                            VStack(alignment: .leading, spacing: 2) {
+                                HStack(spacing: Spacing.xs) {
+                                    Text("On-Device (Parakeet)")
+                                        .scaledFont(size: 16)
+                                        .fontWeight(.medium)
+                                        .foregroundStyle(theme.textPrimary)
+                                    Text("NEW")
+                                        .scaledFont(size: 9, weight: .heavy)
+                                        .foregroundStyle(.white)
+                                        .padding(.horizontal, 5)
+                                        .padding(.vertical, 2)
+                                        .background(
+                                            Capsule().fill(
+                                                LinearGradient(
+                                                    colors: [theme.brandPrimary, theme.brandPrimary.opacity(0.7)],
+                                                    startPoint: .leading,
+                                                    endPoint: .trailing
+                                                )
+                                            )
+                                        )
+                                }
+                                Text("parakeet-tdt-0.6b-v3 — English, fully on-device")
+                                    .scaledFont(size: 12, weight: .medium)
+                                    .foregroundStyle(theme.textTertiary)
+                            }
+                            Spacer()
+                            Image(systemName: audioFileMode == "device" ? "checkmark.circle.fill" : "circle")
+                                .scaledFont(size: 22)
+                                .foregroundStyle(
+                                    audioFileMode == "device" ? theme.brandPrimary : theme.textTertiary.opacity(0.4)
+                                )
+                        }
+                    }
+                    .buttonStyle(.plain)
+                }
+            } header: {
+                Text("Audio File Transcription")
+            } footer: {
+                if audioFileMode == "server" {
+                    Text("Audio files attached in chat are uploaded to your server, which handles transcription automatically. No extra downloads needed.")
+                } else {
+                    Text("Audio files are transcribed locally on your device using Parakeet. Fully private — no audio sent to the server. Downloads once.")
+                }
+            }
+
+            // On-Device Model Settings (Parakeet) — only when device mode is selected
+            if audioFileMode == "device" && asr.isAvailable {
+                let activeVariant: ASRModelVariant = .parakeet
+                let currentModelSize = parakeetModelSize
+                let modelLabel = activeVariant.displayName
+                Section {
+                    HStack {
+                        Text("Status")
+                            .scaledFont(size: 16)
+                            .foregroundStyle(theme.textPrimary)
+                        Spacer()
+                        asrStatusBadge
+                    }
+
+                    if currentModelSize != "–" {
+                        HStack {
+                            Text("Model Size on Disk")
+                                .scaledFont(size: 16)
+                                .foregroundStyle(theme.textPrimary)
+                            Spacer()
+                            Text(currentModelSize)
+                                .scaledFont(size: 14)
+                                .foregroundStyle(theme.textSecondary)
+                        }
+                    }
+
+                    if case .unloaded = asr.state {
+                        Button {
+                            Task { try? await asr.loadModel() }
+                        } label: {
+                            HStack(spacing: Spacing.sm) {
+                                Image(systemName: "arrow.down.circle")
+                                    .scaledFont(size: 16, weight: .medium)
+                                Text("Download & Load Model")
+                                    .scaledFont(size: 16)
+                                    .fontWeight(.medium)
+                            }
+                            .foregroundStyle(theme.brandPrimary)
+                        }
+                    } else if case .loading = asr.state {
+                        HStack(spacing: Spacing.sm) {
+                            ProgressView()
+                                .controlSize(.small)
+                            Text("Loading model…")
+                                .scaledFont(size: 16)
+                                .foregroundStyle(theme.textSecondary)
+                        }
+                    } else if case .ready = asr.state {
+                        Button(role: .destructive) {
+                            asr.unloadModel()
+                        } label: {
+                            HStack(spacing: Spacing.sm) {
+                                Image(systemName: "xmark.circle")
+                                    .scaledFont(size: 16, weight: .medium)
+                                Text("Unload Model (Free Memory)")
+                                    .scaledFont(size: 16)
+                                    .fontWeight(.medium)
+                            }
+                        }
+
+                        Button(role: .destructive) {
+                            asr.unloadAndDeleteVariant(activeVariant)
+                            refreshModelSizes()
+                        } label: {
+                            HStack(spacing: Spacing.sm) {
+                                Image(systemName: "trash.circle")
+                                    .scaledFont(size: 16, weight: .medium)
+                                Text("Delete Downloaded Model")
+                                    .scaledFont(size: 16)
+                                    .fontWeight(.medium)
+                            }
+                        }
+                    } else if case .error = asr.state {
+                        Button {
+                            asr.unloadModel()
+                            Task { try? await asr.loadModel() }
+                        } label: {
+                            HStack(spacing: Spacing.sm) {
+                                Image(systemName: "arrow.clockwise.circle")
+                                    .scaledFont(size: 16, weight: .medium)
+                                Text("Retry Download")
+                                    .scaledFont(size: 16)
+                                    .fontWeight(.medium)
+                            }
+                            .foregroundStyle(theme.warning)
+                        }
+                    }
+                } header: {
+                    Text("\(modelLabel)")
+                } footer: {
+                    Text("The model downloads from HuggingFace on first use and is cached locally. Unloading frees memory; deleting removes the download.")
+                }
+            }
+
+            // Language (only for on-device Apple STT)
+            if selectedSTTEngine == "device" {
+                Section {
+                    NavigationLink {
+                        STTLanguagePickerView(
+                            sttLocale: $sttLocale,
+                            locales: supportedSTTLocales
+                        )
+                        .onChange(of: sttLocale) { _, newValue in
+                            dependencies.speechRecognitionService.updateLocale(newValue)
+                        }
+                    } label: {
+                        HStack {
+                            Text("Language")
+                            Spacer()
+                            Text(
+                                sttLocale.isEmpty
+                                    ? "Auto"
+                                    : (Locale.current.localizedString(forIdentifier: sttLocale) ?? sttLocale)
+                            )
+                            .foregroundStyle(.secondary)
+                        }
+                    }
+                } header: {
+                    Text("Language")
+                } footer: {
+                    Text("Choose the language you'll speak. \"Auto\" uses your device's current language.")
                 }
             }
 
@@ -1144,11 +1405,37 @@ struct STTSettingsView: View {
             } header: {
                 Text("Permissions")
             }
+            // Model Storage Management
+            Section {
+                HStack {
+                    Text("Parakeet ASR")
+                        .scaledFont(size: 16)
+                        .foregroundStyle(theme.textPrimary)
+                    Spacer()
+                    Text(parakeetModelSize)
+                        .scaledFont(size: 14)
+                        .foregroundStyle(theme.textSecondary)
+                }
+                .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                    Button(role: .destructive) {
+                        asr.unloadAndDeleteVariant(.parakeet)
+                        refreshModelSizes()
+                    } label: {
+                        Label("Delete", systemImage: "trash")
+                    }
+                }
+
+            } header: {
+                Text("Model Storage")
+            } footer: {
+                Text("Swipe left on a model row to delete it from disk and free storage.")
+            }
         }
-        .navigationTitle("Speech-to-Text")
+        .navigationTitle("Audio & Transcription")
         .navigationBarTitleDisplayMode(.inline)
         .onAppear {
             refreshPermissions()
+            refreshModelSizes()
         }
     }
 
@@ -1165,20 +1452,13 @@ struct STTSettingsView: View {
         speechPermissionGranted = SFSpeechRecognizer.authorizationStatus() == .authorized
     }
 
-    // MARK: - Qwen3 ASR Status Badge
+    // MARK: - ASR Status Badge (shared for both variants)
 
     @ViewBuilder
-    private var qwen3ASRStatusBadge: some View {
-        switch dependencies.qwen3ASRService.state {
+    private var asrStatusBadge: some View {
+        switch asr.state {
         case .unloaded:
             statusPill("Not Downloaded", color: theme.textTertiary)
-        case .downloading(let progress):
-            HStack(spacing: 4) {
-                ProgressView().controlSize(.mini)
-                Text("\(Int(progress * 100))%")
-                    .scaledFont(size: 12, weight: .medium)
-                    .foregroundStyle(theme.warning)
-            }
         case .loading:
             HStack(spacing: 4) {
                 ProgressView().controlSize(.mini)
@@ -1190,6 +1470,8 @@ struct STTSettingsView: View {
             statusPill("Ready", color: theme.success)
         case .transcribing:
             statusPill("Transcribing…", color: theme.brandPrimary)
+        case .paused:
+            statusPill("Paused", color: theme.textTertiary)
         case .error(let msg):
             statusPill("Error", color: theme.error)
                 .help(msg)
@@ -1222,6 +1504,145 @@ struct STTSettingsView: View {
             .padding(.vertical, 3)
             .background(color.opacity(0.12))
             .clipShape(Capsule())
+    }
+
+    private func refreshModelSizes() {
+        let p = asr.modelSize(for: .parakeet)
+        parakeetModelSize = p > 0 ? ByteCountFormatter.string(fromByteCount: p, countStyle: .file) : "Not downloaded"
+    }
+
+}
+
+// MARK: - STT Language Picker
+
+/// Full-screen scrollable list of all SFSpeechRecognizer-supported locales.
+/// Uses a plain List so there's no nested-scroll conflict with the parent.
+struct STTLanguagePickerView: View {
+    @Binding var sttLocale: String
+    let locales: [Locale]
+    @Environment(\.dismiss) private var dismiss
+    @State private var searchText = ""
+
+    private var filteredLocales: [Locale] {
+        guard !searchText.isEmpty else { return locales }
+        let q = searchText.lowercased()
+        return locales.filter { locale in
+            let name = (Locale.current.localizedString(forIdentifier: locale.identifier) ?? locale.identifier).lowercased()
+            return name.contains(q) || locale.identifier.lowercased().contains(q)
+        }
+    }
+
+    var body: some View {
+        List {
+            if searchText.isEmpty {
+                Button {
+                    sttLocale = ""
+                    dismiss()
+                } label: {
+                    HStack {
+                        Text("Auto (Device Language)")
+                        Spacer()
+                        if sttLocale.isEmpty {
+                            Image(systemName: "checkmark")
+                                .foregroundStyle(.blue)
+                        }
+                    }
+                }
+                .foregroundStyle(.primary)
+            }
+
+            ForEach(filteredLocales, id: \.identifier) { locale in
+                Button {
+                    sttLocale = locale.identifier
+                    dismiss()
+                } label: {
+                    HStack {
+                        Text(Locale.current.localizedString(forIdentifier: locale.identifier) ?? locale.identifier)
+                        Spacer()
+                        if sttLocale == locale.identifier {
+                            Image(systemName: "checkmark")
+                                .foregroundStyle(.blue)
+                        }
+                    }
+                }
+                .foregroundStyle(.primary)
+            }
+        }
+        .searchable(text: $searchText, prompt: "Search language…")
+        .navigationTitle("STT Language")
+        .navigationBarTitleDisplayMode(.inline)
+    }
+}
+
+// MARK: - TTS Voice Picker
+
+/// Full-screen scrollable list of all installed AVSpeechSynthesisVoice entries.
+/// Uses a plain List so there's no nested-scroll conflict with the parent.
+struct TTSVoicePickerView: View {
+    @Binding var voiceIdentifier: String
+    let voices: [AVSpeechSynthesisVoice]
+    @Environment(\.dismiss) private var dismiss
+    @State private var searchText = ""
+
+    private var filteredVoices: [AVSpeechSynthesisVoice] {
+        guard !searchText.isEmpty else { return voices }
+        let q = searchText.lowercased()
+        return voices.filter { voice in
+            voice.name.lowercased().contains(q) || voice.language.lowercased().contains(q)
+        }
+    }
+
+    var body: some View {
+        List {
+            if searchText.isEmpty {
+                Button {
+                    voiceIdentifier = ""
+                    dismiss()
+                } label: {
+                    HStack {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Auto (detect language)")
+                                .fontWeight(.medium)
+                            Text("Picks the best voice for each message's language")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        if voiceIdentifier.isEmpty {
+                            Image(systemName: "checkmark")
+                                .foregroundStyle(.blue)
+                        }
+                    }
+                }
+                .foregroundStyle(.primary)
+            }
+
+            ForEach(filteredVoices, id: \.identifier) { voice in
+                Button {
+                    voiceIdentifier = voice.identifier
+                    dismiss()
+                } label: {
+                    HStack {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(voice.name)
+                                .fontWeight(.medium)
+                            Text(voice.language)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        if voiceIdentifier == voice.identifier {
+                            Image(systemName: "checkmark")
+                                .foregroundStyle(.blue)
+                        }
+                    }
+                }
+                .foregroundStyle(.primary)
+            }
+        }
+        .searchable(text: $searchText, prompt: "Search voice or language…")
+        .navigationTitle("TTS Voice")
+        .navigationBarTitleDisplayMode(.inline)
     }
 }
 

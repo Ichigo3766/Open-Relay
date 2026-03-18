@@ -178,7 +178,7 @@ struct ChatDetailView: View {
         .task {
             keyboard.start()
             if let manager = dependencies.conversationManager {
-                viewModel.configure(with: manager, socket: dependencies.socketService, store: dependencies.activeChatStore)
+                viewModel.configure(with: manager, socket: dependencies.socketService, store: dependencies.activeChatStore, asr: dependencies.asrService)
             }
             // Perform non-async setup before awaiting load() so the UI
             // populates prompts and temporary-chat state instantly.
@@ -186,11 +186,25 @@ struct ChatDetailView: View {
                 viewModel.isTemporaryChat = UserDefaults.standard.bool(forKey: "temporaryChatDefault")
             }
             if randomPrompts.isEmpty {
-                randomPrompts = Self.pickRandomPrompts(count: promptCardCount)
+                randomPrompts = Self.buildServerPrompts(
+                    from: dependencies.authViewModel.backendConfig?.defaultPromptSuggestions,
+                    count: promptCardCount
+                )
             }
             NotificationService.shared.activeConversationId =
                 viewModel.conversationId ?? viewModel.conversation?.id
             await viewModel.load()
+        }
+        // Reactive fallback: if backendConfig wasn't ready when .task ran
+        // (first app launch), rebuild prompts as soon as the config arrives.
+        // Watch the suggestion count (Int?) — always Equatable, avoids
+        // asking the type-checker to diff the entire BackendConfig struct.
+        .onChange(of: dependencies.authViewModel.backendConfig?.defaultPromptSuggestions?.count) { _, _ in
+            // Always rebuild when the server config changes — this handles both the
+            // first-launch timing case (randomPrompts is empty) AND the case where
+            // the admin updates suggestions on the server while the app is running.
+            let suggestions = dependencies.authViewModel.backendConfig?.defaultPromptSuggestions
+            randomPrompts = Self.buildServerPrompts(from: suggestions, count: promptCardCount)
         }
         .onDisappear {
             keyboard.stop()
@@ -1184,32 +1198,41 @@ struct ChatDetailView: View {
         let id = UUID()
         let title: String
         let subtitle: String
-        var fullText: String { "\(title) \(subtitle)" }
+        private let _fullText: String?
+        var fullText: String { _fullText ?? "\(title) \(subtitle)" }
+
+        init(title: String, subtitle: String, fullText: String? = nil) {
+            self.title = title
+            self.subtitle = subtitle
+            self._fullText = fullText
+        }
     }
 
-    private static let allSuggestedPrompts: [SuggestedPrompt] = [
-        SuggestedPrompt(title: "Give me ideas", subtitle: "for what to do with my kids' art"),
-        SuggestedPrompt(title: "Help me study", subtitle: "vocabulary for a college entrance exam"),
-        SuggestedPrompt(title: "Overcome procrastination", subtitle: "give me tips"),
-        SuggestedPrompt(title: "Write a poem", subtitle: "about a sunset over the ocean"),
-        SuggestedPrompt(title: "Plan a trip", subtitle: "to Tokyo for a week on a budget"),
-        SuggestedPrompt(title: "Explain like I'm 5", subtitle: "how the internet works"),
-        SuggestedPrompt(title: "Help me cook", subtitle: "a healthy dinner with what's in my fridge"),
-        SuggestedPrompt(title: "Draft an email", subtitle: "to negotiate a raise with my manager"),
-        SuggestedPrompt(title: "Create a workout", subtitle: "routine I can do at home in 30 minutes"),
-        SuggestedPrompt(title: "Recommend books", subtitle: "similar to Sapiens by Yuval Noah Harari"),
-        SuggestedPrompt(title: "Brainstorm names", subtitle: "for a new mobile app startup"),
-        SuggestedPrompt(title: "Summarize the key ideas", subtitle: "of stoic philosophy"),
-        SuggestedPrompt(title: "Write a short story", subtitle: "about a robot discovering emotions"),
-        SuggestedPrompt(title: "Teach me basics", subtitle: "of investing in the stock market"),
-        SuggestedPrompt(title: "Help me debug", subtitle: "why my code isn't working"),
-        SuggestedPrompt(title: "Compare pros and cons", subtitle: "of remote vs. office work"),
-        SuggestedPrompt(title: "Create a meal plan", subtitle: "for the week that's under $50"),
-        SuggestedPrompt(title: "Design a morning routine", subtitle: "to be more productive"),
-    ]
+    /// Converts server-provided `default_prompt_suggestions` into display models.
+    ///
+    /// Returns an empty array when the server has no suggestions configured
+    /// (admin turned them off or the field is absent), which collapses the
+    /// entire prompt grid and shows a clean hero-only welcome screen.
+    private static func buildServerPrompts(
+        from suggestions: [BackendConfig.PromptSuggestion]?,
+        count: Int
+    ) -> [SuggestedPrompt] {
+        guard let suggestions, !suggestions.isEmpty else { return [] }
 
-    private static func pickRandomPrompts(count: Int) -> [SuggestedPrompt] {
-        Array(allSuggestedPrompts.shuffled().prefix(count))
+        let mapped: [SuggestedPrompt] = suggestions.compactMap { suggestion in
+            // title[0] = bold heading, title[1] = subtitle (may be absent)
+            guard let titleParts = suggestion.title, !titleParts.isEmpty else { return nil }
+            let title = titleParts[0]
+            let subtitle = titleParts.count > 1 ? titleParts[1] : ""
+            // Use the server's `content` field as the sent message; fall back
+            // to joining the title parts if content is missing.
+            let content = suggestion.content ?? titleParts.joined(separator: " ")
+            return SuggestedPrompt(title: title, subtitle: subtitle, fullText: content)
+        }
+
+        // Shuffle so a different subset appears each time, then cap to `count`
+        // (4 cards on iPhone, 8 on iPad).
+        return Array(mapped.shuffled().prefix(count))
     }
 
     private var welcomeView: some View {
@@ -1261,29 +1284,36 @@ struct ChatDetailView: View {
                 }
             }
 
-            Spacer().frame(height: 32)
+            // ── Suggested prompt cards ──
+            // Only shown when the server has configured suggestions.
+            // If the admin clears all suggestions (or the server doesn't
+            // return any), this entire block is hidden and the welcome
+            // screen shows only the hero avatar + "How can I help?".
+            if !randomPrompts.isEmpty {
+                Spacer().frame(height: 32)
 
-            // ── Suggested prompt cards (adaptive grid: 2-col iPhone, 4-col iPad) ──
-            let cols = promptColumnCount
-            let rows = stride(from: 0, to: randomPrompts.count, by: cols).map { i in
-                Array(randomPrompts[i..<min(i + cols, randomPrompts.count)])
-            }
-            VStack(spacing: 10) {
-                ForEach(Array(rows.enumerated()), id: \.offset) { _, row in
-                    HStack(spacing: 10) {
-                        ForEach(row) { prompt in
-                            promptCard(prompt)
-                        }
-                        // Fill empty slots if row has fewer items than column count
-                        ForEach(0..<(cols - row.count), id: \.self) { _ in
-                            Color.clear
-                                .frame(maxWidth: .infinity)
-                        }
-                    }
-                    .padding(.horizontal, Spacing.screenPadding)
+                // Adaptive grid: 2-col iPhone, 4-col iPad
+                let cols = promptColumnCount
+                let rows = stride(from: 0, to: randomPrompts.count, by: cols).map { i in
+                    Array(randomPrompts[i..<min(i + cols, randomPrompts.count)])
                 }
+                VStack(spacing: 10) {
+                    ForEach(Array(rows.enumerated()), id: \.offset) { _, row in
+                        HStack(spacing: 10) {
+                            ForEach(row) { prompt in
+                                promptCard(prompt)
+                            }
+                            // Fill empty slots if row has fewer items than column count
+                            ForEach(0..<(cols - row.count), id: \.self) { _ in
+                                Color.clear
+                                    .frame(maxWidth: .infinity)
+                            }
+                        }
+                        .padding(.horizontal, Spacing.screenPadding)
+                    }
+                }
+                .frame(maxWidth: iPadMaxContentWidth)
             }
-            .frame(maxWidth: iPadMaxContentWidth)
 
                 Spacer(minLength: 60).layoutPriority(1)
             }
@@ -1890,23 +1920,21 @@ for item in items {
         let attachment = ChatAttachment(type: .audio, name: url.lastPathComponent, thumbnail: nil, data: data)
         viewModel.attachments.append(attachment)
 
-        let asrService = dependencies.qwen3ASRService
-        guard asrService.isAvailable && asrService.autoTranscribeEnabled else { return }
-
-        if let idx = viewModel.attachments.firstIndex(where: { $0.id == attachment.id }) {
-            viewModel.attachments[idx].isTranscribing = true
-        }
-        do {
-            let transcript = try await asrService.transcribe(audioData: data, fileName: url.lastPathComponent)
-            if let idx = viewModel.attachments.firstIndex(where: { $0.id == attachment.id }) {
-                viewModel.attachments[idx].transcribedText = transcript
-                viewModel.attachments[idx].isTranscribing = false
-            }
-        } catch {
-            if let idx = viewModel.attachments.firstIndex(where: { $0.id == attachment.id }) {
-                viewModel.attachments[idx].isTranscribing = false
-            }
-            viewModel.errorMessage = "Transcription failed: \(error.localizedDescription)"
+        // Route to the user-selected transcription engine.
+        // "device" and "server" are live-speech engines, not file transcription — skip ML for those.
+        // Route based on the audio file transcription mode setting.
+        // "server" (default): upload the audio file to the server via the files API —
+        //   the server handles transcription/processing automatically (?process=true).
+        //   No on-device work needed; the user can navigate away freely.
+        // "device": use on-device Parakeet/Qwen3 ASR (existing behavior).
+        let audioFileMode = UserDefaults.standard.string(forKey: "audioFileTranscriptionMode") ?? "server"
+        if audioFileMode == "server" {
+            // Treat audio exactly like any other file attachment — upload immediately.
+            // The server processes the audio via ?process=true and handles transcription.
+            viewModel.uploadAttachmentImmediately(attachmentId: attachment.id)
+        } else {
+            // On-device mode: delegate to ViewModel so the Task survives navigation.
+            viewModel.transcribeAudioAttachment(attachmentId: attachment.id, audioData: data, fileName: url.lastPathComponent)
         }
     }
 

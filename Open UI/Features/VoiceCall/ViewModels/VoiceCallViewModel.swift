@@ -134,6 +134,13 @@ final class VoiceCallViewModel {
         callState = .disconnected
         currentTranscript = ""
         voiceIntensity = 0
+
+        // CRITICAL: Clear all shared service callbacks so a stale VM reference
+        // cannot restart the microphone after the call ends. Without this, the
+        // ttsService.onComplete closure (which calls startListening) remains set
+        // on the shared singleton and fires the next time any TTS plays — causing
+        // the mic to turn on permanently in the background.
+        clearCallbacks()
     }
 
     /// Pauses listening.
@@ -191,6 +198,20 @@ final class VoiceCallViewModel {
     }
 
     // MARK: - Private
+
+    /// Clears all callbacks installed on shared services.
+    /// Must be called when the call ends to prevent a stale VM from
+    /// restarting the microphone the next time any TTS plays elsewhere in the app.
+    private func clearCallbacks() {
+        speechService.onFinalTranscript = nil
+        speechService.onStateChanged = nil
+        speechService.onError = nil
+        ttsService.onStart = nil
+        ttsService.onComplete = nil
+        ttsService.onError = nil
+        callKitManager.onCallEnded = nil
+        callKitManager.onMuteToggled = nil
+    }
 
     /// Sets up callbacks between services.
     private func setupCallbacks() {

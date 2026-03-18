@@ -1,5 +1,6 @@
 import SwiftUI
 import WidgetKit
+import BackgroundTasks
 
 @main
 struct Open_UIApp: App {
@@ -40,6 +41,19 @@ struct Open_UIApp: App {
                         // .inactive fires before .background, giving us time to release GPU resources.
                         dependencies.textToSpeechService.stop()
                         dependencies.textToSpeechService.marvisService.stopAndUnload()
+
+                        // ASR background safety: pause on-device transcription on iOS < 26.
+                        //
+                        // iOS < 26: Metal GPU access is forbidden in the background. Calling
+                        // pauseForBackground() cancels the in-flight MLX task and unloads the
+                        // model BEFORE iOS revokes GPU access, preventing the uncatchable
+                        // std::runtime_error crash. ChatViewModel catches .backgroundInterrupted
+                        // and auto-restarts transcription when the app returns to foreground.
+                        //
+                        // iOS 26+: BGContinuedProcessingTask + Background GPU Access entitlement
+                        // keeps the GPU alive in the background, so pauseForBackground() is a
+                        // no-op and transcription continues uninterrupted for minutes.
+                        dependencies.asrService.pauseForBackground()
 
                         // STORAGE FIX: Run routine cleanup when entering background.
                         // Cleans orphaned temp files, prunes upload cache, evicts

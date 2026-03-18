@@ -925,7 +925,16 @@ final class APIClient: @unchecked Sendable {
     ///
     /// For documents (PDF, txt, etc.), waits for text extraction/embeddings
     /// via SSE polling before returning — required before using the file in RAG.
-    func uploadFile(data fileData: Data, fileName: String) async throws -> String {
+    ///
+    /// - Parameters:
+    ///   - onUploaded: Called after the multipart upload succeeds but before processing
+    ///     begins. Receives the file ID. Use this to transition UI from "uploading" to
+    ///     "processing" state while the SSE poll runs.
+    func uploadFile(
+        data fileData: Data,
+        fileName: String,
+        onUploaded: ((String) -> Void)? = nil
+    ) async throws -> String {
         let mime = mimeType(for: fileName)
         let isImage = mime.hasPrefix("image/")
 
@@ -953,6 +962,8 @@ final class APIClient: @unchecked Sendable {
         }
 
         if !isImage {
+            // Notify caller that file is uploaded — processing is about to start
+            onUploaded?(fileId)
             try await waitForFileProcessing(fileId: fileId)
         }
 
@@ -961,6 +972,7 @@ final class APIClient: @unchecked Sendable {
 
     /// Polls `GET /api/v1/files/{id}/process/status?stream=true` via SSE
     /// until status is `"completed"` or an error/timeout occurs.
+    /// Throws `APIError.httpError` if the server reports a processing failure.
     private func waitForFileProcessing(fileId: String, timeout: TimeInterval = 300) async throws {
         let queryItems = [URLQueryItem(name: "stream", value: "true")]
 
@@ -995,7 +1007,11 @@ final class APIClient: @unchecked Sendable {
                 if errorBody.count > 4096 { break }
             }
             logger.error("File processing status check failed with \(httpResponse.statusCode)")
-            return
+            throw APIError.httpError(
+                statusCode: httpResponse.statusCode,
+                message: "File processing check failed (HTTP \(httpResponse.statusCode))",
+                data: errorBody
+            )
         }
 
         for try await line in bytes.lines {
@@ -1023,10 +1039,19 @@ final class APIClient: @unchecked Sendable {
             case "completed":
                 logger.info("File \(fileId) processing completed")
                 return
-            case "error":
-                let errorMsg = json["error"] as? String ?? "File processing failed"
-                logger.error("File \(fileId) processing error: \(errorMsg)")
-                return
+            case "failed", "error":
+                // Extract the server-provided error message and surface it to the user
+                let rawError = json["error"] as? String ?? "File processing failed on the server."
+                // Strip verbose internal prefixes to keep the message readable
+                let errorMsg = rawError
+                    .replacingOccurrences(of: "Error transcribing chunk: External: ", with: "")
+                    .replacingOccurrences(of: "External: ", with: "")
+                logger.error("File \(fileId) processing error: \(rawError)")
+                throw APIError.httpError(
+                    statusCode: 422,
+                    message: errorMsg,
+                    data: nil
+                )
             default:
                 continue
             }

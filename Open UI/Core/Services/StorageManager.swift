@@ -288,7 +288,24 @@ final class StorageManager: @unchecked Sendable {
         Int64(diskSize(of: huggingFaceHubCacheDirectory))
     }
 
-    /// Deletes all downloaded HuggingFace Hub ML model files (MarvisTTS + Qwen3 ASR).
+    /// Returns the on-disk size of the Parakeet ASR model files (without deleting).
+    func parakeetASRModelSize() -> Int64 {
+        var total: Int64 = 0
+        total += modelFilesSize(matching: "parakeet-tdt")
+        total += mlxAudioModelFilesSize(matching: "parakeet-tdt")
+        return total
+    }
+
+    /// Returns the on-disk size of the MarvisTTS model files (without deleting).
+    func marvisTTSModelSize() -> Int64 {
+        var total: Int64 = 0
+        total += modelFilesSize(matching: "marvis-tts")
+        total += modelFilesSize(matching: "Marvis-AI")
+        total += mlxAudioModelFilesSize(matching: "marvis")
+        return total
+    }
+
+    /// Deletes all downloaded HuggingFace Hub ML model files (MarvisTTS + Parakeet ASR).
     /// Returns the number of bytes freed.
     @discardableResult
     func deleteAllMLModelFiles() -> Int64 {
@@ -314,14 +331,13 @@ final class StorageManager: @unchecked Sendable {
         return total
     }
 
-    /// Deletes only Qwen3 ASR model files.
-    /// Searches both the legacy "Qwen3-ASR" pattern and the mlx-audio-swift
-    /// cache pattern ("Qwen3-ASR", "mlx-community_Qwen3-ASR") used by ModelUtils.
+    /// Deletes Parakeet ASR model files.
+    /// Searches the mlx-audio-swift cache pattern ("parakeet-tdt") used by ModelUtils.
     @discardableResult
-    func deleteQwen3ASRModelFiles() -> Int64 {
+    func deleteParakeetASRModelFiles() -> Int64 {
         var total: Int64 = 0
-        total += deleteModelFiles(matching: "Qwen3-ASR")
-        total += deleteMLXAudioModelFiles(matching: "Qwen3-ASR")
+        total += deleteModelFiles(matching: "parakeet-tdt")
+        total += deleteMLXAudioModelFiles(matching: "parakeet-tdt")
         return total
     }
 
@@ -364,12 +380,13 @@ final class StorageManager: @unchecked Sendable {
     }
 
     /// Deletes model files from the mlx-audio-swift cache directory.
-    /// mlx-audio-swift stores models under `{hubCache}/mlx-audio/{repoId}`.
+    /// mlx-audio-swift stores models under `{cachesDir}/huggingface/hub/mlx-audio/{repoId}`.
     private func deleteMLXAudioModelFiles(matching pattern: String) -> Int64 {
         guard let hubDir = huggingFaceHubCacheDirectory else { return 0 }
 
-        // mlx-audio-swift uses: {hubCache}/mlx-audio/{owner_reponame}/
-        let mlxAudioDir = hubDir.appendingPathComponent("mlx-audio", isDirectory: true)
+        // mlx-audio-swift uses: {huggingfaceDir}/hub/mlx-audio/{owner_reponame}/
+        // huggingFaceHubCacheDirectory returns the "huggingface" dir, so we need hub/mlx-audio
+        let mlxAudioDir = hubDir.appendingPathComponent("hub/mlx-audio", isDirectory: true)
         guard fileManager.fileExists(atPath: mlxAudioDir.path) else { return 0 }
 
         var totalFreed: Int64 = 0
@@ -398,6 +415,39 @@ final class StorageManager: @unchecked Sendable {
         }
 
         return totalFreed
+    }
+
+    /// Returns the size of model files matching a name pattern without deleting them.
+    private func modelFilesSize(matching pattern: String) -> Int64 {
+        guard let hubDir = huggingFaceHubCacheDirectory else { return 0 }
+        guard fileManager.fileExists(atPath: hubDir.path) else { return 0 }
+        var total: Int64 = 0
+        do {
+            let contents = try fileManager.contentsOfDirectory(
+                at: hubDir, includingPropertiesForKeys: nil, options: .skipsHiddenFiles
+            )
+            for item in contents where item.lastPathComponent.lowercased().contains(pattern.lowercased()) {
+                total += Int64(diskSize(of: item))
+            }
+        } catch {}
+        return total
+    }
+
+    /// Returns the size of mlx-audio model files matching a name pattern without deleting them.
+    private func mlxAudioModelFilesSize(matching pattern: String) -> Int64 {
+        guard let hubDir = huggingFaceHubCacheDirectory else { return 0 }
+        let mlxAudioDir = hubDir.appendingPathComponent("hub/mlx-audio", isDirectory: true)
+        guard fileManager.fileExists(atPath: mlxAudioDir.path) else { return 0 }
+        var total: Int64 = 0
+        do {
+            let contents = try fileManager.contentsOfDirectory(
+                at: mlxAudioDir, includingPropertiesForKeys: nil, options: .skipsHiddenFiles
+            )
+            for item in contents where item.lastPathComponent.lowercased().contains(pattern.lowercased()) {
+                total += Int64(diskSize(of: item))
+            }
+        } catch {}
+        return total
     }
 
     /// Deletes model files matching a name pattern in the HuggingFace cache.

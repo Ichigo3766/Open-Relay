@@ -4,5 +4,11 @@
 <dict>
 	<key>com.apple.developer.kernel.increased-memory-limit</key>
 	<true/>
+	<!-- Allows BGContinuedProcessingTask to use the GPU while the app is backgrounded.
+	     Requires iOS 26+ and the Background GPU Access capability in Xcode.
+	     Used for on-device ASR (Parakeet/MLX) so transcription continues uninterrupted
+	     when the user backgrounds the app. No effect on iOS < 26. -->
+	<key>com.apple.developer.background-tasks.continued-processing.gpu</key>
+	<true/>
 </dict>
 </plist>

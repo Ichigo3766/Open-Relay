@@ -12,8 +12,8 @@ import os.log
 /// 1. Loading the server URL — the proxy will redirect to its login portal
 /// 2. The user authenticates through whatever UI the proxy shows
 /// 3. The proxy redirects back to the app's server URL
-/// 4. We detect arrival back on the server domain and poll until `/health` returns JSON
-/// 5. All session cookies are captured and passed back for injection into URLSession
+/// 4. We detect arrival back on the server domain and immediately capture cookies
+///    (no health polling needed — redirect back = auth complete)
 struct ProxyAuthWebView: UIViewRepresentable {
     let serverURL: String
     /// Called with all captured cookies (name→value) and the webView's User-Agent
@@ -27,10 +27,8 @@ struct ProxyAuthWebView: UIViewRepresentable {
 
     func makeUIView(context: Context) -> WKWebView {
         let config = WKWebViewConfiguration()
-        // Use a fresh ephemeral store so stale proxy sessions don't cause silent
-        // auto-login — we want the user to actually go through the proxy portal.
-        // NOTE: We use default() so that any saved passwords / autofill works,
-        // making the experience smooth for the user.
+        // Use the default data store so saved passwords / autofill works,
+        // making the proxy login experience smooth for the user.
         config.websiteDataStore = WKWebsiteDataStore.default()
 
         let webView = WKWebView(frame: .zero, configuration: config)
@@ -60,10 +58,14 @@ struct ProxyAuthWebView: UIViewRepresentable {
         let onFailed: () -> Void
         weak var webView: WKWebView?
 
-        private var pollTimer: Timer?
         private var timeoutTimer: Timer?
         private var didSucceed = false
-        private var isCheckingHealth = false
+
+        /// Tracks whether the WebView has navigated away from the server domain
+        /// to the auth portal. We only trigger success detection AFTER the user
+        /// has been to the proxy login page and come back.
+        private var hasLeftServerDomain = false
+
         private let logger = Logger(subsystem: "com.openui", category: "ProxyAuth")
 
         init(
@@ -77,20 +79,79 @@ struct ProxyAuthWebView: UIViewRepresentable {
         }
 
         deinit {
-            pollTimer?.invalidate()
             timeoutTimer?.invalidate()
+        }
+
+        // MARK: - Navigation Delegate
+
+        func webView(
+            _ webView: WKWebView,
+            decidePolicyFor navigationAction: WKNavigationAction,
+            decisionHandler: @escaping (WKNavigationActionPolicy) -> Void
+        ) {
+            // Block all navigation once we've succeeded
+            if didSucceed {
+                decisionHandler(.cancel)
+                return
+            }
+
+            if let url = navigationAction.request.url {
+                if !isOnServerDomain(url) {
+                    // We're navigating to the auth portal (Authelia, etc.)
+                    hasLeftServerDomain = true
+                    logger.debug("ProxyAuth: navigating to auth portal: \(url.host ?? url.absoluteString)")
+                }
+            }
+
+            decisionHandler(.allow)
         }
 
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
             guard !didSucceed else { return }
             guard let currentURL = webView.url else { return }
 
-            logger.debug("ProxyAuth: page finished loading: \(currentURL.absoluteString)")
+            logger.debug("ProxyAuth: page finished: \(currentURL.absoluteString)")
 
-            // Check if we've landed back on the server domain
-            if isOnServerDomain(currentURL) {
-                logger.info("ProxyAuth: back on server domain, checking if auth succeeded")
-                startPollingForSuccess()
+            // Success condition: we previously left the server domain (went to auth portal)
+            // and have now returned to the server domain. The proxy has set auth cookies.
+            if hasLeftServerDomain && isOnServerDomain(currentURL) {
+                logger.info("ProxyAuth: returned to server domain after auth portal — capturing cookies immediately")
+                captureSessionAndSucceed()
+            }
+        }
+
+        func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
+            guard !didSucceed else { return }
+
+            // Start the 3-minute timeout on the very first navigation
+            if timeoutTimer == nil {
+                timeoutTimer = Timer.scheduledTimer(withTimeInterval: 180, repeats: false) { [weak self] _ in
+                    guard let self, !self.didSucceed else { return }
+                    self.logger.warning("ProxyAuth: timed out after 3 minutes")
+                    DispatchQueue.main.async { self.onFailed() }
+                }
+            }
+
+            // Also check on provisional navigation starts — this catches redirects
+            // back to the server domain before the page fully loads, enabling
+            // even faster dismissal.
+            if let url = webView.url, hasLeftServerDomain && isOnServerDomain(url) {
+                logger.info("ProxyAuth: server domain detected on provisional navigation — capturing cookies")
+                captureSessionAndSucceed()
+            }
+        }
+
+        func webView(
+            _ webView: WKWebView,
+            didReceiveServerRedirectForProvisionalNavigation navigation: WKNavigation!
+        ) {
+            guard !didSucceed else { return }
+
+            // This fires when the server sends a redirect header.
+            // If we're being redirected back to the server domain, grab cookies now.
+            if let url = webView.url, hasLeftServerDomain && isOnServerDomain(url) {
+                logger.info("ProxyAuth: server redirect back to server domain — capturing cookies")
+                captureSessionAndSucceed()
             }
         }
 
@@ -104,19 +165,6 @@ struct ProxyAuthWebView: UIViewRepresentable {
             logger.warning("ProxyAuth: navigation failed: \(error.localizedDescription)")
         }
 
-        func webView(
-            _ webView: WKWebView,
-            decidePolicyFor navigationAction: WKNavigationAction,
-            decisionHandler: @escaping (WKNavigationActionPolicy) -> Void
-        ) {
-            // Block further navigation once we've successfully authenticated
-            if didSucceed {
-                decisionHandler(.cancel)
-                return
-            }
-            decisionHandler(.allow)
-        }
-
         // MARK: - Domain Check
 
         private func isOnServerDomain(_ url: URL) -> Bool {
@@ -126,90 +174,15 @@ struct ProxyAuthWebView: UIViewRepresentable {
             return currentHost == serverHost || currentHost.hasSuffix(".\(serverHost)")
         }
 
-        // MARK: - Polling
-
-        /// Poll by probing the server's `/health` endpoint directly from the
-        /// WKWebView via `fetch()`. If it returns JSON with `{"status": true}`,
-        /// the proxy session is active and cookies are valid.
-        private func startPollingForSuccess() {
-            guard !didSucceed, !isCheckingHealth else { return }
-
-            // Start timeout (3 minutes max)
-            if timeoutTimer == nil || !(timeoutTimer?.isValid ?? false) {
-                timeoutTimer = Timer.scheduledTimer(withTimeInterval: 180, repeats: false) { [weak self] _ in
-                    guard let self, !self.didSucceed else { return }
-                    self.pollTimer?.invalidate()
-                    self.logger.warning("ProxyAuth: timed out after 3 minutes")
-                    DispatchQueue.main.async { self.onFailed() }
-                }
-            }
-
-            // Check immediately, then poll every second
-            checkHealthViaFetch()
-            pollTimer?.invalidate()
-            pollTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
-                self?.checkHealthViaFetch()
-            }
-        }
-
-        /// Uses WKWebView's `fetch()` to check `/health` — this runs with the webview's
-        /// cookies so it works even before we inject them into URLSession.
-        private func checkHealthViaFetch() {
-            guard !didSucceed, !isCheckingHealth, let webView else { return }
-            isCheckingHealth = true
-
-            let healthURL = serverURL.hasSuffix("/")
-                ? "\(serverURL)health"
-                : "\(serverURL)/health"
-
-            let script = """
-            (async function() {
-                try {
-                    const r = await fetch('\(healthURL)', {
-                        credentials: 'include',
-                        cache: 'no-store'
-                    });
-                    if (!r.ok) return JSON.stringify({ok: false, status: r.status});
-                    const contentType = r.headers.get('content-type') || '';
-                    if (!contentType.includes('application/json')) {
-                        return JSON.stringify({ok: false, status: r.status, html: true});
-                    }
-                    const data = await r.json();
-                    return JSON.stringify({ok: true, status: data.status});
-                } catch(e) {
-                    return JSON.stringify({ok: false, error: e.message});
-                }
-            })()
-            """
-
-            webView.evaluateJavaScript(script) { [weak self] result, error in
-                guard let self else { return }
-                self.isCheckingHealth = false
-
-                guard error == nil, let resultString = result as? String,
-                      let data = resultString.data(using: .utf8),
-                      let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-                else { return }
-
-                let isOK = json["ok"] as? Bool ?? false
-                let status = json["status"]
-                let isValidStatus = (status as? Bool) == true || (status as? Int) == 1
-
-                if isOK && isValidStatus {
-                    self.captureSessionAndSucceed()
-                }
-            }
-        }
-
         // MARK: - Cookie Capture
 
         private func captureSessionAndSucceed() {
             guard !didSucceed, let webView else { return }
             didSucceed = true
-            pollTimer?.invalidate()
             timeoutTimer?.invalidate()
+            timeoutTimer = nil
 
-            logger.info("ProxyAuth: health check passed — capturing cookies")
+            logger.info("ProxyAuth: capturing cookies and completing auth")
 
             WKWebsiteDataStore.default().httpCookieStore.getAllCookies { [weak self, weak webView] cookies in
                 guard let self else { return }
@@ -271,7 +244,7 @@ struct ProxyAuthView: View {
                         HStack(spacing: Spacing.sm) {
                             ProgressView()
                                 .tint(theme.brandPrimary)
-                            Text("Sign in to continue — your login is being detected automatically.")
+                            Text("Sign in to continue — your login will be detected automatically.")
                                 .scaledFont(size: 12, weight: .medium)
                                 .foregroundStyle(theme.textSecondary)
                         }

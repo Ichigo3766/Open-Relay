@@ -230,8 +230,41 @@ final class TextToSpeechService: NSObject {
 
     func availableVoices() -> [AVSpeechSynthesisVoice] {
         AVSpeechSynthesisVoice.speechVoices()
-            .filter { $0.language.hasPrefix(Locale.current.language.languageCode?.identifier ?? "en") }
+            .sorted { lhs, rhs in
+                if lhs.language != rhs.language {
+                    return lhs.language < rhs.language
+                }
+                return lhs.quality.rawValue > rhs.quality.rawValue
+            }
+    }
+
+    /// Detects the dominant language of `text` using NLLanguageRecognizer and
+    /// returns the highest-quality installed `AVSpeechSynthesisVoice` for that
+    /// language. Falls back to the device locale voice if detection fails or no
+    /// matching voice is installed.
+    private func bestVoice(for text: String) -> AVSpeechSynthesisVoice? {
+        let recognizer = NLLanguageRecognizer()
+        recognizer.processString(text)
+        let detected = recognizer.dominantLanguage?.rawValue  // e.g. "fr", "de", "ja"
+
+        let allVoices = AVSpeechSynthesisVoice.speechVoices()
+
+        // Try to find a voice whose BCP-47 tag starts with the detected language code
+        if let lang = detected, !lang.isEmpty {
+            let match = allVoices
+                .filter { $0.language.hasPrefix(lang) }
+                .sorted { $0.quality.rawValue > $1.quality.rawValue }
+                .first
+            if let match { return match }
+        }
+
+        // Fallback: device locale
+        let deviceLang = Locale.current.language.languageCode?.identifier ?? "en"
+        return allVoices
+            .filter { $0.language.hasPrefix(deviceLang) }
             .sorted { $0.quality.rawValue > $1.quality.rawValue }
+            .first
+        ?? AVSpeechSynthesisVoice(language: "en-US")
     }
 
     // MARK: - Streaming TTS
@@ -447,8 +480,9 @@ final class TextToSpeechService: NSObject {
            let voice = AVSpeechSynthesisVoice(identifier: voiceId) {
             utterance.voice = voice
         } else {
-            utterance.voice = AVSpeechSynthesisVoice(
-                language: Locale.current.language.languageCode?.identifier ?? "en-US")
+            // Auto-detect the language of the text and pick a matching voice.
+            // This ensures non-English responses are spoken with correct pronunciation.
+            utterance.voice = bestVoice(for: chunk)
         }
 
         utterance.rate = speechRate

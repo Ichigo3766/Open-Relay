@@ -166,8 +166,8 @@ final class ConversationManager: @unchecked Sendable {
 
     // MARK: - Files
 
-    func uploadFile(data: Data, fileName: String) async throws -> String {
-        try await apiClient.uploadFile(data: data, fileName: fileName)
+    func uploadFile(data: Data, fileName: String, onUploaded: ((String) -> Void)? = nil) async throws -> String {
+        try await apiClient.uploadFile(data: data, fileName: fileName, onUploaded: onUploaded)
     }
 
     // MARK: - Knowledge

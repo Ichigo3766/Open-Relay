@@ -175,34 +175,6 @@ struct MainChatView: View {
             // MARK: Main chat content
             NavigationStack {
                 chatContent
-                    // Interactive edge-swipe to open drawer from left edge.
-                    .simultaneousGesture(
-                        DragGesture(minimumDistance: 12, coordinateSpace: .local)
-                            .onChanged { value in
-                                let horizontal = value.translation.width
-                                let vertical = abs(value.translation.height)
-                                guard horizontal > vertical,
-                                      value.startLocation.x < 44,
-                                      !showDrawer else { return }
-                                if !isDraggingDrawer {
-                                    UIApplication.shared.sendAction(
-                                        #selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
-                                }
-                                isDraggingDrawer = true
-                                dragOffset = horizontal
-                            }
-                            .onEnded { value in
-                                guard isDraggingDrawer else { return }
-                                let horizontal = value.translation.width
-                                let velocity = value.velocity.width
-                                isDraggingDrawer = false
-                                if horizontal > drawerWidth * 0.4 || velocity > 500 {
-                                    openDrawerAnimated()
-                                } else {
-                                    closeDrawerAnimated()
-                                }
-                            }
-                    )
                     .navigationBarTitleDisplayMode(.inline)
                     .toolbar {
                         ToolbarItem(placement: .topBarLeading) {
@@ -238,7 +210,7 @@ struct MainChatView: View {
                         }
                     }
             }
-            .allowsHitTesting(drawerFraction < 0.01)
+            .allowsHitTesting(drawerFraction < 0.01 && !isDraggingDrawer && !isDraggingFileBrowser)
 
             // MARK: Dimming overlay
             Color.black
@@ -365,39 +337,80 @@ struct MainChatView: View {
                     }
             )
             } // end if isTerminalActiveInCurrentChat
+
+            // MARK: Left edge overlay — exclusively captures left-edge swipe to open drawer.
+            // Sits on top of the NavigationStack so it intercepts touches before they
+            // reach background content. Uses .gesture() (not .simultaneousGesture) so
+            // background taps/scrolls cannot fire during the drag.
+            if !showDrawer {
+                Color.clear
+                    .frame(width: 20)
+                    .frame(maxHeight: .infinity)
+                    .contentShape(Rectangle())
+                    .gesture(
+                        DragGesture(minimumDistance: 12, coordinateSpace: .local)
+                            .onChanged { value in
+                                let horizontal = value.translation.width
+                                let vertical = abs(value.translation.height)
+                                guard horizontal > vertical else { return }
+                                if !isDraggingDrawer {
+                                    UIApplication.shared.sendAction(
+                                        #selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
+                                }
+                                isDraggingDrawer = true
+                                dragOffset = horizontal
+                            }
+                            .onEnded { value in
+                                guard isDraggingDrawer else { return }
+                                let horizontal = value.translation.width
+                                let velocity = value.velocity.width
+                                isDraggingDrawer = false
+                                if horizontal > drawerWidth * 0.4 || velocity > 500 {
+                                    openDrawerAnimated()
+                                } else {
+                                    closeDrawerAnimated()
+                                }
+                            }
+                    )
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+
+            // MARK: Right edge overlay — exclusively captures right-edge swipe to open file browser.
+            // Only shown when terminal is active and file browser is closed.
+            if isTerminalActiveInCurrentChat && !showFileBrowser && !showDrawer {
+                Color.clear
+                    .frame(width: 40)
+                    .frame(maxHeight: .infinity)
+                    .contentShape(Rectangle())
+                    .gesture(
+                        DragGesture(minimumDistance: 12, coordinateSpace: .local)
+                            .onChanged { value in
+                                let horizontal = value.translation.width
+                                let vertical = abs(value.translation.height)
+                                guard abs(horizontal) > vertical, horizontal < 0 else { return }
+                                if !isDraggingFileBrowser {
+                                    configureTerminalBrowserIfNeeded()
+                                    UIApplication.shared.sendAction(
+                                        #selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
+                                }
+                                isDraggingFileBrowser = true
+                                fileBrowserDragOffset = horizontal
+                            }
+                            .onEnded { value in
+                                guard isDraggingFileBrowser else { return }
+                                let horizontal = abs(value.translation.width)
+                                let velocity = abs(value.velocity.width)
+                                isDraggingFileBrowser = false
+                                if horizontal > fileBrowserWidth * 0.3 || velocity > 500 {
+                                    openFileBrowserAnimated()
+                                } else {
+                                    closeFileBrowserAnimated()
+                                }
+                            }
+                    )
+                    .frame(maxWidth: .infinity, alignment: .trailing)
+            }
         }
-        // Right-edge swipe to open file browser (mirrors left-edge drawer gesture)
-        .simultaneousGesture(
-            DragGesture(minimumDistance: 12, coordinateSpace: .local)
-                .onChanged { value in
-                    let horizontal = value.translation.width
-                    let vertical = abs(value.translation.height)
-                    guard isTerminalActiveInCurrentChat,
-                          abs(horizontal) > vertical,
-                          horizontal < 0,
-                          value.startLocation.x > containerWidth - 40,
-                          !showFileBrowser, !showDrawer else { return }
-                    if !isDraggingFileBrowser {
-                        // Configure terminal browser VM on first drag touch
-                        configureTerminalBrowserIfNeeded()
-                        UIApplication.shared.sendAction(
-                            #selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
-                    }
-                    isDraggingFileBrowser = true
-                    fileBrowserDragOffset = horizontal
-                }
-                .onEnded { value in
-                    guard isDraggingFileBrowser else { return }
-                    let horizontal = abs(value.translation.width)
-                    let velocity = abs(value.velocity.width)
-                    isDraggingFileBrowser = false
-                    if horizontal > fileBrowserWidth * 0.3 || velocity > 500 {
-                        openFileBrowserAnimated()
-                    } else {
-                        closeFileBrowserAnimated()
-                    }
-                }
-        )
     }
 
     // MARK: - Sheets (Settings, Notes, Voice Call, Folders, Rename, Export)
@@ -833,10 +846,24 @@ struct MainChatView: View {
     // MARK: - New Chat
 
     private func startNewChat() {
-        dependencies.activeChatStore.remove(nil)
+        // If we're already on the new-chat screen AND a transcription is in
+        // progress, stay put — destroying the VM would silently discard the work.
+        let alreadyOnNewChat = activeConversationId == nil && activeChannelId == nil
+        let currentNewVM = dependencies.activeChatStore.viewModel(for: nil)
+        if alreadyOnNewChat && currentNewVM.hasActiveTranscriptions {
+            return
+        }
+
+        // If we're NOT already on the new-chat screen, just navigate there
+        // without resetting the VM — the transcription can keep running.
+        // Only remove + recreate the VM when there's no ongoing work.
+        if !currentNewVM.hasActiveTranscriptions {
+            dependencies.activeChatStore.remove(nil)
+            newChatGeneration += 1
+        }
+
         activeConversationId = nil
         activeChannelId = nil
-        newChatGeneration += 1
         // Reset terminal file browser state so it starts fresh in the new chat
         closeFileBrowserAnimated()
         terminalBrowserVM.reset()

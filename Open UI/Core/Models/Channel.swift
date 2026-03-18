@@ -45,6 +45,8 @@ struct Channel: Identifiable, Hashable, Sendable {
     var updatedAt: Date
     var updatedBy: String?
     var archivedAt: Date?
+    /// Server-computed write access — `true` means the current user can post. Nil if not yet loaded.
+    var writeAccess: Bool?
     
     // Local-only state
     var unreadCount: Int = 0
@@ -98,11 +100,11 @@ struct Channel: Identifiable, Hashable, Sendable {
         return type.iconName
     }
     
-    /// Whether the current user has write access based on access grants.
-    func hasWriteAccess(userId: String) -> Bool {
-        // No grants configured = default access (server controls)
-        if accessGrants.isEmpty { return true }
-        return accessGrants.contains { $0.userId == userId && $0.write }
+    /// Whether the current user has write access.
+    /// Trusts the server-computed `write_access` field exclusively.
+    /// Returns `true` (permissive default) only when the server hasn't sent the field yet.
+    var canWrite: Bool {
+        writeAccess ?? true
     }
     
     // MARK: - Hashable (consistent == and hash)
@@ -171,6 +173,8 @@ struct Channel: Identifiable, Hashable, Sendable {
         )
         channel.unreadCount = unreadCount
         channel.lastMessage = lastMessage
+        // Trust server's computed write permission directly
+        channel.writeAccess = json["write_access"] as? Bool
         return channel
     }
 }

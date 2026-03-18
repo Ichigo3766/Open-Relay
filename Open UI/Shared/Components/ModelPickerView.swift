@@ -135,12 +135,24 @@ struct ModelPickerView: View {
                     authToken: authToken
                 )
 
-                // Name + description
+                // Name + badges + description
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(model.shortName)
-                        .scaledFont(size: 15, weight: .medium)
-                        .foregroundStyle(theme.textPrimary)
-                        .lineLimit(1)
+                    HStack(spacing: 6) {
+                        Text(model.shortName)
+                            .scaledFont(size: 15, weight: .medium)
+                            .foregroundStyle(theme.textPrimary)
+                            .lineLimit(1)
+
+                        if model.functionCallingMode == "native" {
+                            Text("⚡ Native Tools")
+                                .scaledFont(size: 10, weight: .semibold)
+                                .foregroundStyle(theme.brandPrimary)
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 2)
+                                .background(theme.brandPrimary.opacity(0.12))
+                                .clipShape(Capsule())
+                        }
+                    }
 
                     if let desc = model.description, !desc.isEmpty {
                         Text(desc)

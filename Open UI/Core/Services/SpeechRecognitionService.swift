@@ -59,7 +59,34 @@ final class SpeechRecognitionService {
     // MARK: - Initialization
 
     init() {
-        recognizer = SFSpeechRecognizer(locale: Locale.current)
+        let savedLocale = UserDefaults.standard.string(forKey: "sttLocale") ?? ""
+        if savedLocale.isEmpty {
+            recognizer = SFSpeechRecognizer(locale: Locale.current)
+        } else {
+            recognizer = SFSpeechRecognizer(locale: Locale(identifier: savedLocale))
+        }
+    }
+
+    /// Updates the speech recognizer to use a specific locale and restarts
+    /// listening automatically if it was active when called.
+    /// Pass an empty string to revert to the device's current locale.
+    func updateLocale(_ localeIdentifier: String) {
+        let wasListening = state == .listening
+        stopListening()
+
+        if localeIdentifier.isEmpty {
+            recognizer = SFSpeechRecognizer(locale: Locale.current)
+        } else {
+            recognizer = SFSpeechRecognizer(locale: Locale(identifier: localeIdentifier))
+        }
+        logger.info("STT locale updated to: \(localeIdentifier.isEmpty ? "device default" : localeIdentifier)")
+
+        // Resume listening automatically so the voice call doesn't stall
+        if wasListening {
+            Task {
+                try? await startListening()
+            }
+        }
     }
 
     // MARK: - Permissions

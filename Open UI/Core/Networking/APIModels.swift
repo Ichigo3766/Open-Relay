@@ -252,18 +252,22 @@ struct ChatCompletionRequest: Sendable {
     /// When set, the backend injects terminal tools (execute_command, file management, etc.)
     /// into the model's tool-calling pipeline.
     var terminalId: String?
+    /// OpenWebUI server-side parameters sent alongside the request.
+    /// The server's `apply_params_to_form_data()` consumes these before forwarding
+    /// to the LLM. Key use: `function_calling` — controls native vs default tool mode.
+    /// Example: `["function_calling": "native"]` enables native tool calling.
+    var params: [String: Any]?
 
     struct ChatFeatures: Sendable {
         var webSearch: Bool = false
         var imageGeneration: Bool = false
         var codeInterpreter: Bool = false
         var memory: Bool = false
-        var nativeToolCalling: Bool = false
 
         /// Whether any feature is enabled. Used to decide whether to include
         /// the `features` object in the request at all.
         var hasAnyEnabled: Bool {
-            webSearch || imageGeneration || codeInterpreter || memory || nativeToolCalling
+            webSearch || imageGeneration || codeInterpreter || memory
         }
     }
 
@@ -286,24 +290,27 @@ struct ChatCompletionRequest: Sendable {
         if let backgroundTasks, !backgroundTasks.isEmpty { data["background_tasks"] = backgroundTasks }
         if let terminalId, !terminalId.isEmpty { data["terminal_id"] = terminalId }
 
+        // Include server-side params (e.g. function_calling mode).
+        // The server's apply_params_to_form_data() consumes this dict and strips
+        // OpenWebUI-specific keys before forwarding the rest to the LLM.
+        if let params, !params.isEmpty { data["params"] = params }
+
         // Always include parent_message to prevent server NoneType errors
         // (matches Flutter: data['parent_message'] = {})
         data["parent_message"] = [String: Any]()
 
         if let features {
+            // Always send all feature keys with explicit true/false values,
+            // matching the web client behavior. If we only send `true` keys
+            // (or omit `features` entirely when all are off), the server falls
+            // back to the model's `defaultFeatureIds` and enables features the
+            // user explicitly toggled OFF.
             var feat: [String: Any] = [:]
-            // Only include features that are explicitly enabled.
-            // Omitting a key lets the server apply its own defaults
-            // (e.g., admin-enabled web search / image generation).
-            // Sending `false` would override those server defaults.
-            if features.webSearch { feat["web_search"] = true }
-            if features.imageGeneration { feat["image_generation"] = true }
-            if features.codeInterpreter { feat["code_interpreter"] = true }
+            feat["web_search"] = features.webSearch
+            feat["image_generation"] = features.imageGeneration
+            feat["code_interpreter"] = features.codeInterpreter
             if features.memory { feat["memory"] = true }
-            if features.nativeToolCalling { feat["native_tool_calling"] = true }
-            if !feat.isEmpty {
-                data["features"] = feat
-            }
+            data["features"] = feat
         }
 
         return data
