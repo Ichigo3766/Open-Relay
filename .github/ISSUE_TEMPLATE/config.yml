@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: "📖 README & Documentation"
+    url: https://github.com/Ichigo3766/Open-UI/blob/main/README.md
+    about: "Read the documentation before opening an issue — your question may already be answered."
+  - name: "🗺️ Roadmap"
+    url: https://github.com/Ichigo3766/Open-UI/blob/main/ROADMAP.md
+    about: "Check if your feature request is already planned."

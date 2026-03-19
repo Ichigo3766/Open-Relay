@@ -1,0 +1,74 @@
+name: "🎨 UI/UX Improvement"
+description: "Report a design issue, visual glitch, or suggest a UX improvement."
+labels: ["ui/ux", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Found something that looks off or feels awkward to use? Let us know!
+
+  - type: input
+    id: app_version
+    attributes:
+      label: "App Version"
+      placeholder: "e.g. 1.4.2 (42)"
+    validations:
+      required: true
+
+  - type: input
+    id: device
+    attributes:
+      label: "Device"
+      placeholder: "e.g. iPhone 16 Pro, iPad Air M2"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: issue_type
+    attributes:
+      label: "Type of Issue"
+      options:
+        - "Visual glitch / rendering bug"
+        - "Layout / spacing problem"
+        - "Confusing or unclear UI"
+        - "Animation / transition issue"
+        - "Accessibility problem"
+        - "Dark/light mode issue"
+        - "General UX flow improvement"
+        - "Other"
+    validations:
+      required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: "Description"
+      description: "What does the issue look like or feel like?"
+      placeholder: "Describe the visual or UX problem..."
+    validations:
+      required: true
+
+  - type: textarea
+    id: location
+    attributes:
+      label: "Where in the app?"
+      description: "Which screen, view, or interaction does this affect?"
+      placeholder: "e.g. Chat screen → message bubble on long press, Settings → Appearance"
+    validations:
+      required: true
+
+  - type: textarea
+    id: suggestion
+    attributes:
+      label: "Suggested Improvement"
+      description: "How would you improve it? (optional — reference other apps for inspiration if helpful)"
+    validations:
+      required: false
+
+  - type: textarea
+    id: screenshots
+    attributes:
+      label: "Screenshots"
+      description: "Drag and drop images here — before/after mockups are very welcome!"
+    validations:
+      required: false
