@@ -1,19 +1,11 @@
 name: "❓ Question / Help"
-description: "Ask a question about setup, configuration, or how to use Open UI."
+description: "Ask about setup, configuration, or how to use Open UI."
 labels: ["question"]
 body:
   - type: markdown
     attributes:
       value: |
-        Before asking, please check the [README](https://github.com/Ichigo3766/Open-UI/blob/main/README.md) — your answer might already be there!
-
-  - type: input
-    id: app_version
-    attributes:
-      label: "App Version"
-      placeholder: "e.g. 1.4.2 (42)"
-    validations:
-      required: false
+        Before asking, check the [README](https://github.com/Ichigo3766/Open-UI/blob/main/README.md) — your answer might already be there!
 
   - type: dropdown
     id: topic
@@ -23,27 +15,17 @@ body:
         - "Server setup / connection"
         - "Authentication (login, SSO, LDAP)"
         - "Model configuration"
-        - "Voice / TTS / STT features"
+        - "Voice / TTS / STT"
         - "Folders and organization"
         - "Settings and customization"
         - "Building from source"
-        - "Compatibility question"
         - "Other"
     validations:
-      required: true
+      required: false
 
   - type: textarea
     id: question
     attributes:
-      label: "Your Question"
-      description: "What would you like to know? Please be specific."
+      label: "Your question"
     validations:
       required: true
-
-  - type: textarea
-    id: context
-    attributes:
-      label: "What have you already tried?"
-      description: "Any docs you've read, things you've already attempted, etc."
-    validations:
-      required: false

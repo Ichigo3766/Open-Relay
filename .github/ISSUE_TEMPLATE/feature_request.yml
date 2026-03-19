@@ -1,51 +1,27 @@
 name: "✨ Feature Request"
-description: "Suggest a new feature or capability for Open UI."
+description: "Suggest a new feature or capability."
 labels: ["enhancement", "triage"]
 body:
-  - type: markdown
-    attributes:
-      value: |
-        Got an idea that would make Open UI better? Describe it below!
-
   - type: textarea
     id: summary
     attributes:
-      label: "Feature Summary"
-      description: "A concise one-line description of the feature."
-      placeholder: "e.g. Add ability to pin messages within a conversation"
+      label: "What would you like?"
+      placeholder: "e.g. Add ability to pin messages in a conversation"
     validations:
       required: true
 
   - type: textarea
-    id: problem
+    id: why
     attributes:
-      label: "Problem / Motivation"
-      description: "What problem does this solve? Why would this be useful?"
-      placeholder: "Currently when I want to... I have to... which is frustrating because..."
+      label: "Why would this be useful?"
+      placeholder: "Describe the problem it solves or the value it adds."
     validations:
       required: true
-
-  - type: textarea
-    id: solution
-    attributes:
-      label: "Proposed Solution"
-      description: "Describe the feature as you'd like it to work. Include mockups or examples if possible."
-    validations:
-      required: true
-
-  - type: textarea
-    id: alternatives
-    attributes:
-      label: "Alternatives Considered"
-      description: "Any workarounds or alternative solutions you've thought about?"
-    validations:
-      required: false
 
   - type: dropdown
     id: area
     attributes:
-      label: "Feature Area"
-      description: "Which part of the app does this relate to?"
+      label: "Which part of the app?"
       options:
         - "Chat / Conversations"
         - "Voice Calls"
@@ -57,16 +33,15 @@ body:
         - "Attachments / Files"
         - "Appearance / Theming"
         - "Notifications"
-        - "Widgets / Extensions"
-        - "Performance"
+        - "Widgets"
         - "Other"
     validations:
-      required: true
+      required: false
 
   - type: textarea
     id: additional
     attributes:
-      label: "Additional Context"
-      description: "Any other info, links, or references that would help."
+      label: "Anything else? (optional)"
+      description: "Mockups, references to other apps, or extra context."
     validations:
       required: false

@@ -2,43 +2,12 @@ name: "🐛 Bug Report"
 description: "Something is broken, crashing, or not working as expected."
 labels: ["bug", "triage"]
 body:
-  - type: markdown
-    attributes:
-      value: |
-        Thanks for taking the time to report a bug! Please fill out the form below as completely as possible — the more detail you provide, the faster it can be fixed.
-
   - type: input
     id: app_version
     attributes:
-      label: "App Version"
-      description: "Found in Settings → About Open UI (e.g. 1.4.2 (42))"
-      placeholder: "e.g. 1.4.2 (42)"
-    validations:
-      required: true
-
-  - type: input
-    id: ios_version
-    attributes:
-      label: "iOS Version"
-      description: "Found in iOS Settings → General → About"
-      placeholder: "e.g. iOS 18.3.1"
-    validations:
-      required: true
-
-  - type: input
-    id: device
-    attributes:
-      label: "Device"
-      placeholder: "e.g. iPhone 16 Pro, iPad Air M2"
-    validations:
-      required: true
-
-  - type: input
-    id: server_version
-    attributes:
-      label: "Open WebUI Server Version"
-      description: "Found in Settings → About Open UI → Server Version (if relevant)"
-      placeholder: "e.g. 0.6.5 or N/A"
+      label: "App Version (optional)"
+      description: "Found in Settings → About Open UI"
+      placeholder: "e.g. 1.4.2"
     validations:
       required: false
 
@@ -55,11 +24,10 @@ body:
     id: steps
     attributes:
       label: "Steps to Reproduce"
-      description: "Exact steps to trigger the bug."
       placeholder: |
         1. Go to '...'
-        2. Tap on '...'
-        3. See error / crash
+        2. Tap '...'
+        3. See error
     validations:
       required: true
 
@@ -69,20 +37,12 @@ body:
       label: "Expected Behavior"
       placeholder: "What should have happened?"
     validations:
-      required: true
+      required: false
 
   - type: textarea
     id: screenshots
     attributes:
-      label: "Screenshots / Screen Recording"
-      description: "Drag and drop images or video here (optional but very helpful)."
-    validations:
-      required: false
-
-  - type: textarea
-    id: additional
-    attributes:
-      label: "Additional Context"
-      description: "Any other info — error messages, logs, network conditions, model being used, etc."
+      label: "Screenshots / Recording (optional)"
+      description: "Drag and drop images here."
     validations:
       required: false

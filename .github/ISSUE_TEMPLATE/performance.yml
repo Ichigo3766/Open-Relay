@@ -1,49 +1,17 @@
 name: "⚡ Performance Issue"
-description: "Report slow loading, lag, high battery usage, memory warnings, or crashes."
+description: "Report slow loading, lag, high battery usage, or crashes."
 labels: ["performance", "bug", "triage"]
 body:
-  - type: markdown
-    attributes:
-      value: |
-        Performance issues can often be tricky to track down. Please provide as much detail as possible!
-
-  - type: input
-    id: app_version
-    attributes:
-      label: "App Version"
-      placeholder: "e.g. 1.4.2 (42)"
-    validations:
-      required: true
-
-  - type: input
-    id: ios_version
-    attributes:
-      label: "iOS Version"
-      placeholder: "e.g. iOS 18.3.1"
-    validations:
-      required: true
-
-  - type: input
-    id: device
-    attributes:
-      label: "Device"
-      placeholder: "e.g. iPhone 16 Pro, iPhone 13 mini, iPad Air M2"
-    validations:
-      required: true
-
   - type: dropdown
     id: issue_type
     attributes:
-      label: "Type of Performance Issue"
+      label: "What kind of issue?"
       options:
-        - "App is slow / laggy UI"
-        - "Streaming text is slow or stuttering"
+        - "Slow / laggy UI"
+        - "Streaming is slow or stuttering"
         - "High battery usage"
-        - "High memory usage / memory warning"
-        - "Long load time on startup"
-        - "Slow to load chat history"
         - "App crash"
-        - "Background process draining battery"
+        - "Long startup time"
         - "Other"
     validations:
       required: true
@@ -51,39 +19,27 @@ body:
   - type: textarea
     id: description
     attributes:
-      label: "Describe the Performance Problem"
-      placeholder: "e.g. After about 20 messages, scrolling becomes noticeably laggy..."
+      label: "Describe the problem"
+      placeholder: "e.g. After 20+ messages, scrolling becomes laggy..."
     validations:
       required: true
-
-  - type: textarea
-    id: reproduction
-    attributes:
-      label: "How to Reproduce"
-      description: "Steps or conditions that trigger the issue."
-      placeholder: |
-        1. Open a conversation with 50+ messages
-        2. Scroll quickly up and down
-        3. Notice lag after ~10 seconds
-    validations:
-      required: false
 
   - type: dropdown
     id: frequency
     attributes:
-      label: "How often does this happen?"
+      label: "How often?"
       options:
         - "Every time"
         - "Most of the time"
         - "Sometimes"
         - "Rarely / once"
     validations:
-      required: true
+      required: false
 
   - type: textarea
     id: additional
     attributes:
-      label: "Additional Context"
-      description: "Model used, conversation length, TTS/STT active, server specs, etc."
+      label: "Additional context (optional)"
+      description: "Model being used, conversation length, etc."
     validations:
       required: false
