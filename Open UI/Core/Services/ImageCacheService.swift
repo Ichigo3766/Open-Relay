@@ -20,7 +20,7 @@ actor ImageCacheService {
 
     // MARK: - Private Storage
 
-    private let memoryCache = NSCache<NSString, UIImage>()
+    nonisolated(unsafe) private let memoryCache = NSCache<NSString, UIImage>()
     private let fileManager = FileManager.default
     private let logger = Logger(subsystem: "com.openui", category: "ImageCache")
 
@@ -143,6 +143,31 @@ actor ImageCacheService {
         return nil
     }
 
+    /// Synchronous memory-only cache lookup — safe to call from any context.
+    ///
+    /// `NSCache` is thread-safe, so this can be called from `nonisolated` or
+    /// synchronous contexts without awaiting the actor. Use this in SwiftUI
+    /// view initializers to pre-populate state and avoid shimmer flashes when
+    /// the image is already warm in memory.
+    ///
+    /// - Parameter url: The image URL to look up.
+    /// - Returns: The cached `UIImage` from memory only, or `nil` if not in memory.
+    /// Called from SwiftUI view `init` — always on the main actor.
+    @MainActor func cachedImageSync(for url: URL) -> UIImage? {
+        let urlString = url.absoluteString
+        let data = Data(urlString.utf8)
+        var h1 = UInt64(14695981039346656037)
+        var h2 = UInt64(0xcbf29ce484222325)
+        for byte in data {
+            h1 ^= UInt64(byte)
+            h1 &*= 1099511628211
+            h2 ^= UInt64(byte)
+            h2 &*= 6364136223846793005
+        }
+        let key = String(h1, radix: 16) + String(h2, radix: 16)
+        return memoryCache.object(forKey: key as NSString)
+    }
+
     /// Loads an image from the given URL, using the cache if available.
     ///
     /// Deduplicates concurrent requests for the same URL. If a download
@@ -243,6 +268,35 @@ actor ImageCacheService {
 
             Task {
                 _ = await loadImage(from: url)
+            }
+        }
+    }
+
+    /// Prefetches authenticated images for the given URLs in parallel, up to `maxConcurrency`
+    /// simultaneous downloads. Designed for model avatar endpoints that require a Bearer token.
+    ///
+    /// - Parameters:
+    ///   - urls: The image URLs to prefetch (already-cached URLs are skipped instantly).
+    ///   - authToken: Bearer token to attach to each request.
+    ///   - maxConcurrency: Maximum simultaneous downloads (default: 6). Keeps the request
+    ///     count reasonable so the server isn't flooded when 50+ models load at once.
+    func prefetchWithAuth(urls: [URL], authToken: String?, maxConcurrency: Int = 6) {
+        Task(priority: .userInitiated) {
+            // Split into batches of `maxConcurrency` and fire them in parallel within each batch.
+            let batches = stride(from: 0, to: urls.count, by: maxConcurrency).map {
+                Array(urls[$0..<min($0 + maxConcurrency, urls.count)])
+            }
+            for batch in batches {
+                await withTaskGroup(of: Void.self) { group in
+                    for url in batch {
+                        // Skip URLs already in memory — no network needed.
+                        let key = self.cacheKey(for: url)
+                        guard self.memoryCache.object(forKey: key as NSString) == nil else { continue }
+                        group.addTask {
+                            _ = await self.loadImage(from: url, authToken: authToken)
+                        }
+                    }
+                }
             }
         }
     }
@@ -443,8 +497,26 @@ struct CachedAsyncImage<Content: View, Placeholder: View>: View {
     @ViewBuilder let content: (Image) -> Content
     @ViewBuilder let placeholder: () -> Placeholder
 
+    /// Pre-populated synchronously from the memory cache so the view
+    /// renders the cached image immediately on first layout — no shimmer flash.
     @State private var loadedImage: UIImage?
-    @State private var isLoading = false
+
+    init(
+        url: URL?,
+        authToken: String? = nil,
+        @ViewBuilder content: @escaping (Image) -> Content,
+        @ViewBuilder placeholder: @escaping () -> Placeholder
+    ) {
+        self.url = url
+        self.authToken = authToken
+        self.content = content
+        self.placeholder = placeholder
+        // Synchronous memory-cache hit: pre-populate so SwiftUI renders the
+        // image on the very first pass without a shimmer flash.
+        if let url {
+            _loadedImage = State(initialValue: ImageCacheService.shared.cachedImageSync(for: url))
+        }
+    }
 
     var body: some View {
         Group {
@@ -454,17 +526,25 @@ struct CachedAsyncImage<Content: View, Placeholder: View>: View {
                 placeholder()
             }
         }
+        // stale-while-revalidate: always fetch in the background so avatar
+        // changes propagate. If the response is identical the UI won't flicker
+        // because SwiftUI only re-renders when `loadedImage` actually changes.
         .task(id: url) {
-            await loadImage()
+            await revalidate()
         }
     }
 
-    private func loadImage() async {
+    /// Fetches the latest image from the network (or cache) and updates
+    /// `loadedImage` if the result differs from what is already shown.
+    private func revalidate() async {
         guard let url else { return }
-        isLoading = true
-
-        loadedImage = await ImageCacheService.shared.loadImage(from: url, authToken: authToken)
-        isLoading = false
+        let fresh = await ImageCacheService.shared.loadImage(from: url, authToken: authToken)
+        if let fresh, fresh !== loadedImage {
+            loadedImage = fresh
+        } else if fresh == nil && loadedImage == nil {
+            // First load, no cache — show whatever came back (nil keeps placeholder)
+            loadedImage = fresh
+        }
     }
 }
 

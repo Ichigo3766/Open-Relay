@@ -7,14 +7,18 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		380186272F6F1E22007FCD96 /* MarkdownParser in Frameworks */ = {isa = PBXBuildFile; productRef = 380186262F6F1E22007FCD96 /* MarkdownParser */; };
+		380186292F6F1E22007FCD96 /* MarkdownView in Frameworks */ = {isa = PBXBuildFile; productRef = 380186282F6F1E22007FCD96 /* MarkdownView */; };
 		384A11FE2F68A9B9005E1919 /* MarkdownParser in Frameworks */ = {isa = PBXBuildFile; productRef = 384A11FD2F68A9B9005E1919 /* MarkdownParser */; };
 		384A12002F68A9B9005E1919 /* MarkdownView in Frameworks */ = {isa = PBXBuildFile; productRef = 384A11FF2F68A9B9005E1919 /* MarkdownView */; };
-		384A12032F68AD9E005E1919 /* MarkdownParser in Frameworks */ = {isa = PBXBuildFile; productRef = 384A12022F68AD9E005E1919 /* MarkdownParser */; };
-		384A12052F68AD9E005E1919 /* MarkdownView in Frameworks */ = {isa = PBXBuildFile; productRef = 384A12042F68AD9E005E1919 /* MarkdownView */; };
 		384A121A2F68D677005E1919 /* MLXAudioCodecs in Frameworks */ = {isa = PBXBuildFile; productRef = 384A12192F68D677005E1919 /* MLXAudioCodecs */; };
 		384A121C2F68D677005E1919 /* MLXAudioCore in Frameworks */ = {isa = PBXBuildFile; productRef = 384A121B2F68D677005E1919 /* MLXAudioCore */; };
 		384A121E2F68D677005E1919 /* MLXAudioSTT in Frameworks */ = {isa = PBXBuildFile; productRef = 384A121D2F68D677005E1919 /* MLXAudioSTT */; };
 		384A12202F68D677005E1919 /* MLXAudioTTS in Frameworks */ = {isa = PBXBuildFile; productRef = 384A121F2F68D677005E1919 /* MLXAudioTTS */; };
+		385E9BC42F6FAB4900A57A28 /* MarkdownParser in Frameworks */ = {isa = PBXBuildFile; productRef = 385E9BC32F6FAB4900A57A28 /* MarkdownParser */; };
+		385E9BC62F6FAB4900A57A28 /* MarkdownView in Frameworks */ = {isa = PBXBuildFile; productRef = 385E9BC52F6FAB4900A57A28 /* MarkdownView */; };
+		385E9BC92F6FAE8600A57A28 /* MarkdownParser in Frameworks */ = {isa = PBXBuildFile; productRef = 385E9BC82F6FAE8600A57A28 /* MarkdownParser */; };
+		385E9BCB2F6FAE8600A57A28 /* MarkdownView in Frameworks */ = {isa = PBXBuildFile; productRef = 385E9BCA2F6FAE8600A57A28 /* MarkdownView */; };
 		3870D18B2F5C0732004FF9ED /* MarkdownParser in Frameworks */ = {isa = PBXBuildFile; productRef = 3870D18A2F5C0732004FF9ED /* MarkdownParser */; };
 		3870D18D2F5C0732004FF9ED /* MarkdownView in Frameworks */ = {isa = PBXBuildFile; productRef = 3870D18C2F5C0732004FF9ED /* MarkdownView */; };
 		38868C2A2F5A527000FA123F /* MarkdownParser in Frameworks */ = {isa = PBXBuildFile; productRef = 38868C292F5A527000FA123F /* MarkdownParser */; };
@@ -60,20 +64,24 @@
 				384A121E2F68D677005E1919 /* MLXAudioSTT in Frameworks */,
 				384A12202F68D677005E1919 /* MLXAudioTTS in Frameworks */,
 				38868C2A2F5A527000FA123F /* MarkdownParser in Frameworks */,
+				385E9BC42F6FAB4900A57A28 /* MarkdownParser in Frameworks */,
 				3870D18D2F5C0732004FF9ED /* MarkdownView in Frameworks */,
 				38C0AC0E2F5A12CF0084BC6C /* MarkdownParser in Frameworks */,
 				38868C2C2F5A527000FA123F /* MarkdownView in Frameworks */,
 				3870D18B2F5C0732004FF9ED /* MarkdownParser in Frameworks */,
-				384A12052F68AD9E005E1919 /* MarkdownView in Frameworks */,
 				384A121A2F68D677005E1919 /* MLXAudioCodecs in Frameworks */,
 				38868C362F5A66F300FA123F /* MarkdownView in Frameworks */,
 				384A121C2F68D677005E1919 /* MLXAudioCore in Frameworks */,
 				38868C342F5A66F300FA123F /* MarkdownParser in Frameworks */,
+				385E9BCB2F6FAE8600A57A28 /* MarkdownView in Frameworks */,
+				385E9BC92F6FAE8600A57A28 /* MarkdownParser in Frameworks */,
 				38C0AC102F5A12CF0084BC6C /* MarkdownView in Frameworks */,
 				38AA00012FA9B00000MRMAID /* BeautifulMermaid in Frameworks */,
+				385E9BC62F6FAB4900A57A28 /* MarkdownView in Frameworks */,
 				384A11FE2F68A9B9005E1919 /* MarkdownParser in Frameworks */,
+				380186292F6F1E22007FCD96 /* MarkdownView in Frameworks */,
 				38AA00042FA9B00000SVGDRW /* SwiftDraw in Frameworks */,
-				384A12032F68AD9E005E1919 /* MarkdownParser in Frameworks */,
+				380186272F6F1E22007FCD96 /* MarkdownParser in Frameworks */,
 				384A12002F68A9B9005E1919 /* MarkdownView in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -130,12 +138,16 @@
 				38AA00032FA9B00000SVGDRW /* SwiftDraw */,
 				384A11FD2F68A9B9005E1919 /* MarkdownParser */,
 				384A11FF2F68A9B9005E1919 /* MarkdownView */,
-				384A12022F68AD9E005E1919 /* MarkdownParser */,
-				384A12042F68AD9E005E1919 /* MarkdownView */,
 				384A12192F68D677005E1919 /* MLXAudioCodecs */,
 				384A121B2F68D677005E1919 /* MLXAudioCore */,
 				384A121D2F68D677005E1919 /* MLXAudioSTT */,
 				384A121F2F68D677005E1919 /* MLXAudioTTS */,
+				380186262F6F1E22007FCD96 /* MarkdownParser */,
+				380186282F6F1E22007FCD96 /* MarkdownView */,
+				385E9BC32F6FAB4900A57A28 /* MarkdownParser */,
+				385E9BC52F6FAB4900A57A28 /* MarkdownView */,
+				385E9BC82F6FAE8600A57A28 /* MarkdownParser */,
+				385E9BCA2F6FAE8600A57A28 /* MarkdownView */,
 			);
 			productName = "Open UI";
 			productReference = 38EB667D2F39CE5A00AED774 /* Open UI.app */;
@@ -163,14 +175,17 @@
 				en,
 				es,
 				Base,
+				de,
+				ko,
+				hi,
 			);
 			mainGroup = 38EB66742F39CE5A00AED774;
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
 				38AA00022FA9B00000MRMAID /* XCRemoteSwiftPackageReference "beautiful-mermaid-swift" */,
 				38AA00052FA9B00000SVGDRW /* XCRemoteSwiftPackageReference "SwiftDraw" */,
-				384A12012F68AD9E005E1919 /* XCRemoteSwiftPackageReference "MarkdownView" */,
 				384A12182F68D677005E1919 /* XCRemoteSwiftPackageReference "mlx-audio-swift" */,
+				385E9BC72F6FAE8600A57A28 /* XCRemoteSwiftPackageReference "MarkdownView" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 38EB667E2F39CE5A00AED774 /* Products */;
@@ -343,12 +358,12 @@
 				INFOPLIST_KEY_CFBundleDisplayName = "Open Relay";
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.productivity";
 				INFOPLIST_KEY_LSSupportsOpeningDocumentsInPlace = YES;
-				INFOPLIST_KEY_NSCameraUsageDescription = "Open UI needs camera access to capture photos and documents for chat attachments.";
-				INFOPLIST_KEY_NSFaceIDUsageDescription = "Open UI uses Face ID to protect your account and conversations.";
-				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Open UI needs microphone access for voice input and voice calls.";
-				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "Open UI needs permission to save images generated in conversations to your photo library.";
-				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "Open UI needs photo library access to attach images to your conversations.";
-				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "Open UI uses speech recognition to convert your voice input to text.";
+				INFOPLIST_KEY_NSCameraUsageDescription = "Open Relay needs camera access to capture photos and documents for chat attachments.";
+				INFOPLIST_KEY_NSFaceIDUsageDescription = "Open Relay uses Face ID to protect your account and conversations.";
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Open Relay needs microphone access for voice input and voice calls.";
+				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "Open Relay needs permission to save images generated in conversations to your photo library.";
+				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "Open Relay needs photo library access to attach images to your conversations.";
+				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "Open Relay uses speech recognition to convert your voice input to text.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
@@ -360,7 +375,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.2.1;
+				MARKETING_VERSION = 1.3.1;
 				PRODUCT_BUNDLE_IDENTIFIER = com.openui.openui;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
@@ -388,12 +403,12 @@
 				INFOPLIST_KEY_CFBundleDisplayName = "Open Relay";
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.productivity";
 				INFOPLIST_KEY_LSSupportsOpeningDocumentsInPlace = YES;
-				INFOPLIST_KEY_NSCameraUsageDescription = "Open UI needs camera access to capture photos and documents for chat attachments.";
-				INFOPLIST_KEY_NSFaceIDUsageDescription = "Open UI uses Face ID to protect your account and conversations.";
-				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Open UI needs microphone access for voice input and voice calls.";
-				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "Open UI needs permission to save images generated in conversations to your photo library.";
-				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "Open UI needs photo library access to attach images to your conversations.";
-				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "Open UI uses speech recognition to convert your voice input to text.";
+				INFOPLIST_KEY_NSCameraUsageDescription = "Open Relay needs camera access to capture photos and documents for chat attachments.";
+				INFOPLIST_KEY_NSFaceIDUsageDescription = "Open Relay uses Face ID to protect your account and conversations.";
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Open Relay needs microphone access for voice input and voice calls.";
+				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "Open Relay needs permission to save images generated in conversations to your photo library.";
+				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "Open Relay needs photo library access to attach images to your conversations.";
+				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "Open Relay uses speech recognition to convert your voice input to text.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
@@ -405,7 +420,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.3;
+				MARKETING_VERSION = 1.3.1;
 				PRODUCT_BUNDLE_IDENTIFIER = com.openui.openui;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
@@ -442,17 +457,17 @@
 /* End XCConfigurationList section */
 
 /* Begin XCRemoteSwiftPackageReference section */
-		384A12012F68AD9E005E1919 /* XCRemoteSwiftPackageReference "MarkdownView" */ = {
+		384A12182F68D677005E1919 /* XCRemoteSwiftPackageReference "mlx-audio-swift" */ = {
 			isa = XCRemoteSwiftPackageReference;
-			repositoryURL = "https://github.com/Ichigo3766/MarkdownView";
+			repositoryURL = "https://github.com/Blaizzy/mlx-audio-swift.git";
 			requirement = {
 				branch = main;
 				kind = branch;
 			};
 		};
-		384A12182F68D677005E1919 /* XCRemoteSwiftPackageReference "mlx-audio-swift" */ = {
+		385E9BC72F6FAE8600A57A28 /* XCRemoteSwiftPackageReference "MarkdownView" */ = {
 			isa = XCRemoteSwiftPackageReference;
-			repositoryURL = "https://github.com/Blaizzy/mlx-audio-swift.git";
+			repositoryURL = "https://github.com/Ichigo3766/MarkdownView";
 			requirement = {
 				branch = main;
 				kind = branch;
@@ -477,22 +492,20 @@
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
+		380186262F6F1E22007FCD96 /* MarkdownParser */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = MarkdownParser;
+		};
+		380186282F6F1E22007FCD96 /* MarkdownView */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = MarkdownView;
+		};
 		384A11FD2F68A9B9005E1919 /* MarkdownParser */ = {
 			isa = XCSwiftPackageProductDependency;
 			productName = MarkdownParser;
 		};
 		384A11FF2F68A9B9005E1919 /* MarkdownView */ = {
 			isa = XCSwiftPackageProductDependency;
-			productName = MarkdownView;
-		};
-		384A12022F68AD9E005E1919 /* MarkdownParser */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = 384A12012F68AD9E005E1919 /* XCRemoteSwiftPackageReference "MarkdownView" */;
-			productName = MarkdownParser;
-		};
-		384A12042F68AD9E005E1919 /* MarkdownView */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = 384A12012F68AD9E005E1919 /* XCRemoteSwiftPackageReference "MarkdownView" */;
 			productName = MarkdownView;
 		};
 		384A12192F68D677005E1919 /* MLXAudioCodecs */ = {
@@ -514,6 +527,24 @@
 			isa = XCSwiftPackageProductDependency;
 			package = 384A12182F68D677005E1919 /* XCRemoteSwiftPackageReference "mlx-audio-swift" */;
 			productName = MLXAudioTTS;
+		};
+		385E9BC32F6FAB4900A57A28 /* MarkdownParser */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = MarkdownParser;
+		};
+		385E9BC52F6FAB4900A57A28 /* MarkdownView */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = MarkdownView;
+		};
+		385E9BC82F6FAE8600A57A28 /* MarkdownParser */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 385E9BC72F6FAE8600A57A28 /* XCRemoteSwiftPackageReference "MarkdownView" */;
+			productName = MarkdownParser;
+		};
+		385E9BCA2F6FAE8600A57A28 /* MarkdownView */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 385E9BC72F6FAE8600A57A28 /* XCRemoteSwiftPackageReference "MarkdownView" */;
+			productName = MarkdownView;
 		};
 		3870D18A2F5C0732004FF9ED /* MarkdownParser */ = {
 			isa = XCSwiftPackageProductDependency;

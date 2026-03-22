@@ -362,22 +362,40 @@ final class FolderListViewModel {
     // MARK: - Delete
 
     /// Deletes a folder. When `deleteContents` is true, also deletes all chats.
+    /// When `deleteContents` is false, chats are moved to root (no folder) before
+    /// the folder is deleted — matching the behaviour of dragging chats out of a folder.
     func deleteFolder(id: String, deleteContents: Bool = false) async {
         guard let manager else { return }
 
         let removed = folders.first { $0.id == id }
-        folders.removeAll { $0.id == id }
 
         // Clear active folder if it's the deleted one
         if activeFolderId == id {
             clearActiveFolder()
         }
 
+        if !deleteContents {
+            // Move every chat in the folder to root before deleting the folder.
+            // This is identical to what drag-and-drop does: moveChat(…, to: nil).
+            let chatsToMove = removed?.chats ?? []
+            for chat in chatsToMove {
+                do {
+                    try await manager.moveChat(conversationId: chat.id, to: nil)
+                } catch {
+                    logger.error("Failed to unlink chat \(chat.id) from folder \(id) before deletion: \(error.localizedDescription)")
+                    // Non-fatal — continue moving the rest
+                }
+            }
+        }
+
+        // Remove the folder from the local list now that chats have been relocated.
+        folders.removeAll { $0.id == id }
+
         do {
             try await manager.deleteFolder(id: id, deleteContents: deleteContents)
         } catch {
             logger.error("Failed to delete folder: \(error.localizedDescription)")
-            // Revert
+            // Revert the local removal
             if let removed {
                 folders.append(removed)
                 folders.sort { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }

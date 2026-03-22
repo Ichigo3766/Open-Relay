@@ -1,3 +1,36 @@
+# Changelog
+
+## 📦 NEXT BUILD
+
+### What's New
+
+### Improvements
+
+### Bug Fixes
+
+## Previous Builds
+
+## v1.3.1 — March 22, 2026
+
+### What's New
+- Completely redesigned model picker — tap the model name in the toolbar to open a native bottom sheet with search and filter pills (by connection type and tag).
+- Folders can now have a default model set when creating them
+- Folders, Channels, and Notes in the drawer are now hidden when the server has those features disabled.
+- Added delete confirmation dialogs for chats, folders, and channels across all views
+- Channels list now groups conversations by type: Direct Messages, Groups, and Channels — making it easier to find what you need at a glance.
+- iPad conversation context menu now includes Share, Clone, Remove from Folder, and a grouped Download submenu — fully matching iPhone.
+- iPad now supports editing folder settings (name, system prompt, knowledge) after creation.
+- iPad subfolders now render correctly in a nested tree layout, matching iPhone.
+- iPad voice transcription is no longer accidentally cancelled when tapping New Chat while recording is in progress.
+
+### Improvements
+- Performance boost for streaming and code blocks rendering.
+
+### Bug Fixes
+- Fixed "Delete Folder Only" incorrectly deleting the chats inside — chats are now properly moved to your main chat list instead.
+- Fixed the tool state resetting when enabling new tools.
+- Fixed deleting models in settings -> STT/TTS.
+
 ## v1.3 — March 20, 2026
 
 ### What's New

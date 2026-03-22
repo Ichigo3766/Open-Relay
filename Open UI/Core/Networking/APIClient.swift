@@ -487,6 +487,18 @@ final class APIClient: @unchecked Sendable {
             }
         }
 
+        // Parse tags — server sends [{"name": "OpenRou"}, ...] or ["OpenRou", ...]
+        let tags: [String] = {
+            if let tagArray = raw["tags"] as? [[String: Any]] {
+                return tagArray.compactMap { $0["name"] as? String }
+            } else if let tagArray = raw["tags"] as? [String] {
+                return tagArray
+            }
+            return []
+        }()
+
+        let connectionType = raw["connection_type"] as? String
+
         return AIModel(
             id: id,
             name: name,
@@ -500,7 +512,9 @@ final class APIClient: @unchecked Sendable {
             toolIds: toolIds,
             defaultFeatureIds: defaultFeatureIds,
             functionCallingMode: functionCallingMode,
-            builtinTools: builtinTools
+            builtinTools: builtinTools,
+            tags: tags,
+            connectionType: connectionType
         )
     }
 
@@ -1946,6 +1960,18 @@ final class APIClient: @unchecked Sendable {
                 }
             }
 
+            // Parse tags — server sends [{"name": "OpenRou"}, ...] or ["OpenRou", ...]
+            let tags: [String] = {
+                if let tagArray = raw["tags"] as? [[String: Any]] {
+                    return tagArray.compactMap { $0["name"] as? String }
+                } else if let tagArray = raw["tags"] as? [String] {
+                    return tagArray
+                }
+                return []
+            }()
+
+            let connectionType = raw["connection_type"] as? String
+
             return AIModel(
                 id: id,
                 name: name,
@@ -1959,7 +1985,9 @@ final class APIClient: @unchecked Sendable {
                 toolIds: toolIds,
                 defaultFeatureIds: defaultFeatureIds,
                 functionCallingMode: functionCallingMode,
-                builtinTools: builtinTools
+                builtinTools: builtinTools,
+                tags: tags,
+                connectionType: connectionType
             )
         }
     }

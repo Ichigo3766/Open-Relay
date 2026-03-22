@@ -519,7 +519,7 @@ struct ChatSettingsView: View {
             } header: {
                 Text("Haptics")
             } footer: {
-                Text("Provides a subtle haptic pulse as each token streams in. May increase battery usage.")
+                Text("Haptic feedback pulses as each token streams in.")
             }
 
             Section {
@@ -775,9 +775,9 @@ struct TTSSettingsView: View {
                             preloadMarvisModel()
                         } label: {
                             HStack(spacing: Spacing.sm) {
-                                Image(systemName: "arrow.down.circle")
+                                Image(systemName: marvisFilesOnDisk ? "bolt.circle" : "arrow.down.circle")
                                     .scaledFont(size: 16, weight: .medium)
-                                Text("Download & Load Model")
+                                Text(marvisFilesOnDisk ? "Load Model" : "Download & Load Model")
                                     .scaledFont(size: 16)
                                     .fontWeight(.medium)
                             }
@@ -928,31 +928,31 @@ struct TTSSettingsView: View {
                     }
                 }
             }
-        }
 
-        // Model Storage Management
-        Section {
-            HStack {
-                Text("Marvis TTS")
-                    .scaledFont(size: 16)
-                    .foregroundStyle(theme.textPrimary)
-                Spacer()
-                Text(marvisModelSize)
-                    .scaledFont(size: 14)
-                    .foregroundStyle(theme.textSecondary)
-            }
-            .swipeActions(edge: .trailing, allowsFullSwipe: true) {
-                Button(role: .destructive) {
-                    ttsService.marvisService.unloadAndDeleteModel()
-                    refreshMarvisModelSize()
-                } label: {
-                    Label("Delete", systemImage: "trash")
+            // Model Storage Management
+            Section {
+                HStack {
+                    Text("Marvis TTS")
+                        .scaledFont(size: 16)
+                        .foregroundStyle(theme.textPrimary)
+                    Spacer()
+                    Text(marvisModelSize)
+                        .scaledFont(size: 14)
+                        .foregroundStyle(theme.textSecondary)
                 }
+                .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                    Button(role: .destructive) {
+                        ttsService.marvisService.unloadAndDeleteModel()
+                        refreshMarvisModelSize()
+                    } label: {
+                        Label("Delete", systemImage: "trash")
+                    }
+                }
+            } header: {
+                Text("Model Storage")
+            } footer: {
+                Text("Swipe left on a model row to delete it from disk and free storage.")
             }
-        } header: {
-            Text("Model Storage")
-        } footer: {
-            Text("Swipe left on a model row to delete it from disk and free storage.")
         }
         .navigationTitle("Text-to-Speech")
         .navigationBarTitleDisplayMode(.inline)
@@ -967,11 +967,16 @@ struct TTSSettingsView: View {
 
     // MARK: - Marvis Status Badge
 
+    /// True when model files are already cached on disk (but not necessarily loaded into memory).
+    private var marvisFilesOnDisk: Bool {
+        marvisModelSize != "–" && marvisModelSize != "Not downloaded"
+    }
+
     @ViewBuilder
     private var marvisStatusBadge: some View {
         switch ttsService.marvisState {
         case .unloaded:
-            statusPill("Not Downloaded", color: theme.textTertiary)
+            statusPill(marvisFilesOnDisk ? "Not Loaded" : "Not Downloaded", color: theme.textTertiary)
         case .downloading(let progress):
             VStack(alignment: .trailing, spacing: 2) {
                 HStack(spacing: 4) {

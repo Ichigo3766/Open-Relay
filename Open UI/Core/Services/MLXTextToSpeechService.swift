@@ -8,6 +8,7 @@ import MLXAudioTTS
 import MLXAudioCore
 import MLX
 import MLXLMCommon
+import HuggingFace
 #endif
 
 // MARK: - Marvis TTS Configuration
@@ -112,8 +113,10 @@ final class MarvisTTSService {
         logger.info("Loading MarvisTTS model via mlx-audio-swift…")
 
         do {
+            let modelCache = HubCache(location: .fixed(directory: StorageManager.modelCacheDirectory))
             let loaded = try await MarvisTTSModel.fromPretrained(
-                "Marvis-AI/marvis-tts-250m-v0.2-MLX-8bit"
+                "Marvis-AI/marvis-tts-250m-v0.2-MLX-8bit",
+                cache: modelCache
             ) { [weak self] progress in
                 Task { @MainActor [weak self] in
                     guard let self else { return }

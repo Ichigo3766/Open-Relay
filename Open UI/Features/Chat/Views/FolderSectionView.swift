@@ -262,6 +262,7 @@ private struct FolderChatRow: View {
     var onTogglePin: (() -> Void)?
 
     @Environment(\.theme) private var theme
+    @State private var showDeleteConfirmation = false
 
     var body: some View {
         Button {
@@ -310,9 +311,9 @@ private struct FolderChatRow: View {
             .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 8))
         }
         // Swipe actions
-        .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
             Button(role: .destructive) {
-                onDelete?()
+                showDeleteConfirmation = true
             } label: {
                 Label(String(localized: "Delete"), systemImage: "trash")
             }
@@ -366,10 +367,22 @@ private struct FolderChatRow: View {
             }
 
             Button(role: .destructive) {
-                onDelete?()
+                showDeleteConfirmation = true
             } label: {
                 Label(String(localized: "Delete"), systemImage: "trash")
             }
+        }
+        .confirmationDialog(
+            String(localized: "Delete \"\(conversation.title)\"?"),
+            isPresented: $showDeleteConfirmation,
+            titleVisibility: .visible
+        ) {
+            Button(String(localized: "Delete"), role: .destructive) {
+                onDelete?()
+            }
+            Button(String(localized: "Cancel"), role: .cancel) {}
+        } message: {
+            Text("This action cannot be undone.")
         }
         .accessibilityLabel(Text(conversation.title))
         .accessibilityHint(Text("Double tap to open. Drag to move between folders."))

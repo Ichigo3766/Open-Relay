@@ -53,6 +53,12 @@ struct MainChatView: View {
     /// Controls the "delete selected" confirmation dialog.
     @State private var showDeleteSelectedConfirmation = false
 
+    /// Single-conversation delete confirmation (from drawer context menu).
+    @State private var deletingConversation: Conversation?
+
+    /// Channel delete confirmation (from drawer context menu).
+    @State private var deletingChannelId: String?
+
     /// Whether the "create folder" sheet is visible.
     @State private var showCreateFolderSheet = false
 
@@ -701,6 +707,58 @@ struct MainChatView: View {
             } message: {
                 Text("This will permanently delete \(listViewModel.selectedCount) selected conversation\(listViewModel.selectedCount == 1 ? "" : "s"). This action cannot be undone.")
             }
+            // Single-conversation delete confirmation
+            .confirmationDialog(
+                "Delete \"\(deletingConversation?.title ?? "")\"?",
+                isPresented: .init(
+                    get: { deletingConversation != nil },
+                    set: { if !$0 { deletingConversation = nil } }
+                ),
+                titleVisibility: .visible
+            ) {
+                Button("Delete", role: .destructive) {
+                    if let conv = deletingConversation {
+                        let deletedId = conv.id
+                        deletingConversation = nil
+                        Task {
+                            await listViewModel.deleteConversation(id: deletedId)
+                            if activeConversationId == deletedId {
+                                activeConversationId = nil
+                            }
+                        }
+                    }
+                }
+                Button("Cancel", role: .cancel) {
+                    deletingConversation = nil
+                }
+            } message: {
+                Text("This action cannot be undone.")
+            }
+            // Channel delete confirmation
+            .confirmationDialog(
+                "Delete Channel?",
+                isPresented: .init(
+                    get: { deletingChannelId != nil },
+                    set: { if !$0 { deletingChannelId = nil } }
+                ),
+                titleVisibility: .visible
+            ) {
+                Button("Delete Channel", role: .destructive) {
+                    if let channelId = deletingChannelId {
+                        deletingChannelId = nil
+                        if activeChannelId == channelId { activeChannelId = nil }
+                        Task {
+                            try? await dependencies.apiClient?.deleteChannel(id: channelId)
+                            await channelListVM.refreshChannels()
+                        }
+                    }
+                }
+                Button("Cancel", role: .cancel) {
+                    deletingChannelId = nil
+                }
+            } message: {
+                Text("This will permanently delete this channel and all its messages.")
+            }
             // Export error alert
             .alert("Export Failed", isPresented: .init(get: { exportError != nil }, set: { if !$0 { exportError = nil } })) {
                 Button("OK", role: .cancel) {}
@@ -991,7 +1049,7 @@ struct MainChatView: View {
     // MARK: - Model Selector
 
     private var modelSelector: some View {
-        ModelSelectorLabel(
+        MainModelSelectorLabel(
             conversationId: activeConversationId,
             activeChatStore: dependencies.activeChatStore,
             theme: theme
@@ -1020,7 +1078,8 @@ struct MainChatView: View {
                     }
 
                     // ── DIVIDER between Folders & Channels ──────────────
-                    if !folderVM.folders.isEmpty || !channelListVM.channels.isEmpty {
+                    let channelsEnabled = dependencies.authViewModel.backendConfig?.features?.enableChannels != false
+                    if (!folderVM.featureDisabled && !folderVM.folders.isEmpty) || (channelsEnabled && !channelListVM.channels.isEmpty) {
                         Rectangle()
                             .fill(theme.textTertiary.opacity(0.15))
                             .frame(height: 1)
@@ -1028,7 +1087,8 @@ struct MainChatView: View {
                             .padding(.vertical, Spacing.sm)
                     }
 
-                    // ── CHANNELS SECTION (always visible — channels are accessible from drawer) ──
+                    // ── CHANNELS SECTION (shown only when enabled on server) ──
+                    if channelsEnabled {
                     VStack(alignment: .leading, spacing: 0) {
                         HStack(spacing: 6) {
                             Image(systemName: "bubble.left.and.bubble.right")
@@ -1063,70 +1123,32 @@ struct MainChatView: View {
                                 .padding(.horizontal, Spacing.md)
                                 .padding(.vertical, 4)
                         } else {
-                            ForEach(channelListVM.channels) { channel in
-                                Button {
-                                    activeChannelId = channel.id
-                                    activeConversationId = nil
-                                    closeDrawer()
-                                } label: {
-                                    HStack(spacing: 6) {
-                                        // DM: show participant avatar; others: show icon
-                                        if channel.type == .dm, let participant = channel.dmParticipants.first {
-                                            UserAvatar(
-                                                size: 22,
-                                                imageURL: participant.resolveAvatarURL(serverBaseURL: dependencies.apiClient?.baseURL ?? ""),
-                                                name: participant.displayName,
-                                                authToken: dependencies.apiClient?.network.authToken
-                                            )
-                                        } else {
-                                            Image(systemName: channel.sidebarIcon)
-                                                .scaledFont(size: 11)
-                                                .foregroundStyle(activeChannelId == channel.id ? theme.brandPrimary : theme.textTertiary)
-                                        }
-                                        Text(channel.displayName)
-                                            .scaledFont(size: 14)
-                                            .fontWeight(activeChannelId == channel.id || channel.unreadCount > 0 ? .semibold : .regular)
-                                            .foregroundStyle(activeChannelId == channel.id ? theme.textPrimary : theme.textSecondary)
-                                            .lineLimit(1)
-                                        Spacer()
-                                        if channel.unreadCount > 0 {
-                                            Text("\(channel.unreadCount)")
-                                                .scaledFont(size: 11, weight: .bold)
-                                                .foregroundStyle(.white)
-                                                .padding(.horizontal, 6)
-                                                .padding(.vertical, 2)
-                                                .background(theme.brandPrimary)
-                                                .clipShape(Capsule())
-                                        }
-                                    }
-                                    .padding(.horizontal, Spacing.md)
-                                    .padding(.vertical, 7)
-                                    .background(
-                                        activeChannelId == channel.id
-                                            ? theme.brandPrimary.opacity(0.08)
-                                            : Color.clear
-                                    )
-                                    .clipShape(RoundedRectangle(cornerRadius: CornerRadius.sm))
-                                    .contentShape(Rectangle())
+                            // DMs first
+                            if !channelListVM.dmChannels.isEmpty {
+                                drawerChannelGroupLabel("Direct Messages", icon: "person.crop.circle")
+                                ForEach(channelListVM.dmChannels) { channel in
+                                    drawerChannelRow(channel)
                                 }
-                                .buttonStyle(.plain)
-                                .contextMenu {
-                                    Button(role: .destructive) {
-                                        Task {
-                                            if activeChannelId == channel.id {
-                                                activeChannelId = nil
-                                            }
-                                            try? await dependencies.apiClient?.deleteChannel(id: channel.id)
-                                            await channelListVM.refreshChannels()
-                                        }
-                                    } label: {
-                                        Label("Delete Channel", systemImage: "trash")
-                                    }
+                            }
+                            // Groups
+                            if !channelListVM.groupChannels.isEmpty {
+                                drawerChannelGroupLabel("Groups", icon: "person.3")
+                                ForEach(channelListVM.groupChannels) { channel in
+                                    drawerChannelRow(channel)
+                                }
+                            }
+                            // Standard channels
+                            if !channelListVM.standardChannels.isEmpty {
+                                drawerChannelGroupLabel("Channels", icon: "number")
+                                ForEach(channelListVM.standardChannels) { channel in
+                                    drawerChannelRow(channel)
                                 }
                             }
                         }
                     }
+                    } // end if channelsEnabled
 
+                    // ── DIVIDER between Channels & Chats ──────────────
                     Rectangle()
                         .fill(theme.textTertiary.opacity(0.15))
                         .frame(height: 1)
@@ -1497,6 +1519,95 @@ struct MainChatView: View {
         .animation(.easeInOut(duration: AnimDuration.medium), value: folderVM.folders.map(\.id))
     }
 
+    // MARK: - Drawer Channel Helpers
+
+    /// Small sub-group label (e.g. "Direct Messages", "Groups", "Channels") inside the channels section.
+    @ViewBuilder
+    private func drawerChannelGroupLabel(_ title: String, icon: String) -> some View {
+        HStack(spacing: 4) {
+            Image(systemName: icon)
+                .scaledFont(size: 9, weight: .medium)
+                .foregroundStyle(theme.textTertiary.opacity(0.7))
+            Text(title)
+                .scaledFont(size: 10, weight: .medium)
+                .foregroundStyle(theme.textTertiary.opacity(0.7))
+                .textCase(.uppercase)
+                .tracking(0.4)
+        }
+        .padding(.horizontal, Spacing.md)
+        .padding(.top, 6)
+        .padding(.bottom, 2)
+    }
+
+    /// A single channel row in the drawer sidebar.
+    @ViewBuilder
+    private func drawerChannelRow(_ channel: Channel) -> some View {
+        Button {
+            activeChannelId = channel.id
+            activeConversationId = nil
+            closeDrawer()
+        } label: {
+            HStack(spacing: 6) {
+                // DM: show participant avatar; others: show icon
+                if channel.type == .dm, let participant = channel.dmParticipants.first {
+                    UserAvatar(
+                        size: 22,
+                        imageURL: participant.resolveAvatarURL(serverBaseURL: dependencies.apiClient?.baseURL ?? ""),
+                        name: participant.displayName,
+                        authToken: dependencies.apiClient?.network.authToken
+                    )
+                } else {
+                    Image(systemName: channel.sidebarIcon)
+                        .scaledFont(size: 11)
+                        .foregroundStyle(activeChannelId == channel.id ? theme.brandPrimary : theme.textTertiary)
+                }
+                Text(channel.type == .dm
+                    ? (channel.dmParticipants.first?.displayName ?? channel.displayName)
+                    : channel.displayName)
+                    .scaledFont(size: 14)
+                    .fontWeight(activeChannelId == channel.id || channel.unreadCount > 0 ? .semibold : .regular)
+                    .foregroundStyle(activeChannelId == channel.id ? theme.textPrimary : theme.textSecondary)
+                    .lineLimit(1)
+                Spacer()
+                if channel.unreadCount > 0 {
+                    Text("\(channel.unreadCount)")
+                        .scaledFont(size: 11, weight: .bold)
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(theme.brandPrimary)
+                        .clipShape(Capsule())
+                }
+            }
+            .padding(.horizontal, Spacing.md)
+            .padding(.vertical, 7)
+            .background(
+                activeChannelId == channel.id
+                    ? theme.brandPrimary.opacity(0.08)
+                    : Color.clear
+            )
+            .clipShape(RoundedRectangle(cornerRadius: CornerRadius.sm))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .contextMenu {
+            if channel.type == .dm {
+                Button {
+                    channelListVM.hideDM(channelId: channel.id)
+                    Haptics.play(.light)
+                } label: {
+                    Label("Hide Conversation", systemImage: "eye.slash")
+                }
+            } else {
+                Button(role: .destructive) {
+                    deletingChannelId = channel.id
+                } label: {
+                    Label("Delete Channel", systemImage: "trash")
+                }
+            }
+        }
+    }
+
     // MARK: - Drawer Conversation Row
 
     private func drawerConversationRow(_ conversation: Conversation) -> some View {
@@ -1542,6 +1653,7 @@ struct MainChatView: View {
                 Button {
                     activeConversationId = conversation.id
                     activeChannelId = nil  // Clear channel when opening a chat
+                    activeFolderWorkspaceId = nil  // Clear folder highlight when opening a regular chat
                     SharedDataService.shared.saveLastActiveConversationId(conversation.id)
                     closeDrawer()
                 } label: {
@@ -1696,13 +1808,7 @@ struct MainChatView: View {
 
                     // Delete
                     Button(role: .destructive) {
-                        let deletedId = conversation.id
-                        Task {
-                            await listViewModel.deleteConversation(id: deletedId)
-                            if activeConversationId == deletedId {
-                                activeConversationId = nil
-                            }
-                        }
+                        deletingConversation = conversation
                     } label: {
                         Label("Delete", systemImage: "trash")
                     }
@@ -1783,16 +1889,18 @@ struct MainChatView: View {
                     .contentShape(Rectangle())
             }
 
-            // Notes
-            Button {
-                closeDrawer()
-                showNotes = true
-            } label: {
-                Image(systemName: "note.text")
-                    .scaledFont(size: 16, weight: .medium)
-                    .foregroundStyle(theme.textTertiary)
-                    .frame(width: 44, height: 44)
-                    .contentShape(Rectangle())
+            // Notes (only shown when enabled on server)
+            if dependencies.authViewModel.backendConfig?.features?.enableNotes != false {
+                Button {
+                    closeDrawer()
+                    showNotes = true
+                } label: {
+                    Image(systemName: "note.text")
+                        .scaledFont(size: 16, weight: .medium)
+                        .foregroundStyle(theme.textTertiary)
+                        .frame(width: 44, height: 44)
+                        .contentShape(Rectangle())
+                }
             }
 
             // Settings
@@ -1964,10 +2072,12 @@ struct MainChatView: View {
 /// only when it actually needs to render. This avoids the parent
 /// `MainChatView` body from accessing `ActiveChatStore.viewModel(for:)`
 /// on every evaluation.
-private struct ModelSelectorLabel: View {
+private struct MainModelSelectorLabel: View {
     let conversationId: String?
     let activeChatStore: ActiveChatStore
     let theme: AppTheme
+
+    @State private var isShowingModelSelectorSheet = false
 
     private var vm: ChatViewModel {
         activeChatStore.viewModel(for: conversationId)
@@ -1981,19 +2091,9 @@ private struct ModelSelectorLabel: View {
                     .foregroundStyle(theme.textPrimary)
                     .lineLimit(1)
             } else {
-                Menu {
-                    ForEach(vm.availableModels) { model in
-                        Button {
-                            vm.selectModel(model.id)
-                        } label: {
-                            HStack {
-                                Text(model.name)
-                                if model.id == vm.selectedModelId {
-                                    Image(systemName: "checkmark")
-                                }
-                            }
-                        }
-                    }
+                Button {
+                    vm.refreshModelsInBackground()
+                    isShowingModelSelectorSheet = true
                 } label: {
                     HStack(spacing: Spacing.xs) {
                         if let model = vm.selectedModel {
@@ -2010,13 +2110,27 @@ private struct ModelSelectorLabel: View {
                             .foregroundStyle(theme.textPrimary)
                             .lineLimit(1)
                             .truncationMode(.tail)
-                            .frame(maxWidth: 160)
+                            .fixedSize(horizontal: true, vertical: false)
+                            .frame(maxWidth: 160, alignment: .leading)
                         Image(systemName: "chevron.down")
                             .scaledFont(size: 10, weight: .semibold)
                             .foregroundStyle(theme.textTertiary)
                             .fixedSize()
                     }
-                    .fixedSize(horizontal: false, vertical: true)
+                    .fixedSize(horizontal: true, vertical: true)
+                }
+                .buttonStyle(.plain)
+                .sheet(isPresented: $isShowingModelSelectorSheet) {
+                    ModelSelectorSheet(
+                        models: vm.availableModels,
+                        selectedModelId: vm.selectedModelId,
+                        serverBaseURL: vm.serverBaseURL,
+                        authToken: vm.serverAuthToken,
+                        onSelect: { model in
+                            vm.selectModel(model.id)
+                        }
+                    )
+                    .themed()
                 }
             }
         }

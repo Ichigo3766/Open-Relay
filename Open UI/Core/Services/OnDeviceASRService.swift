@@ -6,6 +6,7 @@ import os.log
 import MLXAudioSTT
 import MLXAudioCore
 import MLX
+import HuggingFace
 #endif
 
 // MARK: - Model Variant
@@ -148,7 +149,8 @@ final class OnDeviceASRService {
         logger.info("Loading ASR model: \(variant.displayName, privacy: .public)")
 
         do {
-            parakeetModel = try await ParakeetModel.fromPretrained(variant.repoId)
+            let modelCache = HubCache(location: .fixed(directory: StorageManager.modelCacheDirectory))
+            parakeetModel = try await ParakeetModel.fromPretrained(variant.repoId, cache: modelCache)
             state = .ready
             isLoadInProgress = false
             logger.info("ASR model loaded: \(variant.displayName, privacy: .public)")

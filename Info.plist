@@ -43,7 +43,7 @@
 				<string>public.data</string>
 			</array>
 			<key>UTTypeDescription</key>
-			<string>Open UI Chat Item</string>
+			<string>Open Relay Chat Item</string>
 			<key>UTTypeIdentifier</key>
 			<string>com.openui.chat-item</string>
 		</dict>

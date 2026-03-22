@@ -127,7 +127,6 @@ final class ChatListViewModel {
         let calendar = Calendar.current
         let now = Date.now
         let currentYear = calendar.component(.year, from: now)
-        let currentMonth = calendar.component(.month, from: now)
 
         let sortDesc = { (a: Conversation, b: Conversation) -> Bool in a.updatedAt > b.updatedAt }
 
