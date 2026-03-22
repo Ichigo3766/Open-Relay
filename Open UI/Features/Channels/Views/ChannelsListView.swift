@@ -184,15 +184,15 @@ struct ChannelsListView: View {
     
     private var channelsList: some View {
         List {
-            // Standard Channels
-            if !viewModel.standardChannels.isEmpty {
-                Section("Channels") {
-                    ForEach(viewModel.standardChannels) { channel in
+            // DM Channels — shown first (most frequently accessed)
+            if !viewModel.dmChannels.isEmpty {
+                Section("Direct Messages") {
+                    ForEach(viewModel.dmChannels) { channel in
                         channelRow(channel)
                     }
                 }
             }
-            
+
             // Group Channels
             if !viewModel.groupChannels.isEmpty {
                 Section("Groups") {
@@ -201,11 +201,11 @@ struct ChannelsListView: View {
                     }
                 }
             }
-            
-            // DM Channels
-            if !viewModel.dmChannels.isEmpty {
-                Section("Direct Messages") {
-                    ForEach(viewModel.dmChannels) { channel in
+
+            // Standard Channels
+            if !viewModel.standardChannels.isEmpty {
+                Section("Channels") {
+                    ForEach(viewModel.standardChannels) { channel in
                         channelRow(channel)
                     }
                 }

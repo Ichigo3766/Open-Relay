@@ -16,6 +16,9 @@ struct ChatDetailView: View {
     private let initialConversationId: String?
     @State private var viewModel: ChatViewModel
 
+    // MARK: Model selector sheet
+    @State private var isShowingModelSelectorSheet = false
+
     // MARK: Scroll state (iOS 18 ScrollPosition API)
     /// iOS 18+ declarative scroll position. Used with `.scrollPosition($scrollPosition)`
     /// to drive programmatic scrolling via `scrollTo(edge:)`.
@@ -28,6 +31,8 @@ struct ChatDetailView: View {
     @State private var viewState_contentHeight: CGFloat = 0
     /// Cached scroll container height — updated via a separate onScrollGeometryChange.
     @State private var viewState_containerHeight: CGFloat = 0
+    /// Timestamp of last animated scroll-to-bottom during active streaming (throttle guard).
+    @State private var lastStreamingScrollTime: Date = .distantPast
 
 
     // MARK: UI state
@@ -200,22 +205,24 @@ struct ChatDetailView: View {
             if viewModel.isNewConversation {
                 viewModel.isTemporaryChat = UserDefaults.standard.bool(forKey: "temporaryChatDefault")
             }
-            // Prompts are populated via the .onChange(initial: true) below —
-        // no need to build them here. The onChange fires synchronously on
-        // first evaluation, so prompts are always in sync with backendConfig.
+            if randomPrompts.isEmpty {
+                randomPrompts = Self.buildServerPrompts(
+                    from: dependencies.authViewModel.backendConfig?.defaultPromptSuggestions,
+                    count: promptCardCount
+                )
+            }
             NotificationService.shared.activeConversationId =
                 viewModel.conversationId ?? viewModel.conversation?.id
             await viewModel.load()
         }
-        // Build welcome prompts from server config — fires immediately on first render
-        // (initial: true) AND whenever the config changes later. This covers:
-        //   • First app launch: backendConfig loads asynchronously after view appears.
-        //     initial: true fires once synchronously on view attach (prompts = [] if
-        //     config not yet ready), then fires again when config arrives.
-        //   • Subsequent launches: config is already loaded — initial: true fires
-        //     synchronously with the correct data, so prompts are populated instantly.
-        //   • Admin updates suggestions while app is running — fires on count change.
-        .onChange(of: dependencies.authViewModel.backendConfig?.defaultPromptSuggestions?.count, initial: true) { _, _ in
+        // Reactive fallback: if backendConfig wasn't ready when .task ran
+        // (first app launch), rebuild prompts as soon as the config arrives.
+        // Watch the suggestion count (Int?) — always Equatable, avoids
+        // asking the type-checker to diff the entire BackendConfig struct.
+        .onChange(of: dependencies.authViewModel.backendConfig?.defaultPromptSuggestions?.count) { _, _ in
+            // Always rebuild when the server config changes — this handles both the
+            // first-launch timing case (randomPrompts is empty) AND the case where
+            // the admin updates suggestions on the server while the app is running.
             let suggestions = dependencies.authViewModel.backendConfig?.defaultPromptSuggestions
             randomPrompts = Self.buildServerPrompts(from: suggestions, count: promptCardCount)
         }
@@ -384,6 +391,11 @@ struct ChatDetailView: View {
                         .foregroundStyle(theme.warning)
                 }
             }
+            // Force SwiftUI to fully re-layout the toolbar principal slot when
+            // the selected model changes. Without this, the toolbar caches the
+            // intrinsic width from the previous (possibly longer) model name
+            // and never shrinks back even when a shorter name is selected.
+            .id(viewModel.selectedModelId ?? "none")
         }
         ToolbarItemGroup(placement: .topBarTrailing) {
             if viewModel.messages.isEmpty {
@@ -414,19 +426,9 @@ struct ChatDetailView: View {
                     .lineLimit(1)
                     .truncationMode(.tail)
             } else {
-                Menu {
-                    ForEach(viewModel.availableModels) { model in
-                        Button {
-                            withAnimation(MicroAnimation.snappy) { viewModel.selectModel(model.id) }
-                        } label: {
-                            HStack {
-                                Text(model.name)
-                                if model.id == viewModel.selectedModelId {
-                                    Image(systemName: "checkmark")
-                                }
-                            }
-                        }
-                    }
+                Button {
+                    viewModel.refreshModelsInBackground()
+                    isShowingModelSelectorSheet = true
                 } label: {
                     HStack(spacing: Spacing.xs) {
                         if let model = viewModel.selectedModel {
@@ -443,14 +445,30 @@ struct ChatDetailView: View {
                             .foregroundStyle(theme.textPrimary)
                             .lineLimit(1)
                             .truncationMode(.tail)
+                            .fixedSize(horizontal: true, vertical: false)
+                            .frame(maxWidth: 160, alignment: .leading)
                         Image(systemName: "chevron.down")
                             .scaledFont(size: 10, weight: .semibold)
                             .foregroundStyle(theme.textTertiary)
                             .fixedSize()
                     }
+                    .fixedSize(horizontal: true, vertical: true)
                 }
-                // Refresh model list silently when user opens the picker
-                .onTapGesture { viewModel.refreshModelsInBackground() }
+                .buttonStyle(.plain)
+                .sheet(isPresented: $isShowingModelSelectorSheet) {
+                    ModelSelectorSheet(
+                        models: viewModel.availableModels,
+                        selectedModelId: viewModel.selectedModelId,
+                        serverBaseURL: viewModel.serverBaseURL,
+                        authToken: viewModel.serverAuthToken,
+                        onSelect: { model in
+                            withAnimation(MicroAnimation.snappy) {
+                                viewModel.selectModel(model.id)
+                            }
+                        }
+                    )
+                    .themed()
+                }
             }
         }
         // Cap the model selector width so long names truncate
@@ -716,20 +734,9 @@ struct ChatDetailView: View {
             // iPhone: fills the full screen (maxWidth: .infinity).
             .frame(maxWidth: iPadMaxContentWidth)
             .frame(maxWidth: .infinity)
-            // Ensure content fills the viewport so that when there are few
-            // messages they appear at the top (alignment: .top) instead of
-            // being pushed to the bottom by .defaultScrollAnchor(.bottom).
-            // When content exceeds the viewport, minHeight has no effect.
             .frame(minHeight: max(viewState_containerHeight, 0), alignment: .top)
-            // Clip content to container width — prevents follow-up suggestions
-            // or other animated insertions from temporarily expanding the
-            // scroll content width during layout, which would enable 2D panning.
             .clipped()
         }
-        // Lock the underlying UIScrollView to vertical-only scrolling.
-        // Even if a child view momentarily reports wider-than-container
-        // content during animated insertion (e.g. follow-up suggestions),
-        // horizontal panning/bounce is physically impossible.
         .background(ScrollViewHorizontalLock())
         .scrollDismissesKeyboard(.interactively)
         .defaultScrollAnchor(.bottom)
@@ -751,12 +758,27 @@ struct ChatDetailView: View {
         }
         .onScrollGeometryChange(for: CGSize.self) { geo in
             CGSize(width: geo.contentSize.height, height: geo.containerSize.height)
-        } action: { _, newSize in
+        } action: { oldSize, newSize in
+            let oldContentHeight = viewState_contentHeight
             if abs(newSize.width - viewState_contentHeight) > 1 {
                 viewState_contentHeight = newSize.width
             }
             if abs(newSize.height - viewState_containerHeight) > 1 {
                 viewState_containerHeight = newSize.height
+            }
+            // Smooth scroll-to-bottom during active streaming:
+            // When the content height grows (new tokens pushed layout taller)
+            // and the user hasn't scrolled up, animate to the bottom so new
+            // content slides in smoothly instead of snapping.
+            let grew = newSize.width > oldContentHeight + 1
+            if grew && viewModel.isStreaming && !isScrolledUp {
+                let now = Date()
+                if now.timeIntervalSince(lastStreamingScrollTime) > 0.1 {
+                    lastStreamingScrollTime = now
+                    withAnimation(.easeOut(duration: 0.15)) {
+                        scrollPosition.scrollTo(edge: .bottom)
+                    }
+                }
             }
         }
     }
@@ -1344,13 +1366,8 @@ struct ChatDetailView: View {
         .scrollDismissesKeyboard(.interactively)
     }
 
-    // MARK: - Folder Workspace Welcome View
+    // MARK: - Folder Welcome View
 
-    /// Shown instead of the generic "How can I help?" welcome when the user
-    /// navigates into a folder workspace. Mirrors the Open WebUI web design:
-    /// large folder icon + folder name centred, with a hint that new chats
-    /// will be created inside this folder.
-    @ViewBuilder
     private func folderWelcomeView(folder: ChatFolder) -> some View {
         VStack(spacing: 0) {
             Spacer(minLength: 60).layoutPriority(1)

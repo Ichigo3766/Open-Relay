@@ -47,6 +47,10 @@ struct iPadMainChatView: View {
     /// The channel currently being viewed. When set, replaces detail with ChannelDetailView.
     @State private var activeChannelId: String?
 
+    /// When set, the detail area shows a folder workspace view so new chats
+    /// are created inside this folder (mirrors MainChatView behaviour).
+    @State private var activeFolderWorkspaceId: String?
+
     /// Channel list view model for sidebar display.
     @State private var channelListVM = ChannelListViewModel()
 
@@ -64,9 +68,16 @@ struct iPadMainChatView: View {
     @State private var isExporting = false
     @State private var exportError: String?
 
+    /// Share chat sheet state.
+    @State private var sharingConversation: Conversation?
+
     /// Deletion confirmation dialogs.
     @State private var showDeleteAllConfirmation = false
     @State private var showDeleteSelectedConfirmation = false
+    /// Single-conversation delete confirmation (from context menu or folder).
+    @State private var deletingConversation: Conversation?
+    /// Channel delete confirmation.
+    @State private var deletingChannelId: String?
 
     /// Terminal file browser (trailing column).
     @State private var terminalBrowserVM = TerminalBrowserViewModel()
@@ -86,6 +97,7 @@ struct iPadMainChatView: View {
             showSettings: $showSettings,
             showNotes: $showNotes,
             showCreateFolderSheet: $showCreateFolderSheet,
+            sharingConversation: $sharingConversation,
             renamingConversation: $renamingConversation,
             renameText: $renameText,
             isGeneratingTitle: $isGeneratingTitle,
@@ -105,9 +117,14 @@ struct iPadMainChatView: View {
         .applyAlerts(
             showDeleteAllConfirmation: $showDeleteAllConfirmation,
             showDeleteSelectedConfirmation: $showDeleteSelectedConfirmation,
+            deletingConversation: $deletingConversation,
+            deletingChannelId: $deletingChannelId,
             exportError: $exportError,
             listViewModel: listViewModel,
-            activeConversationId: $activeConversationId
+            activeConversationId: $activeConversationId,
+            activeChannelId: $activeChannelId,
+            channelListVM: channelListVM,
+            dependencies: dependencies
         )
         .applyLifecycle(
             listViewModel: listViewModel,
@@ -187,16 +204,30 @@ struct iPadMainChatView: View {
             channelListVM: channelListVM,
             activeConversationId: $activeConversationId,
             activeChannelId: $activeChannelId,
+            activeFolderWorkspaceId: $activeFolderWorkspaceId,
             showCreateFolderSheet: $showCreateFolderSheet,
             showCreateChannel: $showCreateChannel,
             showSettings: $showSettings,
             showNotes: $showNotes,
             showDeleteAllConfirmation: $showDeleteAllConfirmation,
             showDeleteSelectedConfirmation: $showDeleteSelectedConfirmation,
+            deletingConversation: $deletingConversation,
+            deletingChannelId: $deletingChannelId,
+            sharingConversation: $sharingConversation,
             renamingConversation: $renamingConversation,
             renameText: $renameText,
             dependencies: dependencies,
             onNewChat: { startNewChat() },
+            onSelectFolder: { folderId in
+                let folderVM = listViewModel.folderViewModel
+                Task { await folderVM.setActiveFolder(folderId) }
+                // Reset the new-chat VM so the folder workspace always starts fresh.
+                dependencies.activeChatStore.remove(nil)
+                newChatGeneration += 1
+                activeFolderWorkspaceId = folderId
+                activeConversationId = nil
+                activeChannelId = nil
+            },
             onExport: { conv, format in Task { await exportChat(conv, format: format) } }
         )
     }
@@ -238,15 +269,12 @@ struct iPadMainChatView: View {
     @ViewBuilder
     private var chatDetailContent: some View {
         if let channelId = activeChannelId {
-            // Show channel detail inline (same as how chats work)
             ChannelDetailView(channelId: channelId)
                 .id("channel-\(channelId)")
                 .transition(.opacity)
                 .toolbar {
                     ToolbarItem(placement: .topBarTrailing) {
-                        Button {
-                            startNewChat()
-                        } label: {
+                        Button { startNewChat() } label: {
                             Image(systemName: "square.and.pencil")
                                 .scaledFont(size: 14, weight: .medium)
                                 .foregroundStyle(theme.textSecondary)
@@ -264,9 +292,7 @@ struct iPadMainChatView: View {
             .transition(.opacity)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
-                    Button {
-                        startNewChat()
-                    } label: {
+                    Button { startNewChat() } label: {
                         Image(systemName: "square.and.pencil")
                             .scaledFont(size: 14, weight: .medium)
                             .foregroundStyle(theme.textSecondary)
@@ -275,25 +301,47 @@ struct iPadMainChatView: View {
                     .accessibilityLabel("New Chat")
                 }
             }
+        } else if let folderWorkspaceId = activeFolderWorkspaceId {
+            let vm = dependencies.activeChatStore.viewModel(for: nil)
+            let folder = listViewModel.folderViewModel.folders.first { $0.id == folderWorkspaceId }
+                ?? listViewModel.folderViewModel.activeFolderDetail
+            ChatDetailView(viewModel: vm, folderWorkspace: folder)
+                .id("folder-workspace-\(folderWorkspaceId)-\(newChatGeneration)")
+                .transition(.opacity)
+                .onAppear {
+                    let folderDetail = listViewModel.folderViewModel.activeFolderDetail
+                    vm.setFolderContext(
+                        folderId: folderWorkspaceId,
+                        systemPrompt: folderDetail?.systemPrompt ?? folder?.systemPrompt,
+                        modelIds: folderDetail?.modelIds ?? folder?.modelIds ?? []
+                    )
+                }
+                .toolbar {
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Button { startNewChat() } label: {
+                            Image(systemName: "square.and.pencil")
+                                .scaledFont(size: 14, weight: .medium)
+                                .foregroundStyle(theme.textSecondary)
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("New Chat")
+                    }
+                }
         } else {
-            ChatDetailView(
-                viewModel: dependencies.activeChatStore.viewModel(for: nil)
-            )
-            .id("new-chat-\(newChatGeneration)")
-            .transition(.opacity)
-            .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button {
-                        startNewChat()
-                    } label: {
-                        Image(systemName: "square.and.pencil")
-                            .scaledFont(size: 14, weight: .medium)
-                            .foregroundStyle(theme.textSecondary)
+            ChatDetailView(viewModel: dependencies.activeChatStore.viewModel(for: nil))
+                .id("new-chat-\(newChatGeneration)")
+                .transition(.opacity)
+                .toolbar {
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Button { startNewChat() } label: {
+                            Image(systemName: "square.and.pencil")
+                                .scaledFont(size: 14, weight: .medium)
+                                .foregroundStyle(theme.textSecondary)
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("New Chat")
                     }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel("New Chat")
                 }
-            }
         }
     }
 
@@ -338,9 +386,6 @@ struct iPadMainChatView: View {
 
     // MARK: - Terminal Configuration
 
-    /// Configures the terminal browser VM with the active chat's terminal server credentials.
-    /// Must be called before the TerminalBrowserView column is shown, otherwise loadDirectory()
-    /// returns early because apiClient and serverId are empty.
     private func configureTerminalBrowserIfNeeded() {
         guard let apiClient = dependencies.apiClient else { return }
         let vm = dependencies.activeChatStore.viewModel(for: activeConversationId)
@@ -351,10 +396,23 @@ struct iPadMainChatView: View {
     // MARK: - Actions
 
     private func startNewChat() {
-        dependencies.activeChatStore.remove(nil)
+        // If we're already on the new-chat screen AND a transcription is in
+        // progress, stay put — destroying the VM would silently discard the work.
+        let alreadyOnNewChat = activeConversationId == nil && activeChannelId == nil
+        let currentNewVM = dependencies.activeChatStore.viewModel(for: nil)
+        if alreadyOnNewChat && currentNewVM.hasActiveTranscriptions {
+            return
+        }
+
+        // Only remove + recreate the VM when there's no ongoing transcription work.
+        if !currentNewVM.hasActiveTranscriptions {
+            dependencies.activeChatStore.remove(nil)
+            newChatGeneration += 1
+        }
+
         activeConversationId = nil
         activeChannelId = nil
-        newChatGeneration += 1
+        activeFolderWorkspaceId = nil
         terminalBrowserVM.reset()
         Haptics.play(.light)
     }
@@ -459,16 +517,22 @@ struct iPadSidebarContent: View {
     var channelListVM: ChannelListViewModel
     @Binding var activeConversationId: String?
     @Binding var activeChannelId: String?
+    @Binding var activeFolderWorkspaceId: String?
     @Binding var showCreateFolderSheet: Bool
     @Binding var showCreateChannel: Bool
     @Binding var showSettings: Bool
     @Binding var showNotes: Bool
     @Binding var showDeleteAllConfirmation: Bool
     @Binding var showDeleteSelectedConfirmation: Bool
+    @Binding var deletingConversation: Conversation?
+    @Binding var deletingChannelId: String?
+    @Binding var sharingConversation: Conversation?
     @Binding var renamingConversation: Conversation?
     @Binding var renameText: String
     let dependencies: AppDependencyContainer
     let onNewChat: () -> Void
+    /// Called when the folder name/icon is tapped — opens folder workspace in the detail pane.
+    var onSelectFolder: ((String) -> Void)?
     let onExport: (Conversation, iPadMainChatView.ExportFormat) -> Void
 
     @Environment(\.theme) private var theme
@@ -494,7 +558,8 @@ struct iPadSidebarContent: View {
                     }
 
                     // Divider between folders and channels
-                    if !folderVM.folders.isEmpty || !channelListVM.channels.isEmpty {
+                    let channelsEnabled = dependencies.authViewModel.backendConfig?.features?.enableChannels != false
+                    if (!folderVM.featureDisabled && !folderVM.folders.isEmpty) || (channelsEnabled && !channelListVM.channels.isEmpty) {
                         Rectangle()
                             .fill(theme.textTertiary.opacity(0.12))
                             .frame(height: 1)
@@ -502,11 +567,13 @@ struct iPadSidebarContent: View {
                             .padding(.vertical, Spacing.sm)
                     }
 
-                    // Channels section
-                    channelsSection
+                    // Channels section (shown only when enabled on server)
+                    if channelsEnabled {
+                        channelsSection
+                    }
 
                     // Divider between channels and chats
-                    if !channelListVM.channels.isEmpty {
+                    if channelsEnabled && !channelListVM.channels.isEmpty {
                         Rectangle()
                             .fill(theme.textTertiary.opacity(0.12))
                             .frame(height: 1)
@@ -540,6 +607,13 @@ struct iPadSidebarContent: View {
         .ignoresSafeArea(.keyboard)
         .navigationTitle("Chats")
         .navigationBarTitleDisplayMode(.inline)
+        // Bridge folderVM.showCreateSheet → showCreateFolderSheet (mirrors MainChatView)
+        .onChange(of: listViewModel.folderViewModel.showCreateSheet) { _, show in
+            if show {
+                listViewModel.folderViewModel.showCreateSheet = false
+                showCreateFolderSheet = true
+            }
+        }
         .toolbar {
             ToolbarItem(placement: .topBarLeading) {
                 if listViewModel.isSelectionMode {
@@ -678,17 +752,21 @@ struct iPadSidebarContent: View {
             .padding(.top, Spacing.sm)
             .padding(.bottom, Spacing.xs)
 
-            ForEach(folderVM.folders) { folder in
+            // Use rootFolders (tree with childFolders populated) for proper subfolder nesting
+            ForEach(folderVM.rootFolders) { folder in
                 DrawerFolderRow(
                     folder: folder,
                     folderVM: folderVM,
                     allConversations: listViewModel.conversations,
                     activeConversationId: activeConversationId,
+                    activeFolderWorkspaceId: activeFolderWorkspaceId,
                     onSelectChat: { chatId in
                         activeConversationId = chatId
+                        activeFolderWorkspaceId = nil
                         SharedDataService.shared.saveLastActiveConversationId(chatId)
                         // No drawer to close on iPad — sidebar stays visible
                     },
+                    onSelectFolder: onSelectFolder,
                     onChatMoved: { chatId, targetFolderId in
                         if let idx = listViewModel.conversations.firstIndex(where: { $0.id == chatId }) {
                             listViewModel.conversations[idx].folderId = targetFolderId
@@ -703,7 +781,8 @@ struct iPadSidebarContent: View {
                     onDeleteChat: { chatId in
                         Task {
                             await listViewModel.deleteConversation(id: chatId)
-                            if let fIdx = folderVM.folders.firstIndex(where: { $0.id == folder.id }) {
+                            // Clear from all folders (root + subfolders) to avoid stale UI
+                            for fIdx in folderVM.folders.indices {
                                 folderVM.folders[fIdx].chats.removeAll { $0.id == chatId }
                             }
                             if activeConversationId == chatId { activeConversationId = nil }
@@ -734,11 +813,7 @@ struct iPadSidebarContent: View {
                     .textCase(.uppercase)
                     .tracking(0.5)
                 Spacer()
-
-                // Create new channel
-                Button {
-                    showCreateChannel = true
-                } label: {
+                Button { showCreateChannel = true } label: {
                     Image(systemName: "plus.bubble")
                         .scaledFont(size: 13)
                         .foregroundStyle(theme.textTertiary)
@@ -755,55 +830,115 @@ struct iPadSidebarContent: View {
                     .padding(.horizontal, Spacing.md)
                     .padding(.vertical, 4)
             } else {
-                ForEach(channelListVM.channels) { channel in
-                    Button {
-                        activeChannelId = channel.id
-                        activeConversationId = nil
-                    } label: {
-                        HStack(spacing: 6) {
-                            // DM: show participant avatar; others: show icon
-                            if channel.type == .dm, let participant = channel.dmParticipants.first {
-                                UserAvatar(
-                                    size: 22,
-                                    imageURL: participant.resolveAvatarURL(serverBaseURL: dependencies.apiClient?.baseURL ?? ""),
-                                    name: participant.displayName,
-                                    authToken: dependencies.apiClient?.network.authToken
-                                )
-                            } else {
-                                Image(systemName: channel.sidebarIcon)
-                                    .scaledFont(size: 11)
-                                    .foregroundStyle(activeChannelId == channel.id ? theme.brandPrimary : theme.textTertiary)
-                            }
-                            Text(channel.displayName)
-                                .scaledFont(size: 14)
-                                .fontWeight(activeChannelId == channel.id || channel.unreadCount > 0 ? .semibold : .regular)
-                                .foregroundStyle(activeChannelId == channel.id ? theme.textPrimary : theme.textSecondary)
-                                .lineLimit(1)
-                            Spacer()
-                            if activeChannelId == channel.id {
-                                Circle()
-                                    .fill(theme.brandPrimary)
-                                    .frame(width: 6, height: 6)
-                            } else if channel.unreadCount > 0 {
-                                Text("\(channel.unreadCount)")
-                                    .scaledFont(size: 11, weight: .bold)
-                                    .foregroundStyle(.white)
-                                    .padding(.horizontal, 6)
-                                    .padding(.vertical, 2)
-                                    .background(theme.brandPrimary)
-                                    .clipShape(Capsule())
-                            }
-                        }
-                        .padding(.horizontal, Spacing.md)
-                        .padding(.vertical, 7)
-                        .background(
-                            activeChannelId == channel.id
-                                ? theme.brandPrimary.opacity(0.1)
-                                : Color.clear
-                        )
-                        .clipShape(RoundedRectangle(cornerRadius: CornerRadius.sm, style: .continuous))
+                // DMs first
+                if !channelListVM.dmChannels.isEmpty {
+                    channelGroupLabel("Direct Messages", icon: "person.crop.circle")
+                    ForEach(channelListVM.dmChannels) { channel in
+                        channelRow(channel)
                     }
-                    .buttonStyle(.plain)
+                }
+                // Groups
+                if !channelListVM.groupChannels.isEmpty {
+                    channelGroupLabel("Groups", icon: "person.3")
+                    ForEach(channelListVM.groupChannels) { channel in
+                        channelRow(channel)
+                    }
+                }
+                // Standard channels
+                if !channelListVM.standardChannels.isEmpty {
+                    channelGroupLabel("Channels", icon: "number")
+                    ForEach(channelListVM.standardChannels) { channel in
+                        channelRow(channel)
+                    }
+                }
+            }
+        }
+    }
+
+    /// Small sub-group label inside the channels section (mirrors iPhone drawer).
+    @ViewBuilder
+    private func channelGroupLabel(_ title: String, icon: String) -> some View {
+        HStack(spacing: 4) {
+            Image(systemName: icon)
+                .scaledFont(size: 9, weight: .medium)
+                .foregroundStyle(theme.textTertiary.opacity(0.7))
+            Text(title)
+                .scaledFont(size: 10, weight: .medium)
+                .foregroundStyle(theme.textTertiary.opacity(0.7))
+                .textCase(.uppercase)
+                .tracking(0.4)
+        }
+        .padding(.horizontal, Spacing.md)
+        .padding(.top, 6)
+        .padding(.bottom, 2)
+    }
+
+    /// A single channel row in the sidebar (with context menu for hide/delete).
+    @ViewBuilder
+    private func channelRow(_ channel: Channel) -> some View {
+        Button {
+            activeChannelId = channel.id
+            activeConversationId = nil
+        } label: {
+            HStack(spacing: 6) {
+                if channel.type == .dm, let participant = channel.dmParticipants.first {
+                    UserAvatar(
+                        size: 22,
+                        imageURL: participant.resolveAvatarURL(serverBaseURL: dependencies.apiClient?.baseURL ?? ""),
+                        name: participant.displayName,
+                        authToken: dependencies.apiClient?.network.authToken
+                    )
+                } else {
+                    Image(systemName: channel.sidebarIcon)
+                        .scaledFont(size: 11)
+                        .foregroundStyle(activeChannelId == channel.id ? theme.brandPrimary : theme.textTertiary)
+                }
+                Text(channel.type == .dm
+                    ? (channel.dmParticipants.first?.displayName ?? channel.displayName)
+                    : channel.displayName)
+                    .scaledFont(size: 14)
+                    .fontWeight(activeChannelId == channel.id || channel.unreadCount > 0 ? .semibold : .regular)
+                    .foregroundStyle(activeChannelId == channel.id ? theme.textPrimary : theme.textSecondary)
+                    .lineLimit(1)
+                Spacer()
+                if activeChannelId == channel.id {
+                    Circle()
+                        .fill(theme.brandPrimary)
+                        .frame(width: 6, height: 6)
+                } else if channel.unreadCount > 0 {
+                    Text("\(channel.unreadCount)")
+                        .scaledFont(size: 11, weight: .bold)
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(theme.brandPrimary)
+                        .clipShape(Capsule())
+                }
+            }
+            .padding(.horizontal, Spacing.md)
+            .padding(.vertical, 7)
+            .background(
+                activeChannelId == channel.id
+                    ? theme.brandPrimary.opacity(0.1)
+                    : Color.clear
+            )
+            .clipShape(RoundedRectangle(cornerRadius: CornerRadius.sm, style: .continuous))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .contextMenu {
+            if channel.type == .dm {
+                Button {
+                    channelListVM.hideDM(channelId: channel.id)
+                    Haptics.play(.light)
+                } label: {
+                    Label("Hide Conversation", systemImage: "eye.slash")
+                }
+            } else {
+                Button(role: .destructive) {
+                    deletingChannelId = channel.id
+                } label: {
+                    Label("Delete Channel", systemImage: "trash")
                 }
             }
         }
@@ -854,9 +989,7 @@ struct iPadSidebarContent: View {
                 }
             }
         }
-        .background(
-            drawerChatsDropActive ? theme.brandPrimary.opacity(0.05) : Color.clear
-        )
+        .background(drawerChatsDropActive ? theme.brandPrimary.opacity(0.05) : Color.clear)
         .overlay(
             RoundedRectangle(cornerRadius: CornerRadius.md)
                 .stroke(theme.brandPrimary, lineWidth: drawerChatsDropActive ? 1.5 : 0)
@@ -917,21 +1050,18 @@ struct iPadSidebarContent: View {
             } else {
                 Button {
                     activeConversationId = conversation.id
-                    activeChannelId = nil  // Clear channel when opening a chat
+                    activeChannelId = nil
+                    activeFolderWorkspaceId = nil
                     SharedDataService.shared.saveLastActiveConversationId(conversation.id)
-                    // Sidebar stays open on iPad — no dismissal needed
                 } label: {
                     HStack {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(conversation.title)
-                                .scaledFont(size: 14)
-                                .fontWeight(activeConversationId == conversation.id ? .semibold : .regular)
-                                .foregroundStyle(activeConversationId == conversation.id
-                                    ? theme.textPrimary : theme.textSecondary)
-                                .lineLimit(1)
-                        }
+                        Text(conversation.title)
+                            .scaledFont(size: 14)
+                            .fontWeight(activeConversationId == conversation.id ? .semibold : .regular)
+                            .foregroundStyle(activeConversationId == conversation.id
+                                ? theme.textPrimary : theme.textSecondary)
+                            .lineLimit(1)
                         Spacer()
-                        // Active indicator dot
                         if activeConversationId == conversation.id {
                             Circle()
                                 .fill(theme.brandPrimary)
@@ -946,6 +1076,7 @@ struct iPadSidebarContent: View {
                             : Color.clear
                     )
                     .clipShape(RoundedRectangle(cornerRadius: CornerRadius.sm, style: .continuous))
+                    .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .draggable(DraggableChat(
@@ -968,8 +1099,10 @@ struct iPadSidebarContent: View {
                         listViewModel: listViewModel,
                         dependencies: dependencies,
                         activeConversationId: $activeConversationId,
+                        sharingConversation: $sharingConversation,
                         renamingConversation: $renamingConversation,
                         renameText: $renameText,
+                        deletingConversation: $deletingConversation,
                         onExport: onExport
                     )
                 }
@@ -1003,19 +1136,20 @@ struct iPadSidebarContent: View {
 
     private var sidebarBottomBar: some View {
         HStack(spacing: Spacing.md) {
-            // User avatar
-            Button {
-                showSettings = true
-            } label: {
+            // Real user avatar + name (mirrors iPhone drawer bottom bar)
+            Button { showSettings = true } label: {
                 HStack(spacing: Spacing.sm) {
-                    Circle()
-                        .fill(theme.brandPrimary.opacity(0.15))
-                        .frame(width: 30, height: 30)
-                        .overlay(
-                            Text(String((dependencies.authViewModel.currentUser?.displayName ?? "U").prefix(1)).uppercased())
-                                .scaledFont(size: 13, weight: .bold)
-                                .foregroundStyle(theme.brandPrimary)
-                        )
+                    UserAvatar(
+                        size: 30,
+                        imageURL: {
+                            guard let userId = dependencies.authViewModel.currentUser?.id,
+                                  let baseURL = dependencies.apiClient?.baseURL,
+                                  !userId.isEmpty, !baseURL.isEmpty else { return nil }
+                            return URL(string: "\(baseURL)/api/v1/users/\(userId)/profile/image")
+                        }(),
+                        name: dependencies.authViewModel.currentUser?.displayName ?? "User",
+                        authToken: dependencies.apiClient?.network.authToken
+                    )
                     Text(dependencies.authViewModel.currentUser?.displayName ?? "User")
                         .scaledFont(size: 12, weight: .medium)
                         .fontWeight(.medium)
@@ -1027,13 +1161,15 @@ struct iPadSidebarContent: View {
 
             Spacer()
 
-            // Notes
-            Button { showNotes = true } label: {
-                Image(systemName: "note.text")
-                    .scaledFont(size: 15, weight: .medium)
-                    .foregroundStyle(theme.textTertiary)
-                    .frame(width: 36, height: 36)
-                    .contentShape(Rectangle())
+            // Notes (only shown when enabled on server)
+            if dependencies.authViewModel.backendConfig?.features?.enableNotes != false {
+                Button { showNotes = true } label: {
+                    Image(systemName: "note.text")
+                        .scaledFont(size: 15, weight: .medium)
+                        .foregroundStyle(theme.textTertiary)
+                        .frame(width: 36, height: 36)
+                        .contentShape(Rectangle())
+                }
             }
 
             // Settings
@@ -1066,23 +1202,38 @@ private struct iPadConversationContextMenu: View {
     let listViewModel: ChatListViewModel
     let dependencies: AppDependencyContainer
     @Binding var activeConversationId: String?
+    @Binding var sharingConversation: Conversation?
     @Binding var renamingConversation: Conversation?
     @Binding var renameText: String
+    @Binding var deletingConversation: Conversation?
     let onExport: (Conversation, iPadMainChatView.ExportFormat) -> Void
 
     var body: some View {
-        Button { onExport(conversation, .json) } label: {
-            Label("Export as JSON", systemImage: "doc")
+        // Share
+        Button {
+            sharingConversation = conversation
+        } label: {
+            Label("Share", systemImage: "square.and.arrow.up")
         }
-        Button { onExport(conversation, .txt) } label: {
-            Label("Export as Text", systemImage: "doc.plaintext")
-        }
-        Button { onExport(conversation, .pdf) } label: {
-            Label("Export as PDF", systemImage: "doc.richtext")
+
+        // Download submenu (matching WebUI)
+        Menu {
+            Button { onExport(conversation, .json) } label: {
+                Label("Export chat (.json)", systemImage: "doc")
+            }
+            Button { onExport(conversation, .txt) } label: {
+                Label("Plain text (.txt)", systemImage: "doc.plaintext")
+            }
+            Button { onExport(conversation, .pdf) } label: {
+                Label("PDF document (.pdf)", systemImage: "doc.richtext")
+            }
+        } label: {
+            Label("Download", systemImage: "arrow.down.circle")
         }
 
         Divider()
 
+        // Rename
         Button {
             renamingConversation = conversation
             renameText = conversation.title
@@ -1090,6 +1241,7 @@ private struct iPadConversationContextMenu: View {
             Label("Rename", systemImage: "pencil")
         }
 
+        // Pin
         Button {
             Task { await listViewModel.togglePin(conversation: conversation) }
         } label: {
@@ -1097,6 +1249,20 @@ private struct iPadConversationContextMenu: View {
                   systemImage: conversation.pinned ? "pin.slash" : "pin")
         }
 
+        // Clone
+        Button {
+            Task {
+                guard let manager = dependencies.conversationManager else { return }
+                if let cloned = try? await manager.cloneConversation(id: conversation.id) {
+                    await listViewModel.refreshConversations()
+                    activeConversationId = cloned.id
+                }
+            }
+        } label: {
+            Label("Clone", systemImage: "doc.on.doc")
+        }
+
+        // Archive
         Button {
             Task {
                 await listViewModel.toggleArchive(conversation: conversation)
@@ -1108,9 +1274,24 @@ private struct iPadConversationContextMenu: View {
             Label("Archive", systemImage: "archivebox")
         }
 
+        // Move to folder submenu
         let folders = listViewModel.folderViewModel.folders
         if !folders.isEmpty {
             Menu("Move to Folder") {
+                // Remove from folder option when the chat is currently in one
+                if conversation.folderId != nil {
+                    Button {
+                        let conv = conversation
+                        Task {
+                            await listViewModel.folderViewModel.moveChat(conversation: conv, to: nil)
+                            if let idx = listViewModel.conversations.firstIndex(where: { $0.id == conv.id }) {
+                                listViewModel.conversations[idx].folderId = nil
+                            }
+                        }
+                    } label: {
+                        Label("Remove from Folder", systemImage: "folder.badge.minus")
+                    }
+                }
                 ForEach(folders) { folder in
                     Button {
                         let conv = conversation
@@ -1131,11 +1312,8 @@ private struct iPadConversationContextMenu: View {
         Divider()
 
         Button(role: .destructive) {
-            let deletedId = conversation.id
-            Task {
-                await listViewModel.deleteConversation(id: deletedId)
-                if activeConversationId == deletedId { activeConversationId = nil }
-            }
+            Haptics.notify(.warning)
+            deletingConversation = conversation
         } label: {
             Label("Delete", systemImage: "trash")
         }
@@ -1149,6 +1327,7 @@ private extension View {
         showSettings: Binding<Bool>,
         showNotes: Binding<Bool>,
         showCreateFolderSheet: Binding<Bool>,
+        sharingConversation: Binding<Conversation?>,
         renamingConversation: Binding<Conversation?>,
         renameText: Binding<String>,
         isGeneratingTitle: Binding<Bool>,
@@ -1211,6 +1390,25 @@ private extension View {
                     }
                 }
             }
+            // Edit folder sheet — allows changing name, system prompt, knowledge
+            .sheet(item: Binding(
+                get: { listViewModel.folderViewModel.editingFolder },
+                set: { listViewModel.folderViewModel.editingFolder = $0 }
+            )) { folder in
+                EditFolderSheet(
+                    folder: folder,
+                    apiClient: dependencies.apiClient
+                ) { name, data, meta in
+                    Task {
+                        await listViewModel.folderViewModel.updateFolderSettings(
+                            id: folder.id,
+                            name: name,
+                            data: data,
+                            meta: meta
+                        )
+                    }
+                }
+            }
             .alert("Rename Folder", isPresented: .init(
                 get: { listViewModel.folderViewModel.renamingFolder != nil },
                 set: { if !$0 { listViewModel.folderViewModel.renamingFolder = nil } }
@@ -1239,14 +1437,37 @@ private extension View {
                     ShareSheet(items: [url])
                 }
             }
+            // Share chat sheet (matching iPhone)
+            .sheet(item: sharingConversation) { conversation in
+                if let apiClient = dependencies.apiClient {
+                    ShareChatSheet(
+                        conversation: conversation,
+                        apiClient: apiClient,
+                        serverBaseURL: apiClient.baseURL,
+                        onShareIdUpdated: { shareId in
+                            listViewModel.updateShareId(for: conversation.id, shareId: shareId)
+                        },
+                        onClone: { cloned in
+                            activeConversationId.wrappedValue = cloned.id
+                            SharedDataService.shared.saveLastActiveConversationId(cloned.id)
+                        }
+                    )
+                    .themed(with: dependencies.appearanceManager, accessibility: dependencies.accessibilityManager)
+                }
+            }
     }
 
     func applyAlerts(
         showDeleteAllConfirmation: Binding<Bool>,
         showDeleteSelectedConfirmation: Binding<Bool>,
+        deletingConversation: Binding<Conversation?>,
+        deletingChannelId: Binding<String?>,
         exportError: Binding<String?>,
         listViewModel: ChatListViewModel,
-        activeConversationId: Binding<String?>
+        activeConversationId: Binding<String?>,
+        activeChannelId: Binding<String?>,
+        channelListVM: ChannelListViewModel,
+        dependencies: AppDependencyContainer
     ) -> some View {
         self
             .confirmationDialog("Archive All Chats",
@@ -1259,6 +1480,8 @@ private extension View {
                     }
                 }
                 Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("This will archive all your conversations. You can unarchive them later from the web interface.")
             }
             .confirmationDialog("Delete All Chats",
                 isPresented: showDeleteAllConfirmation,
@@ -1284,6 +1507,60 @@ private extension View {
                     Task { await listViewModel.deleteSelectedConversations() }
                 }
                 Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("This will permanently delete \(listViewModel.selectedCount) selected conversation\(listViewModel.selectedCount == 1 ? "" : "s"). This action cannot be undone.")
+            }
+            // Single-conversation delete confirmation
+            .confirmationDialog(
+                "Delete \"\(deletingConversation.wrappedValue?.title ?? "")\"?",
+                isPresented: .init(
+                    get: { deletingConversation.wrappedValue != nil },
+                    set: { if !$0 { deletingConversation.wrappedValue = nil } }
+                ),
+                titleVisibility: .visible
+            ) {
+                Button("Delete", role: .destructive) {
+                    if let conversation = deletingConversation.wrappedValue {
+                        let deletedId = conversation.id
+                        deletingConversation.wrappedValue = nil
+                        Task {
+                            await listViewModel.deleteConversation(id: deletedId)
+                            if activeConversationId.wrappedValue == deletedId {
+                                activeConversationId.wrappedValue = nil
+                            }
+                        }
+                    }
+                }
+                Button("Cancel", role: .cancel) {
+                    deletingConversation.wrappedValue = nil
+                }
+            } message: {
+                Text("This action cannot be undone.")
+            }
+            // Channel delete confirmation
+            .confirmationDialog(
+                "Delete Channel?",
+                isPresented: .init(
+                    get: { deletingChannelId.wrappedValue != nil },
+                    set: { if !$0 { deletingChannelId.wrappedValue = nil } }
+                ),
+                titleVisibility: .visible
+            ) {
+                Button("Delete Channel", role: .destructive) {
+                    if let channelId = deletingChannelId.wrappedValue {
+                        deletingChannelId.wrappedValue = nil
+                        if activeChannelId.wrappedValue == channelId { activeChannelId.wrappedValue = nil }
+                        Task {
+                            try? await dependencies.apiClient?.deleteChannel(id: channelId)
+                            await channelListVM.refreshChannels()
+                        }
+                    }
+                }
+                Button("Cancel", role: .cancel) {
+                    deletingChannelId.wrappedValue = nil
+                }
+            } message: {
+                Text("This will permanently delete this channel and all its messages.")
             }
             .alert("Export Failed",
                    isPresented: .init(get: { exportError.wrappedValue != nil },
@@ -1322,6 +1599,8 @@ private extension View {
                            !socket.isConnected, !socket.isConnecting {
                             socket.connect()
                         }
+                        // Refresh conversations, folders, AND channels on foreground
+                        // (mirrors iPhone's refreshAllDataOnForeground)
                         await withTaskGroup(of: Void.self) { group in
                             group.addTask { await listViewModel.refreshIfStale() }
                             group.addTask { await listViewModel.folderViewModel.refreshFolders() }

@@ -26,6 +26,7 @@ struct DrawerFolderRow: View {
 
     @Environment(\.theme) private var theme
     @State private var showDeleteConfirmation = false
+    @State private var chatToDelete: Conversation?
 
     private var isDropTarget: Bool {
         folderVM.dragTargetFolderId == folder.id
@@ -325,10 +326,30 @@ struct DrawerFolderRow: View {
             }
 
             Button(role: .destructive) {
-                onDeleteChat?(chat.id)
+                chatToDelete = chat
             } label: {
                 Label("Delete", systemImage: "trash")
             }
+        }
+        .confirmationDialog(
+            "Delete \"\(chatToDelete?.title ?? chat.title)\"?",
+            isPresented: .init(
+                get: { chatToDelete?.id == chat.id },
+                set: { if !$0 { chatToDelete = nil } }
+            ),
+            titleVisibility: .visible
+        ) {
+            Button("Delete", role: .destructive) {
+                if let toDelete = chatToDelete {
+                    chatToDelete = nil
+                    onDeleteChat?(toDelete.id)
+                }
+            }
+            Button("Cancel", role: .cancel) {
+                chatToDelete = nil
+            }
+        } message: {
+            Text("This action cannot be undone.")
         }
         .accessibilityLabel(Text(chat.title))
         .accessibilityHint(Text("Double tap to open. Drag to move between folders."))

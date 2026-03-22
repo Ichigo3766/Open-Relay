@@ -24,6 +24,12 @@ struct AIModel: Codable, Identifiable, Hashable, Sendable {
     /// `"web_search"`, `"image_generation"`, `"code_interpreter"`, etc.).
     /// A `true` value means the tool is available; `false` means it's disabled.
     var builtinTools: [String: Bool]
+    /// Tag names extracted from the server's `tags` array (e.g. `["OpenRou", "External"]`).
+    /// Used to drive the tag-filter pills in the model selector sheet.
+    var tags: [String]
+    /// The connection type for this model (e.g. `"external"`, `"internal"`).
+    /// Sourced from `connection_type` in the OpenWebUI model payload.
+    var connectionType: String?
 
     init(
         id: String,
@@ -38,7 +44,9 @@ struct AIModel: Codable, Identifiable, Hashable, Sendable {
         toolIds: [String] = [],
         defaultFeatureIds: [String] = [],
         functionCallingMode: String? = nil,
-        builtinTools: [String: Bool] = [:]
+        builtinTools: [String: Bool] = [:],
+        tags: [String] = [],
+        connectionType: String? = nil
     ) {
         self.id = id
         self.name = name
@@ -53,6 +61,8 @@ struct AIModel: Codable, Identifiable, Hashable, Sendable {
         self.defaultFeatureIds = defaultFeatureIds
         self.functionCallingMode = functionCallingMode
         self.builtinTools = builtinTools
+        self.tags = tags
+        self.connectionType = connectionType
     }
 
     /// Whether the memory builtin tool is enabled for this model.

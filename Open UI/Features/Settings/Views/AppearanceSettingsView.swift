@@ -9,6 +9,7 @@ struct AppearanceSettingsView: View {
     @State private var showColorWheel = false
     @State private var wheelColor: Color = .blue
     @Namespace private var accentAnimation
+    @AppStorage("streamingBlurAnimation") private var streamingBlurEnabled: Bool = true
 
     var body: some View {
         ScrollView {
@@ -49,7 +50,6 @@ struct AppearanceSettingsView: View {
                         icon: "paintpalette.fill",
                         title: "Tinted Surfaces",
                         subtitle: "Add a subtle accent tint to backgrounds",
-                        showDivider: false,
                         accessory: .toggle(
                             isOn: manager.useTintedBackgrounds,
                             onChange: { manager.useTintedBackgrounds = $0 }

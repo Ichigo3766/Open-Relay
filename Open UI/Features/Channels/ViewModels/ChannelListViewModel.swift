@@ -130,10 +130,14 @@ final class ChannelListViewModel {
     // MARK: - DM Support
     
     /// Populates `dmParticipants` on each DM channel.
+    /// Skips channels that already have participant data to avoid unnecessary network requests
+    /// and prevent avatar flicker when re-opening the channels list.
     private func populateDMParticipants() async {
         guard let apiClient else { return }
-        let dmChannelIndices = channels.enumerated().compactMap { (idx, ch) in
-            ch.type == .dm ? idx : nil
+        // Only fetch for DM channels that don't yet have participant data
+        let dmChannelIndices = channels.enumerated().compactMap { (idx, ch) -> Int? in
+            guard ch.type == .dm, ch.dmParticipants.isEmpty else { return nil }
+            return idx
         }
         guard !dmChannelIndices.isEmpty else { return }
         

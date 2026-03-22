@@ -15,6 +15,9 @@ struct AdminConsoleView: View {
     @State private var showChatsSheet = false
     @State private var showDeleteConfirmation = false
     @State private var showAddUserSheet = false
+    /// Role change confirmation state
+    @State private var roleChangeUser: AdminUser?
+    @State private var roleChangeTarget: User.UserRole?
 
     var body: some View {
         ScrollView {
@@ -123,6 +126,31 @@ struct AdminConsoleView: View {
         } message: {
             if let user = viewModel.userToDelete {
                 Text("Are you sure you want to permanently delete \(user.displayName) (\(user.email))? This action cannot be undone.")
+            }
+        }
+        // Role change confirmation dialog
+        .confirmationDialog(
+            "Change Role",
+            isPresented: .init(
+                get: { roleChangeUser != nil },
+                set: { if !$0 { roleChangeUser = nil; roleChangeTarget = nil } }
+            ),
+            titleVisibility: .visible
+        ) {
+            if let user = roleChangeUser, let target = roleChangeTarget {
+                Button("Change to \(target.rawValue.capitalized)") {
+                    Task { await viewModel.cycleRole(for: user) }
+                    roleChangeUser = nil
+                    roleChangeTarget = nil
+                }
+            }
+            Button("Cancel", role: .cancel) {
+                roleChangeUser = nil
+                roleChangeTarget = nil
+            }
+        } message: {
+            if let user = roleChangeUser, let target = roleChangeTarget {
+                Text("Change \(user.displayName)'s role from \(user.role.rawValue) to \(target.rawValue)?")
             }
         }
         .task {
@@ -237,7 +265,15 @@ struct AdminConsoleView: View {
                         showDeleteConfirmation = true
                     },
                     onRoleTap: isSelf ? nil : {
-                        Task { await viewModel.cycleRole(for: user) }
+                        // Compute the next role and show a confirmation before applying
+                        let nextRole: User.UserRole
+                        switch user.role {
+                        case .pending: nextRole = .user
+                        case .user:    nextRole = .admin
+                        case .admin:   nextRole = .user
+                        }
+                        roleChangeUser = user
+                        roleChangeTarget = nextRole
                         Haptics.play(.medium)
                     }
                 )

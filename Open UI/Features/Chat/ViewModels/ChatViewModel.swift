@@ -3396,6 +3396,9 @@ final class ChatViewModel {
     /// Throttled to at most once per 60 seconds to avoid adding unnecessary
     /// network latency to every send operation. Uses the single-model endpoint
     /// (/api/v1/models/model) which also returns params.function_calling.
+    ///
+    /// IMPORTANT: Uses `applyIncrementalModelDefaults` instead of `syncUIWithModelDefaults`
+    /// to avoid wiping tools/features the user has manually toggled during the session.
     private func refreshSelectedModelMetadata() async {
         guard let modelId = selectedModelId, let manager else { return }
         // Skip if we refreshed recently (< 60s) — model admin changes are rare
@@ -3406,12 +3409,60 @@ final class ChatViewModel {
                 if let idx = availableModels.firstIndex(where: { $0.id == modelId }) {
                     availableModels[idx] = fullModel
                 }
-                // Re-sync to apply any admin changes (e.g., function_calling mode change)
-                syncUIWithModelDefaults()
+                // Use incremental sync — only ADD new defaults; never wipe user selections.
+                // syncUIWithModelDefaults() resets selectedToolIds = [] which would discard
+                // any tools the user manually enabled this session.
+                applyIncrementalModelDefaults(for: fullModel)
             }
         } catch {
             // Non-critical — proceed with cached model data
             logger.debug("Model metadata refresh failed: \(error.localizedDescription)")
+        }
+    }
+
+    /// Incrementally applies server-side model defaults to the current session
+    /// **without** clearing existing user selections.
+    ///
+    /// Unlike `syncUIWithModelDefaults()` (which is a full reset intended for
+    /// model switches and new conversations), this method only ADDS newly-discovered
+    /// defaults. It respects `userDisabledToolIds` so tools the user explicitly
+    /// toggled off stay off, and it never removes tools/features the user turned on.
+    ///
+    /// Called by `refreshSelectedModelMetadata()` before each message send.
+    private func applyIncrementalModelDefaults(for model: AIModel) {
+        let defaults = model.defaultFeatureIds
+        let caps = model.capabilities ?? [:]
+
+        func isTruthy(_ key: String) -> Bool {
+            guard let value = caps[key] else { return false }
+            return ["1", "true"].contains(value.lowercased())
+        }
+
+        // Only enable features if admin has them on — never force-disable ones
+        // the user turned on manually.
+        if defaults.contains("web_search") && isTruthy("web_search") {
+            webSearchEnabled = true
+        }
+        if defaults.contains("image_generation") && isTruthy("image_generation") {
+            imageGenerationEnabled = true
+        }
+        if defaults.contains("code_interpreter") && isTruthy("code_interpreter") {
+            codeInterpreterEnabled = true
+        }
+
+        // Add model-assigned tools (admin attached to this model) that aren't
+        // user-disabled and aren't already selected.
+        for toolId in model.toolIds {
+            if !userDisabledToolIds.contains(toolId) {
+                selectedToolIds.insert(toolId)
+            }
+        }
+
+        // Add any globally-enabled tools (is_active) that aren't user-disabled.
+        for tool in availableTools where tool.isEnabled {
+            if !userDisabledToolIds.contains(tool.id) {
+                selectedToolIds.insert(tool.id)
+            }
         }
     }
 
