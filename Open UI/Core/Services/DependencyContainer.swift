@@ -47,6 +47,14 @@ final class ActiveChatStore {
     /// Updated by AppDependencyContainer.fetchTaskConfig().
     var serverTaskConfig: TaskConfig = .default
 
+    /// Session-level cache for the user's memory setting (`ui.memory`).
+    /// Populated by the first ChatViewModel that fetches it, then reused by
+    /// all subsequent VMs so `GET /api/v1/users/user/settings` is called at
+    /// most once per session (rather than on every model load/switch).
+    /// Cleared by `clear()` on logout or server switch so the next session
+    /// always fetches a fresh value.
+    var cachedMemorySetting: Bool? = nil
+
     /// Returns an existing view model or creates a new one for the given
     /// conversation ID.  Pass `nil` for a brand-new conversation.
     ///
@@ -120,6 +128,7 @@ final class ActiveChatStore {
         accessOrder.removeAll()
         cachedModels = []
         cachedSelectedModelId = nil
+        cachedMemorySetting = nil
     }
 }
 
@@ -162,6 +171,9 @@ final class AppDependencyContainer: ServiceContainer {
 
     /// The tools manager for workspace tools CRUD.
     private(set) var toolsManager: ToolsManager?
+
+    /// The functions manager for admin functions CRUD.
+    private(set) var functionsManager: FunctionsManager?
 
     /// The model manager for workspace models CRUD.
     private(set) var modelManager: ModelManager?
@@ -272,6 +284,7 @@ final class AppDependencyContainer: ServiceContainer {
         knowledgeManager = apiClient.map { KnowledgeManager(apiClient: $0) }
         skillsManager = apiClient.map { SkillsManager(apiClient: $0) }
         toolsManager = apiClient.map { ToolsManager(apiClient: $0) }
+        functionsManager = apiClient.map { FunctionsManager(apiClient: $0) }
         modelManager = apiClient.map { ModelManager(apiClient: $0) }
 
         let serverHost = URL(string: config.url)?.host

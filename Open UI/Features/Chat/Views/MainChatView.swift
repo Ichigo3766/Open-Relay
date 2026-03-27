@@ -2238,11 +2238,14 @@ struct MainChatView: View {
 /// `MainChatView` body from accessing `ActiveChatStore.viewModel(for:)`
 /// on every evaluation.
 private struct MainModelSelectorLabel: View {
-    let conversationId: String?
+let conversationId: String?
     let activeChatStore: ActiveChatStore
     let theme: AppTheme
 
+    @Environment(AppDependencyContainer.self) private var dependencies
+
     @State private var isShowingModelSelectorSheet = false
+    @State private var editingModelDetail: ModelDetail? = nil
 
     private var vm: ChatViewModel {
         activeChatStore.viewModel(for: conversationId)
@@ -2291,13 +2294,34 @@ private struct MainModelSelectorLabel: View {
                         selectedModelId: vm.selectedModelId,
                         serverBaseURL: vm.serverBaseURL,
                         authToken: vm.serverAuthToken,
+                        isAdmin: dependencies.authViewModel.currentUser?.role == .admin,
+                        onEdit: dependencies.authViewModel.currentUser?.role == .admin ? { model in
+                            isShowingModelSelectorSheet = false
+                            Task { await openModelEditor(for: model) }
+                        } : nil,
                         onSelect: { model in
                             vm.selectModel(model.id)
                         }
                     )
                     .themed()
                 }
+                .sheet(item: $editingModelDetail) { detail in
+                    NavigationStack {
+                        ModelEditorView(existingModel: detail) { _ in
+                            Task { vm.refreshModelsInBackground() }
+                            editingModelDetail = nil
+                        }
+                    }
+                    .themed()
+                }
             }
+        }
+    }
+
+    private func openModelEditor(for model: AIModel) async {
+        guard let apiClient = dependencies.apiClient else { return }
+        if let detail = try? await apiClient.getWorkspaceModelDetail(id: model.id) {
+            editingModelDetail = detail
         }
     }
 }

@@ -1099,15 +1099,6 @@ final class ChatViewModel {
                     selectedModelId = availableModels.first?.id
                 }
             }
-            // Evict cached model avatars so admin-updated images are re-fetched.
-            // Avatar URLs are stable (keyed by model ID), so without eviction
-            // the image cache returns stale images indefinitely.
-            let baseURL = serverBaseURL
-            for model in availableModels {
-                if let avatarURL = model.resolveAvatarURL(baseURL: baseURL) {
-                    await ImageCacheService.shared.evict(for: avatarURL)
-                }
-            }
             // Write back to shared cache so subsequent VMs are pre-populated
             activeChatStore?.updateModelCache(models: availableModels, selectedId: selectedModelId)
         } catch {
@@ -3494,13 +3485,30 @@ final class ChatViewModel {
                 self.logger.warning("Recovery poll failed: \(error.localizedDescription)")
             }
 
-            // After 60s (12 polls at 5s), give up — socket handlers are the
-            // primary delivery mechanism; this timer is just a last-resort fallback.
-            // Must be long enough for tool calls (web search, image gen) which
-            // can take 30-60+ seconds without producing content tokens.
-            self.emptyPollCount += 1
+            // Check if there are active (pending) tool statuses — if so, tools
+            // are still executing on the server. Do NOT count these polls toward
+            // the give-up threshold. The server will eventually finish or error;
+            // the user can also cancel manually via the stop button.
+            let hasActiveToolStatus: Bool = {
+                guard let msgIdx = self.conversation?.messages.firstIndex(where: { $0.id == assistantMessageId }) else { return false }
+                let statuses = self.conversation?.messages[msgIdx].statusHistory ?? []
+                return statuses.contains { $0.done != true && $0.hidden != true }
+            }()
+
+            if hasActiveToolStatus {
+                // Tools still running — reset the empty poll counter so we
+                // never give up while the server is actively processing.
+                self.emptyPollCount = 0
+                self.logger.debug("Recovery: tools still active, resetting poll count")
+            } else {
+                self.emptyPollCount += 1
+            }
+
+            // After 60s (12 polls at 5s) with NO active tools, give up.
+            // When tools ARE active, emptyPollCount stays at 0 so we wait
+            // indefinitely until the server finishes or the user cancels.
             if self.emptyPollCount >= 12 {
-                self.logger.warning("Recovery: giving up after \(self.emptyPollCount) polls")
+                self.logger.warning("Recovery: giving up after \(self.emptyPollCount) polls (no active tools)")
                 self.updateAssistantMessage(
                     id: assistantMessageId,
                     content: self.conversation?.messages.last(where: { $0.role == .assistant })?.content ?? "",
@@ -3797,13 +3805,22 @@ final class ChatViewModel {
     /// toggles memory in Settings → Personalization. Fire-and-forget
     /// — failure just leaves `memoryEnabled` at its last known value.
     func fetchMemorySettingFromServer() async {
+        // Use session-level cache — avoids a redundant GET /api/v1/users/user/settings
+        // on every model load/switch. Cache is cleared by ActiveChatStore.clear()
+        // on logout or server switch, ensuring a fresh fetch each session.
+        if let cached = activeChatStore?.cachedMemorySetting {
+            memoryEnabled = cached
+            logger.debug("Memory setting from cache: \(cached)")
+            return
+        }
         guard let apiClient = manager?.apiClient else { return }
         do {
             let settings = try await apiClient.getUserSettings()
             if let ui = settings["ui"] as? [String: Any],
                let memory = ui["memory"] as? Bool {
                 memoryEnabled = memory
-                logger.debug("Memory setting fetched: \(memory)")
+                activeChatStore?.cachedMemorySetting = memory
+                logger.debug("Memory setting fetched from server: \(memory)")
             }
         } catch {
             logger.debug("Failed to fetch memory setting: \(error.localizedDescription)")
@@ -3976,13 +3993,24 @@ final class ChatViewModel {
     }
 
     private func parseStatusData(_ data: [String: Any]) -> ChatStatusUpdate {
-        ChatStatusUpdate(
+        // Parse queries from various formats (array of strings, or single string)
+        var queries: [String] = []
+        if let qArray = data["queries"] as? [String] {
+            queries = qArray.filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
+        } else if let qStr = data["queries"] as? String, !qStr.isEmpty {
+            queries = [qStr]
+        }
+
+        return ChatStatusUpdate(
             action: data["action"] as? String,
             description: data["description"] as? String,
             done: data["done"] as? Bool,
             hidden: data["hidden"] as? Bool,
             urls: (data["urls"] as? [String]) ?? [],
-            occurredAt: .now
+            occurredAt: .now,
+            count: data["count"] as? Int ?? (data["count"] as? Double).map { Int($0) },
+            query: data["query"] as? String,
+            queries: queries
         )
     }
 
@@ -4222,6 +4250,13 @@ final class ChatViewModel {
             if !isDuplicate {
                 conversation?.messages[index].statusHistory.append(status)
             }
+        }
+
+        // Also write to the streaming store so the isolated streaming status
+        // view sees the update in real-time (it reads from streamingStore,
+        // not conversation.messages, during active streaming).
+        if streamingStore.streamingMessageId == id && streamingStore.isActive {
+            streamingStore.appendStatus(status)
         }
     }
 

@@ -18,6 +18,8 @@ struct ModelSelectorSheet: View {
     let selectedModelId: String?
     let serverBaseURL: String
     let authToken: String?
+    let isAdmin: Bool
+    let onEdit: ((AIModel) -> Void)?
     let onSelect: (AIModel) -> Void
 
     @Environment(\.dismiss) private var dismiss
@@ -83,9 +85,13 @@ struct ModelSelectorSheet: View {
     }
 
     private func prefetchAvatars() {
+        // Prefetch all model avatar URLs in the background.
+        // Each URL hits the server endpoint which returns the custom avatar or
+        // the default favicon. Results are stored in ImageCacheService so
+        // subsequent opens of the picker are instant with zero network requests.
         let urls = models.compactMap { $0.resolveAvatarURL(baseURL: serverBaseURL) }
         guard !urls.isEmpty else { return }
-        Task(priority: .userInitiated) {
+        Task(priority: .background) {
             await ImageCacheService.shared.prefetchWithAuth(urls: urls, authToken: authToken)
         }
     }
@@ -308,6 +314,8 @@ struct ModelSelectorSheet: View {
                             isLast: idx == filteredModels.count - 1,
                             serverBaseURL: serverBaseURL,
                             authToken: authToken,
+                            isAdmin: isAdmin,
+                            onEdit: onEdit != nil ? { onEdit?(model) } : nil,
                             onTap: {
                                 Haptics.play(.light)
                                 onSelect(model)
@@ -369,6 +377,8 @@ private struct EquatableModelRow: View, Equatable {
     let isLast: Bool
     let serverBaseURL: String
     let authToken: String?
+    let isAdmin: Bool
+    let onEdit: (() -> Void)?
     let onTap: () -> Void
 
     static func == (lhs: EquatableModelRow, rhs: EquatableModelRow) -> Bool {
@@ -377,6 +387,7 @@ private struct EquatableModelRow: View, Equatable {
             && lhs.isSelected == rhs.isSelected
             && lhs.isLast == rhs.isLast
             && lhs.serverBaseURL == rhs.serverBaseURL
+            && lhs.isAdmin == rhs.isAdmin
     }
 
     @Environment(\.theme) private var theme
@@ -416,6 +427,22 @@ private struct EquatableModelRow: View, Equatable {
             }
 
             Spacer(minLength: 0)
+
+            // Admin edit button — gear icon, only visible to admins
+            if isAdmin, let onEdit {
+                Button {
+                    Haptics.play(.light)
+                    onEdit()
+                } label: {
+                    Image(systemName: "slider.horizontal.3")
+                        .scaledFont(size: 14, weight: .medium)
+                        .foregroundStyle(theme.textTertiary)
+                        .frame(width: 32, height: 32)
+                        .background(theme.surfaceContainer.opacity(0.7))
+                        .clipShape(Circle())
+                }
+                .buttonStyle(.plain)
+            }
 
             // Simple checkmark — minimal, Apple-style
             if isSelected {

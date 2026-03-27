@@ -874,6 +874,168 @@ struct ModelKnowledgeEntry: Identifiable, Sendable {
     var icon: String { type == .file ? "doc.text" : "cylinder.split.1x2" }
 }
 
+// MARK: - Function Item (lightweight model for /api/v1/functions/)
+
+/// Represents a function from the server (filter, action/skill, or pipe).
+struct FunctionItem: Identifiable, Sendable {
+    let id: String
+    var name: String
+    var type: String           // "filter", "action", or "pipe"
+    var description: String
+    var isActive: Bool
+    var isGlobal: Bool
+    var version: String?
+    var authorName: String?
+    var userId: String
+
+    init?(json: [String: Any]) {
+        guard let id = json["id"] as? String,
+              let name = json["name"] as? String else { return nil }
+        self.id = id
+        self.name = name
+        self.type = json["type"] as? String ?? ""
+        self.userId = json["user_id"] as? String ?? ""
+        let meta = json["meta"] as? [String: Any] ?? [:]
+        self.description = meta["description"] as? String ?? json["description"] as? String ?? ""
+        self.isActive = json["is_active"] as? Bool ?? true
+        self.isGlobal = json["is_global"] as? Bool ?? false
+        let manifest = meta["manifest"] as? [String: Any] ?? [:]
+        self.version = manifest["version"] as? String
+        self.authorName = manifest["author"] as? String
+    }
+}
+
+// MARK: - Function Detail (full CRUD model)
+
+/// Full function model used for create/edit flows.
+/// Includes the `content` field (Python code) which can be very large.
+struct FunctionDetail: Identifiable, Sendable {
+    let id: String
+    var name: String
+    var type: String           // "filter", "action", or "pipe"
+    var content: String        // Python code
+    var description: String    // from meta.description
+    var manifest: ToolManifest // reuses ToolManifest (same structure)
+    var isActive: Bool
+    var isGlobal: Bool
+    let userId: String
+    let createdAt: Date?
+    var updatedAt: Date?
+
+    init(id: String = "",
+         name: String = "",
+         type: String = "filter",
+         content: String = "",
+         description: String = "",
+         manifest: ToolManifest = ToolManifest(),
+         isActive: Bool = true,
+         isGlobal: Bool = false,
+         userId: String = "",
+         createdAt: Date? = nil,
+         updatedAt: Date? = nil) {
+        self.id = id
+        self.name = name
+        self.type = type
+        self.content = content
+        self.description = description
+        self.manifest = manifest
+        self.isActive = isActive
+        self.isGlobal = isGlobal
+        self.userId = userId
+        self.createdAt = createdAt
+        self.updatedAt = updatedAt
+    }
+
+    init?(json: [String: Any]) {
+        guard let id = json["id"] as? String,
+              let name = json["name"] as? String else { return nil }
+
+        self.id = id
+        self.name = name
+        self.type = json["type"] as? String ?? "filter"
+        self.content = json["content"] as? String ?? ""
+        self.userId = json["user_id"] as? String ?? ""
+        self.isActive = json["is_active"] as? Bool ?? true
+        self.isGlobal = json["is_global"] as? Bool ?? false
+
+        let meta = json["meta"] as? [String: Any] ?? [:]
+        self.description = meta["description"] as? String ?? ""
+
+        if let manifestDict = meta["manifest"] as? [String: Any] {
+            self.manifest = ToolManifest(json: manifestDict)
+        } else {
+            self.manifest = ToolManifest()
+        }
+
+        if let ts = json["created_at"] as? Double {
+            self.createdAt = Date(timeIntervalSince1970: ts)
+        } else if let ts = json["created_at"] as? Int {
+            self.createdAt = Date(timeIntervalSince1970: Double(ts))
+        } else {
+            self.createdAt = nil
+        }
+
+        if let ts = json["updated_at"] as? Double {
+            self.updatedAt = Date(timeIntervalSince1970: ts)
+        } else if let ts = json["updated_at"] as? Int {
+            self.updatedAt = Date(timeIntervalSince1970: Double(ts))
+        } else {
+            self.updatedAt = nil
+        }
+    }
+
+    func toCreatePayload() -> [String: Any] {
+        return [
+            "id": id,
+            "name": name,
+            "type": type,
+            "content": content,
+            "meta": [
+                "description": description,
+                "manifest": manifest.toJSON()
+            ]
+        ]
+    }
+
+    func toUpdatePayload() -> [String: Any] {
+        return [
+            "id": id,
+            "name": name,
+            "type": type,
+            "content": content,
+            "meta": [
+                "description": description,
+                "manifest": manifest.toJSON()
+            ]
+        ]
+    }
+
+    func toFunctionItem() -> FunctionItem? {
+        var json: [String: Any] = [
+            "id": id,
+            "name": name,
+            "type": type,
+            "user_id": userId,
+            "is_active": isActive,
+            "is_global": isGlobal,
+            "meta": [
+                "description": description,
+                "manifest": manifest.toJSON()
+            ]
+        ]
+        if let cd = createdAt { json["created_at"] = cd.timeIntervalSince1970 }
+        if let ud = updatedAt { json["updated_at"] = ud.timeIntervalSince1970 }
+        return FunctionItem(json: json)
+    }
+}
+
+// MARK: - FunctionValvesSheetItem
+
+/// Used with `.sheet(item:)` to atomically pass a function ID into the valves sheet.
+struct FunctionValvesSheetItem: Identifiable {
+    let id: String
+}
+
 // MARK: - Model Item (lightweight list model)
 
 struct ModelItem: Identifiable, Sendable {
@@ -971,6 +1133,12 @@ struct ModelDetail: Identifiable, Sendable {
     // Knowledge (meta.knowledge)
     var knowledgeItems: [ModelKnowledgeEntry]
 
+    // Tools, Filters, Actions (meta.toolIds, meta.filterIds, meta.actionIds, meta.defaultFilterIds)
+    var toolIds: [String]
+    var filterIds: [String]
+    var defaultFilterIds: [String]
+    var actionIds: [String]
+
     // Suggestion Prompts (meta.suggestion_prompts)
     var suggestionPrompts: [SuggestionPrompt]
 
@@ -1047,6 +1215,7 @@ struct ModelDetail: Identifiable, Sendable {
         self.builtinChannels = builtinChannels; self.builtinWebSearch = builtinWebSearch
         self.builtinImageGen = builtinImageGen; self.builtinCodeInterpreter = builtinCodeInterpreter
         self.knowledgeItems = knowledgeItems; self.suggestionPrompts = suggestionPrompts
+        self.toolIds = []; self.filterIds = []; self.defaultFilterIds = []; self.actionIds = []
         self.ttsVoice = ttsVoice; self.customParams = []
         self.advStreamResponse = nil; self.advStreamDeltaChunkSize = nil; self.advFunctionCalling = nil
         self.advReasoningEffort = nil; self.advReasoningTagStart = nil; self.advReasoningTagEnd = nil
@@ -1099,6 +1268,16 @@ struct ModelDetail: Identifiable, Sendable {
         if let kArr = meta["knowledge"] as? [[String: Any]] {
             self.knowledgeItems = kArr.compactMap { ModelKnowledgeEntry(json: $0) }
         } else { self.knowledgeItems = [] }
+
+        // Tools, Filters, Actions/Skills
+        self.toolIds = meta["toolIds"] as? [String] ?? []
+        self.filterIds = meta["filterIds"] as? [String] ?? []
+        self.defaultFilterIds = meta["defaultFilterIds"] as? [String] ?? []
+        // OpenWebUI stores skill IDs under both "actionIds" and "skillIds" in meta.
+        // Prefer "actionIds" but fall back to "skillIds" for compatibility with the web UI.
+        self.actionIds = meta["actionIds"] as? [String]
+            ?? meta["skillIds"] as? [String]
+            ?? []
 
         let caps = meta["capabilities"] as? [String: Any] ?? [:]
         self.capVision = caps["vision"] as? Bool ?? true
@@ -1242,6 +1421,11 @@ struct ModelDetail: Identifiable, Sendable {
             "code_interpreter": builtinCodeInterpreter
         ]
         meta["knowledge"] = knowledgeItems.map { ["type": $0.type.rawValue, "id": $0.id, "name": $0.name] }
+        meta["toolIds"] = toolIds
+        meta["filterIds"] = filterIds
+        meta["defaultFilterIds"] = defaultFilterIds
+        meta["actionIds"] = actionIds
+        meta["skillIds"] = actionIds
         meta["suggestion_prompts"] = suggestionPrompts.isEmpty
             ? NSNull()
             : suggestionPrompts.map { $0.toJSON() }

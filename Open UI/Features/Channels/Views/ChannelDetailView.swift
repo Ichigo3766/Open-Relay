@@ -2,6 +2,7 @@ import SwiftUI
 import PhotosUI
 import QuickLook
 import MarkdownView
+import os.log
 
 /// Channel chat view with:
 /// - Markdown rendering for all message content
@@ -327,7 +328,8 @@ struct ChannelDetailView: View {
                     currentUserId: userId
                 )
                 if userId == nil {
-                    print("[ChannelDetailView] WARNING: currentUserId is nil — Edit/Delete will be hidden")
+                    Logger(subsystem: "com.openui", category: "ChannelDetailView")
+                        .debug("currentUserId is nil — Edit/Delete will be hidden")
                 }
             }
             await viewModel.load()

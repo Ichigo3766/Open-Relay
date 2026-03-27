@@ -218,21 +218,15 @@ actor ImageCacheService {
                 // - All other servers: URLSession.shared (picks up cf_clearance cookies)
                 let (data, response) = try await self.session(for: url).data(for: request)
 
-                let httpResponse = response as? HTTPURLResponse
-                let statusCode = httpResponse?.statusCode ?? -1
-                let contentType = httpResponse?.value(forHTTPHeaderField: "Content-Type") ?? "unknown"
-                
-                print("[ImageCache] Response for \(url.lastPathComponent): status=\(statusCode), contentType=\(contentType), dataSize=\(data.count), authToken=\(authToken != nil ? "YES" : "NO")")
-                
-                guard let httpResponse,
+                guard let httpResponse = response as? HTTPURLResponse,
                       (200...399).contains(httpResponse.statusCode),
                       let image = UIImage(data: data),
                       image.size.width > 0 && image.size.height > 0
                 else {
-                    if let httpResponse {
-                        print("[ImageCache] FAILED for \(url.lastPathComponent): status=\(httpResponse.statusCode), body=\(String(data: data.prefix(200), encoding: .utf8) ?? "non-utf8")")
+                    if let httpResponse = response as? HTTPURLResponse {
+                        logger.debug("Image load failed for \(url.lastPathComponent): status=\(httpResponse.statusCode)")
                     } else {
-                        print("[ImageCache] FAILED for \(url.lastPathComponent): no HTTP response")
+                        logger.debug("Image load failed for \(url.lastPathComponent): no HTTP response")
                     }
                     return nil
                 }
@@ -526,23 +520,28 @@ struct CachedAsyncImage<Content: View, Placeholder: View>: View {
                 placeholder()
             }
         }
-        // stale-while-revalidate: always fetch in the background so avatar
-        // changes propagate. If the response is identical the UI won't flicker
-        // because SwiftUI only re-renders when `loadedImage` actually changes.
+        // When the URL changes (e.g. switching selected model in the toolbar),
+        // immediately update loadedImage from the memory cache (synchronous, zero-cost)
+        // or nil it out so the placeholder shows while the new image fetches.
+        // This ensures the displayed avatar always matches the current URL.
         .task(id: url) {
-            await revalidate()
+            // Synchronously check memory cache for the new URL first.
+            if let newURL = url,
+               let cached = ImageCacheService.shared.cachedImageSync(for: newURL) {
+                loadedImage = cached
+                return
+            }
+            // Not in memory — show placeholder and fetch from disk/network.
+            loadedImage = nil
+            await fetchImage()
         }
     }
 
-    /// Fetches the latest image from the network (or cache) and updates
-    /// `loadedImage` if the result differs from what is already shown.
-    private func revalidate() async {
+    /// Fetches the image from cache (disk) or network and populates `loadedImage`.
+    private func fetchImage() async {
         guard let url else { return }
         let fresh = await ImageCacheService.shared.loadImage(from: url, authToken: authToken)
-        if let fresh, fresh !== loadedImage {
-            loadedImage = fresh
-        } else if fresh == nil && loadedImage == nil {
-            // First load, no cache — show whatever came back (nil keeps placeholder)
+        if let fresh {
             loadedImage = fresh
         }
     }

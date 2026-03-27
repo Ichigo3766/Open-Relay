@@ -2,16 +2,6 @@ import SwiftUI
 
 // MARK: - Streaming Status View
 
-/// Displays status updates during assistant response streaming, such as
-/// tool calls, web searches, and other intermediate actions.
-///
-/// Mirrors the Flutter ``StreamingStatusWidget`` behavior, showing a
-/// collapsible list of status events with animated indicators.
-///
-/// Usage:
-/// ```swift
-/// StreamingStatusView(statusHistory: message.statusHistory)
-/// ```
 struct StreamingStatusView: View {
     let statusHistory: [ChatStatusUpdate]
     var isStreaming: Bool = true
@@ -47,6 +37,11 @@ struct StreamingStatusView: View {
                     statusList
                         .transition(.opacity.combined(with: .move(edge: .top)))
                 }
+
+                // Search queries section (shown for the latest status if it has queries)
+                if let latest = latestStatus, !latest.queries.isEmpty {
+                    queriesSection(latest)
+                }
             }
             .padding(.horizontal, Spacing.screenPadding)
             .padding(.vertical, Spacing.xs)
@@ -68,16 +63,22 @@ struct StreamingStatusView: View {
                 statusIndicator(for: latestStatus)
 
                 // Status text
-                VStack(alignment: .leading, spacing: 0) {
+                VStack(alignment: .leading, spacing: 2) {
                     if let latest = latestStatus {
-                        Text(statusTitle(for: latest))
-                            .scaledFont(size: 12, weight: .medium)
-                            .foregroundStyle(theme.textSecondary)
-                            .lineLimit(1)
-
-                        if let desc = latest.description, !desc.isEmpty {
-                            Text(desc)
+                        let title = resolveStatusDescription(for: latest)
+                        if latest.done == true {
+                            Text(title)
                                 .scaledFont(size: 12, weight: .medium)
+                                .foregroundStyle(theme.textTertiary)
+                                .lineLimit(1)
+                        } else {
+                            ShimmerText(text: title, theme: theme)
+                        }
+
+                        // Show count if available (e.g., "Retrieved 17 sources")
+                        if let count = latest.count, count > 0, latest.done == true {
+                            Text("Retrieved \(count) source\(count == 1 ? "" : "s")")
+                                .scaledFont(size: 11, weight: .regular)
                                 .foregroundStyle(theme.textTertiary)
                                 .lineLimit(1)
                         }
@@ -115,15 +116,16 @@ struct StreamingStatusView: View {
                 .scaleEffect(0.8)
 
             VStack(alignment: .leading, spacing: 0) {
-                Text(statusTitle(for: status))
-                    .scaledFont(size: 12, weight: .medium)
-                    .foregroundStyle(
-                        status.done == true
-                            ? theme.textTertiary
-                            : theme.textSecondary
-                    )
-                    .lineLimit(1)
-                    .strikethrough(status.done == true)
+                let title = resolveStatusDescription(for: status)
+                if status.done == true {
+                    Text(title)
+                        .scaledFont(size: 12, weight: .medium)
+                        .foregroundStyle(theme.textTertiary)
+                        .lineLimit(1)
+                        .strikethrough(true)
+                } else {
+                    ShimmerText(text: title, theme: theme)
+                }
 
                 // Show URLs if present
                 if !status.urls.isEmpty {
@@ -139,6 +141,36 @@ struct StreamingStatusView: View {
         }
     }
 
+    // MARK: - Queries Section
+
+    @ViewBuilder
+    private func queriesSection(_ status: ChatStatusUpdate) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            ForEach(Array(status.queries.enumerated()), id: \.offset) { _, query in
+                HStack(spacing: 6) {
+                    Image(systemName: "magnifyingglass")
+                        .scaledFont(size: 10, weight: .medium)
+                        .foregroundStyle(theme.textTertiary)
+                    Text(query)
+                        .scaledFont(size: 12, weight: .medium)
+                        .foregroundStyle(theme.textSecondary)
+                        .lineLimit(1)
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 5)
+                .background(
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .fill(theme.surfaceContainer.opacity(theme.isDark ? 0.5 : 0.8))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .strokeBorder(theme.cardBorder.opacity(0.4), lineWidth: 0.5)
+                )
+            }
+        }
+        .padding(.leading, Spacing.lg)
+    }
+
     // MARK: - Status Indicator
 
     @ViewBuilder
@@ -148,27 +180,67 @@ struct StreamingStatusView: View {
                 .scaledFont(size: 14)
                 .foregroundStyle(theme.success)
                 .transition(.scale.combined(with: .opacity))
-        } else if isStreaming {
-            ProgressView()
-                .controlSize(.mini)
-                .tint(theme.brandPrimary)
         } else {
-            Image(systemName: "circle")
-                .scaledFont(size: 14)
-                .foregroundStyle(theme.textTertiary)
+            PulsingDot(color: theme.brandPrimary)
         }
     }
 
-    // MARK: - Helpers
+    // MARK: - Status Resolution
 
-    private func statusTitle(for status: ChatStatusUpdate) -> String {
-        if let action = status.action, !action.isEmpty {
-            return formatActionName(action)
+    private func resolveStatusDescription(for status: ChatStatusUpdate) -> String {
+        let action = status.action ?? ""
+        let desc = status.description
+        let isDone = status.done == true
+
+        switch action.lowercased() {
+        case "web_search", "websearch", "web search":
+            if isDone {
+                if let count = status.count, count > 0 {
+                    return "Searched \(count) site\(count == 1 ? "" : "s")"
+                }
+                return desc ?? "Searched the web"
+            }
+            if let query = status.query, !query.isEmpty {
+                return "Searching for '\(query)'"
+            }
+            if !status.queries.isEmpty {
+                return "Searching"
+            }
+            return desc ?? "Searching the web"
+
+        case "generate_image", "image_generation", "generateimage":
+            if isDone { return desc ?? "Image generated" }
+            return desc ?? "Generating image…"
+
+        case "code_interpreter", "codeinterpreter", "code interpreter":
+            if isDone { return desc ?? "Code executed" }
+            return desc ?? "Running code…"
+
+        case "tool_call", "execute_tool":
+            return desc ?? (isDone ? "Tool completed" : "Executing tool…")
+
+        case "memory", "memory_search":
+            if isDone { return desc ?? "Memory retrieved" }
+            return desc ?? "Searching memory…"
+
+        case "knowledge", "knowledge_search", "rag":
+            if isDone {
+                if let count = status.count, count > 0 {
+                    return "Retrieved \(count) source\(count == 1 ? "" : "s")"
+                }
+                return desc ?? "Knowledge retrieved"
+            }
+            return desc ?? "Querying knowledge base…"
+
+        case "reconnecting":
+            return desc ?? "Reconnecting…"
+
+        default:
+            // Fall back to server description or formatted action name
+            if let desc, !desc.isEmpty { return desc }
+            if !action.isEmpty { return formatActionName(action) }
+            return "Processing…"
         }
-        if let desc = status.description, !desc.isEmpty {
-            return desc
-        }
-        return "Processing…"
     }
 
     private func formatActionName(_ action: String) -> String {
@@ -183,6 +255,72 @@ struct StreamingStatusView: View {
 
         // Capitalize first letter
         return cleaned.prefix(1).uppercased() + cleaned.dropFirst()
+    }
+}
+
+// MARK: - Pulsing Dot
+
+struct PulsingDot: View {
+    let color: Color
+    @State private var opacity: Double = 0.3
+
+    var body: some View {
+        Circle()
+            .fill(color)
+            .frame(width: 6, height: 6)
+            .opacity(opacity)
+            .onAppear {
+                withAnimation(
+                    .easeInOut(duration: 0.8)
+                    .repeatForever(autoreverses: true)
+                ) {
+                    opacity = 1.0
+                }
+            }
+    }
+}
+
+// MARK: - Shimmer Text
+
+private struct ShimmerText: View {
+    let text: String
+    let theme: AppTheme
+    @State private var shimmerPhase: CGFloat = -1.0
+
+    var body: some View {
+        Text(text)
+            .scaledFont(size: 12, weight: .medium)
+            .foregroundStyle(theme.textSecondary)
+            .lineLimit(1)
+            .overlay {
+                GeometryReader { geo in
+                    LinearGradient(
+                        colors: [
+                            .clear,
+                            theme.brandPrimary.opacity(0.35),
+                            .clear
+                        ],
+                        startPoint: .leading,
+                        endPoint: .trailing
+                    )
+                    .frame(width: geo.size.width * 0.4)
+                    .offset(x: shimmerPhase * geo.size.width)
+                    .blendMode(.sourceAtop)
+                }
+                .mask {
+                    Text(text)
+                        .scaledFont(size: 12, weight: .medium)
+                        .lineLimit(1)
+                }
+            }
+            .onAppear {
+                withAnimation(
+                    .linear(duration: 1.8)
+                    .repeatForever(autoreverses: false)
+                ) {
+                    shimmerPhase = 1.2
+                }
+            }
     }
 }
 
@@ -204,9 +342,7 @@ struct ToolCallBadge: View {
                     .scaledFont(size: 12)
                     .foregroundStyle(theme.success)
             } else {
-                ProgressView()
-                    .controlSize(.mini)
-                    .tint(theme.brandPrimary)
+                PulsingDot(color: theme.brandPrimary)
             }
 
             Text(action)

@@ -1358,10 +1358,10 @@ final class APIClient: @unchecked Sendable {
 
         // Log the exact request body being sent
         if let bodyString = String(data: bodyData, encoding: .utf8) {
-            logger.info("🔊 [TTS] POST /api/v1/audio/speech — body: \(bodyString)")
+            logger.debug("🔊 [TTS] POST /api/v1/audio/speech — body: \(bodyString)")
         }
-        logger.info("🔊 [TTS] input text (\(text.count) chars): \"\(String(text.prefix(200)))\"")
-        logger.info("🔊 [TTS] voice: \(voice ?? "<nil — using server default>")")
+        logger.debug("🔊 [TTS] input text (\(text.count) chars): \"\(String(text.prefix(200)))\"")
+        logger.debug("🔊 [TTS] voice: \(voice ?? "<nil — using server default>")")
 
         let (data, response) = try await network.requestRaw(
             path: "/api/v1/audio/speech",
@@ -1370,7 +1370,7 @@ final class APIClient: @unchecked Sendable {
         )
         let contentType = response.value(forHTTPHeaderField: "Content-Type") ?? "audio/mpeg"
 
-        logger.info("🔊 [TTS] Response: \(contentType), \(data.count) bytes")
+        logger.debug("🔊 [TTS] Response: \(contentType), \(data.count) bytes")
 
         return (data, contentType)
     }
@@ -2103,11 +2103,167 @@ final class APIClient: @unchecked Sendable {
 
     // Legacy shim — kept for any callers using the old name
     func getTools() async throws -> [[String: Any]] {
-        let (data, _) = try await network.requestRaw(path: "/api/v1/tools/list")
+        let (data, _) = try await network.requestRaw(path: "/api/v1/tools/")
         guard let array = try JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
             return []
         }
         return array
+    }
+
+    /// Fetch all functions (filters, actions/skills, pipes) from the server.
+    func getFunctions() async throws -> [FunctionItem] {
+        let (data, _) = try await network.requestRaw(path: "/api/v1/functions/")
+        guard let array = try JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
+            return []
+        }
+        return array.compactMap { FunctionItem(json: $0) }
+    }
+
+    /// GET /api/v1/functions/id/{id} — returns full function detail including content
+    /// GET /api/v1/functions/id/{id} — returns raw JSON data (for export)
+    func getFunctionDetailRaw(id: String) async throws -> Data {
+        let (data, _) = try await network.requestRaw(path: "/api/v1/functions/id/\(id)")
+        return data
+    }
+
+    func getFunctionDetail(id: String) async throws -> FunctionDetail {
+        let json = try await network.requestJSON(path: "/api/v1/functions/id/\(id)")
+        guard let detail = FunctionDetail(json: json) else {
+            throw APIError.responseDecoding(underlying: NSError(domain: "FunctionAPI", code: -1, userInfo: [NSLocalizedDescriptionKey: "Failed to decode function response"]), data: nil)
+        }
+        return detail
+    }
+
+    /// POST /api/v1/functions/create
+    func createFunction(detail: FunctionDetail) async throws -> FunctionDetail {
+        let json = try await network.requestJSON(
+            path: "/api/v1/functions/create",
+            method: .post,
+            body: detail.toCreatePayload()
+        )
+        guard let created = FunctionDetail(json: json) else {
+            throw APIError.responseDecoding(underlying: NSError(domain: "FunctionAPI", code: -1, userInfo: [NSLocalizedDescriptionKey: "Failed to decode function response"]), data: nil)
+        }
+        return created
+    }
+
+    /// POST /api/v1/functions/id/{id}/update
+    func updateFunction(detail: FunctionDetail) async throws -> FunctionDetail {
+        let json = try await network.requestJSON(
+            path: "/api/v1/functions/id/\(detail.id)/update",
+            method: .post,
+            body: detail.toUpdatePayload()
+        )
+        guard let updated = FunctionDetail(json: json) else {
+            throw APIError.responseDecoding(underlying: NSError(domain: "FunctionAPI", code: -1, userInfo: [NSLocalizedDescriptionKey: "Failed to decode function response"]), data: nil)
+        }
+        return updated
+    }
+
+    /// DELETE /api/v1/functions/id/{id}/delete
+    func deleteFunction(id: String) async throws {
+        try await network.requestVoid(
+            path: "/api/v1/functions/id/\(id)/delete",
+            method: .delete
+        )
+    }
+
+    /// POST /api/v1/functions/id/{id}/toggle — toggles is_active
+    func toggleFunction(id: String) async throws -> FunctionDetail {
+        let json = try await network.requestJSON(
+            path: "/api/v1/functions/id/\(id)/toggle",
+            method: .post,
+            body: [:]
+        )
+        guard let toggled = FunctionDetail(json: json) else {
+            throw APIError.responseDecoding(underlying: NSError(domain: "FunctionAPI", code: -1, userInfo: [NSLocalizedDescriptionKey: "Failed to decode function response"]), data: nil)
+        }
+        return toggled
+    }
+
+    /// POST /api/v1/functions/id/{id}/toggle/global — toggles is_global
+    func toggleFunctionGlobal(id: String) async throws -> FunctionDetail {
+        let json = try await network.requestJSON(
+            path: "/api/v1/functions/id/\(id)/toggle/global",
+            method: .post,
+            body: [:]
+        )
+        guard let toggled = FunctionDetail(json: json) else {
+            throw APIError.responseDecoding(underlying: NSError(domain: "FunctionAPI", code: -1, userInfo: [NSLocalizedDescriptionKey: "Failed to decode function response"]), data: nil)
+        }
+        return toggled
+    }
+
+    /// GET /api/v1/functions/export — returns raw JSON Data for share sheet
+    func exportFunctions() async throws -> Data {
+        let (data, _) = try await network.requestRaw(path: "/api/v1/functions/export")
+        return data
+    }
+
+    /// GET /api/v1/functions/id/{id}/valves — returns current saved valve values
+    func getFunctionValves(id: String) async throws -> [String: Any] {
+        let (data, _) = try await network.requestRaw(path: "/api/v1/functions/id/\(id)/valves")
+        guard !data.isEmpty,
+              let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return [:]
+        }
+        return json
+    }
+
+    /// GET /api/v1/functions/id/{id}/valves/spec — returns JSON Schema for valves
+    func getFunctionValvesSpec(id: String) async throws -> [String: Any] {
+        let (data, _) = try await network.requestRaw(path: "/api/v1/functions/id/\(id)/valves/spec")
+        guard !data.isEmpty,
+              let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return [:]
+        }
+        return json
+    }
+
+    /// GET /api/v1/functions/id/{id}/valves/spec — with insertion-order key preservation
+    func getFunctionValvesSpecOrdered(id: String) async throws -> ([String: Any], [String]) {
+        let (data, _) = try await network.requestRaw(path: "/api/v1/functions/id/\(id)/valves/spec")
+        guard !data.isEmpty,
+              let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return ([:], [])
+        }
+        // Extract key order from raw JSON
+        var orderedKeys: [String] = []
+        if let propsData = (json["properties"] as? [String: Any]) {
+            // Try to extract order from raw bytes
+            if let rawStr = String(data: data, encoding: .utf8),
+               let propsRange = rawStr.range(of: "\"properties\"") {
+                let afterProps = rawStr[propsRange.upperBound...]
+                let pattern = try? NSRegularExpression(pattern: "\"([^\"]+)\"\\s*:", options: [])
+                let nsRange = NSRange(afterProps.startIndex..<afterProps.endIndex, in: rawStr)
+                if let matches = pattern?.matches(in: String(rawStr), options: [], range: nsRange) {
+                    for match in matches {
+                        if let keyRange = Range(match.range(at: 1), in: rawStr) {
+                            let key = String(rawStr[keyRange])
+                            if propsData[key] != nil && !orderedKeys.contains(key) {
+                                orderedKeys.append(key)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        return (json, orderedKeys)
+    }
+
+    /// POST /api/v1/functions/id/{id}/valves/update — saves valve overrides
+    @discardableResult
+    func updateFunctionValves(id: String, values: [String: Any]) async throws -> [String: Any] {
+        let (data, _) = try await network.requestRaw(
+            path: "/api/v1/functions/id/\(id)/valves/update",
+            method: .post,
+            body: try JSONSerialization.data(withJSONObject: values)
+        )
+        guard !data.isEmpty,
+              let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return values
+        }
+        return json
     }
 
     // MARK: - Terminal Servers
