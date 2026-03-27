@@ -133,31 +133,24 @@ struct AIModel: Codable, Identifiable, Hashable, Sendable {
 
     // MARK: - Avatar URL Resolution
 
-    /// Resolves the avatar URL for this model using the OpenWebUI dedicated endpoint.
+    /// Resolves the avatar URL for this model.
     ///
-    /// Matches the Flutter `resolveModelIconUrlForModel` logic:
-    /// 1. If `profileImageURL` is an external URL or data URI, use it directly.
-    /// 2. Otherwise, build the URL using the dedicated model avatar endpoint:
-    ///    `/api/v1/models/model/profile/image?id={modelId}`
+    /// Always uses the server's per-model endpoint `/api/v1/models/model/profile/image?id=X`.
+    /// The server returns the model's custom avatar if one is set, or the default favicon
+    /// for models without one. Results are cached by `ImageCacheService` so subsequent
+    /// opens of the model picker are instant with zero network requests.
     ///
-    /// This endpoint handles:
-    /// - External URLs (returns 302 redirect)
-    /// - Base64 data URIs (decodes and serves)
-    /// - Fallback favicon.png
+    /// External HTTP/HTTPS `profileImageURL` values (e.g. OAuth avatars) are used directly.
     func resolveAvatarURL(baseURL: String) -> URL? {
-        // Check for legacy profile_image_url that's an external URL or data URI
-        if let legacy = profileImageURL?.trimmingCharacters(in: .whitespacesAndNewlines),
-           !legacy.isEmpty {
-            if legacy.hasPrefix("data:image") {
-                // Data URIs can't be used as URL — use the dedicated endpoint instead
-                return buildModelAvatarURL(baseURL: baseURL)
-            }
-            if legacy.hasPrefix("http://") || legacy.hasPrefix("https://") {
-                return URL(string: legacy)
-            }
+        // External HTTP/HTTPS URL — use directly.
+        if let raw = profileImageURL?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !raw.isEmpty,
+           raw.hasPrefix("http://") || raw.hasPrefix("https://") {
+            return URL(string: raw)
         }
-
-        // Use the dedicated OpenWebUI model avatar endpoint
+        // All other cases (nil, empty, data URI, relative path like "/static/favicon.png"):
+        // delegate to the per-model endpoint. The server knows whether this model has a
+        // custom avatar and returns the right image — no client-side guessing needed.
         return buildModelAvatarURL(baseURL: baseURL)
     }
 

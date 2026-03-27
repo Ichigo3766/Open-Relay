@@ -1,5 +1,6 @@
 import SwiftUI
 import WebKit
+import os.log
 
 // MARK: - Tool Call Data
 
@@ -708,13 +709,16 @@ private struct RichUIWebView: UIViewRepresentable {
             // helper can include it on Bearer-authenticated `/api/` requests.
             // We do this on every didFinish (not just the first) so that if the
             // page reloads it still has the token.
-            if let token = authToken, !token.isEmpty {
-                // Escape single quotes in the token to prevent JS injection.
-                let safeToken = token.replacingOccurrences(of: "'", with: "\\'")
-                webView.evaluateJavaScript("localStorage.setItem('token', '\(safeToken)')") { _, err in
-                    if let err { print("[RichUIWebView] localStorage inject error: \(err)") }
+                if let token = authToken, !token.isEmpty {
+                    // Escape single quotes in the token to prevent JS injection.
+                    let safeToken = token.replacingOccurrences(of: "'", with: "\\'")
+                    webView.evaluateJavaScript("localStorage.setItem('token', '\(safeToken)')") { _, err in
+                        if let err {
+                            Logger(subsystem: "com.openui", category: "RichUIWebView")
+                                .warning("localStorage inject error: \(err.localizedDescription)")
+                        }
+                    }
                 }
-            }
 
             // Fallback: measure actual content height after load.
             // Only fires if the embed hasn't already reported its height via postMessage.
@@ -905,11 +909,13 @@ struct ReasoningView: View {
 
     init(reasoning: ReasoningData) {
         self.reasoning = reasoning
-        // Expanded while thinking is still in progress, collapsed once done.
-        // Because ReasoningData.id is a fresh UUID on each re-parse, SwiftUI
-        // treats each streaming update as a new view — so `@State` re-inits
-        // each time, giving us the desired auto-collapse on completion.
-        self._isExpanded = State(initialValue: !reasoning.isDone)
+        // Expanded while thinking is still in progress (if the user allows it),
+        // collapsed once done. Because ReasoningData.id is a fresh UUID on each
+        // re-parse, SwiftUI treats each streaming update as a new view — so
+        // `@State` re-inits each time, giving us the desired auto-collapse on
+        // completion.
+        let autoExpand = UserDefaults.standard.object(forKey: "expandThinkingWhileStreaming") as? Bool ?? true
+        self._isExpanded = State(initialValue: !reasoning.isDone && autoExpand)
     }
 
     var body: some View {
@@ -1012,21 +1018,6 @@ struct AssistantMessageContent: View {
     var authToken: String? = nil
     var serverBaseURL: String? = nil
 
-    /// ## OPT 3: Reference-type parse cache (fixes 1-frame stale race)
-    ///
-    /// ### Problem (before)
-    /// The cache used `@State` properties updated via `DispatchQueue.main.async`
-    /// to avoid the "setting value during view update" warning. But this created
-    /// a 1-frame race: the async update doesn't land until the NEXT run loop
-    /// iteration, so the very next body evaluation sees stale cache and re-runs
-    /// the expensive O(n) regex parse — defeating the cache entirely during
-    /// streaming where body is called at ~7-15fps.
-    ///
-    /// ### Fix
-    /// Use a reference-type (`class`) cache that mutates synchronously during
-    /// body evaluation. Since it's a class (not a value type), mutating it
-    /// doesn't trigger SwiftUI state changes or "setting value during update"
-    /// warnings. The cache hit is immediate — same run loop, same body call.
     @State private var parseCache = ParseCache()
 
     /// Reference-type cache for ToolCallParser results. Mutating a class
@@ -1052,11 +1043,6 @@ struct AssistantMessageContent: View {
             return result
         }()
 
-        // Inject message-level embeds into the appropriate group:
-        // Find the last toolCalls group whose last call has no embeds and
-        // attach the messageEmbeds there (matching web UI inline placement).
-        // If no suitable tool call group exists, the embeds are rendered as
-        // standalone blocks appended after all other content.
         let groups: [SegmentGroup] = {
             let base = Self.groupSegments(ordered.segments)
             guard !messageEmbeds.isEmpty else { return base }

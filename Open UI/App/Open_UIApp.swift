@@ -143,10 +143,6 @@ struct Open_UIApp: App {
                     // STORAGE FIX: Run cleanup on app launch to handle accumulated
                     // data from previous sessions (orphaned files, stale caches, etc.)
                     StorageManager.shared.performRoutineCleanup()
-                    
-                    // Evict profile image cache on startup so avatars refresh
-                    // if the user changed them on the web UI since last launch.
-                    await ImageCacheService.shared.evictProfileImages()
 
                     // Initialize notification service: registers categories and
                     // requests permission if not yet determined. Also acts as a

@@ -1,5 +1,22 @@
 # Changelog
 
+## v2.1.0 — March 27, 2026
+
+### What's New
+- Admins can now edit any model's settings directly from the model picker — tap the  icon next to any model to open the full model editor without leaving the chat.
+- Added Tools, Skills, and Filters sections to the Model Editor
+- Added Functions management to the Admin Console
+
+### Improvements
+- Significantly reduced redundant network calls to avatar endpoints - Avatars now load much faster. 
+- Fixed keyboard return key showing "return" instead of "Send" when Send on Enter is enabled.
+
+### Bug Fixes
+- Fixed tool call progress not showing during web search, image generation, and other default function calls — status indicators now display in real time with animated shimmer and search query pills, matching the Open WebUI web interface.
+- Fixed the app prematurely closing the streaming connection while tools were still executing in the background.
+
+## Previous Builds
+
 ## v2.0.0 — March 26, 2026
 
 ### What's New
@@ -24,8 +41,6 @@
 - Fixed pipe/function models (e.g. OpenRouter Pipe) hanging for ~60 seconds before responding
 - Fixed multiple bugs related to STT and TTS pipeline.
 - Fixed profile picture not loading in settings. 
-
-## Previous Builds
 
 ## v1.3.1 — March 22, 2026
 
@@ -53,7 +68,7 @@
 ### What's New
 - Added multi-server management — save multiple OpenWebUI server connections and switch between them instantly from Settings or the server connection screen. 
 - Chat sharing is now fully functional. Long-press any conversation and tap Share to open the share menu.
-- Complete support for memories - Added Enable Memory toggle in Settings → Personalization → Memories to enable/disable he feature
+- Complete support for memories - Added Enable Memory toggle in Settings → Personalization → Memories to enable/disable the feature
 - Folders now support full project workspace configuration — long-press any folder to edit its name, system prompt, default models, and attached knowledge bases (RAG context for all chats in the folder).
 - Added custom headers on sign in. 
 

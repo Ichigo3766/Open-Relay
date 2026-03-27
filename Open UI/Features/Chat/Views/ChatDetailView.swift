@@ -18,6 +18,8 @@ struct ChatDetailView: View {
 
     // MARK: Model selector sheet
     @State private var isShowingModelSelectorSheet = false
+    @State private var editingModelDetail: ModelDetail? = nil
+    @State private var isLoadingModelDetail = false
 
     // MARK: Scroll state (iOS 18 ScrollPosition API)
     /// iOS 18+ declarative scroll position. Used with `.scrollPosition($scrollPosition)`
@@ -488,12 +490,27 @@ struct ChatDetailView: View {
                         selectedModelId: viewModel.selectedModelId,
                         serverBaseURL: viewModel.serverBaseURL,
                         authToken: viewModel.serverAuthToken,
+                        isAdmin: dependencies.authViewModel.currentUser?.role == .admin,
+                        onEdit: dependencies.authViewModel.currentUser?.role == .admin ? { model in
+                            isShowingModelSelectorSheet = false
+                            Task { await openModelEditorFromPicker(model) }
+                        } : nil,
                         onSelect: { model in
                             withAnimation(MicroAnimation.snappy) {
                                 viewModel.selectModel(model.id)
                             }
                         }
                     )
+                    .themed()
+                }
+                .sheet(item: $editingModelDetail) { detail in
+                    NavigationStack {
+                        ModelEditorView(existingModel: detail) { updatedDetail in
+                            // Refresh models list so changes are reflected immediately
+                            Task { viewModel.refreshModelsInBackground() }
+                            editingModelDetail = nil
+                        }
+                    }
                     .themed()
                 }
             }
@@ -1975,6 +1992,20 @@ struct ChatDetailView: View {
 
     // MARK: - Actions
 
+    /// Fetches the full model detail and opens the ModelEditorView sheet.
+    /// Called when an admin taps the edit button in the model selector sheet.
+    private func openModelEditorFromPicker(_ model: AIModel) async {
+        guard let apiClient = dependencies.apiClient else { return }
+        isLoadingModelDetail = true
+        do {
+            let detail = try await apiClient.getWorkspaceModelDetail(id: model.id)
+            isLoadingModelDetail = false
+            editingModelDetail = detail
+        } catch {
+            isLoadingModelDetail = false
+        }
+    }
+
     /// Dismiss all picker/overlay states so a new quick action doesn't stack.
     private func dismissAllPickers() {
         showCameraPicker = false
@@ -2265,14 +2296,16 @@ private struct IsolatedStreamingStatus: View {
             : message.content
         let effectiveIsStreaming = isActiveStore || message.isStreaming
 
-        if effectiveIsStreaming && !effectiveStatusHistory.isEmpty {
+        if !effectiveStatusHistory.isEmpty {
             let visible = effectiveStatusHistory.filter { $0.hidden != true }
-            let hasPending = visible.contains { $0.done != true }
-            let hasContent = !effectiveContent.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            if hasPending && !hasContent {
-                StreamingStatusView(statusHistory: effectiveStatusHistory, isStreaming: true)
-                    .padding(.bottom, Spacing.xs)
-                    .transition(.opacity)
+            if !visible.isEmpty {
+                let hasPending = visible.contains { $0.done != true }
+                StreamingStatusView(
+                    statusHistory: effectiveStatusHistory,
+                    isStreaming: effectiveIsStreaming && hasPending
+                )
+                .padding(.bottom, Spacing.xs)
+                .transition(.opacity)
             }
         }
     }

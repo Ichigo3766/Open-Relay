@@ -83,6 +83,17 @@ struct ModelEditorView: View {
     @State private var knowledgeItems: [ModelKnowledgeEntry] = []
     @State private var showKnowledgePicker = false
 
+    // MARK: - Tools, Skills, Filters
+
+    @State private var selectedToolIds: Set<String> = []
+    @State private var selectedFilterIds: Set<String> = []
+    @State private var defaultFilterIds: Set<String> = []
+    @State private var selectedActionIds: Set<String> = []
+    @State private var allTools: [(id: String, name: String)] = []
+    @State private var allFilters: [(id: String, name: String)] = []
+    @State private var allActions: [(id: String, name: String)] = []
+    @State private var isFetchingToolsAndFunctions = false
+
     // MARK: - Suggestion Prompts
 
     @State private var suggestionPrompts: [SuggestionPrompt] = []
@@ -164,6 +175,13 @@ struct ModelEditorView: View {
     private var accessedUsers: [ChannelMember] {
         let ids = Set(localAccessGrants.compactMap { $0.userId })
         return allUsers.filter { ids.contains($0.id) }
+    }
+
+    /// Whether this is a provider model (not a custom model wrapping another).
+    /// Provider models have no base_model_id. The web UI hides the base model
+    /// picker for these models since they ARE the base model.
+    private var isProviderModel: Bool {
+        isEditing && existingModel?.baseModelId == nil
     }
 
     private var hasChanges: Bool {
@@ -272,9 +290,28 @@ struct ModelEditorView: View {
                     )
                     suggestionPromptsSection
                     knowledgeSection
-                    capabilitiesSection
-                    defaultFeaturesSection
-                    builtinToolsSection
+                    ModelToolsAndCapabilitiesSection(
+                        selectedToolIds: $selectedToolIds,
+                        allTools: $allTools,
+                        isFetchingToolsAndFunctions: $isFetchingToolsAndFunctions,
+                        selectedActionIds: $selectedActionIds,
+                        allActions: $allActions,
+                        selectedFilterIds: $selectedFilterIds,
+                        defaultFilterIds: $defaultFilterIds,
+                        allFilters: $allFilters,
+                        capVision: $capVision, capFileUpload: $capFileUpload,
+                        capFileContext: $capFileContext, capWebSearch: $capWebSearch,
+                        capImageGeneration: $capImageGeneration, capCodeInterpreter: $capCodeInterpreter,
+                        capUsage: $capUsage, capCitations: $capCitations,
+                        capStatusUpdates: $capStatusUpdates, capBuiltinTools: $capBuiltinTools,
+                        defaultWebSearch: $defaultWebSearch, defaultImageGen: $defaultImageGen,
+                        defaultCodeInterpreter: $defaultCodeInterpreter,
+                        builtinTime: $builtinTime, builtinMemory: $builtinMemory,
+                        builtinChats: $builtinChats, builtinNotes: $builtinNotes,
+                        builtinKnowledge: $builtinKnowledge, builtinChannels: $builtinChannels,
+                        builtinWebSearch: $builtinWebSearch, builtinImageGen: $builtinImageGen,
+                        builtinCodeInterpreter: $builtinCodeInterpreter
+                    )
                     ttsVoiceSection
                     settingsSection
                 }
@@ -310,7 +347,7 @@ struct ModelEditorView: View {
             }
             .sheet(isPresented: $showBaseModelPicker) {
                 BaseModelPickerSheet(
-                    availableModels: availableModels,
+                    availableModels: availableModels.filter { $0.id != modelId },
                     selectedModelId: baseModelId,
                     serverBaseURL: serverBaseURL,
                     authToken: authToken,
@@ -360,6 +397,7 @@ struct ModelEditorView: View {
             Task {
                 await manager?.fetchAllUsers()
                 await fetchAvailableModels()
+                await fetchToolsAndFunctions()
             }
         }
         .onChange(of: selectedPhotoItem) { _, newItem in
@@ -509,6 +547,7 @@ struct ModelEditorView: View {
 
                     Divider().background(theme.inputBorder.opacity(0.4))
 
+                    if !isProviderModel {
                     // Base Model — Picker button
                     Button {
                         Haptics.play(.light)
@@ -555,6 +594,7 @@ struct ModelEditorView: View {
                     .padding(.horizontal, Spacing.md)
 
                     Divider().background(theme.inputBorder.opacity(0.4))
+                    } // end if !isProviderModel
 
                     // Description
                     HStack {
@@ -840,6 +880,133 @@ struct ModelEditorView: View {
             .environment(dependencies)
             .presentationDetents([.medium, .large])
             .presentationDragIndicator(.visible)
+        }
+    }
+
+    // MARK: - Tools Section
+
+    private var toolsSection: some View {
+        VStack(alignment: .leading, spacing: Spacing.sm) {
+            sectionHeader("Tools")
+            if isFetchingToolsAndFunctions {
+                fieldCard {
+                    HStack {
+                        ProgressView().controlSize(.small).tint(theme.brandPrimary)
+                        Text("Loading tools…").scaledFont(size: 13).foregroundStyle(theme.textTertiary)
+                    }
+                    .padding(Spacing.md)
+                }
+            } else if allTools.isEmpty {
+                fieldCard {
+                    Text("No tools available. Add tools in the Tools workspace first.")
+                        .scaledFont(size: 13)
+                        .foregroundStyle(theme.textTertiary)
+                        .padding(Spacing.md)
+                }
+            } else {
+                fieldCard {
+                    VStack(alignment: .leading, spacing: 0) {
+                        LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 0) {
+                            ForEach(allTools, id: \.id) { tool in
+                                setCheckbox(tool.name, id: tool.id, selection: $selectedToolIds)
+                            }
+                        }
+                        .padding(.vertical, 4)
+                        .padding(.horizontal, 4)
+                    }
+                }
+                Text("To select toolkits here, add them to the 'Tools' workspace first.")
+                    .scaledFont(size: 12)
+                    .foregroundStyle(theme.textTertiary)
+                    .padding(.leading, 4)
+            }
+        }
+    }
+
+    // MARK: - Skills Section
+
+    private var skillsSection: some View {
+        VStack(alignment: .leading, spacing: Spacing.sm) {
+            sectionHeader("Skills")
+            if isFetchingToolsAndFunctions {
+                fieldCard {
+                    HStack {
+                        ProgressView().controlSize(.small).tint(theme.brandPrimary)
+                        Text("Loading skills…").scaledFont(size: 13).foregroundStyle(theme.textTertiary)
+                    }
+                    .padding(Spacing.md)
+                }
+            } else if allActions.isEmpty {
+                fieldCard {
+                    Text("No skills available. Add skills in the Skills workspace first.")
+                        .scaledFont(size: 13)
+                        .foregroundStyle(theme.textTertiary)
+                        .padding(Spacing.md)
+                }
+            } else {
+                fieldCard {
+                    LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 0) {
+                        ForEach(allActions, id: \.id) { action in
+                            setCheckbox(action.name, id: action.id, selection: $selectedActionIds)
+                        }
+                    }
+                    .padding(.vertical, 4)
+                    .padding(.horizontal, 4)
+                }
+                Text("To select skills here, add them to the 'Skills' workspace first.")
+                    .scaledFont(size: 12)
+                    .foregroundStyle(theme.textTertiary)
+                    .padding(.leading, 4)
+            }
+        }
+    }
+
+    // MARK: - Filters Section
+
+    private var filtersSection: some View {
+        VStack(alignment: .leading, spacing: Spacing.sm) {
+            sectionHeader("Filters")
+            if isFetchingToolsAndFunctions {
+                fieldCard {
+                    HStack {
+                        ProgressView().controlSize(.small).tint(theme.brandPrimary)
+                        Text("Loading filters…").scaledFont(size: 13).foregroundStyle(theme.textTertiary)
+                    }
+                    .padding(Spacing.md)
+                }
+            } else if allFilters.isEmpty {
+                fieldCard {
+                    Text("No filters available.")
+                        .scaledFont(size: 13)
+                        .foregroundStyle(theme.textTertiary)
+                        .padding(Spacing.md)
+                }
+            } else {
+                fieldCard {
+                    LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 0) {
+                        ForEach(allFilters, id: \.id) { filter in
+                            setCheckbox(filter.name, id: filter.id, selection: $selectedFilterIds)
+                        }
+                    }
+                    .padding(.vertical, 4)
+                    .padding(.horizontal, 4)
+                }
+
+                // Default Filters — only shows filters that are currently selected above
+                let checkedFilters = allFilters.filter { selectedFilterIds.contains($0.id) }
+                if !checkedFilters.isEmpty {
+                    sectionHeader("Default Filters")
+                    fieldCard {
+                        LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 0) {
+                            ForEach(checkedFilters, id: \.id) { filter in
+                                setCheckbox(filter.name, id: filter.id, selection: $defaultFilterIds)
+                            }
+                        }
+                        .padding(.vertical, 4)
+                        .padding(.horizontal, 4)
+                    }
+                }
+            }
         }
     }
 
@@ -1140,6 +1307,37 @@ struct ModelEditorView: View {
         }
     }
 
+    // MARK: - Set-based Checkbox (for Tools, Skills, Filters)
+
+    @ViewBuilder
+    private func setCheckbox(_ label: String, id: String, selection: Binding<Set<String>>) -> some View {
+        let isSelected = selection.wrappedValue.contains(id)
+        Button {
+            if isSelected {
+                selection.wrappedValue.remove(id)
+            } else {
+                selection.wrappedValue.insert(id)
+            }
+            Haptics.play(.light)
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: isSelected ? "checkmark.square.fill" : "square")
+                    .scaledFont(size: 16)
+                    .foregroundStyle(isSelected ? theme.brandPrimary : theme.textTertiary)
+                Text(label)
+                    .scaledFont(size: 13)
+                    .foregroundStyle(isSelected ? theme.textPrimary : theme.textSecondary)
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 10)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
     // MARK: - Capability Checkbox
 
     @ViewBuilder
@@ -1259,10 +1457,16 @@ struct ModelEditorView: View {
 
         let hasWildcard = model.accessGrants.contains { $0.userId == "*" }
         localAccessGrants = model.accessGrants.filter { $0.userId != "*" }
+        // Tools, Skills, Filters
+        selectedToolIds = Set(model.toolIds)
+        selectedFilterIds = Set(model.filterIds)
+        defaultFilterIds = Set(model.defaultFilterIds)
+        selectedActionIds = Set(model.actionIds)
+
         isPrivate = !hasWildcard
         idManuallyEdited = true
 
-        logger.info("[Populate] Done. baseModelId='\(model.baseModelId ?? "none")' knowledgeItems=\(model.knowledgeItems.count) profileImageURL='\(model.profileImageURL ?? "none")'")
+        logger.info("[Populate] Done. baseModelId='\(model.baseModelId ?? "none")' knowledgeItems=\(model.knowledgeItems.count) toolIds=\(model.toolIds.count) filterIds=\(model.filterIds.count) actionIds=\(model.actionIds.count)")
     }
 
     // MARK: - Fetch Available Models
@@ -1286,6 +1490,39 @@ struct ModelEditorView: View {
             logger.error("[BaseModelPicker] Failed to fetch models: \(error.localizedDescription)")
         }
         isFetchingModels = false
+    }
+
+    // MARK: - Fetch Tools & Functions
+
+    private func fetchToolsAndFunctions() async {
+        guard let api = dependencies.apiClient else { return }
+        isFetchingToolsAndFunctions = true
+        logger.info("[ToolsFunctions] Fetching tools, skills, and functions…")
+        do {
+            // Fetch tools from /api/v1/tools/ (returns [[String: Any]])
+            let tools = try await api.getTools()
+            allTools = tools.compactMap { dict -> (id: String, name: String)? in
+                guard let id = dict["id"] as? String,
+                      let name = dict["name"] as? String else { return nil }
+                return (id: id, name: name)
+            }
+            logger.info("[ToolsFunctions] Fetched \(allTools.count) tools")
+
+            // Fetch filters from /api/v1/functions/
+            let functions = try await api.getFunctions()
+            allFilters = functions
+                .filter { $0.type == "filter" }
+                .map { (id: $0.id, name: $0.name) }
+            logger.info("[ToolsFunctions] Fetched \(allFilters.count) filters from functions")
+
+            // Fetch skills from /api/v1/skills/list (separate paginated endpoint)
+            let skills = try await api.getSkills()
+            allActions = skills.map { (id: $0.id, name: $0.name) }
+            logger.info("[ToolsFunctions] Fetched \(allActions.count) skills")
+        } catch {
+            logger.error("[ToolsFunctions] Failed to fetch: \(error.localizedDescription)")
+        }
+        isFetchingToolsAndFunctions = false
     }
 
     // MARK: - Handle Photo Selection
@@ -1394,6 +1631,11 @@ struct ModelEditorView: View {
         detail.advNumGpu = advNumGpu
         detail.advKeepAlive = advKeepAlive
         detail.customParams = customParams.filter { !$0.key.isEmpty }
+        // Tools, Skills, Filters
+        detail.toolIds = Array(selectedToolIds)
+        detail.filterIds = Array(selectedFilterIds)
+        detail.defaultFilterIds = Array(defaultFilterIds)
+        detail.actionIds = Array(selectedActionIds)
         return detail
     }
 
@@ -2216,5 +2458,294 @@ struct ModelAdvancedParamsSection: View {
         }
         .padding(.horizontal, Spacing.md)
         .padding(.vertical, 10)
+    }
+}
+
+// MARK: - ModelToolsAndCapabilitiesSection (extracted to prevent stack overflow)
+
+/// Tools, Skills, Filters, Capabilities, Default Features, and Builtin Tools
+/// are extracted into their own struct so they evaluate in a separate stack frame.
+struct ModelToolsAndCapabilitiesSection: View {
+    @Environment(\.theme) private var theme
+
+    // Tools, Skills, Filters
+    @Binding var selectedToolIds: Set<String>
+    @Binding var allTools: [(id: String, name: String)]
+    @Binding var isFetchingToolsAndFunctions: Bool
+    @Binding var selectedActionIds: Set<String>
+    @Binding var allActions: [(id: String, name: String)]
+    @Binding var selectedFilterIds: Set<String>
+    @Binding var defaultFilterIds: Set<String>
+    @Binding var allFilters: [(id: String, name: String)]
+
+    // Capabilities
+    @Binding var capVision: Bool
+    @Binding var capFileUpload: Bool
+    @Binding var capFileContext: Bool
+    @Binding var capWebSearch: Bool
+    @Binding var capImageGeneration: Bool
+    @Binding var capCodeInterpreter: Bool
+    @Binding var capUsage: Bool
+    @Binding var capCitations: Bool
+    @Binding var capStatusUpdates: Bool
+    @Binding var capBuiltinTools: Bool
+
+    // Default Features
+    @Binding var defaultWebSearch: Bool
+    @Binding var defaultImageGen: Bool
+    @Binding var defaultCodeInterpreter: Bool
+
+    // Builtin Tools
+    @Binding var builtinTime: Bool
+    @Binding var builtinMemory: Bool
+    @Binding var builtinChats: Bool
+    @Binding var builtinNotes: Bool
+    @Binding var builtinKnowledge: Bool
+    @Binding var builtinChannels: Bool
+    @Binding var builtinWebSearch: Bool
+    @Binding var builtinImageGen: Bool
+    @Binding var builtinCodeInterpreter: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Spacing.lg) {
+            toolsSectionView
+            skillsSectionView
+            filtersSectionView
+            capabilitiesSectionView
+            defaultFeaturesSectionView
+            builtinToolsSectionView
+        }
+    }
+
+    // MARK: - Tools
+
+    private var toolsSectionView: some View {
+        VStack(alignment: .leading, spacing: Spacing.sm) {
+            sectionHeader("Tools")
+            if isFetchingToolsAndFunctions {
+                fieldCard {
+                    HStack {
+                        ProgressView().controlSize(.small).tint(theme.brandPrimary)
+                        Text("Loading tools…").scaledFont(size: 13).foregroundStyle(theme.textTertiary)
+                    }
+                    .padding(Spacing.md)
+                }
+            } else if allTools.isEmpty {
+                fieldCard {
+                    Text("No tools available. Add tools in the Tools workspace first.")
+                        .scaledFont(size: 13).foregroundStyle(theme.textTertiary).padding(Spacing.md)
+                }
+            } else {
+                fieldCard {
+                    LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 0) {
+                        ForEach(allTools, id: \.id) { tool in
+                            setCheckbox(tool.name, id: tool.id, selection: $selectedToolIds)
+                        }
+                    }
+                    .padding(.vertical, 4).padding(.horizontal, 4)
+                }
+                Text("To select toolkits here, add them to the 'Tools' workspace first.")
+                    .scaledFont(size: 12).foregroundStyle(theme.textTertiary).padding(.leading, 4)
+            }
+        }
+    }
+
+    // MARK: - Skills
+
+    private var skillsSectionView: some View {
+        VStack(alignment: .leading, spacing: Spacing.sm) {
+            sectionHeader("Skills")
+            if isFetchingToolsAndFunctions {
+                fieldCard {
+                    HStack {
+                        ProgressView().controlSize(.small).tint(theme.brandPrimary)
+                        Text("Loading skills…").scaledFont(size: 13).foregroundStyle(theme.textTertiary)
+                    }
+                    .padding(Spacing.md)
+                }
+            } else if allActions.isEmpty {
+                fieldCard {
+                    Text("No skills available. Add skills in the Skills workspace first.")
+                        .scaledFont(size: 13).foregroundStyle(theme.textTertiary).padding(Spacing.md)
+                }
+            } else {
+                fieldCard {
+                    LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 0) {
+                        ForEach(allActions, id: \.id) { action in
+                            setCheckbox(action.name, id: action.id, selection: $selectedActionIds)
+                        }
+                    }
+                    .padding(.vertical, 4).padding(.horizontal, 4)
+                }
+                Text("To select skills here, add them to the 'Skills' workspace first.")
+                    .scaledFont(size: 12).foregroundStyle(theme.textTertiary).padding(.leading, 4)
+            }
+        }
+    }
+
+    // MARK: - Filters
+
+    private var filtersSectionView: some View {
+        VStack(alignment: .leading, spacing: Spacing.sm) {
+            sectionHeader("Filters")
+            if isFetchingToolsAndFunctions {
+                fieldCard {
+                    HStack {
+                        ProgressView().controlSize(.small).tint(theme.brandPrimary)
+                        Text("Loading filters…").scaledFont(size: 13).foregroundStyle(theme.textTertiary)
+                    }
+                    .padding(Spacing.md)
+                }
+            } else if allFilters.isEmpty {
+                fieldCard {
+                    Text("No filters available.")
+                        .scaledFont(size: 13).foregroundStyle(theme.textTertiary).padding(Spacing.md)
+                }
+            } else {
+                fieldCard {
+                    LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 0) {
+                        ForEach(allFilters, id: \.id) { filter in
+                            setCheckbox(filter.name, id: filter.id, selection: $selectedFilterIds)
+                        }
+                    }
+                    .padding(.vertical, 4).padding(.horizontal, 4)
+                }
+                let checkedFilters = allFilters.filter { selectedFilterIds.contains($0.id) }
+                if !checkedFilters.isEmpty {
+                    sectionHeader("Default Filters")
+                    fieldCard {
+                        LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 0) {
+                            ForEach(checkedFilters, id: \.id) { filter in
+                                setCheckbox(filter.name, id: filter.id, selection: $defaultFilterIds)
+                            }
+                        }
+                        .padding(.vertical, 4).padding(.horizontal, 4)
+                    }
+                }
+            }
+        }
+    }
+
+    // MARK: - Capabilities
+
+    private var capabilitiesSectionView: some View {
+        VStack(alignment: .leading, spacing: Spacing.sm) {
+            sectionHeader("Capabilities")
+            fieldCard {
+                LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 0) {
+                    capCheckbox("Vision", value: $capVision)
+                    capCheckbox("File Upload", value: $capFileUpload)
+                    capCheckbox("File Context", value: $capFileContext)
+                    capCheckbox("Web Search", value: $capWebSearch)
+                    capCheckbox("Image Generation", value: $capImageGeneration)
+                    capCheckbox("Code Interpreter", value: $capCodeInterpreter)
+                    capCheckbox("Usage", value: $capUsage)
+                    capCheckbox("Citations", value: $capCitations)
+                    capCheckbox("Status Updates", value: $capStatusUpdates)
+                    capCheckbox("Builtin Tools", value: $capBuiltinTools)
+                }
+                .padding(.vertical, 4).padding(.horizontal, 4)
+            }
+        }
+    }
+
+    // MARK: - Default Features
+
+    private var defaultFeaturesSectionView: some View {
+        VStack(alignment: .leading, spacing: Spacing.sm) {
+            sectionHeader("Default Features")
+            fieldCard {
+                HStack(spacing: 0) {
+                    capCheckbox("Web Search", value: $defaultWebSearch)
+                    capCheckbox("Image Generation", value: $defaultImageGen)
+                    capCheckbox("Code Interpreter", value: $defaultCodeInterpreter)
+                }
+                .padding(.vertical, 4).padding(.horizontal, 4)
+            }
+        }
+    }
+
+    // MARK: - Builtin Tools
+
+    private var builtinToolsSectionView: some View {
+        VStack(alignment: .leading, spacing: Spacing.sm) {
+            sectionHeader("Builtin Tools")
+            fieldCard {
+                LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 0) {
+                    capCheckbox("Time & Calculation", value: $builtinTime)
+                    capCheckbox("Memory", value: $builtinMemory)
+                    capCheckbox("Chat History", value: $builtinChats)
+                    capCheckbox("Notes", value: $builtinNotes)
+                    capCheckbox("Knowledge Base", value: $builtinKnowledge)
+                    capCheckbox("Channels", value: $builtinChannels)
+                    capCheckbox("Web Search", value: $builtinWebSearch)
+                    capCheckbox("Image Generation", value: $builtinImageGen)
+                    capCheckbox("Code Interpreter", value: $builtinCodeInterpreter)
+                }
+                .padding(.vertical, 4).padding(.horizontal, 4)
+            }
+        }
+    }
+
+    // MARK: - Helpers
+
+    @ViewBuilder
+    private func setCheckbox(_ label: String, id: String, selection: Binding<Set<String>>) -> some View {
+        let isSelected = selection.wrappedValue.contains(id)
+        Button {
+            if isSelected { selection.wrappedValue.remove(id) } else { selection.wrappedValue.insert(id) }
+            Haptics.play(.light)
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: isSelected ? "checkmark.square.fill" : "square")
+                    .scaledFont(size: 16)
+                    .foregroundStyle(isSelected ? theme.brandPrimary : theme.textTertiary)
+                Text(label).scaledFont(size: 13)
+                    .foregroundStyle(isSelected ? theme.textPrimary : theme.textSecondary)
+                    .lineLimit(2).fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(.horizontal, 8).padding(.vertical, 10)
+            .frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    @ViewBuilder
+    private func capCheckbox(_ label: String, value: Binding<Bool>) -> some View {
+        Button {
+            value.wrappedValue.toggle()
+            Haptics.play(.light)
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: value.wrappedValue ? "checkmark.square.fill" : "square")
+                    .scaledFont(size: 16)
+                    .foregroundStyle(value.wrappedValue ? theme.brandPrimary : theme.textTertiary)
+                Text(label).scaledFont(size: 13)
+                    .foregroundStyle(value.wrappedValue ? theme.textPrimary : theme.textSecondary)
+                    .lineLimit(2).fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(.horizontal, 8).padding(.vertical, 10)
+            .frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    @ViewBuilder
+    private func sectionHeader(_ title: String) -> some View {
+        Text(title.uppercased())
+            .scaledFont(size: 12, weight: .semibold)
+            .foregroundStyle(theme.textTertiary)
+            .padding(.leading, 4)
+    }
+
+    @ViewBuilder
+    private func fieldCard<Content: View>(@ViewBuilder content: () -> Content) -> some View {
+        content()
+            .background(theme.surfaceContainer.opacity(0.5))
+            .clipShape(RoundedRectangle(cornerRadius: CornerRadius.md, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: CornerRadius.md, style: .continuous)
+                    .stroke(theme.inputBorder.opacity(0.3), lineWidth: 1)
+            )
     }
 }

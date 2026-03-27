@@ -93,6 +93,7 @@ struct PasteableTextView: UIViewRepresentable {
             context.coordinator.parent.onSubmit?()
         }
         textView.sendOnReturn = sendOnReturn
+        textView.returnKeyType = sendOnReturn ? .send : .default
 
         // Placeholder
         textView.placeholderLabel.text = placeholder
@@ -117,6 +118,11 @@ struct PasteableTextView: UIViewRepresentable {
         textView.placeholderLabel.text = placeholder
         textView.placeholderLabel.font = placeholderFont ?? font
         textView.placeholderLabel.textColor = placeholderColor
+        let newReturnKeyType: UIReturnKeyType = sendOnReturn ? .send : .default
+        if textView.returnKeyType != newReturnKeyType {
+            textView.returnKeyType = newReturnKeyType
+            textView.reloadInputViews()
+        }
         textView.sendOnReturn = sendOnReturn
 
         // Re-assign closures so they always capture the latest parent state.

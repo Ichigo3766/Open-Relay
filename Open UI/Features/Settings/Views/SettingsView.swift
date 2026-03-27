@@ -471,6 +471,7 @@ struct ChatSettingsView: View {
     @AppStorage("titleGenerationEnabled") private var titleGenerationEnabled = true
     @AppStorage("suggestionsEnabled") private var suggestionsEnabled = true
     @AppStorage("temporaryChatDefault") private var temporaryChatDefault = false
+    @AppStorage("expandThinkingWhileStreaming") private var expandThinkingWhileStreaming = true
     @AppStorage("quickPills") private var quickPillsData: String = ""
     @State private var availableTools: [ToolItem] = []
     @State private var isLoadingTools = false
@@ -544,6 +545,15 @@ struct ChatSettingsView: View {
                 Text("Privacy")
             } footer: {
                 Text("Temporary chats are not saved to the server. You can still save a temporary chat manually.")
+            }
+
+            Section {
+                Toggle("Expand thinking while streaming", isOn: $expandThinkingWhileStreaming)
+                    .tint(theme.brandPrimary)
+            } header: {
+                Text("Thinking")
+            } footer: {
+                Text("When enabled, reasoning blocks expand automatically while the model is thinking and collapse once done. When disabled, they stay collapsed unless you tap to open them.")
             }
 
             Section {

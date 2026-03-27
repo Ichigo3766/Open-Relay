@@ -1,39 +1,131 @@
 import SwiftUI
 
-/// The main admin console view showing a list of all users with search,
-/// role badges, active indicators, and actions (edit, view chats, delete).
+// MARK: - Admin Console Tab
+
+enum AdminConsoleTab: String, CaseIterable {
+    case users = "Users"
+    case functions = "Functions"
+
+    var icon: String {
+        switch self {
+        case .users: return "person.2"
+        case .functions: return "function"
+        }
+    }
+}
+
+// MARK: - AdminConsoleView
+
+/// The main admin console view with a scrollable tab bar (Users, Functions).
 struct AdminConsoleView: View {
     @Environment(\.theme) private var theme
     @Environment(AppDependencyContainer.self) private var dependencies
     @Environment(AppRouter.self) private var router
+
+    @State private var selectedTab: AdminConsoleTab = .users
+
+    var body: some View {
+        VStack(spacing: 0) {
+            // Tab picker
+            tabBar
+                .padding(.top, Spacing.sm)
+                .padding(.bottom, Spacing.xs)
+
+            Divider()
+                .background(theme.inputBorder.opacity(0.3))
+
+            // Tab content
+            Group {
+                switch selectedTab {
+                case .users:
+                    AdminUsersTab()
+                case .functions:
+                    AdminFunctionsView()
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+        .background(theme.background)
+        .navigationTitle("Admin Console")
+        .navigationBarTitleDisplayMode(.large)
+    }
+
+    // MARK: - Tab Bar
+
+    private var tabBar: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                ForEach(AdminConsoleTab.allCases, id: \.self) { tab in
+                    Button {
+                        withAnimation(.easeInOut(duration: 0.18)) {
+                            selectedTab = tab
+                        }
+                        Haptics.play(.light)
+                    } label: {
+                        HStack(spacing: 6) {
+                            Image(systemName: tab.icon)
+                                .scaledFont(size: 13, weight: .medium)
+                            Text(tab.rawValue)
+                                .scaledFont(size: 14, weight: selectedTab == tab ? .semibold : .regular)
+                                .lineLimit(1)
+                                .fixedSize()
+                        }
+                        .foregroundStyle(selectedTab == tab ? theme.brandPrimary : theme.textTertiary)
+                        .padding(.vertical, 8)
+                        .padding(.horizontal, 14)
+                        .background(
+                            RoundedRectangle(cornerRadius: CornerRadius.md, style: .continuous)
+                                .fill(selectedTab == tab
+                                      ? theme.brandPrimary.opacity(0.12)
+                                      : theme.surfaceContainer.opacity(0.5))
+                        )
+                        .overlay(
+                            RoundedRectangle(cornerRadius: CornerRadius.md, style: .continuous)
+                                .strokeBorder(
+                                    selectedTab == tab ? theme.brandPrimary.opacity(0.3) : Color.clear,
+                                    lineWidth: 1
+                                )
+                        )
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(.horizontal, Spacing.md)
+            .padding(.vertical, Spacing.xs)
+        }
+    }
+}
+
+// MARK: - Admin Users Tab
+
+/// The original admin users list, extracted into its own view.
+struct AdminUsersTab: View {
+    @Environment(\.theme) private var theme
+    @Environment(AppDependencyContainer.self) private var dependencies
+    @Environment(AppRouter.self) private var router
     @State private var viewModel = AdminViewModel()
-    /// The current logged-in user's ID — used to prevent self-deletion/role-change.
+
     private var currentUserId: String? {
         dependencies.authViewModel.currentUser?.id
     }
+
     @State private var showEditSheet = false
     @State private var showChatsSheet = false
     @State private var showDeleteConfirmation = false
     @State private var showAddUserSheet = false
-    /// Role change confirmation state
     @State private var roleChangeUser: AdminUser?
     @State private var roleChangeTarget: User.UserRole?
 
     var body: some View {
         ScrollView {
             VStack(spacing: 0) {
-                // Search bar
                 searchBar
-
-                // Sort controls
                 sortControls
 
-                // Error banner
                 if let error = viewModel.errorMessage {
                     errorBanner(error)
                 }
 
-                // User count
                 if !viewModel.isLoading && !viewModel.users.isEmpty {
                     HStack {
                         Text("Users \(viewModel.userCount)")
@@ -46,7 +138,6 @@ struct AdminConsoleView: View {
                     .padding(.bottom, Spacing.xs)
                 }
 
-                // Content
                 if viewModel.isLoading && viewModel.users.isEmpty {
                     loadingState
                 } else if viewModel.users.isEmpty && !viewModel.isLoading {
@@ -56,9 +147,6 @@ struct AdminConsoleView: View {
                 }
             }
         }
-        .background(theme.background)
-        .navigationTitle("Admin Console")
-        .navigationBarTitleDisplayMode(.large)
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 Button {
@@ -85,12 +173,7 @@ struct AdminConsoleView: View {
                 viewModel: viewModel,
                 serverBaseURL: dependencies.apiClient?.baseURL ?? "",
                 onClone: { clonedConversation in
-                    // Dismiss the chats sheet first
                     showChatsSheet = false
-                    // Post notification to MainChatView to dismiss Settings
-                    // and navigate to the cloned chat. We can't use router.navigate()
-                    // here because AdminConsoleView is inside the Settings sheet's
-                    // own NavigationStack — the router push would be invisible.
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
                         NotificationCenter.default.post(name: .conversationListNeedsRefresh, object: nil)
                         NotificationCenter.default.post(
@@ -128,7 +211,6 @@ struct AdminConsoleView: View {
                 Text("Are you sure you want to permanently delete \(user.displayName) (\(user.email))? This action cannot be undone.")
             }
         }
-        // Role change confirmation dialog
         .confirmationDialog(
             "Change Role",
             isPresented: .init(
@@ -265,7 +347,6 @@ struct AdminConsoleView: View {
                         showDeleteConfirmation = true
                     },
                     onRoleTap: isSelf ? nil : {
-                        // Compute the next role and show a confirmation before applying
                         let nextRole: User.UserRole
                         switch user.role {
                         case .pending: nextRole = .user
@@ -285,7 +366,6 @@ struct AdminConsoleView: View {
                 }
             }
 
-            // Load more trigger
             if viewModel.hasMorePages {
                 ProgressView()
                     .controlSize(.small)
@@ -364,7 +444,6 @@ struct AdminUserRow: View {
 
     var body: some View {
         HStack(spacing: Spacing.md) {
-            // Avatar with active indicator
             ZStack(alignment: .bottomTrailing) {
                 UserAvatar(
                     size: 40,
@@ -384,7 +463,6 @@ struct AdminUserRow: View {
                 }
             }
 
-            // Info
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: Spacing.xs) {
                     Text(user.displayName)
@@ -418,7 +496,6 @@ struct AdminUserRow: View {
 
             Spacer()
 
-            // Role badge (tappable only if not self)
             if let onRoleTap {
                 Button(action: onRoleTap) {
                     RoleBadge(role: user.role)
@@ -428,7 +505,6 @@ struct AdminUserRow: View {
                 RoleBadge(role: user.role)
             }
 
-            // Action buttons — hide delete and edit-role for self
             HStack(spacing: 2) {
                 adminActionButton(icon: "bubble.left.and.text.bubble.right", action: onViewChats)
                 adminActionButton(icon: "pencil", action: onEdit)
@@ -444,13 +520,10 @@ struct AdminUserRow: View {
 
     private var avatarURL: URL? {
         guard let urlString = user.profileImageURL, !urlString.isEmpty else { return nil }
-        // External URLs (e.g. Google OAuth avatars) work directly
         if urlString.hasPrefix("http") {
             return URL(string: urlString)
         }
-        // For server-relative paths, use the profile image endpoint which
-        // doesn't require auth headers (returns the image directly)
-        if urlString == "/user.png" { return nil } // Default — use initials instead
+        if urlString == "/user.png" { return nil }
         return URL(string: "\(serverURL)/api/v1/users/\(user.id)/profile/image")
     }
 

@@ -84,7 +84,6 @@ struct UserAvatar: View {
 
     var body: some View {
         if let imageURL {
-            let _ = print("[UserAvatar] Loading image for '\(name ?? "?")' from: \(imageURL.absoluteString.prefix(100)), authToken: \(authToken != nil ? "YES" : "NO")")
             CachedAsyncImage(url: imageURL, authToken: authToken) { image in
                 image
                     .resizable()
@@ -99,7 +98,6 @@ struct UserAvatar: View {
             }
             .accessibilityLabel(Text(name ?? String(localized: "User")))
         } else {
-            let _ = print("[UserAvatar] No imageURL for '\(name ?? "?")' — showing initials")
             initialsView
         }
     }
