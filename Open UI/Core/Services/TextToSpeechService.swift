@@ -88,13 +88,21 @@ final class TextToSpeechService: NSObject {
     // Server TTS state
     private var serverQueue: [String] = []
     private var isRunningServerQueue = false
-    private var serverAudioPlayer: AVAudioPlayer?
 
-    // Server TTS prefetch pipeline
+    // Server TTS gapless pipeline (AVQueuePlayer-based)
+    /// Gapless player — items are enqueued as audio data arrives from the server.
+    private var queuePlayer: AVQueuePlayer?
+    /// KVO observation for end-of-queue detection.
+    private var queuePlayerObservation: NSKeyValueObservation?
+    /// Tracks how many items are currently queued or playing.
+    private var queuedItemCount: Int = 0
+    /// Tracks how many items have finished playing.
+    private var finishedItemCount: Int = 0
+
     /// Max number of audio chunks to fetch ahead of the currently playing chunk.
     private let serverPrefetchCount = 2
-    /// Buffer of pre-fetched audio players ready to play (FIFO).
-    private var prefetchedPlayers: [AVAudioPlayer] = []
+    /// Buffer of pre-fetched AVPlayerItem instances ready to enqueue (FIFO).
+    private var prefetchedItems: [AVPlayerItem] = []
     /// Background task that keeps the prefetch buffer filled.
     private var prefetchTask: Task<Void, Never>?
 
@@ -219,18 +227,8 @@ final class TextToSpeechService: NSObject {
         marvisService.stop()
         isUsingMarvis = false
 
-        // Stop server TTS — cancel prefetch and clear all buffers
-        prefetchTask?.cancel()
-        prefetchTask = nil
-        for player in prefetchedPlayers {
-            player.stop()
-        }
-        prefetchedPlayers.removeAll()
-        serverAudioPlayer?.stop()
-        serverAudioPlayer = nil
-        serverQueue.removeAll()
-        isRunningServerQueue = false
-        isUsingServer = false
+        // Stop server TTS — cancel prefetch and tear down queue player
+        stopServerPlayback()
 
         // Stop system TTS
         systemQueue.removeAll()
@@ -245,6 +243,23 @@ final class TextToSpeechService: NSObject {
 
         // Deactivate audio session to release hardware resources
         deactivateAudioSession()
+    }
+
+    /// Tears down the server TTS pipeline cleanly.
+    private func stopServerPlayback() {
+        prefetchTask?.cancel()
+        prefetchTask = nil
+        prefetchedItems.removeAll()
+        serverQueue.removeAll()
+        isRunningServerQueue = false
+        isUsingServer = false
+        queuedItemCount = 0
+        finishedItemCount = 0
+        queuePlayerObservation?.invalidate()
+        queuePlayerObservation = nil
+        queuePlayer?.pause()
+        queuePlayer?.removeAllItems()
+        queuePlayer = nil
     }
 
     func pause() {
@@ -312,15 +327,7 @@ final class TextToSpeechService: NSObject {
         marvisService.stop()
         isUsingMarvis = false
 
-        prefetchTask?.cancel()
-        prefetchTask = nil
-        prefetchedPlayers.forEach { $0.stop() }
-        prefetchedPlayers.removeAll()
-        serverAudioPlayer?.stop()
-        serverAudioPlayer = nil
-        serverQueue.removeAll()
-        isRunningServerQueue = false
-        isUsingServer = false
+        stopServerPlayback()
 
         systemQueue.removeAll()
         isSpeakingSystemChunk = false
@@ -433,11 +440,15 @@ final class TextToSpeechService: NSObject {
         }
     }
 
-    /// Starts the two-stage server TTS pipeline:
-    /// - **Producer** (prefetchTask): fetches audio from the server up to `serverPrefetchCount`
-    ///   chunks ahead and stores ready-to-play `AVAudioPlayer` instances in `prefetchedPlayers`.
-    /// - **Consumer** (this task): plays from `prefetchedPlayers`, popping the front player
-    ///   as soon as the previous one finishes, giving seamless gapless playback.
+    /// Starts the server TTS pipeline using AVQueuePlayer for gapless playback.
+    ///
+    /// **Producer task** fetches audio from the server and converts each response
+    /// into an `AVPlayerItem` backed by an in-memory `AVAsset`. Items are enqueued
+    /// into `AVQueuePlayer` as they arrive so playback starts with the first chunk
+    /// and continues seamlessly into subsequent chunks without any polling gaps.
+    ///
+    /// **Completion** is detected by observing `AVQueuePlayer.currentItem` — when
+    /// it goes nil and the producer is done, we know all audio has played.
     private func startServerPipeline() {
         guard let apiClient else {
             logger.error("Server TTS: no API client, falling back to system")
@@ -449,131 +460,144 @@ final class TextToSpeechService: NSObject {
             return
         }
 
-        // Resolve the effective voice: user override → server config default → nil
-        // When nil, the API falls back to whatever its own built-in default is,
-        // which may NOT match the admin-configured voice. By explicitly sending
-        // the server-configured voice we honour the admin's choice.
         let voiceId = serverVoiceId ?? serverDefaultVoice
         let speakerOverride = speakerOverrideEnabled
 
-        // --- Producer: fill prefetch buffer up to serverPrefetchCount ahead ---
+        // Configure audio session before starting the player
+        let session = AVAudioSession.sharedInstance()
+        if speakerOverride {
+            try? session.setCategory(.playAndRecord, mode: .default,
+                                     options: [.defaultToSpeaker, .allowBluetoothA2DP])
+            try? session.setActive(true)
+            try? session.overrideOutputAudioPort(.speaker)
+        } else {
+            try? session.setCategory(.playback, mode: .default)
+            try? session.setActive(true)
+        }
+
+        // Create a fresh AVQueuePlayer for this playback session
+        let player = AVQueuePlayer()
+        player.volume = 1.0
+        queuePlayer = player
+        queuedItemCount = 0
+        finishedItemCount = 0
+
+        // Observe currentItem going nil (queue exhausted) to detect end-of-playback
+        queuePlayerObservation = player.observe(\.currentItem, options: [.new]) { [weak self] player, _ in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                // currentItem == nil means the queue is empty and playback finished
+                guard player.currentItem == nil else { return }
+                // Only fire completion if the producer is done AND we actually played something
+                guard !self.isRunningServerQueue else { return }
+                self.handleServerPlaybackComplete()
+            }
+        }
+
+        // Register for per-item end notifications so we can track finished count
+        NotificationCenter.default.addObserver(
+            forName: AVPlayerItem.didPlayToEndTimeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                self.finishedItemCount += 1
+                // If producer is done and all enqueued items finished, complete
+                if !self.isRunningServerQueue && self.finishedItemCount >= self.queuedItemCount {
+                    self.handleServerPlaybackComplete()
+                }
+            }
+        }
+
+        // Producer: fetch audio chunks and enqueue as AVPlayerItems
         prefetchTask = Task { [weak self] in
             guard let self else { return }
+            var producedAtLeastOne = false
+
             while !Task.isCancelled {
-                // Pull next text chunk from the queue (must happen on MainActor)
                 let chunk: String? = await MainActor.run {
                     guard !self.serverQueue.isEmpty else { return nil }
                     return self.serverQueue.removeFirst()
                 }
 
                 guard let text = chunk else {
-                    // Queue empty — wait briefly for more chunks (streaming may add them)
+                    // Queue empty — wait briefly for streaming to add more
                     try? await Task.sleep(for: .milliseconds(80))
                     let stillEmpty = await MainActor.run { self.serverQueue.isEmpty }
                     if stillEmpty { break }
                     continue
                 }
 
-                // Throttle: don't get too far ahead of the consumer
+                // Throttle: don't fetch too far ahead
                 while !Task.isCancelled {
-                    let bufferSize = await MainActor.run { self.prefetchedPlayers.count }
-                    if bufferSize < self.serverPrefetchCount { break }
+                    let ahead = await MainActor.run { self.queuedItemCount - self.finishedItemCount }
+                    if ahead < self.serverPrefetchCount { break }
                     try? await Task.sleep(for: .milliseconds(50))
                 }
                 guard !Task.isCancelled else { break }
 
                 do {
-                    let (audioData, _) = try await apiClient.generateSpeech(
+                    let (audioData, contentType) = try await apiClient.generateSpeech(
                         text: text,
                         voice: voiceId
                     )
-                    let player = try AVAudioPlayer(data: audioData)
-                    player.prepareToPlay()
-                    // Deposit into buffer on MainActor
+                    // Write audio data to a temp file so AVPlayerItem can load it via URL.
+                    // AVPlayerItem has no in-memory data initialiser; a file URL is required.
+                    let ext = audioExtension(for: contentType)
+                    let tmpURL = FileManager.default.temporaryDirectory
+                        .appendingPathComponent(UUID().uuidString)
+                        .appendingPathExtension(ext)
+                    try audioData.write(to: tmpURL)
+
                     await MainActor.run {
-                        if !Task.isCancelled {
-                            self.prefetchedPlayers.append(player)
+                        guard !Task.isCancelled, let player = self.queuePlayer else {
+                            try? FileManager.default.removeItem(at: tmpURL)
+                            return
+                        }
+                        let item = AVPlayerItem(url: tmpURL)
+                        player.insert(item, after: nil)
+                        self.queuedItemCount += 1
+                        producedAtLeastOne = true
+                        // Start playing as soon as the first item is enqueued
+                        if player.timeControlStatus == .paused || player.timeControlStatus == .waitingToPlayAtSpecifiedRate {
+                            player.play()
                         }
                     }
                 } catch {
                     await MainActor.run {
-                        self.logger.error("Server TTS prefetch failed: \(error.localizedDescription)")
+                        self.logger.error("Server TTS fetch failed: \(error.localizedDescription)")
                     }
-                    // On error skip this chunk and continue
+                }
+            }
+
+            // Producer done — mark queue as no longer running
+            await MainActor.run {
+                self.isRunningServerQueue = false
+                // If nothing was produced (all chunks errored), complete immediately
+                let produced = producedAtLeastOne
+                if !produced {
+                    self.handleServerPlaybackComplete()
                 }
             }
         }
+    }
 
-        // --- Consumer: play from prefetch buffer continuously ---
-        Task { [weak self] in
-            guard let self else { return }
-
-            // Configure audio session once before starting playback
-            let session = AVAudioSession.sharedInstance()
-            if speakerOverride {
-                try? session.setCategory(.playAndRecord, mode: .voiceChat,
-                                         options: [.defaultToSpeaker, .allowBluetoothA2DP])
-                try? session.setActive(true)
-                try? session.overrideOutputAudioPort(.speaker)
-            } else {
-                try? session.setCategory(.playback, mode: .default)
-                try? session.setActive(true)
-            }
-
-            var playedAtLeastOne = false
-
-            // Keep playing until the buffer is empty AND the producer is done
-            while true {
-                // Pop next player from front of buffer
-                let player: AVAudioPlayer? = await MainActor.run {
-                    guard !self.prefetchedPlayers.isEmpty else { return nil }
-                    return self.prefetchedPlayers.removeFirst()
-                }
-
-                if let player {
-                    playedAtLeastOne = true
-                    self.serverAudioPlayer = player
-                    player.play()
-                    while player.isPlaying {
-                        try? await Task.sleep(for: .milliseconds(30))
-                    }
-                    // Release finished player immediately to free memory
-                    player.stop()
-                    await MainActor.run { self.serverAudioPlayer = nil }
-                } else {
-                    // Buffer empty — check if producer is still running
-                    let producerDone = await MainActor.run {
-                        self.prefetchTask?.isCancelled ?? true
-                    }
-                    let queueEmpty = await MainActor.run { self.serverQueue.isEmpty }
-
-                    if producerDone || queueEmpty {
-                        // Give producer a brief moment to deposit last chunk
-                        try? await Task.sleep(for: .milliseconds(120))
-                        let stillEmpty = await MainActor.run { self.prefetchedPlayers.isEmpty }
-                        if stillEmpty { break }
-                    } else {
-                        // Producer still working — wait for next chunk
-                        try? await Task.sleep(for: .milliseconds(30))
-                    }
-                }
-            }
-
-            // All chunks played (or stop() was called)
-            await MainActor.run {
-                self.prefetchTask?.cancel()
-                self.prefetchTask = nil
-                self.serverAudioPlayer = nil
-                self.isRunningServerQueue = false
-                self.isUsingServer = false
-
-                if !self.isStreamingTTS {
-                    self.state = .idle
-                    self.deactivateAudioSession()
-                    if playedAtLeastOne {
-                        self.onComplete?()
-                    }
-                }
+    /// Called when AVQueuePlayer finishes playing all items.
+    private func handleServerPlaybackComplete() {
+        // Remove the per-item observer
+        NotificationCenter.default.removeObserver(
+            self,
+            name: AVPlayerItem.didPlayToEndTimeNotification,
+            object: nil
+        )
+        let hadItems = queuedItemCount > 0
+        stopServerPlayback()
+        if !isStreamingTTS {
+            state = .idle
+            deactivateAudioSession()
+            if hadItems {
+                onComplete?()
             }
         }
     }
@@ -638,6 +662,19 @@ final class TextToSpeechService: NSObject {
         if systemQueue.isEmpty { onStart?() }
 
         synthesizer.speak(utterance)
+    }
+
+    // MARK: - Audio Helpers
+
+    /// Maps a Content-Type header value to the corresponding audio file extension.
+    /// Used when writing server TTS audio to a temp file for `AVPlayerItem(url:)`.
+    private func audioExtension(for contentType: String) -> String {
+        let ct = contentType.lowercased()
+        if ct.contains("wav")  { return "wav"  }
+        if ct.contains("aac")  { return "aac"  }
+        if ct.contains("ogg") || ct.contains("opus") { return "ogg" }
+        if ct.contains("flac") { return "flac" }
+        return "mp3"   // MP3 is the most common TTS backend output format
     }
 
     // MARK: - Audio Session Management

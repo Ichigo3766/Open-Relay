@@ -8,6 +8,7 @@ struct VoiceCallView: View {
     @Environment(AppDependencyContainer.self) private var dependencies
     @Environment(\.theme) private var theme
     @Environment(\.dismiss) private var dismiss
+    @Environment(AppRouter.self) private var router
 
     /// Whether to start a new conversation for this call.
     var startNewConversation: Bool = false
@@ -134,10 +135,24 @@ struct VoiceCallView: View {
 
             Spacer()
 
-            // Minimal end call
+            // Minimize button — dismisses sheet, keeps call running
+            Button {
+                router.minimizeVoiceCall()
+                dismiss()
+            } label: {
+                Image(systemName: "chevron.down")
+                    .scaledFont(size: 14, weight: .bold)
+                    .foregroundStyle(.white.opacity(0.6))
+                    .frame(width: 32, height: 32)
+                    .background(.white.opacity(0.1))
+                    .clipShape(Circle())
+            }
+
+            // End call button
             Button {
                 Task {
                     await viewModel.endCall()
+                    router.dismissVoiceCall()
                     dismiss()
                 }
             } label: {

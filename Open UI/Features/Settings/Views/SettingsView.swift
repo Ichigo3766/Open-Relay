@@ -768,6 +768,8 @@ struct TTSSettingsView: View {
                     Picker("Voice", selection: $marvisVoice) {
                         Text("Conversational A").tag("conversationalA")
                         Text("Conversational B").tag("conversationalB")
+                        Text("Conversational DE 🇩🇪").tag("conversationalDE")
+                        Text("Conversational FR 🇫🇷").tag("conversationalFR")
                     }
                     .onChange(of: marvisVoice) { _, _ in
                         syncMarvisConfig()

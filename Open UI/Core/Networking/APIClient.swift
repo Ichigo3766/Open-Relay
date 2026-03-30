@@ -1417,11 +1417,6 @@ final class APIClient: @unchecked Sendable {
     func generateSpeech(text: String, voice: String? = nil) async throws -> (Data, String) {
         var body: [String: Any] = ["input": text]
         if let voice { body["voice"] = voice }
-        // Request WAV format to eliminate MP3 encoder-delay artifacts that cause
-        // audible noise at the start of each chunk. WAV has zero codec padding,
-        // so AVAudioPlayer plays it cleanly from the first sample.
-        body["response_format"] = "wav"
-
         let bodyData = try JSONSerialization.data(withJSONObject: body)
 
         // Log the exact request body being sent
@@ -1437,8 +1432,6 @@ final class APIClient: @unchecked Sendable {
             body: bodyData
         )
         let contentType = response.value(forHTTPHeaderField: "Content-Type") ?? "audio/mpeg"
-
-        logger.debug("🔊 [TTS] Response: \(contentType), \(data.count) bytes")
 
         return (data, contentType)
     }

@@ -131,18 +131,19 @@ final class StorageManager: @unchecked Sendable {
             var totalFreed: Int64 = 0
 
             // 1. Delete all Hub blob cache dirs (models--*)
-            totalFreed += self.cleanupHubCache()
+            totalFreed += await self.cleanupHubCache()
 
             // 2. Delete legacy Parakeet STT model (replaced by Qwen3 ASR)
-            totalFreed += self.deleteModelDirs(patterns: ["parakeet-tdt"])
+            totalFreed += await self.deleteModelDirs(patterns: ["parakeet-tdt"])
 
             // 3. Delete legacy Moshi model files
-            totalFreed += self.deleteModelDirs(patterns: ["moshiko", "moshi"])
+            totalFreed += await self.deleteModelDirs(patterns: ["moshiko", "moshi"])
 
+            let freedSnapshot = totalFreed
             await MainActor.run {
                 UserDefaults.standard.set(true, forKey: migrationKey)
-                if totalFreed > 0 {
-                    self.logger.info("Hub cache migration freed \(ByteCountFormatter.string(fromByteCount: totalFreed, countStyle: .file))")
+                if freedSnapshot > 0 {
+                    self.logger.info("Hub cache migration freed \(ByteCountFormatter.string(fromByteCount: freedSnapshot, countStyle: .file))")
                 } else {
                     self.logger.info("Hub cache migration: nothing to clean")
                 }

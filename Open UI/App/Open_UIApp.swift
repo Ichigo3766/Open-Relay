@@ -494,6 +494,32 @@ struct RootView: View {
                 MainChatView()
             }
         }
+        .overlay(alignment: .topTrailing) {
+            // Floating pill shown when voice call is minimized.
+            // Compact 56×56 square anchored top-right — no Spacer/drag so
+            // the overlay only intercepts touches directly on the pill itself.
+            if router.isVoiceCallMinimized, let vm = router.voiceCallViewModel {
+                VoiceCallPillView(
+                    viewModel: vm,
+                    onExpand: {
+                        withAnimation(.spring(response: 0.4, dampingFraction: 0.8)) {
+                            router.expandVoiceCall()
+                        }
+                    },
+                    onEndCall: {
+                        Task {
+                            await vm.endCall()
+                            withAnimation(.spring(response: 0.4, dampingFraction: 0.8)) {
+                                router.dismissVoiceCall()
+                            }
+                        }
+                    }
+                )
+                .padding(.top, 56)
+                .padding(.trailing, 12)
+                .animation(.spring(response: 0.4, dampingFraction: 0.8), value: router.isVoiceCallMinimized)
+            }
+        }
         .fullScreenCover(isPresented: $showOnboarding) {
                 OnboardingView(
                     userName: viewModel.currentUser?.displayName ?? "there"

@@ -21,22 +21,26 @@ enum TTSTextPreprocessor {
         // 2. Remove inline code (`...`)
         result = removeInlineCode(result)
 
-        // 3. Remove tool call patterns
+        // 3. Remove math/LaTeX expressions ($$...$$ and $...$)
+        result = removeMathExpressions(result)
+
+        // 4. Remove tool call patterns
         result = removeToolCalls(result)
 
-        // 4. Remove HTML tags (tool call details blocks, etc.)
+        // 5. Remove HTML tags (tool call details blocks, etc.)
         result = removeHTMLTags(result)
 
-        // 5. Strip markdown formatting
+        // 6. Strip markdown formatting — headers become sentence boundaries,
+        //    tables are dropped, abbreviations are expanded for natural pauses
         result = stripMarkdown(result)
 
-        // 6. Remove URLs
+        // 7. Remove URLs
         result = removeURLs(result)
 
-        // 7. Remove emoji (they sound terrible when read aloud)
+        // 8. Remove emoji (they sound terrible when read aloud)
         result = removeEmoji(result)
 
-        // 8. Clean up whitespace
+        // 9. Clean up whitespace
         result = cleanWhitespace(result)
 
         return result
@@ -152,7 +156,8 @@ enum TTSTextPreprocessor {
     /// Finds the character offset of the end of the last complete sentence.
     /// A sentence ends at `.`, `!`, `?`, or `:` followed by a space or end of string.
     private static func findLastSentenceEnd(in text: String) -> Int {
-        let terminators: Set<Character> = [".", "!", "?"]
+        // Includes ':' so "Here are three tips:" creates a pause boundary
+        let terminators: Set<Character> = [".", "!", "?", ":"]
         var lastEnd = 0
 
         for (i, char) in text.enumerated() {
@@ -215,14 +220,41 @@ enum TTSTextPreprocessor {
     static func stripMarkdown(_ text: String) -> String {
         var result = text
 
-        // Remove headers (## Header)
-        result = result.replacingOccurrences(
-            of: "^#{1,6}\\s+",
-            with: "",
-            options: .regularExpression
-        )
+        // --- Headers → standalone sentences ---
+        // Use regexReplace so (?m) enables multiline ^ anchor matching.
+        // Append a period so the header becomes a proper sentence boundary that
+        // NLTokenizer will split on — prevents it from running into the next paragraph.
+        // Only add period if the header doesn't already end with punctuation.
+        result = regexReplace(result, pattern: "(?m)^#{1,6}\\s+(.+?)([.!?])?\\s*$") { match in
+            let content = match.groups[0]
+            let existingPunct = match.groups[1]
+            return existingPunct.isEmpty ? "\(content)." : "\(content)\(existingPunct)"
+        }
 
-        // Remove bold (**text** or __text__)
+        // --- Remove markdown tables ---
+        // Table rows: lines starting and ending with | e.g. "| col1 | col2 |"
+        // Table separator lines: e.g. "|---|---|" or "| :--- | ---: |"
+        result = regexReplace(result, pattern: "(?m)^\\|.*\\|\\s*$", with: "")
+
+        // --- Remove task list checkboxes ---
+        // "- [ ] Item" or "- [x] Item" → "Item."
+        result = regexReplace(result, pattern: "(?m)^[\\-*+]\\s+\\[[ xX]\\]\\s+(.+)", with: "$1.")
+
+        // --- Standalone bold lines acting as section headings → sentence boundary ---
+        // e.g. "**Prologue: The Shattered Pact**" or "**Title: ...**  " (with trailing spaces)
+        // Must come BEFORE generic bold removal so we catch full-line bold patterns first.
+        result = regexReplace(result, pattern: "(?m)^\\*\\*(.+?)([.!?])?\\*\\*\\s*$") { match in
+            let content = match.groups[0]
+            let existingPunct = match.groups[1]
+            return existingPunct.isEmpty ? "\(content)." : "\(content)\(existingPunct)"
+        }
+        result = regexReplace(result, pattern: "(?m)^__(.+?)([.!?])?__\\s*$") { match in
+            let content = match.groups[0]
+            let existingPunct = match.groups[1]
+            return existingPunct.isEmpty ? "\(content)." : "\(content)\(existingPunct)"
+        }
+
+        // --- Bold (**text** or __text__) — inline bold within paragraphs ---
         result = result.replacingOccurrences(
             of: "\\*\\*([^*]+)\\*\\*",
             with: "$1",
@@ -234,7 +266,7 @@ enum TTSTextPreprocessor {
             options: .regularExpression
         )
 
-        // Remove italic (*text* or _text_) — careful not to match ** or __
+        // --- Italic (*text* or _text_) — careful not to match ** or __ ---
         result = result.replacingOccurrences(
             of: "(?<!\\*)\\*([^*]+)\\*(?!\\*)",
             with: "$1",
@@ -246,46 +278,50 @@ enum TTSTextPreprocessor {
             options: .regularExpression
         )
 
-        // Remove strikethrough (~~text~~)
+        // --- Strikethrough (~~text~~) ---
         result = result.replacingOccurrences(
             of: "~~([^~]+)~~",
             with: "$1",
             options: .regularExpression
         )
 
-        // Remove links [text](url) — keep the text
+        // --- Links [text](url) — keep the text ---
         result = result.replacingOccurrences(
             of: "\\[([^\\]]+)\\]\\([^)]+\\)",
             with: "$1",
             options: .regularExpression
         )
 
-        // Remove images ![alt](url)
+        // --- Images ![alt](url) ---
         result = result.replacingOccurrences(
             of: "!\\[[^\\]]*\\]\\([^)]+\\)",
             with: "",
             options: .regularExpression
         )
 
-        // Remove blockquotes (> text) — multiline-aware
+        // --- Blockquotes (> text) ---
         result = regexReplace(result, pattern: "(?m)^>\\s*", with: "")
 
-        // Convert bullet points into standalone sentences:
-        // Add a period before removing the marker so each item becomes a sentence.
+        // --- Bullet points → standalone sentences ---
         result = regexReplace(result, pattern: "(?m)^[\\-*+]\\s+(.+)", with: "$1.")
 
-        // Convert numbered lists into standalone sentences
+        // --- Numbered lists → standalone sentences ---
         result = regexReplace(result, pattern: "(?m)^\\d+\\.\\s+(.+)", with: "$1.")
 
-        // Remove horizontal rules (---, ***, ___)
-        result = regexReplace(result, pattern: "(?m)^[\\-*_]{3,}$", with: "")
+        // --- Horizontal rules (---, ***, ___) ---
+        result = regexReplace(result, pattern: "(?m)^[\\-*_]{3,}\\s*$", with: "")
 
-        // Remove citation references [1], [2] etc.
+        // --- Citation references [1], [2], [^1] etc. ---
         result = result.replacingOccurrences(
-            of: "\\[\\d+\\]",
+            of: "\\[\\^?\\d+\\]",
             with: "",
             options: .regularExpression
         )
+
+        // --- Common abbreviation expansion for more natural pauses ---
+        // Replace BEFORE NLTokenizer sees the text so tokenizer doesn't
+        // accidentally split "e.g." into two sentences.
+        result = expandAbbreviations(result)
 
         return result
     }
@@ -308,6 +344,22 @@ enum TTSTextPreprocessor {
             with: "",
             options: .regularExpression
         )
+    }
+
+    /// Removes LaTeX/math expressions that would sound unnatural when read aloud.
+    /// Handles both display math ($$...$$) and inline math ($...$).
+    static func removeMathExpressions(_ text: String) -> String {
+        var result = text
+        // Display math blocks $$...$$
+        result = regexReplace(result, pattern: "(?s)\\$\\$.*?\\$\\$", with: "")
+        // Inline math $...$ — requires non-space first char to avoid matching
+        // currency like "$5.00" (which starts with a digit, not a letter/symbol)
+        result = result.replacingOccurrences(
+            of: "\\$(?=[^\\s\\d])(?:[^$\n]+?)\\$",
+            with: "",
+            options: .regularExpression
+        )
+        return result
     }
 
     /// Removes tool call patterns and function call syntax.
@@ -377,6 +429,56 @@ enum TTSTextPreprocessor {
         })
     }
 
+    // MARK: - Abbreviation Expansion
+
+    /// Expands common abbreviations into spoken equivalents so NLTokenizer
+    /// doesn't split them into false sentence boundaries and TTS sounds natural.
+    private static func expandAbbreviations(_ text: String) -> String {
+        // Ordered by length (longest first) to avoid partial substitution
+        let replacements: [(pattern: String, replacement: String)] = [
+            // Latin abbreviations
+            ("\\be\\.g\\.",      "for example"),
+            ("\\bi\\.e\\.",      "that is"),
+            ("\\bviz\\.",        "namely"),
+            ("\\bcf\\.",         "compare"),
+            ("\\bib\\.",         "in the same place"),
+            ("\\bop\\. cit\\.",  "in the work cited"),
+            // Common English abbreviations with periods
+            ("\\betc\\.",        "and so on"),
+            ("\\bvs\\.",         "versus"),
+            ("\\bapprox\\.",     "approximately"),
+            ("\\bmax\\.",        "maximum"),
+            ("\\bmin\\.",        "minimum"),
+            ("\\bno\\.",         "number"),
+            ("\\bNov\\.",        "November"),
+            ("\\bDec\\.",        "December"),
+            ("\\bJan\\.",        "January"),
+            ("\\bFeb\\.",        "February"),
+            ("\\bMar\\.",        "March"),
+            ("\\bApr\\.",        "April"),
+            ("\\bAug\\.",        "August"),
+            ("\\bSep\\.",        "September"),
+            ("\\bOct\\.",        "October"),
+            // Honorifics — replace period so tokenizer doesn't split at "Dr."
+            ("\\bDr\\.",   "Doctor"),
+            ("\\bMr\\.",   "Mister"),
+            ("\\bMs\\.",   "Ms"),
+            ("\\bMrs\\.",  "Missus"),
+            ("\\bProf\\.", "Professor"),
+            ("\\bSt\\.",   "Saint"),
+        ]
+
+        var result = text
+        for (pattern, replacement) in replacements {
+            result = result.replacingOccurrences(
+                of: pattern,
+                with: replacement,
+                options: [.regularExpression, .caseInsensitive]
+            )
+        }
+        return result
+    }
+
     // MARK: - Whitespace Cleaning
 
     /// Cleans up excessive whitespace while preserving sentence boundaries.
@@ -387,7 +489,7 @@ enum TTSTextPreprocessor {
 
         // Double newlines = paragraph break → sentence boundary
         // Insert a period only if the line doesn't already end with punctuation
-        result = regexReplace(result, pattern: "([^.!?:;\\n])\\n{2,}", with: "$1. ")
+        result = regexReplace(result, pattern: "([^.!?\\n])\\n{2,}", with: "$1. ")
 
         // Lines ending with punctuation + double newline → just add space
         result = result.replacingOccurrences(
@@ -482,10 +584,48 @@ enum TTSTextPreprocessor {
     }
 
     /// Helper that uses NSRegularExpression for patterns needing multiline/dotAll flags.
-    private static func regexReplace(_ text: String, pattern: String, with replacement: String) -> String {
+    static func regexReplace(_ text: String, pattern: String, with replacement: String) -> String {
         guard let regex = try? NSRegularExpression(pattern: pattern) else { return text }
         let range = NSRange(text.startIndex..., in: text)
         return regex.stringByReplacingMatches(in: text, range: range, withTemplate: replacement)
+    }
+
+    /// Regex replace with a closure for dynamic replacements (e.g. conditional punctuation).
+    private static func regexReplace(
+        _ text: String,
+        pattern: String,
+        transform: (RegexMatch) -> String
+    ) -> String {
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return text }
+        var result = text
+        let nsText = text as NSString
+        let matches = regex.matches(in: text, range: NSRange(text.startIndex..., in: text))
+
+        // Process in reverse order to preserve string indices
+        for match in matches.reversed() {
+            let replacement = transform(RegexMatch(result: match, source: nsText))
+            let swiftRange = Range(match.range, in: result)!
+            result.replaceSubrange(swiftRange, with: replacement)
+        }
+        return result
+    }
+}
+
+// MARK: - RegexMatch Helper
+
+/// Wraps an NSTextCheckingResult to provide convenient group capture access.
+private struct RegexMatch {
+    let result: NSTextCheckingResult
+    let source: NSString
+
+    /// Returns the string for capture group at `index` (1-based), or "" if unmatched.
+    var groups: [String] {
+        (1..<result.numberOfRanges).map { i in
+            let range = result.range(at: i)
+            guard range.location != NSNotFound,
+                  let swiftRange = Range(range, in: source as String) else { return "" }
+            return String((source as String)[swiftRange])
+        }
     }
 }
 

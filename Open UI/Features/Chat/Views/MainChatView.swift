@@ -482,7 +482,12 @@ struct MainChatView: View {
                 .environment(dependencies)
                 .environment(router)
             }
-            .sheet(isPresented: voiceCallBinding) {
+            .sheet(isPresented: voiceCallBinding, onDismiss: {
+                // Dragging the sheet down counts as minimizing if the call is still active.
+                if !router.isVoiceCallMinimized, router.voiceCallViewModel != nil {
+                    router.minimizeVoiceCall()
+                }
+            }) {
                 if let voiceCallVM = router.voiceCallViewModel {
                     VoiceCallView(viewModel: voiceCallVM)
                         .environment(dependencies)
@@ -494,7 +499,7 @@ struct MainChatView: View {
                 }
             }
             .onChange(of: router.isVoiceCallPresented) { _, isPresented in
-                if !isPresented {
+                if !isPresented && !router.isVoiceCallMinimized {
                     router.voiceCallViewModel = nil
                 }
             }

@@ -1,5 +1,20 @@
 # Changelog
 
+## v2.3.1 — March 30, 2026
+
+### What's New
+- Added German and French conversational voice options for Marvis Neural TTS.
+- Added minimize/PiP for voice calls — tap the chevron button in the voice call screen to shrink it to a floating pill. Tap the pill to restore the full call, or tap the red button to end it. The call stays active while minimized.
+
+### Improvements
+- Drastically improved TTS text-to-speech naturalness: Sentences now create proper pauses, even better than openwebui splitting.
+
+### Bug Fixes
+- Fixed voice calls not starting to speak until the full AI response finished generating — responses now begin playing as soon as the first complete sentence arrives.
+- Fixed audible gaps between spoken sentences in server-side TTS — replaced the old polling-based audio player with gapless queue playback so chunks play back-to-back without any pauses.
+
+## Previous Builds
+
 ## v2.3 — March 30, 2026
 
 ### What's New
@@ -19,8 +34,6 @@
 - Fixed accessibility sizing not applying to assistant messages, drawer lists, and input boxes. 
 - Fixed orphaned `</think>` closing tags leaking into chat messages as visible code blocks when models like Qwen skip the opening tag or when streaming splits tags across chunks.
 - Fixed selecting a model and immediately sending a message no longer uses stale config.
-
-## Previous Builds
 
 ## v2.2 — March 28, 2026
 

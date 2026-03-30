@@ -161,7 +161,7 @@ final class OnDeviceASRService {
             // Clean up Hub blob cache (models--* dirs) left behind by the HuggingFace
             // download library — these are duplicates of the working copy in mlx-audio/.
             Task.detached(priority: .utility) {
-                StorageManager.shared.cleanupHubCache()
+                await StorageManager.shared.cleanupHubCache()
             }
         } catch {
             let msg = error.localizedDescription

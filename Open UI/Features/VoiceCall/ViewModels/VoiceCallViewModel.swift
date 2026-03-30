@@ -551,7 +551,17 @@ final class VoiceCallViewModel {
         }
 
         chatViewModel.inputText = transcript
-        await chatViewModel.sendMessage()
+
+        // Fire sendMessage concurrently — DO NOT await it.
+        // Awaiting sendMessage() blocks until the entire stream finishes, which
+        // means waitForResponseAndSpeak()'s polling loop sees isStreaming==false
+        // immediately and never feeds any incremental text to TTS.
+        // By launching it as a detached task, the polling loop below runs
+        // concurrently with the LLM stream, feeding sentences to TTS as they arrive.
+        Task { await chatViewModel.sendMessage() }
+
+        // Brief yield so sendMessage() can set isStreaming = true before we poll
+        try? await Task.sleep(for: .milliseconds(120))
 
         await waitForResponseAndSpeak()
     }
@@ -567,22 +577,37 @@ final class VoiceCallViewModel {
             ttsService.startStreamingTTS()
         }
 
-        // Poll for streaming content — feed sentences to TTS pipeline as they arrive
+        // Poll for streaming content — feed sentences to TTS pipeline as they arrive.
+        //
+        // IMPORTANT: During streaming, ChatViewModel routes every token delta into
+        // streamingStore.streamingContent (an isolated @Observable store) rather than
+        // into conversation.messages[idx].content — this is a performance optimisation
+        // that prevents all message views from re-evaluating on every token.
+        // Reading messages.last?.content here would always see "" (the frozen placeholder)
+        // until streaming fully completes. We must read directly from the streaming store.
         var lastContent = ""
         while chatViewModel.isStreaming {
-            if let lastMessage = chatViewModel.messages.last(where: { $0.role == .assistant }) {
-                let newContent = lastMessage.content
-                if newContent != lastContent {
-                    lastContent = newContent
-                    if !isMuted {
-                        ttsService.feedStreamingText(newContent)
-                    }
+            // Prefer live content from the streaming store; fall back to messages array
+            // for socket-based external streams that bypass the store.
+            let newContent: String
+            if chatViewModel.streamingStore.isActive {
+                newContent = chatViewModel.streamingStore.streamingContent
+            } else {
+                newContent = chatViewModel.messages.last(where: { $0.role == .assistant })?.content ?? ""
+            }
+
+            if newContent != lastContent {
+                lastContent = newContent
+                if !isMuted {
+                    ttsService.feedStreamingText(newContent)
                 }
             }
             try? await Task.sleep(for: .milliseconds(60))
         }
 
-        // Send any remaining text to TTS
+        // Send any remaining text to TTS.
+        // After streaming ends, the store has been flushed to conversation.messages,
+        // so reading from messages here is correct for final cleanup.
         if let finalMessage = chatViewModel.messages.last(where: { $0.role == .assistant }) {
             let finalContent = finalMessage.content
 

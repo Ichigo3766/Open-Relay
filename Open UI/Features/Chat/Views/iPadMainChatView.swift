@@ -1635,7 +1635,12 @@ private extension View {
                 }
                 .presentationCornerRadius(20)
             }
-            .sheet(isPresented: voiceCallBinding) {
+            .sheet(isPresented: voiceCallBinding, onDismiss: {
+                // Dragging the sheet down counts as minimizing if the call is still active.
+                if !router.isVoiceCallMinimized, router.voiceCallViewModel != nil {
+                    router.minimizeVoiceCall()
+                }
+            }) {
                 if let voiceCallVM = router.voiceCallViewModel {
                     VoiceCallView(viewModel: voiceCallVM)
                         .environment(dependencies)
@@ -1647,7 +1652,7 @@ private extension View {
                 }
             }
             .onChange(of: router.isVoiceCallPresented) { _, isPresented in
-                if !isPresented { router.voiceCallViewModel = nil }
+                if !isPresented && !router.isVoiceCallMinimized { router.voiceCallViewModel = nil }
             }
             .sheet(isPresented: showCreateFolderSheet) {
                 CreateFolderSheet(apiClient: dependencies.apiClient) { name, data, meta in

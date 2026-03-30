@@ -10,6 +10,9 @@ final class AppRouter {
     /// Whether the voice call full-screen cover is presented.
     var isVoiceCallPresented: Bool = false
 
+    /// Whether the voice call has been minimized (sheet dismissed, but call still active).
+    var isVoiceCallMinimized: Bool = false
+
     /// The voice call view model for the currently presented voice call.
     var voiceCallViewModel: VoiceCallViewModel?
 
@@ -42,12 +45,27 @@ final class AppRouter {
     /// Presents the voice call as a full-screen cover with a pre-configured view model.
     func presentVoiceCall(viewModel: VoiceCallViewModel) {
         self.voiceCallViewModel = viewModel
+        self.isVoiceCallMinimized = false
         self.isVoiceCallPresented = true
     }
 
-    /// Dismisses the voice call.
+    /// Minimizes the voice call — dismisses the sheet but keeps the call running.
+    /// A floating pill overlay appears so the user can restore or end the call.
+    func minimizeVoiceCall() {
+        isVoiceCallPresented = false
+        isVoiceCallMinimized = true
+    }
+
+    /// Restores the minimized voice call by re-presenting the full sheet.
+    func expandVoiceCall() {
+        isVoiceCallMinimized = false
+        isVoiceCallPresented = true
+    }
+
+    /// Dismisses the voice call entirely (call ended).
     func dismissVoiceCall() {
         isVoiceCallPresented = false
+        isVoiceCallMinimized = false
         voiceCallViewModel = nil
     }
 
@@ -57,8 +75,9 @@ final class AppRouter {
         path = NavigationPath()
         channelPath = NavigationPath()
         presentedSheet = nil
-        if isVoiceCallPresented {
+        if isVoiceCallPresented || isVoiceCallMinimized {
             isVoiceCallPresented = false
+            isVoiceCallMinimized = false
             voiceCallViewModel = nil
         }
     }

@@ -133,7 +133,7 @@ final class MarvisTTSService {
             // Clean up Hub blob cache (models--* dirs) left behind by the HuggingFace
             // download library — these are duplicates of the working copy in mlx-audio/.
             Task.detached(priority: .utility) {
-                StorageManager.shared.cleanupHubCache()
+                await StorageManager.shared.cleanupHubCache()
             }
         } catch {
             let msg = error.localizedDescription
@@ -497,8 +497,10 @@ final class MarvisTTSService {
     #if canImport(MLXAudioTTS)
     private func resolveVoice() -> MarvisTTSModel.Voice? {
         switch config.voice {
-        case "conversationalB": return .conversationalB
-        default: return .conversationalA
+        case "conversationalB": return MarvisTTSModel.Voice.conversationalB
+        case "conversationalDE": return MarvisTTSModel.Voice.conversationalDE
+        case "conversationalFR": return MarvisTTSModel.Voice.conversationalFR
+        default: return MarvisTTSModel.Voice.conversationalA
         }
     }
 
