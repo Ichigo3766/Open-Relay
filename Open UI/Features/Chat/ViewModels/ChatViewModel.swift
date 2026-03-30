@@ -14,6 +14,9 @@ extension Notification.Name {
     /// Posted by the audio attachment thumbnail's retry button.
     /// `object` is the `UUID` of the attachment to retry uploading.
     static let retryAttachmentUpload = Notification.Name("retryAttachmentUpload")
+    /// Posted when function config changes (toggle active/global in Admin, or model editor save).
+    /// ChatViewModel observes this to re-resolve actions/filters for the current model immediately.
+    static let functionsConfigChanged = Notification.Name("functionsConfigChanged")
 }
 
 /// Manages state and logic for a single chat conversation.
@@ -155,6 +158,11 @@ final class ChatViewModel {
     /// The post-streaming completion task (chatCompleted + file polling + metadata refresh).
     /// Cancelled when a new message is sent so it doesn't overwrite newer messages.
     private var completionTask: Task<Void, Never>?
+    /// In-flight model config fetch from selectModel(). Stored so
+    /// sendMessage/regenerateResponse can await it before reading
+    /// functionCallingMode — prevents the race where the user selects
+    /// a model and immediately sends before the config fetch completes.
+    private var modelConfigTask: Task<Void, Never>?
     private var chatSubscription: SocketSubscription?
     private var channelSubscription: SocketSubscription?
     /// Persistent passive socket listener that observes events for this chat
@@ -167,7 +175,7 @@ final class ChatViewModel {
     /// Guards against flooding syncForExternalStream with duplicate fetch tasks
     /// when many socket tokens arrive before the first fetch completes.
     private var isSyncingExternalStream: Bool = false
-    private var sessionId: String = UUID().uuidString
+    private(set) var sessionId: String = UUID().uuidString
     private let logger = Logger(subsystem: "com.openui", category: "ChatViewModel")
     private var hasFinishedStreaming = false
     private var activeTaskId: String?
@@ -342,6 +350,7 @@ final class ChatViewModel {
         self.asrService = asr
         setupRetryAttachmentObserver()
         setupMemorySettingObserver()
+        setupFunctionsConfigObserver()
     }
 
     /// Registers the observer that handles retry requests posted by the
@@ -384,6 +393,26 @@ final class ChatViewModel {
             Task { @MainActor [weak self] in
                 guard let self else { return }
                 self.memoryEnabled = newValue
+            }
+        }
+    }
+
+    /// Observes `.functionsConfigChanged` to re-resolve actions/filters for the
+    /// current model immediately when function config changes (admin toggles
+    /// active/global, or model editor saves). This ensures action buttons and
+    /// filter IDs update in the chat UI without requiring a model picker open
+    /// or app restart.
+    private func setupFunctionsConfigObserver() {
+        NotificationCenter.default.addObserver(
+            forName: .functionsConfigChanged,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            guard let self else { return }
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                await self.refreshSelectedModelConfig()
+                self.logger.info("Functions config changed — re-resolved actions/filters for current model")
             }
         }
     }
@@ -573,6 +602,19 @@ final class ChatViewModel {
         // Now that all initial data is loaded, enable message appear animations.
         // New messages sent/received during this session will animate in smoothly.
         shouldAnimateNewMessages = true
+    }
+
+    /// Re-fetches the conversation from the server and updates the local state.
+    /// Called after an action button invocation to pick up content changes
+    /// made by the action's server-side event emitters.
+    func reloadConversation() async {
+        guard let chatId = conversationId ?? conversation?.id, let manager else { return }
+        do {
+            let refreshed = try await manager.fetchConversation(id: chatId)
+            adoptServerMessages(serverConversation: refreshed)
+        } catch {
+            logger.warning("reloadConversation failed: \(error.localizedDescription)")
+        }
     }
 
     func loadConversation() async {
@@ -1153,11 +1195,30 @@ final class ChatViewModel {
         guard let manager else { return }
         isLoadingTools = true
         do {
-            let serverTools = try await manager.fetchTools()
-            if !serverTools.isEmpty {
-                availableTools = serverTools
-                // Auto-select globally-enabled tools (server-side defaults)
-                // and model-assigned tools into selectedToolIds
+            var allItems = try await manager.fetchTools()
+
+            // Also fetch toggle-filter functions (meta.toggle: true) from /api/v1/functions/
+            // These are filter functions that can be toggled per-message, like
+            // "OpenRouter Search" or "Direct Uploads". They show as toggleable
+            // tools in the ToolsMenuSheet alongside regular tools.
+            do {
+                let functions = try await manager.apiClient.getFunctions()
+                let toggleFilters = functions.filter { $0.type == "filter" && $0.isActive && $0.hasToggle }
+                for fn in toggleFilters {
+                    // Avoid duplicates (a filter could theoretically have the same ID as a tool)
+                    if !allItems.contains(where: { $0.id == fn.id }) {
+                        allItems.append(ToolItem(
+                            id: fn.id,
+                            name: fn.name,
+                            description: fn.description.isEmpty ? nil : fn.description,
+                            isEnabled: fn.isGlobal // Global toggle-filters are enabled by default
+                        ))
+                    }
+                }
+            }
+
+            if !allItems.isEmpty {
+                availableTools = allItems
                 syncToolSelectionWithDefaults()
                 isLoadingTools = false
                 return
@@ -1577,23 +1638,6 @@ final class ChatViewModel {
     }
 
     // MARK: - Passive Socket Listener (Cross-Client Stream Observation)
-
-    /// Registers a persistent, passive socket listener for this chat that
-    /// observes ALL socket events broadcast by the server to `user:{id}`.
-    ///
-    /// This mirrors the Open WebUI website's `Chat.svelte` approach where
-    /// `socket.on("events", chatEventHandler)` listens for events matching
-    /// the current `chat_id` — regardless of which client initiated the generation.
-    ///
-    /// The passive listener enables bidirectional real-time sync:
-    /// - Website starts generation → app sees it streaming live
-    /// - App starts generation → website sees it (already worked)
-    ///
-    /// When the app itself initiates a stream (`sendMessage`/`regenerateResponse`),
-    /// the active handlers (`chatSubscription`/`channelSubscription`) take over
-    /// and `selfInitiatedStream` is set to `true` so the passive listener skips
-    /// content events to avoid conflicts. Metadata events (title, tags, follow-ups)
-    /// are always processed by the passive listener regardless.
     private func startPassiveSocketListener() {
         // Only for existing conversations with a known ID
         guard let chatId = conversationId ?? conversation?.id else { return }
@@ -1616,11 +1660,6 @@ final class ChatViewModel {
     }
 
     /// Handles a socket event received by the passive listener.
-    ///
-    /// Processes events from external clients (website, other tabs) that are
-    /// generating content for this chat. Skips processing when this VM has
-    /// its own active stream (`selfInitiatedStream == true`) to avoid conflicts
-    /// with the dedicated active handlers.
     private func handlePassiveEvent(_ event: [String: Any]) {
         let data = event["data"] as? [String: Any] ?? event
         let type = data["type"] as? String
@@ -1860,11 +1899,6 @@ final class ChatViewModel {
                 self.logger.warning("External stream initial fetch failed: \(error.localizedDescription)")
             }
 
-            // Poll every 1.5s until cancelled or stream ends.
-            // DO NOT call adoptServerMessages here — it has guards that flip
-            // isStreaming back to false (server DB doesn't store isStreaming=true),
-            // causing the streaming indicator to vanish and content rendering to break.
-            // Instead, just directly set the content from the server response.
             while !Task.isCancelled && self.isExternallyStreaming {
                 try? await Task.sleep(nanoseconds: 1_500_000_000)
                 guard !Task.isCancelled, self.isExternallyStreaming else { break }
@@ -2273,15 +2307,18 @@ final class ChatViewModel {
                 // toggles the user explicitly turned OFF.
                 request.features = self.buildChatFeatures()
 
-                // Always explicitly send the server's function_calling mode.
-                // The server reads params["function_calling"] to decide between
-                // native and default tool calling. Omitting it or sending empty {}
-                // causes the server to fall back to whatever its global default is,
-                // which may differ from the per-model setting. Sending "default"
-                // explicitly forces the server to use the non-native path even when
-                // its global default is "native".
-                let functionCallingMode = self.selectedModel?.functionCallingMode ?? "default"
-                request.params = ["function_calling": functionCallingMode.isEmpty ? "default" : functionCallingMode]
+                // Await any pending model config fetch from selectModel() to ensure
+                // functionCallingMode is populated before reading it. Without this,
+                // the user can select a model and immediately send — reading stale
+                // config from the list endpoint which doesn't include params.
+                await self.modelConfigTask?.value
+
+                // Only include function_calling param when explicitly set to "native".
+                // When nil/empty (default mode), omit the param entirely — the server
+                // uses its own default (non-native) handling when the param is absent.
+                if let fc = self.selectedModel?.functionCallingMode, fc == "native" {
+                    request.params = ["function_calling": "native"]
+                }
 
                 // Request usage statistics in the streaming response.
                 // Matches the web UI payload: "stream_options": {"include_usage": true}
@@ -2693,9 +2730,16 @@ final class ChatViewModel {
                 let regenFeatures = self.buildChatFeatures()
                 request.features = regenFeatures
 
-                // Always explicitly send the server's function_calling mode.
-                let functionCallingMode = self.selectedModel?.functionCallingMode ?? "default"
-                request.params = ["function_calling": functionCallingMode.isEmpty ? "default" : functionCallingMode]
+                // Await any pending model config fetch from selectModel() to ensure
+                // functionCallingMode is populated before reading it.
+                await self.modelConfigTask?.value
+
+                // Only include function_calling param when explicitly set to "native".
+                // When nil/empty (default mode), omit the param entirely — the server
+                // uses its own default (non-native) handling when the param is absent.
+                if let fc = self.selectedModel?.functionCallingMode, fc == "native" {
+                    request.params = ["function_calling": "native"]
+                }
 
                 // Request usage statistics in the streaming response (matches web UI).
                 request.streamOptions = ["include_usage": true]
@@ -2796,7 +2840,10 @@ final class ChatViewModel {
         conversation?.model = modelId
         // Fetch full model config from single-model endpoint to get params.function_calling,
         // toolIds, defaultFeatureIds, and capabilities — which /api/models doesn't return.
-        Task { [weak self] in
+        // Store the task so sendMessage/regenerate can await it if the user sends
+        // before this completes.
+        modelConfigTask?.cancel()
+        modelConfigTask = Task { [weak self] in
             await self?.refreshSelectedModelConfig()
         }
     }
@@ -3643,6 +3690,11 @@ final class ChatViewModel {
                         fullModel.rawModelItem = existingModel.rawModelItem
                     }
                 }
+                // Resolve actions and filters from IDs + global functions.
+                // The single-model endpoint returns actionIds/filterIds but not full objects.
+                // Fetch functions to build proper entries with name/icon.
+                await resolveActionsForModel(&fullModel)
+                await resolveFiltersForModel(&fullModel)
                 if let idx = availableModels.firstIndex(where: { $0.id == modelId }) {
                     availableModels[idx] = fullModel
                 } else {
@@ -3650,7 +3702,7 @@ final class ChatViewModel {
                 }
                 lastModelMetadataRefreshTime = Date()
                 syncUIWithModelDefaults()
-                logger.info("Model config loaded: \(modelId) function_calling=\(fullModel.functionCallingMode ?? "default") isPipe=\(fullModel.isPipeModel)")
+                logger.info("Model config loaded: \(modelId) function_calling=\(fullModel.functionCallingMode ?? "(absent)") isPipe=\(fullModel.isPipeModel)")
             }
         } catch {
             logger.debug("Model config fetch failed for \(modelId): \(error.localizedDescription)")
@@ -3669,10 +3721,6 @@ final class ChatViewModel {
     /// to avoid wiping tools/features the user has manually toggled during the session.
     private func refreshSelectedModelMetadata() async {
         guard let modelId = selectedModelId, let manager else { return }
-        // Skip if we refreshed recently (< 60s) — model admin changes are rare
-        guard Date().timeIntervalSince(lastModelMetadataRefreshTime) > 60 else {
-            return
-        }
         do {
             if var fullModel = try await manager.apiClient.fetchModelConfig(modelId: modelId) {
                 lastModelMetadataRefreshTime = Date()
@@ -3689,6 +3737,9 @@ final class ChatViewModel {
                         fullModel.rawModelItem = existingModel.rawModelItem
                     }
                 }
+                // Resolve actions and filters from IDs + global functions (fresh every time).
+                await resolveActionsForModel(&fullModel)
+                await resolveFiltersForModel(&fullModel)
                 if let idx = availableModels.firstIndex(where: { $0.id == modelId }) {
                     availableModels[idx] = fullModel
                 }
@@ -3700,6 +3751,79 @@ final class ChatViewModel {
         } catch {
             // Non-critical — proceed with cached model data
             logger.debug("Model metadata refresh failed: \(error.localizedDescription)")
+        }
+    }
+
+    /// Resolves action buttons for a model by combining:
+    /// 1. Global action functions (is_global == true, is_active == true) → always included
+    /// 2. Per-model action IDs (model.actionIds) → included if active
+    ///
+    /// Fetches the functions list from `/api/v1/functions/` to get full action
+    /// metadata (name, icon) and global/active status. This ensures actions are
+    /// always fresh and correctly reflect admin changes (e.g., turning global off).
+    private func resolveActionsForModel(_ model: inout AIModel) async {
+        guard let apiClient = manager?.apiClient else { return }
+        do {
+            let functions = try await apiClient.getFunctions()
+            let actionFunctions = functions.filter { $0.type == "action" && $0.isActive }
+
+            var resolvedActions: [AIModelAction] = []
+            var seenIds = Set<String>()
+
+            for fn in actionFunctions {
+                // Include if globally enabled OR if the model has this action in its actionIds
+                let isGlobal = fn.isGlobal
+                let isPerModel = model.actionIds.contains(fn.id)
+
+                if isGlobal || isPerModel {
+                    guard !seenIds.contains(fn.id) else { continue }
+                    seenIds.insert(fn.id)
+                    resolvedActions.append(AIModelAction(
+                        id: fn.id,
+                        name: fn.name,
+                        description: fn.description,
+                        icon: fn.iconURL
+                    ))
+                }
+            }
+
+            model.actions = resolvedActions
+        } catch {
+            // Non-critical — keep whatever actions the model already has
+            logger.debug("Failed to resolve actions: \(error.localizedDescription)")
+        }
+    }
+
+    /// Resolves filter IDs for a model by combining:
+    /// 1. Global filter functions (is_global == true, is_active == true) → always included
+    /// 2. Per-model filter IDs (model.filterIds from meta.filterIds) → included if active
+    ///
+    /// Fetches the functions list from `/api/v1/functions/` to get global/active status.
+    /// This ensures filterIds sent in chat requests always reflect the current server state.
+    private func resolveFiltersForModel(_ model: inout AIModel) async {
+        guard let apiClient = manager?.apiClient else { return }
+        do {
+            let functions = try await apiClient.getFunctions()
+            let filterFunctions = functions.filter { $0.type == "filter" && $0.isActive }
+
+            var resolvedFilterIds: [String] = []
+            var seenIds = Set<String>()
+
+            for fn in filterFunctions {
+                let isGlobal = fn.isGlobal
+                let isPerModel = model.filterIds.contains(fn.id)
+
+                if isGlobal || isPerModel {
+                    guard !seenIds.contains(fn.id) else { continue }
+                    seenIds.insert(fn.id)
+                    resolvedFilterIds.append(fn.id)
+                }
+            }
+
+            model.filterIds = resolvedFilterIds
+        } catch {
+            // Non-critical — keep whatever filterIds the model already has
+            logger.debug("Failed to resolve filters: \(error.localizedDescription)")
         }
     }
 

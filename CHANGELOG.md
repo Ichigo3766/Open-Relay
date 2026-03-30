@@ -1,5 +1,27 @@
 # Changelog
 
+## v2.3 — March 30, 2026
+
+### What's New
+- Added Action Buttons support
+
+### Improvements
+- Replaced Parakeet (English-only) with Qwen3 ASR for on-device audio transcription — now supports automatic language detection and multilingual transcription (Spanish, French, German, Italian, Portuguese, Russian, Chinese, Japanese, Korean, and more).
+- Model editor now supports enabling/disabling action buttons
+- Toggle-filter functions now appear as toggleable tools in the Tools menu alongside regular tools.
+- Filter functions are now properly resolved using the global vs per-model logic — global filters always apply, per-model filters respect configuration.
+- Starter prompt cards on the welcome screen now fall back to per-model suggestion prompts when the admin hasn't set global prompts, and update automatically when switching models.
+- The TTS/STT settings screen now correctly shows "Not Loaded" (when the model is downloaded but not in memory) vs "Not Downloaded" (when no model files exist on disk), and the download/load button label and icon also adapt accordingly.
+
+### Bug Fixes
+- Fixed on-device TTS and STT models taking up twice the expected storage — the HuggingFace download library was leaving a duplicate blob cache alongside the working model files. Existing users will automatically reclaim the wasted space on their next app launch.
+- Fixed Shift+Enter intermittently sending the message instead of inserting a new line on iPad with a hardware keyboard.
+- Fixed accessibility sizing not applying to assistant messages, drawer lists, and input boxes. 
+- Fixed orphaned `</think>` closing tags leaking into chat messages as visible code blocks when models like Qwen skip the opening tag or when streaming splits tags across chunks.
+- Fixed selecting a model and immediately sending a message no longer uses stale config.
+
+## Previous Builds
+
 ## v2.2 — March 28, 2026
 
 ### What's New
@@ -12,8 +34,6 @@
 ### Bug Fixes
 - Fixed thinking/reasoning blocks from models (Qwen, DeepSeek, etc.) showing as raw tags in the chat instead of rendering as a collapsible "Thinking" section. Now handles all six reasoning tag formats during streaming and fixes stray summary tags leaking mid-stream.
 - Fixed on-device audio transcription cutting off the last portion (and many words throughout) of uploaded audio.
-
-## Previous Builds
 
 ## v2.1 — March 27, 2026
 
@@ -29,8 +49,6 @@
 ### Bug Fixes
 - Fixed tool call progress not showing during web search, image generation, and other default function calls — status indicators now display in real time with animated shimmer and search query pills, matching the Open WebUI web interface.
 - Fixed the app prematurely closing the streaming connection while tools were still executing in the background.
-
-## Previous Builds
 
 ## v2.0.0 — March 26, 2026
 
@@ -137,8 +155,6 @@
 - Fixed repeated `heartbeat() missing 1 required positional argument: 'data'` errors in Open WebUI server logs
 - Fixed web search, image generation, and code interpreter toggles being ignored when turned off mid-chat — toggling a tool off now correctly prevents it from being used.
 - Fixed conversations older than "This Month" not loading — pagination now properly triggers when scrolling to the bottom, allowing all conversation history to load.
-
-## Previous Builds
 
 ## v1.1.0 — March 12, 2026
 

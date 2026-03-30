@@ -503,9 +503,74 @@ final class APIClient: @unchecked Sendable {
         let isPipeModel = raw["pipe"] != nil
 
         // Extract filter IDs — server sends raw["filters"] = [{"id": "...", ...}]
+        // The list endpoint returns full filter objects; the single-model endpoint
+        // returns only meta.filterIds as string IDs.
         let filterIds: [String] = {
-            guard let filters = raw["filters"] as? [[String: Any]] else { return [] }
-            return filters.compactMap { $0["id"] as? String }
+            // First try the full objects from the list endpoint
+            if let filters = raw["filters"] as? [[String: Any]] {
+                let ids = filters.compactMap { $0["id"] as? String }
+                if !ids.isEmpty { return ids }
+            }
+            // Fallback: meta.filterIds from single-model endpoint
+            if let meta = raw["meta"] as? [String: Any],
+               let ids = meta["filterIds"] as? [String] {
+                return ids
+            }
+            // Fallback: info.meta.filterIds from list endpoint
+            if let info = raw["info"] as? [String: Any],
+               let meta = info["meta"] as? [String: Any],
+               let ids = meta["filterIds"] as? [String] {
+                return ids
+            }
+            return []
+        }()
+
+        // Extract action buttons — server sends raw["actions"] = [{"id": "...", "name": "...", "icon": "data:..."}]
+        // These are function-based action buttons that appear in the assistant message action bar.
+        // Only the list endpoint (/api/models) returns full action objects; the single-model
+        // endpoint returns meta.actionIds as string IDs only.
+        let actions: [AIModelAction] = {
+            guard let actionsArray = raw["actions"] as? [[String: Any]] else { return [] }
+            return actionsArray.compactMap { AIModelAction(json: $0) }
+        }()
+
+        // Extract actionIds from meta.actionIds (available from both single-model and list endpoints).
+        // These are the per-model action IDs configured by the admin.
+        let actionIds: [String] = {
+            // Try top-level meta first (single-model endpoint)
+            if let meta = raw["meta"] as? [String: Any],
+               let ids = meta["actionIds"] as? [String] {
+                return ids
+            }
+            // Fallback: info.meta (list endpoint)
+            if let info = raw["info"] as? [String: Any],
+               let meta = info["meta"] as? [String: Any],
+               let ids = meta["actionIds"] as? [String] {
+                return ids
+            }
+            return []
+        }()
+
+        // Extract per-model suggestion prompts from meta.suggestion_prompts
+        let suggestionPrompts: [BackendConfig.PromptSuggestion] = {
+            // Try top-level meta first (single-model endpoint)
+            if let meta = raw["meta"] as? [String: Any],
+               let arr = meta["suggestion_prompts"] as? [[String: Any]], !arr.isEmpty {
+                if let data = try? JSONSerialization.data(withJSONObject: arr),
+                   let decoded = try? JSONDecoder().decode([BackendConfig.PromptSuggestion].self, from: data) {
+                    return decoded
+                }
+            }
+            // Fallback: info.meta (list endpoint)
+            if let info = raw["info"] as? [String: Any],
+               let meta = info["meta"] as? [String: Any],
+               let arr = meta["suggestion_prompts"] as? [[String: Any]], !arr.isEmpty {
+                if let data = try? JSONSerialization.data(withJSONObject: arr),
+                   let decoded = try? JSONDecoder().decode([BackendConfig.PromptSuggestion].self, from: data) {
+                    return decoded
+                }
+            }
+            return []
         }()
 
         return AIModel(
@@ -526,6 +591,9 @@ final class APIClient: @unchecked Sendable {
             connectionType: connectionType,
             isPipeModel: isPipeModel,
             filterIds: filterIds,
+            actionIds: actionIds,
+            actions: actions,
+            suggestionPrompts: suggestionPrompts,
             rawModelItem: raw
         )
     }
@@ -2110,6 +2178,27 @@ final class APIClient: @unchecked Sendable {
         return array
     }
 
+    // MARK: - Chat Actions (Function-based action buttons)
+
+    /// Invokes a function-based action button on an assistant message.
+    /// `POST /api/chat/actions/{actionId}`
+    ///
+    /// The action function runs server-side and may modify the message content
+    /// via event emitters (replace, message, status). The response is typically
+    /// `null` — the actual result arrives as a content update on the message.
+    ///
+    /// After calling this, the caller should re-fetch the conversation to pick
+    /// up any message content changes made by the action.
+    func invokeAction(actionId: String, body: [String: Any]) async throws {
+        let bodyData = try JSONSerialization.data(withJSONObject: body)
+        let _ = try await network.requestRaw(
+            path: "/api/chat/actions/\(actionId)",
+            method: .post,
+            body: bodyData,
+            timeout: 120
+        )
+    }
+
     /// Fetch all functions (filters, actions/skills, pipes) from the server.
     func getFunctions() async throws -> [FunctionItem] {
         let (data, _) = try await network.requestRaw(path: "/api/v1/functions/")
@@ -2942,6 +3031,36 @@ final class APIClient: @unchecked Sendable {
                 return filters.compactMap { $0["id"] as? String }
             }()
 
+            // Extract action buttons — server sends raw["actions"] = [{"id": "...", "name": "...", "icon": "data:..."}]
+            let actions: [AIModelAction] = {
+                guard let actionsArray = raw["actions"] as? [[String: Any]] else { return [] }
+                return actionsArray.compactMap { AIModelAction(json: $0) }
+            }()
+
+            // Extract actionIds from info.meta.actionIds (list endpoint)
+            let actionIds: [String] = {
+                if let info = raw["info"] as? [String: Any],
+                   let meta = info["meta"] as? [String: Any],
+                   let ids = meta["actionIds"] as? [String] {
+                    return ids
+                }
+                return []
+            }()
+
+            // Extract per-model suggestion prompts from info.meta.suggestion_prompts
+            let suggestionPrompts: [BackendConfig.PromptSuggestion] = {
+                if let info = raw["info"] as? [String: Any],
+                   let meta = info["meta"] as? [String: Any],
+                   let arr = meta["suggestion_prompts"] as? [[String: Any]], !arr.isEmpty {
+                    // Re-serialize to JSON Data and decode as [PromptSuggestion]
+                    if let data = try? JSONSerialization.data(withJSONObject: arr),
+                       let decoded = try? JSONDecoder().decode([BackendConfig.PromptSuggestion].self, from: data) {
+                        return decoded
+                    }
+                }
+                return []
+            }()
+
             return AIModel(
                 id: id,
                 name: name,
@@ -2960,6 +3079,9 @@ final class APIClient: @unchecked Sendable {
                 connectionType: connectionType,
                 isPipeModel: isPipeModel,
                 filterIds: filterIds,
+                actionIds: actionIds,
+                actions: actions,
+                suggestionPrompts: suggestionPrompts,
                 rawModelItem: raw
             )
         }

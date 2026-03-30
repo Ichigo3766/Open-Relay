@@ -119,6 +119,7 @@ struct ChatInputField: View {
     var photoPicker: AnyView?
 
     @Environment(\.theme) private var theme
+    @Environment(\.accessibilityScale) private var accessibilityScale
     @FocusState private var isFocused: Bool
     @State private var showToolsSheet = false
     @State private var previewingTranscript: ChatAttachment? = nil
@@ -326,20 +327,25 @@ struct ChatInputField: View {
 
     @AppStorage("sendOnEnter") private var sendOnEnter = true
 
-    /// Rounded system font for a softer, modern chat feel.
-    private static let inputFont: UIFont = {
-        let base = UIFont.systemFont(ofSize: 14, weight: .regular)
+    /// Base font size for the chat input field.
+    private static let inputBaseFontSize: CGFloat = 14
+
+    /// Rounded system font scaled by the user's accessibility content scale.
+    private var scaledInputFont: UIFont {
+        let scale = accessibilityScale.scale(for: .content)
+        let size = round(Self.inputBaseFontSize * scale * 10) / 10
+        let base = UIFont.systemFont(ofSize: size, weight: .regular)
         if let rounded = base.fontDescriptor.withDesign(.rounded) {
-            return UIFont(descriptor: rounded, size: 14)
+            return UIFont(descriptor: rounded, size: size)
         }
         return base
-    }()
+    }
 
     private var textField: some View {
         PasteableTextView(
             text: $text,
             placeholder: placeholder,
-            font: Self.inputFont,
+            font: scaledInputFont,
             textColor: UIColor(theme.textPrimary),
             placeholderColor: UIColor(theme.textTertiary),
             tintColor: UIColor(theme.brandPrimary),

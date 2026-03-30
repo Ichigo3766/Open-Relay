@@ -887,6 +887,12 @@ struct FunctionItem: Identifiable, Sendable {
     var version: String?
     var authorName: String?
     var userId: String
+    /// Icon URL for action-type functions. Parsed from `meta.manifest.icon_url`.
+    /// Typically a `data:image/svg+xml;base64,...` data URI or an HTTP URL.
+    var iconURL: String?
+    /// Whether this filter function has a per-message toggle (meta.toggle: true).
+    /// When true, the filter should appear as a toggleable tool in the ToolsMenuSheet.
+    var hasToggle: Bool
 
     init?(json: [String: Any]) {
         guard let id = json["id"] as? String,
@@ -899,9 +905,11 @@ struct FunctionItem: Identifiable, Sendable {
         self.description = meta["description"] as? String ?? json["description"] as? String ?? ""
         self.isActive = json["is_active"] as? Bool ?? true
         self.isGlobal = json["is_global"] as? Bool ?? false
+        self.hasToggle = meta["toggle"] as? Bool ?? false
         let manifest = meta["manifest"] as? [String: Any] ?? [:]
         self.version = manifest["version"] as? String
         self.authorName = manifest["author"] as? String
+        self.iconURL = manifest["icon_url"] as? String
     }
 }
 

@@ -55,7 +55,7 @@ final class StorageManager: @unchecked Sendable {
 
     // MARK: - Model Cache Location
 
-    /// The canonical directory where all on-device ML models (MarvisTTS, Parakeet ASR)
+    /// The canonical directory where all on-device ML models (MarvisTTS, Qwen3 ASR)
     /// are stored. Lives in `Documents/Models` so it is visible and fully deletable
     /// via the Files app. Pass `HubCache(location: .fixed(directory: StorageManager.modelCacheDirectory))`
     /// to any `fromPretrained` call.
@@ -66,12 +66,99 @@ final class StorageManager: @unchecked Sendable {
         return dir
     }
 
+    // MARK: - Hub Cache Cleanup
+
+    /// Deletes the HuggingFace Hub's internal `models--*` blob caches from Documents/Models.
+    ///
+    /// Background: When mlx-audio-swift downloads a model via `HubClient.downloadSnapshot()`,
+    /// the HuggingFace Hub library maintains a Git-LFS-style cache alongside the working copy:
+    ///
+    ///   Documents/Models/
+    ///   ├── mlx-audio/
+    ///   │   └── Marvis-AI_marvis-tts-250m-v0.2-MLX-8bit/   ← working copy (what the app reads)
+    ///   │       ├── model.safetensors  (665 MB)
+    ///   │       └── ...
+    ///   └── models--Marvis-AI--marvis-tts-250m-v0.2-MLX-8bit/  ← Hub's internal cache (duplicate!)
+    ///       ├── blobs/  (the same 665 MB file lives here too)
+    ///       ├── refs/
+    ///       └── snapshots/
+    ///
+    /// The `models--*` folders are never read by the app after download — they exist only for
+    /// the Hub library's version-tracking. Deleting them is safe and reclaims significant storage.
+    ///
+    /// - Returns: Bytes freed.
+    @discardableResult
+    func cleanupHubCache() -> Int64 {
+        let dir = StorageManager.modelCacheDirectory
+        guard fileManager.fileExists(atPath: dir.path) else { return 0 }
+
+        var totalFreed: Int64 = 0
+        do {
+            let contents = try fileManager.contentsOfDirectory(
+                at: dir, includingPropertiesForKeys: nil, options: .skipsHiddenFiles
+            )
+            for item in contents {
+                let name = item.lastPathComponent
+                // Only delete the Hub's internal cache folders (models--*), never mlx-audio/
+                guard name.hasPrefix("models--") else { continue }
+                let size = Int64(diskSize(of: item))
+                try? fileManager.removeItem(at: item)
+                totalFreed += size
+                logger.info("Deleted Hub blob cache: \(name) (\(ByteCountFormatter.string(fromByteCount: size, countStyle: .file)))")
+            }
+        } catch {
+            logger.error("Failed to clean hub cache: \(error.localizedDescription)")
+        }
+
+        if totalFreed > 0 {
+            logger.info("Hub cache cleanup freed \(ByteCountFormatter.string(fromByteCount: totalFreed, countStyle: .file))")
+        }
+        return totalFreed
+    }
+
+    /// One-time migration that cleans up:
+    ///   1. All `models--*` Hub blob cache folders (duplicate model data).
+    ///   2. Legacy Parakeet STT model files (replaced by Qwen3 ASR).
+    ///   3. Legacy Moshi model files (no longer used).
+    ///
+    /// Runs once per device, keyed by `storage.hubCacheMigration.v1`. Safe to call on every
+    /// app launch — it's a no-op after the first run.
+    func runHubCacheMigrationIfNeeded() {
+        let migrationKey = "storage.hubCacheMigration.v1"
+        guard !UserDefaults.standard.bool(forKey: migrationKey) else { return }
+
+        Task.detached(priority: .utility) { [self] in
+            var totalFreed: Int64 = 0
+
+            // 1. Delete all Hub blob cache dirs (models--*)
+            totalFreed += self.cleanupHubCache()
+
+            // 2. Delete legacy Parakeet STT model (replaced by Qwen3 ASR)
+            totalFreed += self.deleteModelDirs(patterns: ["parakeet-tdt"])
+
+            // 3. Delete legacy Moshi model files
+            totalFreed += self.deleteModelDirs(patterns: ["moshiko", "moshi"])
+
+            await MainActor.run {
+                UserDefaults.standard.set(true, forKey: migrationKey)
+                if totalFreed > 0 {
+                    self.logger.info("Hub cache migration freed \(ByteCountFormatter.string(fromByteCount: totalFreed, countStyle: .file))")
+                } else {
+                    self.logger.info("Hub cache migration: nothing to clean")
+                }
+            }
+        }
+    }
+
     // MARK: - Public API
 
     /// Performs a full cleanup pass. Call on app launch and when entering background.
     /// This is the main entry point — it orchestrates all cleanup tasks.
     func performRoutineCleanup() {
         logger.info("Starting routine storage cleanup")
+
+        // Run one-time migration (deletes Hub blob caches, legacy models). No-op after first run.
+        runHubCacheMigrationIfNeeded()
 
         // Run cleanup on a background queue to avoid blocking main thread
         Task.detached(priority: .utility) { [self] in
@@ -301,9 +388,9 @@ final class StorageManager: @unchecked Sendable {
         Int64(diskSize(of: StorageManager.modelCacheDirectory))
     }
 
-    /// Returns the on-disk size of the Parakeet ASR model files.
-    func parakeetASRModelSize() -> Int64 {
-        modelSize(patterns: ["parakeet-tdt"])
+    /// Returns the on-disk size of the ASR model files (Qwen3-ASR + legacy Parakeet).
+    func asrModelSize() -> Int64 {
+        modelSize(patterns: ["Qwen3-ASR", "parakeet-tdt"])
     }
 
     /// Returns the on-disk size of the MarvisTTS model files.
@@ -336,54 +423,74 @@ final class StorageManager: @unchecked Sendable {
         return freed
     }
 
-    /// Deletes Parakeet ASR model files from Documents/Models.
+    /// Deletes ASR model files (Qwen3-ASR + legacy Parakeet) from Documents/Models.
     @discardableResult
-    func deleteParakeetASRModelFiles() -> Int64 {
-        let freed = deleteModelDirs(patterns: ["parakeet-tdt"])
+    func deleteASRModelFiles() -> Int64 {
+        let freed = deleteModelDirs(patterns: ["Qwen3-ASR", "parakeet-tdt"])
         if freed > 0 {
-            logger.info("Deleted Parakeet ASR model files: \(ByteCountFormatter.string(fromByteCount: freed, countStyle: .file))")
+            logger.info("Deleted ASR model files: \(ByteCountFormatter.string(fromByteCount: freed, countStyle: .file))")
         }
         return freed
     }
 
     // MARK: - Model Dir Helpers
 
+    /// Searches `Documents/Models/` AND `Documents/Models/mlx-audio/` for directories
+    /// matching any of the given patterns (case-insensitive substring match on folder name).
+    /// This is needed because mlx-audio-swift stores downloaded model weights inside the
+    /// `mlx-audio/` subdirectory, e.g.:
+    ///   Documents/Models/mlx-audio/Marvis-AI_marvis-tts-250m-v0.2-MLX-8bit/
     private func modelSize(patterns: [String]) -> Int64 {
-        let dir = StorageManager.modelCacheDirectory
-        guard fileManager.fileExists(atPath: dir.path) else { return 0 }
+        let root = StorageManager.modelCacheDirectory
+        guard fileManager.fileExists(atPath: root.path) else { return 0 }
+
+        // Directories to scan: the root itself, plus the mlx-audio/ subdirectory
+        var scanDirs: [URL] = [root]
+        let mlxAudio = root.appendingPathComponent("mlx-audio", isDirectory: true)
+        if fileManager.fileExists(atPath: mlxAudio.path) { scanDirs.append(mlxAudio) }
+
         var total: Int64 = 0
-        do {
-            let contents = try fileManager.contentsOfDirectory(
+        for dir in scanDirs {
+            guard let contents = try? fileManager.contentsOfDirectory(
                 at: dir, includingPropertiesForKeys: nil, options: .skipsHiddenFiles
-            )
+            ) else { continue }
             for item in contents {
                 let name = item.lastPathComponent.lowercased()
                 if patterns.contains(where: { name.contains($0.lowercased()) }) {
                     total += Int64(diskSize(of: item))
                 }
             }
-        } catch {}
+        }
         return total
     }
 
+    /// Deletes directories matching any of the given patterns from both
+    /// `Documents/Models/` and `Documents/Models/mlx-audio/`.
     private func deleteModelDirs(patterns: [String]) -> Int64 {
-        let dir = StorageManager.modelCacheDirectory
-        guard fileManager.fileExists(atPath: dir.path) else { return 0 }
+        let root = StorageManager.modelCacheDirectory
+        guard fileManager.fileExists(atPath: root.path) else { return 0 }
+
+        var scanDirs: [URL] = [root]
+        let mlxAudio = root.appendingPathComponent("mlx-audio", isDirectory: true)
+        if fileManager.fileExists(atPath: mlxAudio.path) { scanDirs.append(mlxAudio) }
+
         var totalFreed: Int64 = 0
-        do {
-            let contents = try fileManager.contentsOfDirectory(
+        for dir in scanDirs {
+            guard let contents = try? fileManager.contentsOfDirectory(
                 at: dir, includingPropertiesForKeys: nil, options: .skipsHiddenFiles
-            )
+            ) else { continue }
             for item in contents {
                 let name = item.lastPathComponent.lowercased()
                 if patterns.contains(where: { name.contains($0.lowercased()) }) {
                     let size = Int64(diskSize(of: item))
-                    try? fileManager.removeItem(at: item)
-                    totalFreed += size
+                    do {
+                        try fileManager.removeItem(at: item)
+                        totalFreed += size
+                    } catch {
+                        logger.error("Failed to delete model dir \(item.lastPathComponent): \(error.localizedDescription)")
+                    }
                 }
             }
-        } catch {
-            logger.error("Failed to delete model dirs: \(error.localizedDescription)")
         }
         return totalFreed
     }

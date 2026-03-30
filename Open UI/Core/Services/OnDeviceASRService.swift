@@ -13,10 +13,10 @@ import HuggingFace
 
 /// Identifies which on-device ASR model is active.
 enum ASRModelVariant: String, CaseIterable, Sendable {
-    case parakeet = "parakeet"
+    case qwen3ASR = "qwen3asr"
 
-    var displayName: String { "Parakeet TDT 0.6B" }
-    var repoId: String { "mlx-community/parakeet-tdt-0.6b-v3" }
+    var displayName: String { "Qwen3 ASR 0.6B" }
+    var repoId: String { "mlx-community/Qwen3-ASR-0.6B-8bit" }
 }
 
 // MARK: - State
@@ -56,10 +56,14 @@ enum ASRError: LocalizedError {
 
 // MARK: - OnDeviceASRService
 
-/// On-device automatic speech recognition using Parakeet TDT 0.6B.
+/// On-device automatic speech recognition using Qwen3 ASR 0.6B.
 ///
 /// Backed by the mlx-audio-swift library. Audio is downsampled to 16 kHz
 /// off the main actor so the UI spinner remains responsive.
+///
+/// Qwen3 ASR is a multilingual model that supports automatic language detection.
+/// When `language: nil` is passed, it auto-detects the spoken language and
+/// transcribes accordingly — no manual language selection needed.
 ///
 /// ## Background Safety
 ///
@@ -100,11 +104,11 @@ final class OnDeviceASRService {
     private var isLoadInProgress = false
 
     #if canImport(MLXAudioSTT)
-    // nonisolated(unsafe): ParakeetModel is not Sendable, but all writes happen
+    // nonisolated(unsafe): Qwen3ASRModel is not Sendable, but all writes happen
     // on @MainActor (loadModel / unloadModel) and reads in transcribe() are
     // pre-captured into a local `capturedModel` constant on @MainActor before
     // the detached Task executes — so no concurrent access actually occurs.
-    @ObservationIgnored nonisolated(unsafe) private var parakeetModel: ParakeetModel?
+    @ObservationIgnored nonisolated(unsafe) private var qwen3Model: Qwen3ASRModel?
     #endif
 
     /// The currently running transcription Task. Stored so it can be cancelled
@@ -114,8 +118,8 @@ final class OnDeviceASRService {
     // MARK: - Init
 
     init() {
-        let raw = UserDefaults.standard.string(forKey: "sttEngine") ?? "parakeet"
-        activeVariant = ASRModelVariant(rawValue: raw) ?? .parakeet
+        let raw = UserDefaults.standard.string(forKey: "sttEngine") ?? "qwen3asr"
+        activeVariant = ASRModelVariant(rawValue: raw) ?? .qwen3ASR
     }
 
     // MARK: - Variant Switching
@@ -141,7 +145,7 @@ final class OnDeviceASRService {
             logger.info("ASR model load already in progress, ignoring (\(variant.displayName, privacy: .public))")
             return
         }
-        if parakeetModel != nil && state == .ready { return }
+        if qwen3Model != nil && state == .ready { return }
         if case .ready = state { return }
 
         isLoadInProgress = true
@@ -150,10 +154,15 @@ final class OnDeviceASRService {
 
         do {
             let modelCache = HubCache(location: .fixed(directory: StorageManager.modelCacheDirectory))
-            parakeetModel = try await ParakeetModel.fromPretrained(variant.repoId, cache: modelCache)
+            qwen3Model = try await Qwen3ASRModel.fromPretrained(variant.repoId, cache: modelCache)
             state = .ready
             isLoadInProgress = false
             logger.info("ASR model loaded: \(variant.displayName, privacy: .public)")
+            // Clean up Hub blob cache (models--* dirs) left behind by the HuggingFace
+            // download library — these are duplicates of the working copy in mlx-audio/.
+            Task.detached(priority: .utility) {
+                StorageManager.shared.cleanupHubCache()
+            }
         } catch {
             let msg = error.localizedDescription
             state = .error("\(variant.displayName) load failed: \(msg)")
@@ -167,7 +176,7 @@ final class OnDeviceASRService {
 
     func unloadModel() {
         #if canImport(MLXAudioSTT)
-        parakeetModel = nil
+        qwen3Model = nil
         Memory.clearCache()
         #endif
         isLoadInProgress = false
@@ -181,7 +190,7 @@ final class OnDeviceASRService {
     func unloadAndDeleteModel() {
         let variantName = activeVariant.displayName
         unloadModel()
-        let freed = StorageManager.shared.deleteParakeetASRModelFiles()
+        let freed = StorageManager.shared.deleteASRModelFiles()
         if freed > 0 {
             logger.info("\(variantName, privacy: .public) files deleted (\(ByteCountFormatter.string(fromByteCount: freed, countStyle: .file), privacy: .public))")
         }
@@ -189,13 +198,13 @@ final class OnDeviceASRService {
 
     /// Returns the on-disk size (bytes) of the cached model files.
     func modelSize(for variant: ASRModelVariant) -> Int64 {
-        StorageManager.shared.parakeetASRModelSize()
+        StorageManager.shared.asrModelSize()
     }
 
     /// Unloads (if active) and deletes the model files from disk.
     func unloadAndDeleteVariant(_ variant: ASRModelVariant) {
         if variant == activeVariant { unloadModel() }
-        let freed = StorageManager.shared.deleteParakeetASRModelFiles()
+        let freed = StorageManager.shared.deleteASRModelFiles()
         if freed > 0 {
             logger.info("\(variant.displayName) files deleted (\(ByteCountFormatter.string(fromByteCount: freed, countStyle: .file)))")
         }
@@ -249,6 +258,10 @@ final class OnDeviceASRService {
     /// hop back to `@MainActor` via `MainActor.run {}`. The heavy ML token loop
     /// runs on a detached background task so the UI stays fully responsive.
     ///
+    /// Qwen3 ASR automatically detects the spoken language when `language: nil`
+    /// is used, so Spanish, French, German, etc. are all transcribed correctly
+    /// without any manual configuration.
+    ///
     /// - Parameter audioData: Raw audio file data
     /// - Parameter fileName: Original filename (used for temp file extension)
     /// - Returns: Transcribed text
@@ -273,7 +286,7 @@ final class OnDeviceASRService {
         defer { try? FileManager.default.removeItem(at: tempURL) }
         try audioData.write(to: tempURL)
 
-        // Load audio and downsample to 16 kHz — both models require 16 kHz input.
+        // Load audio and downsample to 16 kHz — Qwen3 ASR requires 16 kHz input.
         // Runs off the main actor to keep the UI spinner responsive.
         let (sampleRate, audioArray) = try await Task.detached(priority: .userInitiated) { [tempURL] in
             try loadAudioArray(from: tempURL, sampleRate: 16000)
@@ -288,12 +301,8 @@ final class OnDeviceASRService {
         let totalDuration = Double(totalSamples) / Double(sampleRate)
         logger.info("Audio loaded: \(String(format: "%.1f", totalDuration))s at \(sampleRate)Hz")
 
-        // Use generate() instead of generateStream() for file transcription.
-        // generate() uses 15s overlap between 30s chunks (vs 1s in streaming),
-        // which produces far better merge quality and prevents audio cutoff at
-        // chunk boundaries — especially for the last chunk.
-        // language: nil lets the model auto-detect (Parakeet is English-only,
-        // but we don't hardcode it).
+        // Use generate() for file transcription.
+        // language: nil lets Qwen3 ASR auto-detect the spoken language.
         let params = STTGenerateParameters(
             language: nil,
             chunkDuration: 30
@@ -303,7 +312,7 @@ final class OnDeviceASRService {
         // nonisolated(unsafe) — no await needed; direct read is safe here because
         // we are still on @MainActor at this point (transcribe() hops back via
         // MainActor.run earlier), so no concurrent write can race with this read.
-        let capturedModel: ParakeetModel? = parakeetModel
+        let capturedModel: Qwen3ASRModel? = qwen3Model
 
         // Create the transcription task and register it so pauseForBackground() can cancel it.
         let transcriptionTask = Task.detached(priority: .userInitiated) {

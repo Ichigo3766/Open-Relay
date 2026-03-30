@@ -219,7 +219,7 @@ struct SettingsView: View {
             }
             .background(theme.background)
             .navigationTitle("Settings")
-            .navigationBarTitleDisplayMode(.large)
+            .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Done") { dismiss() }
@@ -1073,7 +1073,7 @@ struct TTSSettingsView: View {
 
     // MARK: - Marvis Status Badge
 
-    /// True when model files are already cached on disk (but not necessarily loaded into memory).
+    /// True when Marvis TTS model files are already cached on disk (but not necessarily loaded into memory).
     private var marvisFilesOnDisk: Bool {
         marvisModelSize != "–" && marvisModelSize != "Not downloaded"
     }
@@ -1259,7 +1259,12 @@ struct STTSettingsView: View {
     @AppStorage("sttLocale") private var sttLocale: String = ""
     @State private var micPermissionGranted = false
     @State private var speechPermissionGranted = false
-    @State private var parakeetModelSize: String = "–"
+    @State private var asrModelSize: String = "–"
+
+    /// True when ASR model files are already cached on disk (but not necessarily loaded into memory).
+    private var asrFilesOnDisk: Bool {
+        asrModelSize != "–" && asrModelSize != "Not downloaded"
+    }
 
     private var asr: OnDeviceASRService { dependencies.asrService }
 
@@ -1346,33 +1351,17 @@ struct STTSettingsView: View {
                     Button {
                         withAnimation(.easeOut(duration: 0.15)) {
                             audioFileMode = "device"
-                            asr.switchVariant(.parakeet)
+                            asr.switchVariant(.qwen3ASR)
                         }
                         Haptics.play(.light)
                     } label: {
                         HStack(spacing: Spacing.md) {
                             VStack(alignment: .leading, spacing: 2) {
-                                HStack(spacing: Spacing.xs) {
-                                    Text("On-Device (Parakeet)")
-                                        .scaledFont(size: 16)
-                                        .fontWeight(.medium)
-                                        .foregroundStyle(theme.textPrimary)
-                                    Text("NEW")
-                                        .scaledFont(size: 9, weight: .heavy)
-                                        .foregroundStyle(.white)
-                                        .padding(.horizontal, 5)
-                                        .padding(.vertical, 2)
-                                        .background(
-                                            Capsule().fill(
-                                                LinearGradient(
-                                                    colors: [theme.brandPrimary, theme.brandPrimary.opacity(0.7)],
-                                                    startPoint: .leading,
-                                                    endPoint: .trailing
-                                                )
-                                            )
-                                        )
-                                }
-                                Text("parakeet-tdt-0.6b-v3 — English, fully on-device")
+                                Text("On-Device (Qwen3 ASR)")
+                                    .scaledFont(size: 16)
+                                    .fontWeight(.medium)
+                                    .foregroundStyle(theme.textPrimary)
+                                Text("Multilingual with auto language detection, fully on-device")
                                     .scaledFont(size: 12, weight: .medium)
                                     .foregroundStyle(theme.textTertiary)
                             }
@@ -1392,14 +1381,14 @@ struct STTSettingsView: View {
                 if audioFileMode == "server" {
                     Text("Audio files attached in chat are uploaded to your server, which handles transcription automatically. No extra downloads needed.")
                 } else {
-                    Text("Audio files are transcribed locally on your device using Parakeet. Fully private — no audio sent to the server. Downloads once.")
+                    Text("Audio files are transcribed locally on your device using Qwen3 ASR. Fully private — no audio sent to the server. Supports multiple languages with auto-detection.")
                 }
             }
 
-            // On-Device Model Settings (Parakeet) — only when device mode is selected
+            // On-Device Model Settings (Qwen3 ASR) — only when device mode is selected
             if audioFileMode == "device" && asr.isAvailable {
-                let activeVariant: ASRModelVariant = .parakeet
-                let currentModelSize = parakeetModelSize
+                let activeVariant: ASRModelVariant = .qwen3ASR
+                let currentModelSize = asrModelSize
                 let modelLabel = activeVariant.displayName
                 Section {
                     HStack {
@@ -1427,9 +1416,9 @@ struct STTSettingsView: View {
                             Task { try? await asr.loadModel() }
                         } label: {
                             HStack(spacing: Spacing.sm) {
-                                Image(systemName: "arrow.down.circle")
+                                Image(systemName: asrFilesOnDisk ? "bolt.circle" : "arrow.down.circle")
                                     .scaledFont(size: 16, weight: .medium)
-                                Text("Download & Load Model")
+                                Text(asrFilesOnDisk ? "Load Model" : "Download & Load Model")
                                     .scaledFont(size: 16)
                                     .fontWeight(.medium)
                             }
@@ -1591,17 +1580,17 @@ struct STTSettingsView: View {
             // Model Storage Management
             Section {
                 HStack {
-                    Text("Parakeet ASR")
+                    Text("Qwen3 ASR")
                         .scaledFont(size: 16)
                         .foregroundStyle(theme.textPrimary)
                     Spacer()
-                    Text(parakeetModelSize)
+                    Text(asrModelSize)
                         .scaledFont(size: 14)
                         .foregroundStyle(theme.textSecondary)
                 }
                 .swipeActions(edge: .trailing, allowsFullSwipe: true) {
                     Button(role: .destructive) {
-                        asr.unloadAndDeleteVariant(.parakeet)
+                        asr.unloadAndDeleteVariant(.qwen3ASR)
                         refreshModelSizes()
                     } label: {
                         Label("Delete", systemImage: "trash")
@@ -1641,7 +1630,7 @@ struct STTSettingsView: View {
     private var asrStatusBadge: some View {
         switch asr.state {
         case .unloaded:
-            statusPill("Not Downloaded", color: theme.textTertiary)
+            statusPill(asrFilesOnDisk ? "Not Loaded" : "Not Downloaded", color: theme.textTertiary)
         case .loading:
             HStack(spacing: 4) {
                 ProgressView().controlSize(.mini)
@@ -1690,8 +1679,8 @@ struct STTSettingsView: View {
     }
 
     private func refreshModelSizes() {
-        let p = asr.modelSize(for: .parakeet)
-        parakeetModelSize = p > 0 ? ByteCountFormatter.string(fromByteCount: p, countStyle: .file) : "Not downloaded"
+        let p = asr.modelSize(for: .qwen3ASR)
+        asrModelSize = p > 0 ? ByteCountFormatter.string(fromByteCount: p, countStyle: .file) : "Not downloaded"
     }
 
 }

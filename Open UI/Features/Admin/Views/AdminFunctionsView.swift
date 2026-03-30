@@ -495,6 +495,7 @@ struct AdminFunctionsView: View {
         do {
             try await manager.toggleActive(id: fn.id)
             Haptics.play(.light)
+            NotificationCenter.default.post(name: .functionsConfigChanged, object: nil)
         } catch {
             errorMessage = error.localizedDescription
             Haptics.notify(.error)
@@ -517,6 +518,7 @@ struct AdminFunctionsView: View {
         do {
             try await manager.toggleGlobal(id: fn.id)
             Haptics.play(.light)
+            NotificationCenter.default.post(name: .functionsConfigChanged, object: nil)
         } catch {
             errorMessage = "Toggle global failed: \(error.localizedDescription)"
             Haptics.notify(.error)
