@@ -90,8 +90,12 @@ struct ModelEditorView: View {
     @State private var defaultFilterIds: Set<String> = []
     @State private var selectedActionIds: Set<String> = []
     @State private var allTools: [(id: String, name: String)] = []
-    @State private var allFilters: [(id: String, name: String)] = []
+    @State private var allFilters: [(id: String, name: String, isGlobal: Bool)] = []
     @State private var allActions: [(id: String, name: String)] = []
+    /// Action-type functions (type == "action") with global/active state.
+    /// Used for the "Actions" section with global lock support.
+    @State private var allActionFunctions: [(id: String, name: String, isGlobal: Bool)] = []
+    @State private var selectedActionFunctionIds: Set<String> = []
     @State private var isFetchingToolsAndFunctions = false
 
     // MARK: - Suggestion Prompts
@@ -296,6 +300,8 @@ struct ModelEditorView: View {
                         isFetchingToolsAndFunctions: $isFetchingToolsAndFunctions,
                         selectedActionIds: $selectedActionIds,
                         allActions: $allActions,
+                        allActionFunctions: $allActionFunctions,
+                        selectedActionFunctionIds: $selectedActionFunctionIds,
                         selectedFilterIds: $selectedFilterIds,
                         defaultFilterIds: $defaultFilterIds,
                         allFilters: $allFilters,
@@ -1508,12 +1514,41 @@ struct ModelEditorView: View {
             }
             logger.info("[ToolsFunctions] Fetched \(allTools.count) tools")
 
-            // Fetch filters from /api/v1/functions/
+            // Fetch filters and action functions from /api/v1/functions/
             let functions = try await api.getFunctions()
             allFilters = functions
                 .filter { $0.type == "filter" }
-                .map { (id: $0.id, name: $0.name) }
+                .map { (id: $0.id, name: $0.name, isGlobal: $0.isGlobal) }
             logger.info("[ToolsFunctions] Fetched \(allFilters.count) filters from functions")
+
+            // Pre-select global filters (always enabled, non-editable)
+            for fn in allFilters where fn.isGlobal {
+                selectedFilterIds.insert(fn.id)
+            }
+            // Also select per-model filter IDs from the existing model
+            if let model = existingModel {
+                for filterId in model.filterIds {
+                    selectedFilterIds.insert(filterId)
+                }
+            }
+
+            // Extract action-type functions with global state for the Actions section
+            allActionFunctions = functions
+                .filter { $0.type == "action" && $0.isActive }
+                .map { (id: $0.id, name: $0.name, isGlobal: $0.isGlobal) }
+            logger.info("[ToolsFunctions] Fetched \(allActionFunctions.count) active action functions")
+
+            // Pre-select action functions: global ones are always selected,
+            // per-model ones come from the model's actionIds
+            for fn in allActionFunctions where fn.isGlobal {
+                selectedActionFunctionIds.insert(fn.id)
+            }
+            // Also select per-model action IDs from the existing model
+            if let model = existingModel {
+                for actionId in model.actionIds {
+                    selectedActionFunctionIds.insert(actionId)
+                }
+            }
 
             // Fetch skills from /api/v1/skills/list (separate paginated endpoint)
             let skills = try await api.getSkills()
@@ -1633,9 +1668,21 @@ struct ModelEditorView: View {
         detail.customParams = customParams.filter { !$0.key.isEmpty }
         // Tools, Skills, Filters
         detail.toolIds = Array(selectedToolIds)
-        detail.filterIds = Array(selectedFilterIds)
+        // Filter IDs: exclude global filters (server applies them automatically).
+        // Only save per-model filter selections.
+        let globalFilterIds = Set(allFilters.filter(\.isGlobal).map(\.id))
+        detail.filterIds = Array(selectedFilterIds.subtracting(globalFilterIds))
         detail.defaultFilterIds = Array(defaultFilterIds)
-        detail.actionIds = Array(selectedActionIds)
+        // Action IDs: merge skill selections with non-global action function selections.
+        // Global action functions are excluded — the server applies them automatically.
+        // Filter out any action function IDs from selectedActionIds to avoid double-counting
+        // (populateIfEditing puts all model.actionIds into selectedActionIds before we
+        // know which ones are skills vs action functions).
+        let allActionFunctionIds = Set(allActionFunctions.map(\.id))
+        let globalActionIds = Set(allActionFunctions.filter(\.isGlobal).map(\.id))
+        let skillOnlyIds = selectedActionIds.subtracting(allActionFunctionIds)
+        let perModelActionFunctionIds = selectedActionFunctionIds.subtracting(globalActionIds)
+        detail.actionIds = Array(skillOnlyIds) + Array(perModelActionFunctionIds)
         return detail
     }
 
@@ -1686,6 +1733,7 @@ struct ModelEditorView: View {
                 )
                 updated.accessGrants = updatedGrants
                 onSave?(updated)
+                NotificationCenter.default.post(name: .functionsConfigChanged, object: nil)
             } else {
                 var detail = buildDetail(id: trimmedId)
                 detail.accessGrants = allGrants
@@ -2474,9 +2522,12 @@ struct ModelToolsAndCapabilitiesSection: View {
     @Binding var isFetchingToolsAndFunctions: Bool
     @Binding var selectedActionIds: Set<String>
     @Binding var allActions: [(id: String, name: String)]
+    /// Action-type functions with global/active state for the "Actions" section.
+    @Binding var allActionFunctions: [(id: String, name: String, isGlobal: Bool)]
+    @Binding var selectedActionFunctionIds: Set<String>
     @Binding var selectedFilterIds: Set<String>
     @Binding var defaultFilterIds: Set<String>
-    @Binding var allFilters: [(id: String, name: String)]
+    @Binding var allFilters: [(id: String, name: String, isGlobal: Bool)]
 
     // Capabilities
     @Binding var capVision: Bool
@@ -2511,6 +2562,7 @@ struct ModelToolsAndCapabilitiesSection: View {
             toolsSectionView
             skillsSectionView
             filtersSectionView
+            actionFunctionsSectionView
             capabilitiesSectionView
             defaultFeaturesSectionView
             builtinToolsSectionView
@@ -2585,6 +2637,9 @@ struct ModelToolsAndCapabilitiesSection: View {
 
     // MARK: - Filters
 
+    /// Shows filter functions with global lock support.
+    /// Global filters are always checked and disabled (non-editable) with a 🔒 icon.
+    /// Per-model filters are editable checkboxes.
     private var filtersSectionView: some View {
         VStack(alignment: .leading, spacing: Spacing.sm) {
             sectionHeader("Filters")
@@ -2605,7 +2660,36 @@ struct ModelToolsAndCapabilitiesSection: View {
                 fieldCard {
                     LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 0) {
                         ForEach(allFilters, id: \.id) { filter in
-                            setCheckbox(filter.name, id: filter.id, selection: $selectedFilterIds)
+                            let isGlobal = filter.isGlobal
+                            let isSelected = selectedFilterIds.contains(filter.id)
+                            Button {
+                                guard !isGlobal else { return }
+                                if isSelected {
+                                    selectedFilterIds.remove(filter.id)
+                                } else {
+                                    selectedFilterIds.insert(filter.id)
+                                }
+                                Haptics.play(.light)
+                            } label: {
+                                HStack(spacing: 6) {
+                                    Image(systemName: isSelected ? "checkmark.square.fill" : "square")
+                                        .scaledFont(size: 16)
+                                        .foregroundStyle(isSelected ? theme.brandPrimary : theme.textTertiary)
+                                    Text(filter.name).scaledFont(size: 13)
+                                        .foregroundStyle(isSelected ? theme.textPrimary : theme.textSecondary)
+                                        .lineLimit(2).fixedSize(horizontal: false, vertical: true)
+                                    if isGlobal {
+                                        Image(systemName: "lock.fill")
+                                            .scaledFont(size: 9)
+                                            .foregroundStyle(theme.textTertiary)
+                                    }
+                                }
+                                .padding(.horizontal, 8).padding(.vertical, 10)
+                                .frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                            .disabled(isGlobal)
+                            .opacity(isGlobal ? 0.7 : 1.0)
                         }
                     }
                     .padding(.vertical, 4).padding(.horizontal, 4)
@@ -2621,6 +2705,56 @@ struct ModelToolsAndCapabilitiesSection: View {
                         }
                         .padding(.vertical, 4).padding(.horizontal, 4)
                     }
+                }
+            }
+        }
+    }
+
+    // MARK: - Action Functions
+
+    /// Shows action-type functions (e.g. "Generate Image") with global lock support.
+    /// Global actions are always checked and disabled (non-editable).
+    /// Per-model actions are editable checkboxes.
+    private var actionFunctionsSectionView: some View {
+        VStack(alignment: .leading, spacing: Spacing.sm) {
+            if !allActionFunctions.isEmpty {
+                sectionHeader("Actions")
+                fieldCard {
+                    LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 0) {
+                        ForEach(allActionFunctions, id: \.id) { fn in
+                            let isGlobal = fn.isGlobal
+                            let isSelected = selectedActionFunctionIds.contains(fn.id)
+                            Button {
+                                guard !isGlobal else { return } // Global actions cannot be toggled
+                                if isSelected {
+                                    selectedActionFunctionIds.remove(fn.id)
+                                } else {
+                                    selectedActionFunctionIds.insert(fn.id)
+                                }
+                                Haptics.play(.light)
+                            } label: {
+                                HStack(spacing: 6) {
+                                    Image(systemName: isSelected ? "checkmark.square.fill" : "square")
+                                        .scaledFont(size: 16)
+                                        .foregroundStyle(isSelected ? theme.brandPrimary : theme.textTertiary)
+                                    Text(fn.name).scaledFont(size: 13)
+                                        .foregroundStyle(isSelected ? theme.textPrimary : theme.textSecondary)
+                                        .lineLimit(2).fixedSize(horizontal: false, vertical: true)
+                                    if isGlobal {
+                                        Image(systemName: "lock.fill")
+                                            .scaledFont(size: 9)
+                                            .foregroundStyle(theme.textTertiary)
+                                    }
+                                }
+                                .padding(.horizontal, 8).padding(.vertical, 10)
+                                .frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                            .disabled(isGlobal)
+                            .opacity(isGlobal ? 0.7 : 1.0)
+                        }
+                    }
+                    .padding(.vertical, 4).padding(.horizontal, 4)
                 }
             }
         }

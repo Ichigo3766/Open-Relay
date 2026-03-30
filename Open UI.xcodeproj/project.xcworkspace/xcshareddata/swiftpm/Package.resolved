@@ -1,5 +1,5 @@
 {
-  "originHash" : "fa6e9e0ca517080edab92e5ada31e4c2d86fb643a7102aab6eb3453556ac217d",
+  "originHash" : "42a26ca2d6609b6207cdeb91d2f41ace59e1a4f8f430381e65162aed51ffe7ad",
   "pins" : [
     {
       "identity" : "beautiful-mermaid-swift",
@@ -61,7 +61,7 @@
       "location" : "https://github.com/Ichigo3766/MarkdownView",
       "state" : {
         "branch" : "main",
-        "revision" : "365c3ab50e4c17b1be3dae2be004420da3e34d83"
+        "revision" : "f7bda9f06c987e180d065756f45825d02e4de14b"
       }
     },
     {
@@ -70,7 +70,7 @@
       "location" : "https://github.com/Blaizzy/mlx-audio-swift.git",
       "state" : {
         "branch" : "main",
-        "revision" : "9bf8fb413de6d18af1312b171fa1c71ccd1f628f"
+        "revision" : "2fd41458059e2d80403436167d5263f585d120d4"
       }
     },
     {

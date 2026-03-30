@@ -18,10 +18,12 @@
 		3852C70F2F71110800283682 /* WidgetKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 3852C70E2F71110800283682 /* WidgetKit.framework */; };
 		3852C7112F71110800283682 /* SwiftUI.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 3852C7102F71110800283682 /* SwiftUI.framework */; };
 		3852C7222F71110900283682 /* OpenUIWidgetsExtension.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = 3852C70C2F71110800283682 /* OpenUIWidgetsExtension.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		3852D4402F7A495A00283682 /* MarkdownParser in Frameworks */ = {isa = PBXBuildFile; productRef = 3852D43F2F7A495A00283682 /* MarkdownParser */; };
+		3852D4422F7A495A00283682 /* MarkdownView in Frameworks */ = {isa = PBXBuildFile; productRef = 3852D4412F7A495A00283682 /* MarkdownView */; };
+		3852D4452F7A4C6900283682 /* MarkdownParser in Frameworks */ = {isa = PBXBuildFile; productRef = 3852D4442F7A4C6900283682 /* MarkdownParser */; };
+		3852D4472F7A4C6900283682 /* MarkdownView in Frameworks */ = {isa = PBXBuildFile; productRef = 3852D4462F7A4C6900283682 /* MarkdownView */; };
 		385E9BC42F6FAB4900A57A28 /* MarkdownParser in Frameworks */ = {isa = PBXBuildFile; productRef = 385E9BC32F6FAB4900A57A28 /* MarkdownParser */; };
 		385E9BC62F6FAB4900A57A28 /* MarkdownView in Frameworks */ = {isa = PBXBuildFile; productRef = 385E9BC52F6FAB4900A57A28 /* MarkdownView */; };
-		385E9BC92F6FAE8600A57A28 /* MarkdownParser in Frameworks */ = {isa = PBXBuildFile; productRef = 385E9BC82F6FAE8600A57A28 /* MarkdownParser */; };
-		385E9BCB2F6FAE8600A57A28 /* MarkdownView in Frameworks */ = {isa = PBXBuildFile; productRef = 385E9BCA2F6FAE8600A57A28 /* MarkdownView */; };
 		3870D18B2F5C0732004FF9ED /* MarkdownParser in Frameworks */ = {isa = PBXBuildFile; productRef = 3870D18A2F5C0732004FF9ED /* MarkdownParser */; };
 		3870D18D2F5C0732004FF9ED /* MarkdownView in Frameworks */ = {isa = PBXBuildFile; productRef = 3870D18C2F5C0732004FF9ED /* MarkdownView */; };
 		38868C2A2F5A527000FA123F /* MarkdownParser in Frameworks */ = {isa = PBXBuildFile; productRef = 38868C292F5A527000FA123F /* MarkdownParser */; };
@@ -117,18 +119,20 @@
 			files = (
 				384A121E2F68D677005E1919 /* MLXAudioSTT in Frameworks */,
 				384A12202F68D677005E1919 /* MLXAudioTTS in Frameworks */,
+				3852D4472F7A4C6900283682 /* MarkdownView in Frameworks */,
 				38868C2A2F5A527000FA123F /* MarkdownParser in Frameworks */,
 				385E9BC42F6FAB4900A57A28 /* MarkdownParser in Frameworks */,
 				3870D18D2F5C0732004FF9ED /* MarkdownView in Frameworks */,
 				38C0AC0E2F5A12CF0084BC6C /* MarkdownParser in Frameworks */,
 				38868C2C2F5A527000FA123F /* MarkdownView in Frameworks */,
+				3852D4452F7A4C6900283682 /* MarkdownParser in Frameworks */,
 				3870D18B2F5C0732004FF9ED /* MarkdownParser in Frameworks */,
 				384A121A2F68D677005E1919 /* MLXAudioCodecs in Frameworks */,
 				38868C362F5A66F300FA123F /* MarkdownView in Frameworks */,
 				384A121C2F68D677005E1919 /* MLXAudioCore in Frameworks */,
 				38868C342F5A66F300FA123F /* MarkdownParser in Frameworks */,
-				385E9BCB2F6FAE8600A57A28 /* MarkdownView in Frameworks */,
-				385E9BC92F6FAE8600A57A28 /* MarkdownParser in Frameworks */,
+				3852D4422F7A495A00283682 /* MarkdownView in Frameworks */,
+				3852D4402F7A495A00283682 /* MarkdownParser in Frameworks */,
 				38C0AC102F5A12CF0084BC6C /* MarkdownView in Frameworks */,
 				38AA00012FA9B00000MRMAID /* BeautifulMermaid in Frameworks */,
 				385E9BC62F6FAB4900A57A28 /* MarkdownView in Frameworks */,
@@ -235,8 +239,10 @@
 				380186282F6F1E22007FCD96 /* MarkdownView */,
 				385E9BC32F6FAB4900A57A28 /* MarkdownParser */,
 				385E9BC52F6FAB4900A57A28 /* MarkdownView */,
-				385E9BC82F6FAE8600A57A28 /* MarkdownParser */,
-				385E9BCA2F6FAE8600A57A28 /* MarkdownView */,
+				3852D43F2F7A495A00283682 /* MarkdownParser */,
+				3852D4412F7A495A00283682 /* MarkdownView */,
+				3852D4442F7A4C6900283682 /* MarkdownParser */,
+				3852D4462F7A4C6900283682 /* MarkdownView */,
 			);
 			productName = "Open UI";
 			productReference = 38EB667D2F39CE5A00AED774 /* Open UI.app */;
@@ -277,7 +283,7 @@
 				38AA00022FA9B00000MRMAID /* XCRemoteSwiftPackageReference "beautiful-mermaid-swift" */,
 				38AA00052FA9B00000SVGDRW /* XCRemoteSwiftPackageReference "SwiftDraw" */,
 				384A12182F68D677005E1919 /* XCRemoteSwiftPackageReference "mlx-audio-swift" */,
-				385E9BC72F6FAE8600A57A28 /* XCRemoteSwiftPackageReference "MarkdownView" */,
+				3852D4432F7A4C6800283682 /* XCRemoteSwiftPackageReference "MarkdownView" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 38EB667E2F39CE5A00AED774 /* Products */;
@@ -352,7 +358,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 2.2;
+				MARKETING_VERSION = 2.3;
 				PRODUCT_BUNDLE_IDENTIFIER = com.openui.openui.OpenUIWidget;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SKIP_INSTALL = YES;
@@ -384,7 +390,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 2.2;
+				MARKETING_VERSION = 2.3;
 				PRODUCT_BUNDLE_IDENTIFIER = com.openui.openui.OpenUIWidget;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SKIP_INSTALL = YES;
@@ -553,7 +559,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 2.2;
+				MARKETING_VERSION = 2.3;
 				PRODUCT_BUNDLE_IDENTIFIER = com.openui.openui;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
@@ -597,7 +603,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 2.2;
+				MARKETING_VERSION = 2.3;
 				PRODUCT_BUNDLE_IDENTIFIER = com.openui.openui;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
@@ -651,7 +657,7 @@
 				kind = branch;
 			};
 		};
-		385E9BC72F6FAE8600A57A28 /* XCRemoteSwiftPackageReference "MarkdownView" */ = {
+		3852D4432F7A4C6800283682 /* XCRemoteSwiftPackageReference "MarkdownView" */ = {
 			isa = XCRemoteSwiftPackageReference;
 			repositoryURL = "https://github.com/Ichigo3766/MarkdownView";
 			requirement = {
@@ -714,22 +720,30 @@
 			package = 384A12182F68D677005E1919 /* XCRemoteSwiftPackageReference "mlx-audio-swift" */;
 			productName = MLXAudioTTS;
 		};
+		3852D43F2F7A495A00283682 /* MarkdownParser */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = MarkdownParser;
+		};
+		3852D4412F7A495A00283682 /* MarkdownView */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = MarkdownView;
+		};
+		3852D4442F7A4C6900283682 /* MarkdownParser */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 3852D4432F7A4C6800283682 /* XCRemoteSwiftPackageReference "MarkdownView" */;
+			productName = MarkdownParser;
+		};
+		3852D4462F7A4C6900283682 /* MarkdownView */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 3852D4432F7A4C6800283682 /* XCRemoteSwiftPackageReference "MarkdownView" */;
+			productName = MarkdownView;
+		};
 		385E9BC32F6FAB4900A57A28 /* MarkdownParser */ = {
 			isa = XCSwiftPackageProductDependency;
 			productName = MarkdownParser;
 		};
 		385E9BC52F6FAB4900A57A28 /* MarkdownView */ = {
 			isa = XCSwiftPackageProductDependency;
-			productName = MarkdownView;
-		};
-		385E9BC82F6FAE8600A57A28 /* MarkdownParser */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = 385E9BC72F6FAE8600A57A28 /* XCRemoteSwiftPackageReference "MarkdownView" */;
-			productName = MarkdownParser;
-		};
-		385E9BCA2F6FAE8600A57A28 /* MarkdownView */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = 385E9BC72F6FAE8600A57A28 /* XCRemoteSwiftPackageReference "MarkdownView" */;
 			productName = MarkdownView;
 		};
 		3870D18A2F5C0732004FF9ED /* MarkdownParser */ = {

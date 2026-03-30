@@ -1,3 +1,4 @@
+import UIKit
 import SwiftUI
 import MarkdownView
 import Charts
@@ -22,12 +23,27 @@ struct StreamingMarkdownView: View {
     @State private var displayContent: String = ""
     @State private var flushTask: Task<Void, Never>? = nil
 
+    @Environment(\.accessibilityScale) private var accessibilityScale
+
     private static let flushInterval: Double = 0.3
+
+    /// Base body font size used by MarkdownTheme.default (UIFont.preferredFont(.body)).
+    /// We scale relative to this so the user's content text scale applies correctly.
+    private static let baseBodyFontSize: CGFloat = UIFont.preferredFont(forTextStyle: .body).pointSize
 
     init(content: String, isStreaming: Bool, textColor: SwiftUI.Color? = nil) {
         self.content = content
         self.isStreaming = isStreaming
         self.textColor = textColor
+    }
+
+    /// Returns a MarkdownTheme with fonts scaled by the user's accessibility content scale.
+    private var scaledTheme: MarkdownTheme {
+        let scale = accessibilityScale.scale(for: .content)
+        guard abs(scale - 1.0) > 0.01 else { return .default }
+        var theme = MarkdownTheme.default
+        theme.align(to: Self.baseBodyFontSize * scale)
+        return theme
     }
 
     var body: some View {
@@ -66,7 +82,7 @@ struct StreamingMarkdownView: View {
             // .codeAutoScroll(true) → CodeView auto-scrolls to bottom as new
             // lines arrive during streaming. User can scroll up manually and the
             // FAB appears to jump back to the bottom.
-            MarkdownView(displayContent).codeAutoScroll(true)
+            MarkdownView(displayContent, theme: scaledTheme).codeAutoScroll(true)
         }
     }
 
@@ -83,13 +99,13 @@ struct StreamingMarkdownView: View {
                     switch segment {
                     case .markdown(let text):
                         if !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                            MarkdownView(text)
+                            MarkdownView(text, theme: scaledTheme)
                         }
                     case .chart(let code):
                         if let spec = tryParseChart(code: code) {
                             ChartPreviewView(spec: spec, rawCode: code, language: "json")
                         } else {
-                            MarkdownView("```json\n\(code)\n```")
+                            MarkdownView("```json\n\(code)\n```", theme: scaledTheme)
                         }
                     case .html(let code):
                         HTMLPreviewView(html: code)

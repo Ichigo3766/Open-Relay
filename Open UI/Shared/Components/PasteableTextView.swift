@@ -386,9 +386,6 @@ final class PasteInterceptingTextView: UITextView {
     /// Whether Return key sends the message instead of inserting a newline.
     var sendOnReturn: Bool = true
 
-    /// Tracks whether the Shift key is currently held on a hardware keyboard.
-    private var isShiftHeld: Bool = false
-
     /// Observer for the widget "focus input" notification so we can call
     /// `becomeFirstResponder()` directly on the UIKit text view.
     /// SwiftUI's `@FocusState` does NOT drive focus for UIViewRepresentable
@@ -551,39 +548,22 @@ final class PasteInterceptingTextView: UITextView {
         GCKeyboard.coalesced != nil
     }
 
-    // MARK: - Modifier Key Tracking
+    // MARK: - Shift Key Detection (Real-Time via GCKeyboard)
 
-    override func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
-        for press in presses {
-            if let key = press.key {
-                if key.keyCode == .keyboardLeftShift || key.keyCode == .keyboardRightShift {
-                    isShiftHeld = true
-                }
-            }
-        }
-        super.pressesBegan(presses, with: event)
-    }
-
-    override func pressesEnded(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
-        for press in presses {
-            if let key = press.key {
-                if key.keyCode == .keyboardLeftShift || key.keyCode == .keyboardRightShift {
-                    isShiftHeld = false
-                }
-            }
-        }
-        super.pressesEnded(presses, with: event)
-    }
-
-    override func pressesCancelled(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
-        for press in presses {
-            if let key = press.key {
-                if key.keyCode == .keyboardLeftShift || key.keyCode == .keyboardRightShift {
-                    isShiftHeld = false
-                }
-            }
-        }
-        super.pressesCancelled(presses, with: event)
+    /// Queries the hardware keyboard's live button state to determine
+    /// whether either Shift key is currently pressed.
+    ///
+    /// This replaces the previous `pressesBegan`/`pressesEnded` tracking
+    /// approach, which suffered from race conditions — `insertText("\n")`
+    /// could fire before the Shift press event was delivered, causing
+    /// Shift+Enter to send instead of inserting a newline.
+    ///
+    /// Reading from `GCKeyboard.coalesced` at the exact moment we need
+    /// the result eliminates the race entirely.
+    private var isShiftCurrentlyPressed: Bool {
+        guard let keyboard = GCKeyboard.coalesced?.keyboardInput else { return false }
+        return keyboard.button(forKeyCode: .leftShift)?.isPressed == true
+            || keyboard.button(forKeyCode: .rightShift)?.isPressed == true
     }
 
     // MARK: - Return Key Handling
@@ -592,7 +572,7 @@ final class PasteInterceptingTextView: UITextView {
         if text == "\n" && sendOnReturn {
             if isHardwareKeyboardConnected {
                 // Hardware keyboard: Shift+Enter inserts a newline, bare Enter sends.
-                if isShiftHeld {
+                if isShiftCurrentlyPressed {
                     super.insertText(text)
                 } else {
                     onReturnKey?()

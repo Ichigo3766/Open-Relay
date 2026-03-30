@@ -130,6 +130,11 @@ final class MarvisTTSService {
             state = .ready
             isLoadInProgress = false
             logger.info("MarvisTTS model loaded (sampleRate=\(loaded.sampleRate))")
+            // Clean up Hub blob cache (models--* dirs) left behind by the HuggingFace
+            // download library — these are duplicates of the working copy in mlx-audio/.
+            Task.detached(priority: .utility) {
+                StorageManager.shared.cleanupHubCache()
+            }
         } catch {
             let msg = error.localizedDescription
             state = .error("Model loading failed: \(msg)")

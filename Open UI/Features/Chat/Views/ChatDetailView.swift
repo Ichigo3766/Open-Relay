@@ -230,16 +230,24 @@ struct ChatDetailView: View {
             if viewModel.isNewConversation {
                 viewModel.isTemporaryChat = UserDefaults.standard.bool(forKey: "temporaryChatDefault")
             }
-            if randomPrompts.isEmpty {
-                randomPrompts = Self.buildServerPrompts(
-                    from: dependencies.authViewModel.backendConfig?.defaultPromptSuggestions,
-                    count: promptCardCount
-                )
-            }
+            randomPrompts = Self.resolvePromptSuggestions(
+                adminSuggestions: dependencies.authViewModel.backendConfig?.defaultPromptSuggestions,
+                modelSuggestions: viewModel.selectedModel?.suggestionPrompts,
+                count: promptCardCount
+            )
             NotificationService.shared.activeConversationId =
                 viewModel.conversationId ?? viewModel.conversation?.id
             await viewModel.load()
             await viewModel.fetchPinnedModels()
+            // Rebuild prompts after load() — models are now fetched with fresh
+            // suggestion_prompts from the server. The pre-load resolve above
+            // uses cached data for instant display; this post-load resolve
+            // ensures prompts reflect the latest server state.
+            randomPrompts = Self.resolvePromptSuggestions(
+                adminSuggestions: dependencies.authViewModel.backendConfig?.defaultPromptSuggestions,
+                modelSuggestions: viewModel.selectedModel?.suggestionPrompts,
+                count: promptCardCount
+            )
         }
         // Reactive fallback: if backendConfig wasn't ready when .task ran
         // (first app launch), rebuild prompts as soon as the config arrives.
@@ -249,8 +257,21 @@ struct ChatDetailView: View {
             // Always rebuild when the server config changes — this handles both the
             // first-launch timing case (randomPrompts is empty) AND the case where
             // the admin updates suggestions on the server while the app is running.
-            let suggestions = dependencies.authViewModel.backendConfig?.defaultPromptSuggestions
-            randomPrompts = Self.buildServerPrompts(from: suggestions, count: promptCardCount)
+            randomPrompts = Self.resolvePromptSuggestions(
+                adminSuggestions: dependencies.authViewModel.backendConfig?.defaultPromptSuggestions,
+                modelSuggestions: viewModel.selectedModel?.suggestionPrompts,
+                count: promptCardCount
+            )
+        }
+        // Also rebuild prompts when the selected model changes — the new model may
+        // have per-model suggestion_prompts that should show as a fallback when the
+        // admin hasn't set global prompts.
+        .onChange(of: viewModel.selectedModelId) { _, _ in
+            randomPrompts = Self.resolvePromptSuggestions(
+                adminSuggestions: dependencies.authViewModel.backendConfig?.defaultPromptSuggestions,
+                modelSuggestions: viewModel.selectedModel?.suggestionPrompts,
+                count: promptCardCount
+            )
         }
         .onDisappear {
             keyboard.stop()
@@ -714,9 +735,7 @@ struct ChatDetailView: View {
 
     /// Maximum reading width for iPad. Content is centered in the available space.
     /// On iPhone, this is effectively unlimited (fills the screen).
-    private var iPadMaxContentWidth: CGFloat {
-        horizontalSizeClass == .regular ? 760 : .infinity
-    }
+    private var iPadMaxContentWidth: CGFloat { .infinity }
 
     /// Number of columns in the welcome prompt grid.
     private var promptColumnCount: Int {
@@ -795,8 +814,6 @@ struct ChatDetailView: View {
             }
             .padding(.top, 8)
             .padding(.bottom, 8)
-            // iPad: constrain content to reading width and center it.
-            // iPhone: fills the full screen (maxWidth: .infinity).
             .frame(maxWidth: iPadMaxContentWidth)
             .frame(maxWidth: .infinity)
             .frame(minHeight: max(viewState_containerHeight, 0), alignment: .top)
@@ -930,11 +947,6 @@ struct ChatDetailView: View {
             }
 
             // ── Streaming status indicators ──
-            // Isolated into its own struct so that reads of streamingStore
-            // properties (streamingStatusHistory, streamingContent, isActive)
-            // are attributed to IsolatedStreamingStatus.body — NOT to
-            // ChatDetailView.body. This prevents the entire ChatDetailView
-            // from re-evaluating on every streaming token.
             if message.role == .assistant {
                 IsolatedStreamingStatus(
                     streamingStore: viewModel.streamingStore,
@@ -1152,7 +1164,8 @@ struct ChatDetailView: View {
                 message: message,
                 activeVersionIndex: activeVersionIndex[message.id] ?? -1,
                 serverBaseURL: viewModel.serverBaseURL,
-                authToken: viewModel.serverAuthToken
+                authToken: viewModel.serverAuthToken,
+                apiClient: dependencies.apiClient
             )
         }
     }
@@ -1350,6 +1363,29 @@ struct ChatDetailView: View {
         // Shuffle so a different subset appears each time, then cap to `count`
         // (4 cards on iPhone, 8 on iPad).
         return Array(mapped.shuffled().prefix(count))
+    }
+
+    /// Resolves which prompt suggestions to show on the welcome screen.
+    ///
+    /// Priority:
+    /// 1. Admin-level `default_prompt_suggestions` (from `/api/config`) — if non-empty, use those.
+    /// 2. Per-model `suggestion_prompts` (from the selected model's `meta.suggestion_prompts`) — fallback.
+    /// 3. Neither → empty array (no prompt cards shown).
+    private static func resolvePromptSuggestions(
+        adminSuggestions: [BackendConfig.PromptSuggestion]?,
+        modelSuggestions: [BackendConfig.PromptSuggestion]?,
+        count: Int
+    ) -> [SuggestedPrompt] {
+        // 1. Admin-configured prompts take priority
+        if let admin = adminSuggestions, !admin.isEmpty {
+            return buildServerPrompts(from: admin, count: count)
+        }
+        // 2. Fall back to per-model prompts
+        if let model = modelSuggestions, !model.isEmpty {
+            return buildServerPrompts(from: model, count: count)
+        }
+        // 3. Neither → no prompts
+        return []
     }
 
     private var welcomeView: some View {
@@ -1687,6 +1723,23 @@ struct ChatDetailView: View {
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("Token usage")
+            }
+
+            // Action buttons (from model's configured actions — e.g. Generate Image)
+            if !viewModel.isStreaming {
+                let model = resolveModel(for: message)
+                if let actions = model?.actions, !actions.isEmpty {
+                    ForEach(actions) { action in
+                        Button {
+                            Task { await invokeActionButton(action: action, message: message) }
+                            Haptics.play(.medium)
+                        } label: {
+                            actionButtonIcon(action: action)
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel(action.name)
+                    }
+                }
             }
 
             Spacer()
@@ -2057,6 +2110,94 @@ struct ChatDetailView: View {
         }
     }
 
+    // MARK: - Action Button Helpers
+
+    /// Renders the icon for an action button. Decodes SVG data URIs into images,
+    /// falls back to an SF Symbol if SVG decoding fails.
+    @ViewBuilder
+    private func actionButtonIcon(action: AIModelAction) -> some View {
+        if let iconStr = action.icon,
+           iconStr.hasPrefix("data:image/svg+xml;base64,"),
+           let base64 = iconStr.components(separatedBy: ",").last,
+           let svgData = Data(base64Encoded: base64),
+           let svgString = String(data: svgData, encoding: .utf8) {
+            // Render SVG via a tiny WKWebView-free approach:
+            // Use the SVG string to create a UIImage via Core Graphics.
+            // Fallback: just use the SF Symbol name from the action name.
+            SVGIconView(svgString: svgString)
+                .frame(width: 28, height: 28)
+                .contentShape(Circle())
+        } else {
+            // Fallback: generic action icon
+            Image(systemName: "bolt.fill")
+                .scaledFont(size: 12, weight: .medium)
+                .foregroundStyle(theme.textTertiary.opacity(0.7))
+                .frame(width: 28, height: 28)
+                .contentShape(Circle())
+        }
+    }
+
+    /// Invokes a function-based action button on an assistant message.
+    /// Builds the request body matching the web UI format and calls the API.
+    /// After invocation, re-fetches the conversation to pick up content updates.
+    private func invokeActionButton(action: AIModelAction, message: ChatMessage) async {
+        guard let apiClient = dependencies.apiClient else { return }
+
+        // Show "Generating..." inline on the message while the action runs
+        if let idx = viewModel.conversation?.messages.firstIndex(where: { $0.id == message.id }) {
+            viewModel.conversation?.messages[idx].statusHistory.append(
+                ChatStatusUpdate(action: action.name, description: "\(action.name)…", done: false)
+            )
+        }
+
+        // Build the message array for the action request
+        let messageArray: [[String: Any]] = viewModel.messages.map { msg in
+            var dict: [String: Any] = [
+                "role": msg.role.rawValue,
+                "content": msg.content,
+                "timestamp": Int(msg.timestamp.timeIntervalSince1970)
+            ]
+            if !msg.id.isEmpty { dict["id"] = msg.id }
+            return dict
+        }
+
+        // Build the model_item from the selected model's rawModelItem
+        let modelItem: [String: Any] = viewModel.selectedModel?.rawModelItem ?? [:]
+
+        var body: [String: Any] = [
+            "model": viewModel.selectedModelId ?? "",
+            "messages": messageArray,
+            "id": message.id
+        ]
+        if let chatId = viewModel.conversationId ?? viewModel.conversation?.id {
+            body["chat_id"] = chatId
+        }
+        body["session_id"] = viewModel.sessionId
+        if !modelItem.isEmpty {
+            body["model_item"] = modelItem
+        }
+
+        do {
+            try await apiClient.invokeAction(actionId: action.id, body: body)
+            // After the action completes, re-fetch the conversation to pick up
+            // any content changes made by the action's event emitters.
+            // The action's server-side replace events may have set isStreaming
+            // via the passive socket listener — clear it before reload.
+            try? await Task.sleep(nanoseconds: 2_000_000_000) // 2s delay for server processing
+            viewModel.isStreaming = false
+            await viewModel.reloadConversation()
+        } catch {
+            viewModel.errorMessage = "Action failed: \(error.localizedDescription)"
+        }
+
+        // Clear the "Generating..." status
+        if let idx = viewModel.conversation?.messages.firstIndex(where: { $0.id == message.id }) {
+            viewModel.conversation?.messages[idx].statusHistory.removeAll {
+                $0.action == action.name && $0.done != true
+            }
+        }
+    }
+
     private func copyMessage(_ message: ChatMessage) {
         var clean = message.content
         if let re = try? NSRegularExpression(pattern: #"<details[^>]*>.*?</details>"#, options: [.dotMatchesLineSeparators]) {
@@ -2296,9 +2437,6 @@ private struct IsolatedStreamingStatus: View {
         let effectiveStatusHistory = isActiveStore
             ? streamingStore.streamingStatusHistory
             : message.statusHistory
-        let effectiveContent = isActiveStore
-            ? streamingStore.streamingContent
-            : message.content
         let effectiveIsStreaming = isActiveStore || message.isStreaming
 
         if !effectiveStatusHistory.isEmpty {
@@ -2344,6 +2482,8 @@ private struct IsolatedAssistantMessage: View {
     let serverBaseURL: String
     /// Auth token passed down to Rich UI embed webviews for localStorage injection.
     var authToken: String? = nil
+    /// APIClient for rendering inline images via AuthenticatedImageView.
+    var apiClient: APIClient? = nil
 
     var body: some View {
         let isActivelyStreaming = streamingStore.streamingMessageId == message.id
@@ -2379,7 +2519,8 @@ private struct IsolatedAssistantMessage: View {
                 isStreaming: effectiveIsStreaming,
                 messageEmbeds: message.embeds,
                 authToken: authToken,
-                serverBaseURL: serverBaseURL
+                serverBaseURL: serverBaseURL,
+                apiClient: apiClient
             )
         }
     }

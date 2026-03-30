@@ -1,5 +1,33 @@
 import Foundation
 
+// MARK: - Action Button Info (attached to a model)
+
+/// Describes a single action button configured on a model.
+/// Parsed from the `actions` array in the model JSON payload.
+/// Example: `{"id": "generate_image", "name": "Generate Image", "description": "...", "icon": "data:image/svg+xml;base64,..."}`
+struct AIModelAction: Codable, Identifiable, Hashable, Sendable {
+    let id: String
+    let name: String
+    let description: String
+    /// SVG icon as a data URI (`data:image/svg+xml;base64,...`) or an HTTP URL.
+    let icon: String?
+
+    init(id: String, name: String, description: String = "", icon: String? = nil) {
+        self.id = id
+        self.name = name
+        self.description = description
+        self.icon = icon
+    }
+
+    init?(json: [String: Any]) {
+        guard let id = json["id"] as? String else { return nil }
+        self.id = id
+        self.name = json["name"] as? String ?? id
+        self.description = json["description"] as? String ?? ""
+        self.icon = json["icon"] as? String
+    }
+}
+
 /// Metadata about an AI model available on an OpenWebUI server.
 struct AIModel: Codable, Identifiable, Hashable, Sendable {
     let id: String
@@ -40,6 +68,19 @@ struct AIModel: Codable, Identifiable, Hashable, Sendable {
     /// OpenWebUI model payload. Sent as `filter_ids` in chat completion requests so
     /// the backend runs the correct filter pipeline for this model.
     var filterIds: [String]
+    /// Raw action IDs from the model's `meta.actionIds` field. Used to resolve
+    /// which action functions should show for this model when combined with
+    /// global action function state.
+    var actionIds: [String]
+    /// Action buttons configured for this model. Parsed from `actions` array in
+    /// the model payload or resolved from `actionIds` + global function state.
+    /// Each entry describes a function-based action button (icon, name, description)
+    /// that should appear in the assistant message action bar.
+    var actions: [AIModelAction]
+    /// Per-model suggestion prompts configured by the admin in the model editor.
+    /// Used as a fallback when no admin-level `default_prompt_suggestions` are set.
+    /// Format matches `BackendConfig.PromptSuggestion`: `{"title": ["...", "..."], "content": "..."}`.
+    var suggestionPrompts: [BackendConfig.PromptSuggestion]
     /// The full raw model JSON from the server. Sent as `model_item` in chat completion
     /// requests for pipe models so the backend can route to the correct pipe function.
     /// Stored as `[String: Any]` (non-Codable) and excluded from Codable synthesis.
@@ -63,6 +104,9 @@ struct AIModel: Codable, Identifiable, Hashable, Sendable {
         connectionType: String? = nil,
         isPipeModel: Bool = false,
         filterIds: [String] = [],
+        actionIds: [String] = [],
+        actions: [AIModelAction] = [],
+        suggestionPrompts: [BackendConfig.PromptSuggestion] = [],
         rawModelItem: [String: Any]? = nil
     ) {
         self.id = id
@@ -82,6 +126,9 @@ struct AIModel: Codable, Identifiable, Hashable, Sendable {
         self.connectionType = connectionType
         self.isPipeModel = isPipeModel
         self.filterIds = filterIds
+        self.actionIds = actionIds
+        self.actions = actions
+        self.suggestionPrompts = suggestionPrompts
         self.rawModelItem = rawModelItem
     }
 
@@ -111,6 +158,7 @@ struct AIModel: Codable, Identifiable, Hashable, Sendable {
             && lhs.capabilities == rhs.capabilities
             && lhs.builtinTools == rhs.builtinTools
             && lhs.tags == rhs.tags
+            && lhs.actions == rhs.actions
     }
 
     func hash(into hasher: inout Hasher) {
@@ -125,7 +173,7 @@ struct AIModel: Codable, Identifiable, Hashable, Sendable {
     enum CodingKeys: String, CodingKey {
         case id, name, description, isMultimodal, supportsStreaming, supportsRAG
         case contextLength, capabilities, profileImageURL, toolIds, defaultFeatureIds
-        case functionCallingMode, builtinTools, tags, connectionType, isPipeModel, filterIds
+        case functionCallingMode, builtinTools, tags, connectionType, isPipeModel, filterIds, actionIds, actions, suggestionPrompts
         // rawModelItem is intentionally excluded from Codable — it contains
         // [String: Any] which cannot be synthesised. It is populated at runtime
         // from the live model fetch and does not need persistence.

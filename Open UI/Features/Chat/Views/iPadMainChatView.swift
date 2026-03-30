@@ -655,7 +655,7 @@ struct iPadSidebarContent: View {
 
             // Conversation list
             ScrollView {
-                LazyVStack(alignment: .leading, spacing: 0) {
+                VStack(alignment: .leading, spacing: 0) {
                     let folderVM = listViewModel.folderViewModel
 
                     // Pinned models section (quick-switch shortcuts)
@@ -700,8 +700,6 @@ struct iPadSidebarContent: View {
                 }
                 .padding(.bottom, Spacing.md)
             }
-
-            Spacer(minLength: 0)
 
             if listViewModel.isSelectionMode {
                 selectionBottomBar
@@ -770,7 +768,7 @@ struct iPadSidebarContent: View {
                         }
                     } label: {
                         Image(systemName: "ellipsis.circle")
-                            .scaledFont(size: 15, weight: .medium)
+                            .scaledFont(size: 15, weight: .medium, context: .list)
                             .foregroundStyle(theme.textSecondary)
                     }
                 }
@@ -778,7 +776,7 @@ struct iPadSidebarContent: View {
             ToolbarItem(placement: .topBarTrailing) {
                 Button(action: onNewChat) {
                     Image(systemName: "square.and.pencil")
-                        .scaledFont(size: 15, weight: .medium)
+                        .scaledFont(size: 15, weight: .medium, context: .list)
                         .foregroundStyle(theme.textSecondary)
                 }
                 .buttonStyle(.plain)
@@ -792,11 +790,11 @@ struct iPadSidebarContent: View {
     private var sidebarSearchBar: some View {
         HStack(spacing: Spacing.sm) {
             Image(systemName: "magnifyingglass")
-                .scaledFont(size: 13)
+                .scaledFont(size: 13, context: .list)
                 .foregroundStyle(theme.textTertiary)
 
             TextField("Search conversations…", text: $listViewModel.searchText)
-                .scaledFont(size: 14)
+                .scaledFont(size: 14, context: .list)
                 .foregroundStyle(theme.textPrimary)
 
             if !listViewModel.searchText.isEmpty {
@@ -804,7 +802,7 @@ struct iPadSidebarContent: View {
                     listViewModel.searchText = ""
                 } label: {
                     Image(systemName: "xmark.circle.fill")
-                        .scaledFont(size: 13)
+                        .scaledFont(size: 13, context: .list)
                         .foregroundStyle(theme.textTertiary)
                 }
             }
@@ -824,7 +822,7 @@ struct iPadSidebarContent: View {
         HStack(spacing: Spacing.sm) {
             Spacer()
             Text("\(listViewModel.selectedCount) selected")
-                .scaledFont(size: 14, weight: .medium)
+                .scaledFont(size: 14, weight: .medium, context: .list)
                 .fontWeight(.semibold)
                 .foregroundStyle(theme.textPrimary)
             Spacer()
@@ -836,7 +834,7 @@ struct iPadSidebarContent: View {
                 }
             } label: {
                 Text(listViewModel.selectedCount == listViewModel.filteredConversations.count ? "Deselect All" : "Select All")
-                    .scaledFont(size: 12, weight: .medium)
+                    .scaledFont(size: 12, weight: .medium, context: .list)
                     .fontWeight(.medium)
                     .foregroundStyle(theme.brandPrimary)
             }
@@ -864,10 +862,10 @@ struct iPadSidebarContent: View {
                 // Section header
                 HStack(spacing: 6) {
                     Image(systemName: "cpu")
-                        .scaledFont(size: 9, weight: .semibold)
+                        .scaledFont(size: 9, weight: .semibold, context: .list)
                         .foregroundStyle(theme.textTertiary)
                     Text("Models")
-                        .scaledFont(size: 12, weight: .medium)
+                        .scaledFont(size: 12, weight: .medium, context: .list)
                         .fontWeight(.bold)
                         .foregroundStyle(theme.textTertiary)
                         .textCase(.uppercase)
@@ -894,14 +892,14 @@ struct iPadSidebarContent: View {
                                 authToken: vm.serverAuthToken
                             )
                             Text(model.shortName)
-                                .scaledFont(size: 14)
+                                .scaledFont(size: 14, context: .list)
                                 .fontWeight(isSelected ? .semibold : .regular)
                                 .foregroundStyle(isSelected ? theme.textPrimary : theme.textSecondary)
                                 .lineLimit(1)
                             Spacer()
                             if isSelected {
                                 Image(systemName: "checkmark")
-                                    .scaledFont(size: 11, weight: .semibold)
+                                    .scaledFont(size: 11, weight: .semibold, context: .list)
                                     .foregroundStyle(theme.brandPrimary)
                             }
                         }
@@ -938,16 +936,16 @@ struct iPadSidebarContent: View {
             } label: {
                 HStack(spacing: 6) {
                     Image(systemName: "chevron.down")
-                        .scaledFont(size: 8, weight: .bold)
+                        .scaledFont(size: 8, weight: .bold, context: .list)
                         .foregroundStyle(theme.textTertiary)
                         .rotationEffect(.degrees(foldersExpanded ? 0 : -90))
                         .animation(.easeInOut(duration: AnimDuration.fast), value: foldersExpanded)
 
                     Image(systemName: "folder")
-                        .scaledFont(size: 9, weight: .semibold)
+                        .scaledFont(size: 9, weight: .semibold, context: .list)
                         .foregroundStyle(theme.textTertiary)
                     Text("Folders")
-                        .scaledFont(size: 12, weight: .medium)
+                        .scaledFont(size: 12, weight: .medium, context: .list)
                         .fontWeight(.bold)
                         .foregroundStyle(theme.textTertiary)
                         .textCase(.uppercase)
@@ -955,7 +953,7 @@ struct iPadSidebarContent: View {
                     Spacer()
                     Button { showCreateFolderSheet = true } label: {
                         Image(systemName: "folder.badge.plus")
-                            .scaledFont(size: 13)
+                            .scaledFont(size: 13, context: .list)
                             .foregroundStyle(theme.textTertiary)
                     }
                     .buttonStyle(.plain)
@@ -1028,16 +1026,16 @@ struct iPadSidebarContent: View {
             } label: {
                 HStack(spacing: 6) {
                     Image(systemName: "chevron.down")
-                        .scaledFont(size: 8, weight: .bold)
+                        .scaledFont(size: 8, weight: .bold, context: .list)
                         .foregroundStyle(theme.textTertiary)
                         .rotationEffect(.degrees(channelsExpanded ? 0 : -90))
                         .animation(.easeInOut(duration: AnimDuration.fast), value: channelsExpanded)
 
                     Image(systemName: "bubble.left.and.bubble.right")
-                        .scaledFont(size: 9, weight: .semibold)
+                        .scaledFont(size: 9, weight: .semibold, context: .list)
                         .foregroundStyle(theme.textTertiary)
                     Text("Channels")
-                        .scaledFont(size: 12, weight: .medium)
+                        .scaledFont(size: 12, weight: .medium, context: .list)
                         .fontWeight(.bold)
                         .foregroundStyle(theme.textTertiary)
                         .textCase(.uppercase)
@@ -1045,7 +1043,7 @@ struct iPadSidebarContent: View {
                     Spacer()
                     Button { showCreateChannel = true } label: {
                         Image(systemName: "plus.bubble")
-                            .scaledFont(size: 13)
+                            .scaledFont(size: 13, context: .list)
                             .foregroundStyle(theme.textTertiary)
                     }
                     .buttonStyle(.plain)
@@ -1059,7 +1057,7 @@ struct iPadSidebarContent: View {
             if channelsExpanded {
                 if channelListVM.channels.isEmpty {
                     Text("No channels yet")
-                        .scaledFont(size: 13)
+                        .scaledFont(size: 13, context: .list)
                         .foregroundStyle(theme.textTertiary)
                         .padding(.horizontal, Spacing.md)
                         .padding(.vertical, 4)
@@ -1095,10 +1093,10 @@ struct iPadSidebarContent: View {
     private func channelGroupLabel(_ title: String, icon: String) -> some View {
         HStack(spacing: 4) {
             Image(systemName: icon)
-                .scaledFont(size: 9, weight: .medium)
+                .scaledFont(size: 9, weight: .medium, context: .list)
                 .foregroundStyle(theme.textTertiary.opacity(0.7))
             Text(title)
-                .scaledFont(size: 10, weight: .medium)
+                .scaledFont(size: 10, weight: .medium, context: .list)
                 .foregroundStyle(theme.textTertiary.opacity(0.7))
                 .textCase(.uppercase)
                 .tracking(0.4)
@@ -1125,13 +1123,13 @@ struct iPadSidebarContent: View {
                     )
                 } else {
                     Image(systemName: channel.sidebarIcon)
-                        .scaledFont(size: 11)
+                        .scaledFont(size: 11, context: .list)
                         .foregroundStyle(activeChannelId == channel.id ? theme.brandPrimary : theme.textTertiary)
                 }
                 Text(channel.type == .dm
                     ? (channel.dmParticipants.first?.displayName ?? channel.displayName)
                     : channel.displayName)
-                    .scaledFont(size: 14)
+                    .scaledFont(size: 14, context: .list)
                     .fontWeight(activeChannelId == channel.id || channel.unreadCount > 0 ? .semibold : .regular)
                     .foregroundStyle(activeChannelId == channel.id ? theme.textPrimary : theme.textSecondary)
                     .lineLimit(1)
@@ -1142,7 +1140,7 @@ struct iPadSidebarContent: View {
                         .frame(width: 6, height: 6)
                 } else if channel.unreadCount > 0 {
                     Text("\(channel.unreadCount)")
-                        .scaledFont(size: 11, weight: .bold)
+                        .scaledFont(size: 11, weight: .bold, context: .list)
                         .foregroundStyle(.white)
                         .padding(.horizontal, 6)
                         .padding(.vertical, 2)
@@ -1193,23 +1191,23 @@ struct iPadSidebarContent: View {
             } label: {
                 HStack(spacing: 6) {
                     Image(systemName: "chevron.down")
-                        .scaledFont(size: 8, weight: .bold)
+                        .scaledFont(size: 8, weight: .bold, context: .list)
                         .foregroundStyle(drawerChatsDropActive ? theme.brandPrimary : theme.textTertiary)
                         .rotationEffect(.degrees(chatsExpanded ? 0 : -90))
                         .animation(.easeInOut(duration: AnimDuration.fast), value: chatsExpanded)
 
                     Image(systemName: "bubble.left.and.text.bubble.right")
-                        .scaledFont(size: 9, weight: .semibold)
+                        .scaledFont(size: 9, weight: .semibold, context: .list)
                         .foregroundStyle(drawerChatsDropActive ? theme.brandPrimary : theme.textTertiary)
                     Text("Chats")
-                        .scaledFont(size: 12, weight: .medium)
+                        .scaledFont(size: 12, weight: .medium, context: .list)
                         .fontWeight(.bold)
                         .foregroundStyle(drawerChatsDropActive ? theme.brandPrimary : theme.textTertiary)
                         .textCase(.uppercase)
                         .tracking(0.5)
                     if drawerChatsDropActive {
                         Text("Drop here")
-                            .scaledFont(size: 12, weight: .medium)
+                            .scaledFont(size: 12, weight: .medium, context: .list)
                             .foregroundStyle(theme.brandPrimary)
                             .transition(.opacity)
                     }
@@ -1284,11 +1282,11 @@ struct iPadSidebarContent: View {
                     HStack(spacing: Spacing.sm) {
                         Image(systemName: listViewModel.isSelected(conversation.id)
                             ? "checkmark.circle.fill" : "circle")
-                            .scaledFont(size: 18)
+                            .scaledFont(size: 18, context: .list)
                             .foregroundStyle(listViewModel.isSelected(conversation.id)
                                 ? theme.brandPrimary : theme.textTertiary)
                         Text(conversation.title)
-                            .scaledFont(size: 14)
+                            .scaledFont(size: 14, context: .list)
                             .foregroundStyle(theme.textPrimary)
                             .lineLimit(1)
                         Spacer()
@@ -1309,7 +1307,7 @@ struct iPadSidebarContent: View {
                 } label: {
                     HStack {
                         Text(conversation.title)
-                            .scaledFont(size: 14)
+                            .scaledFont(size: 14, context: .list)
                             .fontWeight(activeConversationId == conversation.id ? .semibold : .regular)
                             .foregroundStyle(activeConversationId == conversation.id
                                 ? theme.textPrimary : theme.textSecondary)
@@ -1337,9 +1335,9 @@ struct iPadSidebarContent: View {
                     currentFolderId: conversation.folderId
                 )) {
                     HStack(spacing: Spacing.xs) {
-                        Image(systemName: "bubble.left").scaledFont(size: 12)
+                        Image(systemName: "bubble.left").scaledFont(size: 12, context: .list)
                         Text(conversation.title)
-                            .scaledFont(size: 12, weight: .medium)
+                            .scaledFont(size: 12, weight: .medium, context: .list)
                             .lineLimit(1)
                     }
                     .padding(.horizontal, Spacing.sm)
@@ -1373,7 +1371,7 @@ struct iPadSidebarContent: View {
                 Image(systemName: "trash")
                 Text("Delete (\(listViewModel.selectedCount))")
             }
-            .scaledFont(size: 14, weight: .medium)
+            .scaledFont(size: 14, weight: .medium, context: .list)
             .fontWeight(.semibold)
             .foregroundStyle(.white)
             .frame(maxWidth: .infinity)

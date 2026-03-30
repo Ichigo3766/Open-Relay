@@ -286,6 +286,7 @@ enum ToolCallParser {
     /// Order matters: more specific / longer tags first to avoid partial matches.
     private static let defaultReasoningTagPairs: [(open: String, close: String)] = [
         ("<|begin_of_thought|>", "<|end_of_thought|>"),
+        ("◁think▷", "◁/think▷"),
         ("<thinking>", "</thinking>"),
         ("<reasoning>", "</reasoning>"),
         ("<thought>", "</thought>"),
@@ -329,9 +330,10 @@ enum ToolCallParser {
             let escapedClose = NSRegularExpression.escapedPattern(for: pair.close)
 
             // Case 1: Complete pairs (thinking finished)
+            // Use .caseInsensitive so <Think>, <THINK>, <Thinking>, etc. all match
             if let completeRegex = try? NSRegularExpression(
                 pattern: "\(escapedOpen)([\\s\\S]*?)\(escapedClose)",
-                options: [.dotMatchesLineSeparators]
+                options: [.dotMatchesLineSeparators, .caseInsensitive]
             ) {
                 let nsResult = result as NSString
                 let matches = completeRegex.matches(
@@ -352,10 +354,74 @@ enum ToolCallParser {
             }
 
             // Case 2: Unclosed tag (still streaming thinking content)
-            if result.contains(pair.open) {
+            // Case-insensitive check for the open tag
+            if result.range(of: pair.open, options: .caseInsensitive) != nil {
                 if let openRegex = try? NSRegularExpression(
                     pattern: "\(escapedOpen)([\\s\\S]*)$",
-                    options: [.dotMatchesLineSeparators]
+                    options: [.dotMatchesLineSeparators, .caseInsensitive]
+                ) {
+                    let nsResult = result as NSString
+                    if let match = openRegex.firstMatch(
+                        in: result,
+                        range: NSRange(location: 0, length: nsResult.length)
+                    ), match.numberOfRanges > 1 {
+                        let thinkContent = nsResult.substring(with: match.range(at: 1))
+                            .trimmingCharacters(in: .whitespacesAndNewlines)
+                        let replacement = """
+                        <details type="reasoning" done="false">\
+                        <summary>Thinking</summary>\
+                        \(thinkContent)\
+                        </details>
+                        """
+                        result = (result as NSString).replacingCharacters(in: match.range, with: replacement)
+                    }
+                }
+            }
+        }
+
+        // ── Phase 1b: Also handle case-insensitive open tags that the
+        // case-sensitive .contains() quick-check above may have skipped ──
+        // Re-run Phase 1 logic for tags present only in different casing.
+        for pair in defaultReasoningTagPairs {
+            // Skip Unicode/pipe variants — they're case-sensitive by nature
+            if pair.open.hasPrefix("<|") || pair.open.hasPrefix("◁") { continue }
+
+            // Already handled if exact-case was found. Check case-insensitive.
+            guard result.range(of: pair.open, options: .caseInsensitive) != nil else { continue }
+            // If exact case exists, Phase 1 already handled it
+            guard !result.contains(pair.open) else { continue }
+
+            let escapedOpen = NSRegularExpression.escapedPattern(for: pair.open)
+            let escapedClose = NSRegularExpression.escapedPattern(for: pair.close)
+
+            // Complete pairs (case-insensitive)
+            if let completeRegex = try? NSRegularExpression(
+                pattern: "\(escapedOpen)([\\s\\S]*?)\(escapedClose)",
+                options: [.dotMatchesLineSeparators, .caseInsensitive]
+            ) {
+                let nsResult = result as NSString
+                let matches = completeRegex.matches(
+                    in: result,
+                    range: NSRange(location: 0, length: nsResult.length)
+                )
+                for match in matches.reversed() where match.numberOfRanges > 1 {
+                    let thinkContent = nsResult.substring(with: match.range(at: 1))
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                    let replacement = """
+                    <details type="reasoning" done="true">\
+                    <summary>Thinking</summary>\
+                    \(thinkContent)\
+                    </details>
+                    """
+                    result = (result as NSString).replacingCharacters(in: match.range, with: replacement)
+                }
+            }
+
+            // Unclosed tag (case-insensitive)
+            if result.range(of: pair.open, options: .caseInsensitive) != nil {
+                if let openRegex = try? NSRegularExpression(
+                    pattern: "\(escapedOpen)([\\s\\S]*)$",
+                    options: [.dotMatchesLineSeparators, .caseInsensitive]
                 ) {
                     let nsResult = result as NSString
                     if let match = openRegex.firstMatch(
@@ -454,7 +520,103 @@ enum ToolCallParser {
             }
         }
 
-        return result
+        // ── Phase 3: Clean up orphaned closing tags ──
+        // This handles two scenarios:
+        //
+        // A) **Orphaned closer from split streaming**: The opening <think> was
+        //    processed in an earlier chunk, and the closing </think> arrives
+        //    alone in a later chunk with no matching opener. Without this,
+        //    the bare </think> leaks as visible text / code block.
+        //
+        // B) **Qwen no-opener pattern**: Some Qwen models skip the opening
+        //    <think> tag entirely and just start reasoning, then only emit
+        //    </think> when done. Content before the closer is reasoning text.
+        //
+        // Strategy: For each closing tag, if it exists without a matching
+        // opener, check if there's meaningful content before it. If so,
+        // wrap that content as a reasoning block. If not, just strip the tag.
+        for pair in defaultReasoningTagPairs {
+            let closeTag = pair.close
+
+            // Case-insensitive check for the closing tag
+            guard result.range(of: closeTag, options: .caseInsensitive) != nil else { continue }
+
+            // If the matching open tag is also present, this is a complete pair
+            // that Phase 1 should have handled — skip.
+            if result.range(of: pair.open, options: .caseInsensitive) != nil { continue }
+
+            // Also skip if the closer is inside a <details> block (already converted)
+            if result.contains("<details") && result.range(of: closeTag, options: .caseInsensitive) != nil {
+                // Check if the close tag appears outside of any <details>...</details> block
+                let stripped = result.replacingOccurrences(
+                    of: #"<details\s+[^>]*>[\s\S]*?</details>"#,
+                    with: "",
+                    options: .regularExpression
+                )
+                guard stripped.range(of: closeTag, options: .caseInsensitive) != nil else { continue }
+            }
+
+            let escapedClose = NSRegularExpression.escapedPattern(for: closeTag)
+
+            // Try to find: content</think> (Qwen no-opener pattern)
+            // Match everything from start-of-string (or after last <details> block)
+            // up to and including the closing tag
+            if let orphanRegex = try? NSRegularExpression(
+                pattern: "^([\\s\\S]*?)\(escapedClose)",
+                options: [.dotMatchesLineSeparators, .caseInsensitive]
+            ) {
+                let nsResult = result as NSString
+                if let match = orphanRegex.firstMatch(
+                    in: result,
+                    range: NSRange(location: 0, length: nsResult.length)
+                ), match.numberOfRanges > 1 {
+                    let beforeContent = nsResult.substring(with: match.range(at: 1))
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
+
+                    if !beforeContent.isEmpty &&
+                       !beforeContent.hasPrefix("<details") &&
+                       beforeContent.count > 20 {
+                        // Meaningful content before the closer → treat as reasoning
+                        // (Qwen no-opener pattern)
+                        let replacement = """
+                        <details type="reasoning" done="true">\
+                        <summary>Thinking</summary>\
+                        \(beforeContent)\
+                        </details>
+                        """
+                        result = (result as NSString).replacingCharacters(in: match.range, with: replacement)
+                    } else {
+                        // No meaningful content (or just whitespace) → strip the tag
+                        // This handles the orphaned closer from split streaming
+                        result = (result as NSString).replacingCharacters(in: match.range, with: beforeContent)
+                    }
+                }
+            }
+
+            // Strip any remaining instances of the closing tag (there may be
+            // multiple orphans, or the above only caught the first)
+            if let stripRegex = try? NSRegularExpression(
+                pattern: "\\s*\(escapedClose)\\s*",
+                options: [.caseInsensitive]
+            ) {
+                result = stripRegex.stringByReplacingMatches(
+                    in: result,
+                    range: NSRange(location: 0, length: (result as NSString).length),
+                    withTemplate: "\n"
+                )
+            }
+        }
+
+        // Also strip orphaned Unicode triangle closers and pipe closers
+        // that might not have been caught above
+        let additionalOrphanClosers = ["◁/think▷", "<|end_of_thought|>"]
+        for closer in additionalOrphanClosers {
+            if result.contains(closer) {
+                result = result.replacingOccurrences(of: closer, with: "")
+            }
+        }
+
+        return result.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     /// Counts regex occurrences in a string.
@@ -1206,6 +1368,8 @@ struct AssistantMessageContent: View {
     /// Passed down to Rich UI embeds for auth token injection and base URL resolution.
     var authToken: String? = nil
     var serverBaseURL: String? = nil
+    /// APIClient for rendering inline images via AuthenticatedImageView.
+    var apiClient: APIClient? = nil
 
     @State private var parseCache = ParseCache()
 
@@ -1284,10 +1448,36 @@ struct AssistantMessageContent: View {
                     case .text(let str):
                         // Only the last text segment gets the streaming cursor
                         let isLastText = index == lastTextIndex && isStreaming
-                        MarkdownWithLoading(
-                            content: str,
-                            isLoading: isLastText
-                        )
+                        // Extract inline images from markdown ![alt](url) syntax.
+                        // MarkdownView renders images as plain text links — we need
+                        // to intercept server file URLs and render them as actual images.
+                        let imageSegments = Self.splitInlineImages(str)
+                        if imageSegments.count <= 1 {
+                            // No inline images — render normally
+                            MarkdownWithLoading(
+                                content: str,
+                                isLoading: isLastText
+                            )
+                        } else {
+                            // Interleave text and images
+                            ForEach(Array(imageSegments.enumerated()), id: \.offset) { segIdx, seg in
+                                switch seg {
+                                case .text(let text):
+                                    let isLast = isLastText && segIdx == imageSegments.count - 1
+                                    if !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                                        MarkdownWithLoading(
+                                            content: text,
+                                            isLoading: isLast
+                                        )
+                                    }
+                                case .image(let fileId, _):
+                                    if let apiClient {
+                                        AuthenticatedImageView(fileId: fileId, apiClient: apiClient)
+                                            .clipShape(RoundedRectangle(cornerRadius: CornerRadius.md, style: .continuous))
+                                    }
+                                }
+                            }
+                        }
 
                     case .toolCalls(let calls):
                         ToolCallsContainer(
@@ -1378,5 +1568,66 @@ struct AssistantMessageContent: View {
         }
 
         return groups
+    }
+
+    // MARK: - Inline Image Extraction
+
+    /// Segments produced by splitting markdown content at `![alt](url)` boundaries.
+    enum InlineImageSegment {
+        case text(String)
+        /// An inline image with the extracted file ID and alt text.
+        case image(fileId: String, altText: String)
+    }
+
+    /// Splits markdown text at `![alt](url)` patterns where the URL points to
+    /// a server file (`/api/v1/files/{id}/content`). The URL can be relative
+    /// (`/api/v1/files/...`) or absolute (`https://host/api/v1/files/...`).
+    ///
+    /// Returns a single `.text` segment if no server images are found, so the
+    /// caller can short-circuit and render normally.
+    static func splitInlineImages(_ text: String) -> [InlineImageSegment] {
+        // Match ![alt text](url) where url contains /api/v1/files/{uuid}/content
+        // The URL may be relative (/api/...) or absolute (https://host/api/...)
+        let pattern = #"!\[([^\]]*)\]\(((?:https?://[^\s\)]+)?/api/v1/files/([a-f0-9\-]{36})/content)\)"#
+        guard let regex = try? NSRegularExpression(pattern: pattern, options: []) else {
+            return [.text(text)]
+        }
+
+        let nsText = text as NSString
+        let matches = regex.matches(in: text, range: NSRange(location: 0, length: nsText.length))
+        guard !matches.isEmpty else { return [.text(text)] }
+
+        var segments: [InlineImageSegment] = []
+        var currentIndex = 0
+
+        for match in matches {
+            // Text before this image
+            if match.range.location > currentIndex {
+                let beforeRange = NSRange(location: currentIndex, length: match.range.location - currentIndex)
+                let before = nsText.substring(with: beforeRange)
+                if !before.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    segments.append(.text(before))
+                }
+            }
+
+            // Extract the file ID (capture group 3)
+            if match.numberOfRanges > 3 {
+                let altText = nsText.substring(with: match.range(at: 1))
+                let fileId = nsText.substring(with: match.range(at: 3))
+                segments.append(.image(fileId: fileId, altText: altText))
+            }
+
+            currentIndex = match.range.location + match.range.length
+        }
+
+        // Remaining text after last image
+        if currentIndex < nsText.length {
+            let remaining = nsText.substring(from: currentIndex)
+            if !remaining.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                segments.append(.text(remaining))
+            }
+        }
+
+        return segments.isEmpty ? [.text(text)] : segments
     }
 }
