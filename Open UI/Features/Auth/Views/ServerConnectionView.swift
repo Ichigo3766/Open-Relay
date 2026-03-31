@@ -222,9 +222,11 @@ struct ServerConnectionView: View {
                                 .frame(width: 130, height: 130)
                                 .scaleEffect(logoScale * 1.1)
 
-                            Image(systemName: "bubble.left.and.bubble.right.fill")
-                                .scaledFont(size: 40, weight: .medium)
-                                .foregroundStyle(theme.brandPrimary)
+                            Image("AppIconImage")
+                                .resizable()
+                                .scaledToFill()
+                                .frame(width: 72, height: 72)
+                                .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
                                 .scaleEffect(logoScale)
                         }
                         .opacity(logoOpacity)

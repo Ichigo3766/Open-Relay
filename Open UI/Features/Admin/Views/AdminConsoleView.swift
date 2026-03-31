@@ -397,7 +397,7 @@ struct AdminUsersTab: View {
             Image(systemName: "person.2.slash")
                 .scaledFont(size: 40)
                 .foregroundStyle(theme.textTertiary)
-            Text(viewModel.searchQuery.isEmpty ? "No users found" : "No results for \"\(viewModel.searchQuery)\"")
+            Text(viewModel.searchQuery.isEmpty ? "No users were found." : "No results for \"\(viewModel.searchQuery)\"")
                 .scaledFont(size: 16)
                 .foregroundStyle(theme.textTertiary)
         }
@@ -472,7 +472,7 @@ struct AdminUserRow: View {
                         .lineLimit(1)
 
                     if isSelf {
-                        Text("YOU")
+                        Text("You")
                             .scaledFont(size: 8, weight: .heavy)
                             .foregroundStyle(theme.brandPrimary)
                             .padding(.horizontal, 4)

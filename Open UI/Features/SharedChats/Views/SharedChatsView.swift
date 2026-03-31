@@ -256,7 +256,7 @@ struct SharedChatsView: View {
                             Image(systemName: "doc.on.doc")
                                 .scaledFont(size: 14, weight: .medium)
                         }
-                        .accessibilityLabel("Copy share link")
+                        .accessibilityLabel("Copy Share Link")
                     }
                 }
             }

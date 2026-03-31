@@ -313,7 +313,7 @@ struct SkillsListView: View {
                         .foregroundStyle(theme.textPrimary)
                         .lineLimit(1)
                     if !skill.isActive {
-                        Text("INACTIVE")
+                        Text("Inactive")
                             .scaledFont(size: 10, weight: .semibold)
                             .foregroundStyle(theme.textTertiary)
                             .padding(.horizontal, 6)

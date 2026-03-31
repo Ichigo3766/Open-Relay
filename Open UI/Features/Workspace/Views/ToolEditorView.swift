@@ -59,7 +59,7 @@ struct ValvesSheet: View {
                         Image(systemName: "slider.horizontal.3")
                             .scaledFont(size: 44)
                             .foregroundStyle(theme.textTertiary)
-                        Text("No Valves")
+                        Text("No valves")
                             .scaledFont(size: 18, weight: .semibold)
                             .foregroundStyle(theme.textPrimary)
                         Text("This tool has no user-configurable settings.")
@@ -777,7 +777,7 @@ struct ToolEditorView: View {
                 Button {
                     Task { await toggleUserPermission(userId: user.id, currentlyWrite: grant.write) }
                 } label: {
-                    Text(grant.write ? "WRITE" : "READ")
+                    Text(grant.write ? "Write" : "Read")
                         .scaledFont(size: 11, weight: .semibold)
                         .foregroundStyle(grant.write ? theme.brandOnPrimary : theme.textSecondary)
                         .padding(.horizontal, 8)

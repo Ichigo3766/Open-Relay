@@ -1,5 +1,27 @@
 # Changelog
 
+## v2.4 — March 31, 2026
+
+### What's New
+- Added Storage browser in Settings — view all app storage usage and use quick-action buttons to clear caches or remove ML model files in one tap.
+- Added multi-language support for 56 languages (Hindi, Chinese, French, German, Japanese, Korean, Spanish, Polish, and many more).
+- Added in-app Language picker in Settings → Display — browse all supported languages.
+
+### Improvements
+- Welcome screen prompt cards now prioritize per-model suggestions over global admin prompts — model-specific prompts show first, with admin-configured prompts as the fallback.
+- The server connection screen, onboarding, and About screen now display the actual app icon instead of a generic placeholder icon.
+- Long-press any pinned model in the sidebar to unpin it directly, without having to open the model picker.
+
+### Bug Fixes
+- Fixed Marvis Neural TTS producing garbled/garbage audio on responses that contain bullet lists, or paragraphs ending with a colon — the text preprocessor no longer generates invalid "colon-period" sequences that the model can't handle.
+- Fixed server-side TTS accumulating gigabytes of temporary audio files over time — each spoken sentence now deletes its temp file immediately after playback, and any unplayed files are cleaned up when TTS is stopped.
+- Fixed app crash when backgrounding during on-device speech-to-text transcription.
+- Fixed thinking/reasoning blocks not responding to taps while a response is streaming — you can now expand or collapse the thinking block at any time during streaming.
+- Fixed memories getting disabled by itself — pinning a model, changing the default model, or toggling memory from any screen no longer wipes other user settings.
+- Fixed default model not sticking — pinning a model was incorrectly overwriting the default model setting with the pinned models list.
+
+## Previous Builds
+
 ## v2.3.1 — March 30, 2026
 
 ### What's New
@@ -12,8 +34,6 @@
 ### Bug Fixes
 - Fixed voice calls not starting to speak until the full AI response finished generating — responses now begin playing as soon as the first complete sentence arrives.
 - Fixed audible gaps between spoken sentences in server-side TTS — replaced the old polling-based audio player with gapless queue playback so chunks play back-to-back without any pauses.
-
-## Previous Builds
 
 ## v2.3 — March 30, 2026
 

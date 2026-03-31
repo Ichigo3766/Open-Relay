@@ -105,6 +105,11 @@ final class TextToSpeechService: NSObject {
     private var prefetchedItems: [AVPlayerItem] = []
     /// Background task that keeps the prefetch buffer filled.
     private var prefetchTask: Task<Void, Never>?
+    /// Maps each AVPlayerItem to the temp file URL backing it so we can delete after playback.
+    private var playerItemTempURLs: [AVPlayerItem: URL] = [:]
+    /// Token for the `didPlayToEndTimeNotification` observer — must be removed via this token,
+    /// NOT via `removeObserver(self, ...)`, because the closure-based API returns an opaque token.
+    private var playerItemEndObserver: (any NSObjectProtocol)?
 
     // Active engine flags
     private var isUsingMarvis = false
@@ -260,6 +265,18 @@ final class TextToSpeechService: NSObject {
         queuePlayer?.pause()
         queuePlayer?.removeAllItems()
         queuePlayer = nil
+        // Remove the end-of-item observer via its token (closure-based API requires this).
+        if let token = playerItemEndObserver {
+            NotificationCenter.default.removeObserver(token)
+            playerItemEndObserver = nil
+        }
+        // Delete any temp files that were prefetched but not yet played
+        // (e.g. user pressed Stop mid-sentence, or app interrupted TTS).
+        let orphanedURLs = playerItemTempURLs.values
+        playerItemTempURLs.removeAll()
+        for url in orphanedURLs {
+            try? FileManager.default.removeItem(at: url)
+        }
     }
 
     func pause() {
@@ -494,8 +511,12 @@ final class TextToSpeechService: NSObject {
             }
         }
 
-        // Register for per-item end notifications so we can track finished count
-        NotificationCenter.default.addObserver(
+        // Register for per-item end notifications so we can track finished count.
+        // Temp files are NOT deleted here — they're deleted in bulk in stopServerPlayback()
+        // once the session ends, to avoid any race with AVQueuePlayer's gapless buffering.
+        // IMPORTANT: Store the returned token so we can properly remove this observer later.
+        // Using removeObserver(self, ...) does NOT work for the closure-based addObserver API.
+        playerItemEndObserver = NotificationCenter.default.addObserver(
             forName: AVPlayerItem.didPlayToEndTimeNotification,
             object: nil,
             queue: .main
@@ -556,6 +577,8 @@ final class TextToSpeechService: NSObject {
                             return
                         }
                         let item = AVPlayerItem(url: tmpURL)
+                        // Track the temp file so we can delete it after playback finishes.
+                        self.playerItemTempURLs[item] = tmpURL
                         player.insert(item, after: nil)
                         self.queuedItemCount += 1
                         producedAtLeastOne = true
@@ -585,12 +608,13 @@ final class TextToSpeechService: NSObject {
 
     /// Called when AVQueuePlayer finishes playing all items.
     private func handleServerPlaybackComplete() {
-        // Remove the per-item observer
-        NotificationCenter.default.removeObserver(
-            self,
-            name: AVPlayerItem.didPlayToEndTimeNotification,
-            object: nil
-        )
+        // Remove the per-item end observer using the stored token.
+        // NOTE: removeObserver(self, ...) only works for target-action style observers.
+        // For closure-based addObserver calls we must use the returned token.
+        if let token = playerItemEndObserver {
+            NotificationCenter.default.removeObserver(token)
+            playerItemEndObserver = nil
+        }
         let hadItems = queuedItemCount > 0
         stopServerPlayback()
         if !isStreamingTTS {

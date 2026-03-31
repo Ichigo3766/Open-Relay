@@ -117,7 +117,7 @@ struct ShareChatSheet: View {
         VStack(alignment: .leading, spacing: Spacing.xs) {
             // Line 1: "You have shared this chat [before]."
             HStack(spacing: 0) {
-                Text("You have shared this chat ")
+                Text("You have shared this chat")
                     .scaledFont(size: 15)
                     .foregroundStyle(theme.textSecondary)
                 Text("before")
@@ -132,7 +132,7 @@ struct ShareChatSheet: View {
 
             // Line 2: "Click here to [delete this link] and create a new shared link."
             HStack(spacing: 0) {
-                Text("Click here to ")
+                Text("Click here to")
                     .scaledFont(size: 15)
                     .foregroundStyle(theme.textSecondary)
                 Text("delete this link")
@@ -140,7 +140,7 @@ struct ShareChatSheet: View {
                     .foregroundStyle(theme.error)
                     .underline()
                     .onTapGesture { Task { await deleteLinkAction() } }
-                Text(" and create a new shared link.")
+                Text("and create a new shared link.")
                     .scaledFont(size: 15)
                     .foregroundStyle(theme.textSecondary)
             }
@@ -215,7 +215,7 @@ struct ShareChatSheet: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
             }
-            .navigationTitle("Shared Chat")
+            .navigationTitle("Shared Chats")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {

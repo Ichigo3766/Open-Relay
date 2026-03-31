@@ -295,7 +295,6 @@ final class MarvisTTSService {
 
         let sentences = TTSTextPreprocessor.splitIntoSentences(text)
         let pieces = sentences.isEmpty ? [text] : sentences
-        logger.info("Generating \(pieces.count) piece(s) for \(text.count) chars")
 
         // Set cache limit for generation
         Memory.cacheLimit = 512 * 1024 * 1024

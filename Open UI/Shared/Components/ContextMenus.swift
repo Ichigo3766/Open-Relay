@@ -261,7 +261,7 @@ struct DestructiveConfirmation: ViewModifier {
                 Button(destructiveTitle, role: .destructive, action: onConfirm)
                 Button("Cancel", role: .cancel) {}
             } message: {
-                Text(message)
+                Text(LocalizedStringKey(message))
             }
     }
 }

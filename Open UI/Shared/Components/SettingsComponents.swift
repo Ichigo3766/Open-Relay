@@ -21,7 +21,8 @@ struct SettingsSection<Content: View>: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             if let header {
-                Text(header.uppercased())
+                Text(LocalizedStringKey(header))
+                    .textCase(.uppercase)
                     .scaledFont(size: 12, weight: .medium)
                     .foregroundStyle(theme.textTertiary)
                     .tracking(0.8)
@@ -75,12 +76,12 @@ struct SettingsCell: View {
 
                     // Title & subtitle
                     VStack(alignment: .leading, spacing: Spacing.xxs) {
-                        Text(title)
+                        Text(LocalizedStringKey(title))
                             .scaledFont(size: 16)
                             .foregroundStyle(theme.textPrimary)
 
                         if let subtitle {
-                            Text(subtitle)
+                            Text(LocalizedStringKey(subtitle))
                                 .scaledFont(size: 12, weight: .medium)
                                 .foregroundStyle(theme.textTertiary)
                         }
@@ -182,7 +183,7 @@ struct DestructiveSettingsCell: View {
                     .background(theme.error.opacity(0.12))
                     .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
 
-                Text(title)
+                Text(LocalizedStringKey(title))
                     .scaledFont(size: 16)
                     .foregroundStyle(theme.error)
 

@@ -47,13 +47,13 @@ struct EmptyStateView: View {
 
     private var textContent: some View {
         VStack(spacing: Spacing.sm) {
-            Text(title)
+            Text(LocalizedStringKey(title))
                 .scaledFont(size: 20, weight: .semibold)
                 .foregroundStyle(theme.textPrimary)
                 .multilineTextAlignment(.center)
 
             if let description {
-                Text(description)
+                Text(LocalizedStringKey(description))
                     .scaledFont(size: 16)
                     .foregroundStyle(theme.textSecondary)
                     .multilineTextAlignment(.center)
@@ -98,7 +98,7 @@ struct ChatEmptyState: View {
                         .foregroundStyle(theme.brandPrimary.opacity(0.7))
                 }
 
-                Text(modelName != nil ? "Chat with \(modelName!)" : "How can I help you?")
+                Text(modelName != nil ? "Chat with \(modelName!)" : "How can I help you today?")
                     .scaledFont(size: 24, weight: .semibold)
                     .foregroundStyle(theme.textPrimary)
             }
@@ -167,12 +167,12 @@ struct ErrorStateView: View {
                 .foregroundStyle(theme.error)
 
             VStack(spacing: Spacing.sm) {
-                Text(message)
+                Text(LocalizedStringKey(message))
                     .scaledFont(size: 20, weight: .semibold)
                     .foregroundStyle(theme.textPrimary)
 
                 if let detail {
-                    Text(detail)
+                    Text(LocalizedStringKey(detail))
                         .scaledFont(size: 14)
                         .foregroundStyle(theme.textSecondary)
                         .multilineTextAlignment(.center)

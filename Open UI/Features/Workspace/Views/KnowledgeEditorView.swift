@@ -711,7 +711,7 @@ struct KnowledgeEditorView: View {
             }
             .padding(Spacing.md)
             .background(theme.background)
-            .navigationTitle("Add Webpage")
+            .navigationTitle("Add webpage")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
@@ -784,7 +784,7 @@ struct KnowledgeEditorView: View {
             }
             .padding(Spacing.md)
             .background(theme.background)
-            .navigationTitle("Add Text Content")
+            .navigationTitle("Add text content")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
@@ -959,7 +959,7 @@ struct KnowledgeEditorView: View {
                 Button {
                     Task { await toggleUserPermission(userId: user.id, currentlyWrite: grant.write) }
                 } label: {
-                    Text(grant.write ? "WRITE" : "READ")
+                    Text(grant.write ? "Write" : "Read")
                         .scaledFont(size: 11, weight: .semibold)
                         .foregroundStyle(grant.write ? theme.brandOnPrimary : theme.textSecondary)
                         .padding(.horizontal, 8).padding(.vertical, 4)
@@ -1067,7 +1067,7 @@ struct KnowledgeEditorView: View {
 
         let supportedExtensions: Set<String> = [
             "pdf", "txt", "md", "markdown", "docx", "doc",
-            "csv", "json", "xml", "html", "htm", "xlsx", "xls",
+            "csv", "json", "xml", "HTML", "htm", "xlsx", "xls",
             "pptx", "ppt", "rst", "yaml", "yml", "toml",
             "mp3", "wav", "m4a", "ogg", "flac", "aac", "wma", "opus", "webm", "caf", "aiff", "aif"
         ]
@@ -1304,7 +1304,7 @@ struct KnowledgeEditorView: View {
         case "txt", "md", "markdown": return "doc.plaintext"
         case "csv": return "tablecells"
         case "json": return "curlybraces"
-        case "xml", "html", "htm": return "chevron.left.forwardslash.chevron.right"
+        case "xml", "HTML", "htm": return "chevron.left.forwardslash.chevron.right"
         case "docx", "doc": return "doc.text"
         case "xlsx", "xls": return "tablecells"
         case "pptx", "ppt": return "rectangle.on.rectangle"

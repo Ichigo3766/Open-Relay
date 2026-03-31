@@ -78,7 +78,9 @@ struct AIModel: Codable, Identifiable, Hashable, Sendable {
     /// that should appear in the assistant message action bar.
     var actions: [AIModelAction]
     /// Per-model suggestion prompts configured by the admin in the model editor.
-    /// Used as a fallback when no admin-level `default_prompt_suggestions` are set.
+    /// Per-model suggestion prompts shown on the welcome screen. Takes priority over
+    /// admin-level `default_prompt_suggestions` from `/api/config` — admin config is
+    /// used only as a fallback when the model has no suggestions of its own.
     /// Format matches `BackendConfig.PromptSuggestion`: `{"title": ["...", "..."], "content": "..."}`.
     var suggestionPrompts: [BackendConfig.PromptSuggestion]
     /// The full raw model JSON from the server. Sent as `model_item` in chat completion

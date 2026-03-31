@@ -257,7 +257,7 @@ struct ProxyAuthView: View {
                     .transition(.move(edge: .top).combined(with: .opacity))
                 }
             }
-            .navigationTitle("Sign In")
+            .navigationTitle("Sign in")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {

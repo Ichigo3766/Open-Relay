@@ -123,7 +123,7 @@ struct LoginView: View {
 
                     // Sign in button
                     AuthPrimaryButton(
-                        title: "Sign In",
+                        title: "Sign in",
                         icon: viewModel.isLoggingIn ? nil : "arrow.right",
                         isLoading: viewModel.isLoggingIn,
                         isDisabled: viewModel.email.isEmpty || viewModel.password.isEmpty

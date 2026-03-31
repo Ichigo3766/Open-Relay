@@ -3962,7 +3962,9 @@ final class ChatViewModel {
         guard let apiClient = manager?.apiClient else { return }
         Task {
             do {
-                try await apiClient.updateUserSettings(["ui": ["memory": enabled]])
+                // Use merge helper so we only update `memory` without
+                // overwriting `models`, `pinnedModels`, or any other ui keys.
+                try await apiClient.mergeUserUISettings(["memory": enabled])
                 logger.debug("Memory setting saved to server: \(enabled)")
             } catch {
                 logger.debug("Failed to save memory setting: \(error.localizedDescription)")
@@ -4009,17 +4011,15 @@ final class ChatViewModel {
         // Update cache immediately
         activeChatStore?.cachedPinnedModelIds = pinnedModelIds
 
-        // Sync to server (fire-and-forget)
+        // Sync to server (fire-and-forget).
+        // Use merge helper so we ONLY update `pinnedModels` — previously this
+        // also wrote `models` (the default model key) with the pinned IDs array,
+        // which overwrote the user's default model selection on every pin action.
         let currentPinned = pinnedModelIds
         guard let apiClient = manager?.apiClient else { return }
         Task {
             do {
-                try await apiClient.updateUserSettings([
-                    "ui": [
-                        "models": currentPinned,
-                        "pinnedModels": currentPinned
-                    ]
-                ])
+                try await apiClient.mergeUserUISettings(["pinnedModels": currentPinned])
                 logger.debug("Pinned models saved to server: \(currentPinned)")
             } catch {
                 logger.debug("Failed to save pinned models: \(error.localizedDescription)")

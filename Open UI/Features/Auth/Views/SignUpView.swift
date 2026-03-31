@@ -187,7 +187,7 @@ struct SignUpView: View {
                                 Image(systemName: viewModel.doPasswordsMatch ? "checkmark.circle.fill" : "xmark.circle.fill")
                                     .scaledFont(size: 12)
                                     .contentTransition(.symbolEffect(.replace))
-                                Text(viewModel.doPasswordsMatch ? "Passwords match" : "Passwords don't match")
+                                Text(viewModel.doPasswordsMatch ? "Passwords match" : "Passwords do not match.")
                                     .scaledFont(size: 12, weight: .medium)
                             }
                             .foregroundStyle(viewModel.doPasswordsMatch ? theme.success : theme.error)
@@ -247,7 +247,7 @@ struct SignUpView: View {
                                 viewModel.goToPhase(.credentialLogin)
                             }
                         } label: {
-                            Text("Sign In")
+                            Text("Sign in")
                                 .scaledFont(size: 14, weight: .medium)
                                 .foregroundStyle(theme.brandPrimary)
                         }

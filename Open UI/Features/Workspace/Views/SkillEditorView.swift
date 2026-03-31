@@ -438,7 +438,7 @@ struct SkillEditorView: View {
                 Button {
                     Task { await toggleUserPermission(userId: user.id, currentlyWrite: grant.write) }
                 } label: {
-                    Text(grant.write ? "WRITE" : "READ")
+                    Text(grant.write ? "Write" : "Read")
                         .scaledFont(size: 11, weight: .semibold)
                         .foregroundStyle(grant.write ? theme.brandOnPrimary : theme.textSecondary)
                         .padding(.horizontal, 8)

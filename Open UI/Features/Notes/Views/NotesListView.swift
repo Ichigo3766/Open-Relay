@@ -29,7 +29,7 @@ struct NotesListView: View {
         }
         .searchable(
             text: $viewModel.searchText,
-            prompt: "Search notes"
+            prompt: "Search Notes"
         )
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {

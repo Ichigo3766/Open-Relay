@@ -20,7 +20,7 @@ struct AppearanceSettingsView: View {
                 // Color Scheme
                 SettingsSection(
                     header: "Appearance",
-                    footer: "Choose how Open UI looks. System follows your device settings."
+                    footer: "Choose how Open Relay looks. System follows your device settings."
                 ) {
                     colorSchemePicker
                 }
@@ -123,7 +123,7 @@ struct AppearanceSettingsView: View {
                             .scaledFont(size: 18)
                             .foregroundStyle(theme.textTertiary)
 
-                        Text("Message…")
+                        Text("Message")
                             .scaledFont(size: 13)
                             .foregroundStyle(theme.inputPlaceholder)
 

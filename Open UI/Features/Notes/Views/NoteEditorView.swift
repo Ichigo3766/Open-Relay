@@ -60,7 +60,7 @@ struct NoteEditorView: View {
                             Task { await generateTitle() }
                         } label: {
                             SwiftUI.Label(
-                                isGeneratingTitle ? "Generating…" : "Generate Title",
+                                isGeneratingTitle ? "Generating..." : "Generate Title",
                                 systemImage: "sparkles"
                             )
                         }

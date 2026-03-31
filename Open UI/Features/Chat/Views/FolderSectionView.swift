@@ -129,7 +129,7 @@ struct FolderRow: View {
             Button(role: .destructive) {
                 showDeleteConfirmation = true
             } label: {
-                Label(String(localized: "Delete Folder"), systemImage: "trash")
+                Label(String(localized: "Delete folder?"), systemImage: "trash")
             }
         }
         // Swipe to delete

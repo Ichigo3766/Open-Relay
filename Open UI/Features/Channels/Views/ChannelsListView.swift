@@ -574,7 +574,7 @@ struct CreateChannelSheet: View {
                     }
                 } else {
                     Section(channelType == .group ? "Group Info" : "Channel Info") {
-                        TextField(channelType == .group ? "Group name" : "Channel name", text: $name)
+                        TextField(channelType == .group ? "Group Name" : "Channel Name", text: $name)
                             .textInputAutocapitalization(.never)
                             .autocorrectionDisabled()
                         TextField("Description (optional)", text: $description)

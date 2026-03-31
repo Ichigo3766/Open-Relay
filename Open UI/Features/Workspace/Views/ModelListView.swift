@@ -185,7 +185,7 @@ struct ModelListView: View {
                         .scaledFont(size: 15, weight: .medium)
                         .foregroundStyle(theme.brandPrimary)
                 }
-                .accessibilityLabel("Import Model")
+                .accessibilityLabel("Import Models")
 
                 // Export All
                 Button {
@@ -201,7 +201,7 @@ struct ModelListView: View {
                     }
                 }
                 .disabled(isExportingAll || manager.models.isEmpty)
-                .accessibilityLabel("Export All Models")
+                .accessibilityLabel("Export Models")
 
                 // New Model
                 Button {
@@ -279,7 +279,7 @@ struct ModelListView: View {
                         .foregroundStyle(theme.textPrimary)
                         .lineLimit(1)
                     if !model.isActive {
-                        Text("INACTIVE")
+                        Text("Inactive")
                             .scaledFont(size: 10, weight: .semibold)
                             .foregroundStyle(theme.textTertiary)
                             .padding(.horizontal, 6)

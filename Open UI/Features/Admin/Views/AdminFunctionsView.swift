@@ -183,7 +183,7 @@ struct AdminFunctionsView: View {
             Task { await handleImport(result) }
         }
         .confirmationDialog(
-            "Delete Function",
+            "Delete function?",
             isPresented: $showDeleteConfirm,
             titleVisibility: .visible
         ) {
@@ -219,7 +219,7 @@ struct AdminFunctionsView: View {
                 .scaledFont(size: 15, weight: .medium)
                 .foregroundStyle(theme.textTertiary)
 
-            TextField("Search functions…", text: $searchQuery)
+            TextField("Search Functions", text: $searchQuery)
                 .scaledFont(size: 16)
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()

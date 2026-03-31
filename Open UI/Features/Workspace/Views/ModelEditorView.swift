@@ -571,7 +571,7 @@ struct ModelEditorView: View {
                                     .tint(theme.brandPrimary)
                                     .padding(.leading, 4)
                             } else if baseModelId.isEmpty {
-                                Text("Select a model…")
+                                Text("Select a model")
                                     .scaledFont(size: 15)
                                     .foregroundStyle(theme.textTertiary)
                             } else {
@@ -921,7 +921,7 @@ struct ModelEditorView: View {
                         .padding(.horizontal, 4)
                     }
                 }
-                Text("To select toolkits here, add them to the 'Tools' workspace first.")
+                Text("To select toolkits here, add them to the \"Tools\" workspace first.")
                     .scaledFont(size: 12)
                     .foregroundStyle(theme.textTertiary)
                     .padding(.leading, 4)
@@ -959,7 +959,7 @@ struct ModelEditorView: View {
                     .padding(.vertical, 4)
                     .padding(.horizontal, 4)
                 }
-                Text("To select skills here, add them to the 'Skills' workspace first.")
+                Text("To select skills here, add them to the \"Skills\" workspace first.")
                     .scaledFont(size: 12)
                     .foregroundStyle(theme.textTertiary)
                     .padding(.leading, 4)
@@ -1257,7 +1257,7 @@ struct ModelEditorView: View {
                 Button {
                     Task { await toggleUserPermission(userId: user.id, currentlyWrite: grant.write) }
                 } label: {
-                    Text(grant.write ? "WRITE" : "READ")
+                    Text(grant.write ? "Write" : "Read")
                         .scaledFont(size: 11, weight: .semibold)
                         .foregroundStyle(grant.write ? theme.brandOnPrimary : theme.textSecondary)
                         .padding(.horizontal, 8)
@@ -1932,7 +1932,7 @@ struct BaseModelPickerSheet: View {
                         Image(systemName: "cpu")
                             .font(.system(size: 44, weight: .light))
                             .foregroundStyle(theme.textTertiary)
-                        Text("No Models Found")
+                        Text("No models found")
                             .scaledFont(size: 17, weight: .semibold)
                             .foregroundStyle(theme.textPrimary)
                         Text("Could not load available models from the server.")
@@ -2018,7 +2018,7 @@ struct BaseModelPickerSheet: View {
             .background(theme.background)
             .navigationTitle("Select Base Model")
             .navigationBarTitleDisplayMode(.inline)
-            .searchable(text: $searchText, prompt: "Search models…")
+            .searchable(text: $searchText, prompt: "Search Models")
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("Cancel") { onDismiss() }
@@ -2086,7 +2086,7 @@ struct ModelAdvancedParamsSection: View {
                 Haptics.play(.light)
             } label: {
                 HStack {
-                    Text("ADVANCED PARAMS")
+                    Text("Advanced Params")
                         .scaledFont(size: 12, weight: .semibold)
                         .foregroundStyle(theme.textTertiary)
                         .padding(.leading, 4)
@@ -2596,7 +2596,7 @@ struct ModelToolsAndCapabilitiesSection: View {
                     }
                     .padding(.vertical, 4).padding(.horizontal, 4)
                 }
-                Text("To select toolkits here, add them to the 'Tools' workspace first.")
+                Text("To select toolkits here, add them to the \"Tools\" workspace first.")
                     .scaledFont(size: 12).foregroundStyle(theme.textTertiary).padding(.leading, 4)
             }
         }
@@ -2629,7 +2629,7 @@ struct ModelToolsAndCapabilitiesSection: View {
                     }
                     .padding(.vertical, 4).padding(.horizontal, 4)
                 }
-                Text("To select skills here, add them to the 'Skills' workspace first.")
+                Text("To select skills here, add them to the \"Skills\" workspace first.")
                     .scaledFont(size: 12).foregroundStyle(theme.textTertiary).padding(.leading, 4)
             }
         }

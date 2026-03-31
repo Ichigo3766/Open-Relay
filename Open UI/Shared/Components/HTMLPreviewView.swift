@@ -73,7 +73,7 @@ struct HTMLPreviewView: View {
     private var headerBar: some View {
         HStack(spacing: 12) {
             // Language label
-            Text("html")
+            Text("HTML")
                 .font(.system(.caption, design: .monospaced))
                 .fontWeight(.semibold)
                 .foregroundStyle(.secondary)
@@ -170,7 +170,7 @@ struct HTMLPreviewView: View {
         let lineCount = html.components(separatedBy: "\n").count
 
         return VStack(spacing: 0) {
-            HighlightedSourceView(code: html, language: "html")
+            HighlightedSourceView(code: html, language: "HTML")
 
             Divider()
 
@@ -336,7 +336,7 @@ private struct HTMLFullscreenView: View {
             ZStack {
                 if showSource {
                     // Fullscreen source — full content, no truncation, fills screen
-                    HighlightedSourceView(code: html, language: "html", truncate: false, maxHeight: .infinity)
+                    HighlightedSourceView(code: html, language: "HTML", truncate: false, maxHeight: .infinity)
                         .transition(.opacity)
                 } else {
                     // Fullscreen webview — scrolls freely
@@ -555,7 +555,7 @@ struct HTMLSourceCodeView: View {
         VStack(spacing: 0) {
             // Header
             HStack {
-                Text("html")
+                Text("HTML")
                     .font(.system(.caption, design: .monospaced))
                     .fontWeight(.semibold)
                     .foregroundStyle(.secondary)

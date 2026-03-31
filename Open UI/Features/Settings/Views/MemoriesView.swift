@@ -373,7 +373,9 @@ struct MemoriesView: View {
     private func updateMemoryToggle(_ enabled: Bool) async {
         guard let api = dependencies.apiClient else { return }
         isLoadingMemoryToggle = true
-        try? await api.updateUserSettings(["ui": ["memory": enabled as Any]])
+        // Use merge helper so we ONLY update `memory` without overwriting
+        // `models`, `pinnedModels`, or any other ui keys.
+        try? await api.mergeUserUISettings(["memory": enabled])
         isLoadingMemoryToggle = false
         // Notify all active ChatViewModels so they update immediately
         // without waiting for the next server fetch on model switch/reload.

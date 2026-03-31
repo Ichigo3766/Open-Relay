@@ -14,6 +14,8 @@ struct SettingsView: View {
     @State private var showSignOutConfirmation = false
     @State private var navigationPath = NavigationPath()
     @State private var showDefaultModelPicker = false
+    @State private var showLanguagePicker = false
+    @State private var showRestartAlert = false
     @State private var availableModels: [AIModel] = []
     @State private var defaultModelId: String?
     @State private var isLoadingModels = false
@@ -83,10 +85,20 @@ struct SettingsView: View {
                                 ? (dependencies.accessibilityManager.matchingPreset?.displayName ?? "Custom")
                                 : "Standard",
                             iconColor: .purple,
-                            showDivider: false,
+                            showDivider: true,
                             accessory: .chevron
                         ) {
                             navigationPath.append(SettingsDestination.accessibility)
+                        }
+                        SettingsCell(
+                            icon: "globe",
+                            title: "Language",
+                            subtitle: currentLanguageDisplayName,
+                            iconColor: .blue,
+                            showDivider: false,
+                            accessory: .chevron
+                        ) {
+                            showLanguagePicker = true
                         }
                     }
 
@@ -178,6 +190,20 @@ struct SettingsView: View {
                         }
                     }
 
+                    // Storage
+                    SettingsSection(header: "Storage") {
+                        SettingsCell(
+                            icon: "internaldrive",
+                            title: "Storage",
+                            subtitle: "Files, models & caches",
+                            iconColor: .blue,
+                            showDivider: false,
+                            accessory: .chevron
+                        ) {
+                            navigationPath.append(SettingsDestination.storage)
+                        }
+                    }
+
                     // Privacy & Security
                     SettingsSection(header: "Privacy & Security") {
                         SettingsCell(
@@ -194,7 +220,7 @@ struct SettingsView: View {
                     SettingsSection(header: "About") {
                         SettingsCell(
                             icon: "info.circle",
-                            title: "About Open UI",
+                            title: "About Open Relay",
                             showDivider: false,
                             accessory: .chevron
                         ) {
@@ -258,6 +284,8 @@ struct SettingsView: View {
                     AdminConsoleView()
                 case .memories:
                     MemoriesView()
+                case .storage:
+                    StorageSettingsView()
                 }
             }
             .sheet(isPresented: $showDefaultModelPicker) {
@@ -266,6 +294,11 @@ struct SettingsView: View {
                     selectedModelId: $defaultModelId,
                     onSave: saveDefaultModel
                 )
+            }
+            .sheet(isPresented: $showLanguagePicker) {
+                LanguagePickerView()
+                    .presentationDetents([.large])
+                    .presentationDragIndicator(.visible)
             }
             .sheet(isPresented: $showSignOutConfirmation) {
                 SignOutConfirmationSheet(
@@ -297,12 +330,25 @@ struct SettingsView: View {
         }
     }
 
+    /// The display name of the currently active app language.
+    private var currentLanguageDisplayName: String {
+        let langs = UserDefaults.standard.stringArray(forKey: "AppleLanguages") ?? []
+        if let first = langs.first, !first.hasPrefix("en") {
+            let locale = Locale(identifier: first)
+            // Show native name in that language
+            if let native = locale.localizedString(forIdentifier: first) {
+                return native
+            }
+        }
+        return String(localized: "System Default")
+    }
+
     private var notificationStatusSubtitle: String {
         NotificationService.shared.isAuthorized ? "Enabled" : "Disabled"
     }
 
     private var defaultModelDisplayName: String {
-        if isLoadingModels { return "Loading…" }
+        if isLoadingModels { return "Loading..." }
         if let id = defaultModelId, let model = availableModels.first(where: { $0.id == id }) {
             return model.name
         }
@@ -320,17 +366,14 @@ struct SettingsView: View {
     }
 
     private func saveDefaultModel(_ modelId: String?) {
-        // Save to user settings on server
+        // Save to user settings on server.
+        // Use merge helper so we ONLY update `models` without overwriting
+        // `memory`, `pinnedModels`, or any other ui keys.
         Task {
             guard let api = dependencies.apiClient else { return }
             do {
-                var settings: [String: Any] = [:]
-                if let id = modelId {
-                    settings["ui"] = ["models": [id]]
-                } else {
-                    settings["ui"] = ["models": [String]()]
-                }
-                try await api.updateUserSettings(settings)
+                let models: [String] = modelId.map { [$0] } ?? []
+                try await api.mergeUserUISettings(["models": models])
                 defaultModelId = modelId
             } catch {}
         }
@@ -359,6 +402,7 @@ enum SettingsDestination: Hashable {
     case notifications
     case adminConsole
     case memories
+    case storage
 }
 
 // MARK: - Default Model Picker
@@ -439,7 +483,7 @@ struct DefaultModelPickerView: View {
                     )
                 }
             }
-            .searchable(text: $searchText, prompt: "Search models")
+            .searchable(text: $searchText, prompt: "Search Models")
             .navigationTitle("Default Model")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -539,7 +583,7 @@ struct ChatSettingsView: View {
             }
 
             Section {
-                Toggle("Temporary chats by default", isOn: $temporaryChatDefault)
+                Toggle("Temporary Chat by Default", isOn: $temporaryChatDefault)
                     .tint(theme.brandPrimary)
             } header: {
                 Text("Privacy")
@@ -551,7 +595,7 @@ struct ChatSettingsView: View {
                 Toggle("Expand thinking while streaming", isOn: $expandThinkingWhileStreaming)
                     .tint(theme.brandPrimary)
             } header: {
-                Text("Thinking")
+                Text("Thinking...")
             } footer: {
                 Text("When enabled, reasoning blocks expand automatically while the model is thinking and collapse once done. When disabled, they stay collapsed unless you tap to open them.")
             }
@@ -709,7 +753,7 @@ struct TTSSettingsView: View {
                                         .foregroundStyle(theme.textPrimary)
 
                                     if value == "marvis" {
-                                        Text("NEW")
+                                        Text("New")
                                             .scaledFont(size: 9, weight: .heavy)
                                             .foregroundStyle(.white)
                                             .padding(.horizontal, 5)
@@ -1100,14 +1144,14 @@ struct TTSSettingsView: View {
         case .loading:
             HStack(spacing: 4) {
                 ProgressView().controlSize(.mini)
-                Text("Loading…")
+                Text("Loading...")
                     .scaledFont(size: 12, weight: .medium)
                     .foregroundStyle(theme.brandPrimary)
             }
         case .ready:
             statusPill("Ready", color: theme.success)
         case .generating:
-            statusPill("Generating…", color: theme.brandPrimary)
+            statusPill("Generating...", color: theme.brandPrimary)
         case .error(let msg):
             statusPill("Error", color: theme.error)
                 .help(msg)
@@ -1115,7 +1159,7 @@ struct TTSSettingsView: View {
     }
 
     private func statusPill(_ text: String, color: Color) -> some View {
-        Text(text)
+        Text(LocalizedStringKey(text))
             .scaledFont(size: 11, weight: .semibold)
             .foregroundStyle(color)
             .padding(.horizontal, 8)
@@ -1636,7 +1680,7 @@ struct STTSettingsView: View {
         case .loading:
             HStack(spacing: 4) {
                 ProgressView().controlSize(.mini)
-                Text("Loading…")
+                Text("Loading...")
                     .scaledFont(size: 12, weight: .medium)
                     .foregroundStyle(theme.brandPrimary)
             }
@@ -1671,7 +1715,7 @@ struct STTSettingsView: View {
     }
 
     private func statusPill(_ text: String, color: Color) -> some View {
-        Text(text)
+        Text(LocalizedStringKey(text))
             .scaledFont(size: 11, weight: .semibold)
             .foregroundStyle(color)
             .padding(.horizontal, 8)
@@ -1891,7 +1935,7 @@ struct NotificationSettingsView: View {
                 if systemPermissionGranted {
                     Text("Notifications are authorized. You can manage notification style in iOS Settings.")
                 } else {
-                    Text("Notifications require system permission. Tap \"Request Permission\" or enable them in iOS Settings → Open UI → Notifications.")
+                    Text("Notifications require system permission. Tap \"Request Permission\" or enable them in iOS Settings → Open Relay → Notifications.")
                 }
             }
         }

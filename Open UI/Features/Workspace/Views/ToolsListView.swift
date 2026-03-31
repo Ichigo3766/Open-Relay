@@ -199,7 +199,7 @@ struct ToolsListView: View {
                     }
                 }
                 .disabled(isExportingAll || manager.tools.isEmpty)
-                .accessibilityLabel("Export All Tools")
+                .accessibilityLabel("Export Tools")
 
                 // New Tool
                 Button {

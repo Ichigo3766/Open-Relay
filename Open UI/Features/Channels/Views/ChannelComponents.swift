@@ -1157,7 +1157,7 @@ struct PinnedMessagesSheet: View {
             Group {
                 if messages.isEmpty {
                     ContentUnavailableView {
-                        Label("No Pinned Messages", systemImage: "pin.slash")
+                        Label("No pinned messages", systemImage: "pin.slash")
                     } description: {
                         Text("Pin important messages for easy reference.")
                     }

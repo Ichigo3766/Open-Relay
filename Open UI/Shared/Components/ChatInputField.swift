@@ -496,7 +496,7 @@ struct ChatInputField: View {
                         )
                 }
                 .buttonStyle(.plain)
-                .accessibilityLabel("Stop generating")
+                .accessibilityLabel("Stop Generating")
                 .transition(.scale.combined(with: .opacity))
 
             } else if canSend {

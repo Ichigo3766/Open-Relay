@@ -670,7 +670,7 @@ struct MainChatView: View {
                         } else {
                             Image(systemName: "sparkles")
                         }
-                        Text(isGeneratingTitle ? "Generating…" : "Generate")
+                        Text(isGeneratingTitle ? "Generating..." : "Generate")
                     }
                     .scaledFont(size: 14, weight: .medium)
                     .fontWeight(.medium)
@@ -1629,6 +1629,14 @@ struct MainChatView: View {
                         .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
+                    .contextMenu {
+                        Button(role: .destructive) {
+                            vm.togglePinModel(model.id)
+                            Haptics.play(.medium)
+                        } label: {
+                            Label("Unpin", systemImage: "pin.slash")
+                        }
+                    }
                 }
             }
 

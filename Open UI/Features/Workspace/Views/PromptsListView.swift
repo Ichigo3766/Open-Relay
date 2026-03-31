@@ -256,7 +256,7 @@ struct PromptsListView: View {
                         .scaledFont(size: 15, weight: .medium)
                         .foregroundStyle(theme.brandPrimary)
                 }
-                .accessibilityLabel("Import Prompt")
+                .accessibilityLabel("Import Prompts")
 
                 // Export All button
                 Button {
@@ -272,7 +272,7 @@ struct PromptsListView: View {
                     }
                 }
                 .disabled(isExportingAll || manager.prompts.isEmpty)
-                .accessibilityLabel("Export All Prompts")
+                .accessibilityLabel("Export Prompts")
 
                 // New Prompt button
                 Button {
@@ -298,7 +298,7 @@ struct PromptsListView: View {
             Image(systemName: "magnifyingglass")
                 .scaledFont(size: 14)
                 .foregroundStyle(theme.textTertiary)
-            TextField("Search prompts…", text: $searchText)
+            TextField("Search Prompts", text: $searchText)
                 .scaledFont(size: 15)
                 .foregroundStyle(theme.textPrimary)
             if !searchText.isEmpty {
@@ -376,7 +376,7 @@ struct PromptsListView: View {
                         .foregroundStyle(theme.textPrimary)
                         .lineLimit(1)
                     if !prompt.isActive {
-                        Text("INACTIVE")
+                        Text("Inactive")
                             .scaledFont(size: 10, weight: .semibold)
                             .foregroundStyle(theme.textTertiary)
                             .padding(.horizontal, 6)

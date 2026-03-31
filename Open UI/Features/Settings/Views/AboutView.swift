@@ -49,12 +49,12 @@ struct AboutView: View {
                     linkRow(
                         icon: "curlybraces",
                         title: "Source Code",
-                        url: "https://github.com/Ichigo3766/Open-UI"
+                        url: "https://github.com/Ichigo3766/Open-Relay"
                     )
                     linkRow(
                         icon: "hand.raised",
                         title: "Privacy Policy",
-                        url: "https://github.com/Ichigo3766/Open-UI/blob/main/PRIVACY.md",
+                        url: "https://github.com/Ichigo3766/Open-Relay/blob/main/PRIVACY.md",
                         showDivider: false
                     )
                 }
@@ -66,34 +66,34 @@ struct AboutView: View {
                         iconColor: .red,
                         title: "Report a Bug",
                         subtitle: "Something broken? Let us know.",
-                        url: "https://github.com/Ichigo3766/Open-UI/issues/new?template=bug_report.yml"
+                        url: "https://github.com/Ichigo3766/Open-Relay/issues/new?template=bug_report.yml"
                     )
                     linkRow(
                         icon: "sparkles",
                         iconColor: .purple,
                         title: "Request a Feature",
                         subtitle: "Got an idea? We'd love to hear it.",
-                        url: "https://github.com/Ichigo3766/Open-UI/issues/new?template=feature_request.yml"
+                        url: "https://github.com/Ichigo3766/Open-Relay/issues/new?template=feature_request.yml"
                     )
                     linkRow(
                         icon: "paintbrush",
                         iconColor: .orange,
                         title: "UI/UX Improvement",
                         subtitle: "Design or layout feedback.",
-                        url: "https://github.com/Ichigo3766/Open-UI/issues/new?template=ui_ux.yml"
+                        url: "https://github.com/Ichigo3766/Open-Relay/issues/new?template=ui_ux.yml"
                     )
                     linkRow(
                         icon: "bolt",
                         iconColor: .yellow,
                         title: "Performance Issue",
                         subtitle: "Slow, laggy, or draining battery?",
-                        url: "https://github.com/Ichigo3766/Open-UI/issues/new?template=performance.yml"
+                        url: "https://github.com/Ichigo3766/Open-Relay/issues/new?template=performance.yml"
                     )
                     linkRow(
                         icon: "questionmark.circle",
                         title: "Ask a Question",
                         subtitle: "Need help with setup or a feature?",
-                        url: "https://github.com/Ichigo3766/Open-UI/issues/new?template=question.yml",
+                        url: "https://github.com/Ichigo3766/Open-Relay/issues/new?template=question.yml",
                         showDivider: false
                     )
                 }
@@ -113,14 +113,13 @@ struct AboutView: View {
 
     private var appHeader: some View {
         VStack(spacing: Spacing.md) {
-            Image(systemName: "bubble.left.and.bubble.right.fill")
-                .scaledFont(size: 56)
-                .foregroundStyle(theme.brandPrimary)
+            Image("AppIconImage")
+                .resizable()
+                .scaledToFill()
                 .frame(width: 88, height: 88)
-                .background(theme.brandPrimary.opacity(0.1))
                 .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
 
-            Text("Open UI")
+            Text("Open Relay")
                 .scaledFont(size: 28, weight: .bold)
                 .foregroundStyle(theme.textPrimary)
 

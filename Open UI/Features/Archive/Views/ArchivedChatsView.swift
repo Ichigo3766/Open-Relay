@@ -258,7 +258,7 @@ struct ArchivedChatsView: View {
                 .scaledFont(size: 40, weight: .light)
                 .foregroundStyle(theme.textTertiary.opacity(0.6))
             VStack(spacing: Spacing.sm) {
-                Text("No Results")
+                Text("No results")
                     .scaledFont(size: 20, weight: .semibold)
                     .foregroundStyle(theme.textPrimary)
                 Text("No archived chats match \"\(viewModel.searchText)\".")

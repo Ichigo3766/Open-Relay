@@ -68,7 +68,7 @@ struct TerminalFileItem: Identifiable, Sendable {
         case "js", "ts", "jsx", "tsx": return "chevron.left.forwardslash.chevron.right"
         case "swift", "dart", "java", "cpp", "c", "h", "rb", "go", "rs":
             return "chevron.left.forwardslash.chevron.right"
-        case "html", "css", "scss": return "globe"
+        case "HTML", "css", "scss": return "globe"
         case "json", "yaml", "yml", "xml", "toml": return "curlybraces"
         case "md", "txt", "rtf", "log": return "doc.plaintext"
         case "pdf": return "doc.richtext"

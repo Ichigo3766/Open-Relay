@@ -191,12 +191,12 @@ struct VoiceCallView: View {
                 Circle()
                     .fill(Color.blue)
                     .frame(width: 6, height: 6)
-                Text("Listening")
+                Text("Listening...")
             case .processing:
                 ProgressView()
                     .tint(.white.opacity(0.6))
                     .controlSize(.mini)
-                Text("Thinking")
+                Text("Thinking...")
             case .speaking:
                 Circle()
                     .fill(Color.green)

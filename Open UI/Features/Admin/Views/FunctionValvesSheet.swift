@@ -51,7 +51,7 @@ struct FunctionValvesSheet: View {
                         Image(systemName: "slider.horizontal.3")
                             .scaledFont(size: 44)
                             .foregroundStyle(theme.textTertiary)
-                        Text("No Valves")
+                        Text("No valves")
                             .scaledFont(size: 18, weight: .semibold)
                             .foregroundStyle(theme.textPrimary)
                         Text("This function has no user-configurable settings.")

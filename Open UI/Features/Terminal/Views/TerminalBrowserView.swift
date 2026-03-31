@@ -221,7 +221,7 @@ struct TerminalBrowserView: View {
                     Spacer()
                     ProgressView()
                         .controlSize(.regular)
-                    Text("Loading…")
+                    Text("Loading...")
                         .scaledFont(size: 13)
                         .foregroundStyle(theme.textTertiary)
                     Spacer()

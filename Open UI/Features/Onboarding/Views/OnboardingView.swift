@@ -100,7 +100,7 @@ struct OnboardingView: View {
                 onComplete()
             }
         } label: {
-            Text(currentPage == totalPages - 1 ? "Get Started" : "Continue")
+            Text(currentPage == totalPages - 1 ? "Get started" : "Continue")
                 .scaledFont(size: 17, weight: .semibold)
                 .foregroundStyle(theme.buttonPrimaryText)
                 .frame(maxWidth: .infinity)
@@ -167,15 +167,11 @@ struct OnboardingView: View {
             Spacer()
 
             // App icon area
-            ZStack {
-                RoundedRectangle(cornerRadius: 28, style: .continuous)
-                    .fill(theme.brandPrimary.opacity(theme.isDark ? 0.12 : 0.08))
-                    .frame(width: 100, height: 100)
-
-                Image(systemName: "sparkles")
-                    .scaledFont(size: 44, weight: .medium)
-                    .foregroundStyle(theme.brandPrimary)
-            }
+            Image("AppIconImage")
+                .resizable()
+                .scaledToFill()
+                .frame(width: 100, height: 100)
+                .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
             .opacity(o0)
             .offset(y: y0)
             .animation(.spring(response: 0.55, dampingFraction: 0.8).delay(0.0), value: pageAppeared[0])

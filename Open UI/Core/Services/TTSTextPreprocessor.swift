@@ -237,8 +237,12 @@ enum TTSTextPreprocessor {
         result = regexReplace(result, pattern: "(?m)^\\|.*\\|\\s*$", with: "")
 
         // --- Remove task list checkboxes ---
-        // "- [ ] Item" or "- [x] Item" → "Item."
-        result = regexReplace(result, pattern: "(?m)^[\\-*+]\\s+\\[[ xX]\\]\\s+(.+)", with: "$1.")
+        // "- [ ] Item" or "- [x] Item" → "Item." (only add period if not already ending with punctuation)
+        result = regexReplace(result, pattern: "(?m)^[\\-*+]\\s+\\[[ xX]\\]\\s+(.+)") { match in
+            let content = match.groups[0]
+            let last = content.last
+            return (last == "." || last == "!" || last == "?" || last == ":") ? content : "\(content)."
+        }
 
         // --- Standalone bold lines acting as section headings → sentence boundary ---
         // e.g. "**Prologue: The Shattered Pact**" or "**Title: ...**  " (with trailing spaces)
@@ -303,10 +307,20 @@ enum TTSTextPreprocessor {
         result = regexReplace(result, pattern: "(?m)^>\\s*", with: "")
 
         // --- Bullet points → standalone sentences ---
-        result = regexReplace(result, pattern: "(?m)^[\\-*+]\\s+(.+)", with: "$1.")
+        // Only add period if the content doesn't already end with punctuation.
+        result = regexReplace(result, pattern: "(?m)^[\\-*+]\\s+(.+)") { match in
+            let content = match.groups[0]
+            let last = content.last
+            return (last == "." || last == "!" || last == "?" || last == ":") ? content : "\(content)."
+        }
 
         // --- Numbered lists → standalone sentences ---
-        result = regexReplace(result, pattern: "(?m)^\\d+\\.\\s+(.+)", with: "$1.")
+        // Only add period if the content doesn't already end with punctuation.
+        result = regexReplace(result, pattern: "(?m)^\\d+\\.\\s+(.+)") { match in
+            let content = match.groups[0]
+            let last = content.last
+            return (last == "." || last == "!" || last == "?" || last == ":") ? content : "\(content)."
+        }
 
         // --- Horizontal rules (---, ***, ___) ---
         result = regexReplace(result, pattern: "(?m)^[\\-*_]{3,}\\s*$", with: "")
@@ -488,8 +502,10 @@ enum TTSTextPreprocessor {
         var result = text
 
         // Double newlines = paragraph break → sentence boundary
-        // Insert a period only if the line doesn't already end with punctuation
-        result = regexReplace(result, pattern: "([^.!?\\n])\\n{2,}", with: "$1. ")
+        // Insert a period only if the line doesn't already end with terminal punctuation.
+        // The character class excludes '.', '!', '?', ':' so "Key features:\n\n" stays as-is
+        // and doesn't produce the garbage "Key features:." sequence that breaks MarvisTTS.
+        result = regexReplace(result, pattern: "([^.!?:\\n])\\n{2,}", with: "$1. ")
 
         // Lines ending with punctuation + double newline → just add space
         result = result.replacingOccurrences(
@@ -514,6 +530,10 @@ enum TTSTextPreprocessor {
             with: ".",
             options: .regularExpression
         )
+
+        // Safety net: colon-period sequences (e.g. "Key features:.") are never
+        // valid English and cause MarvisTTS to produce garbage audio — remove the period.
+        result = result.replacingOccurrences(of: ":.", with: ":")
 
         // Clean up period-space-period patterns
         result = result.replacingOccurrences(

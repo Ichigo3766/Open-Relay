@@ -1,6 +1,7 @@
 import Foundation
 import AVFoundation
 import os.log
+import BackgroundTasks
 
 #if canImport(MLXAudioSTT)
 import MLXAudioSTT
@@ -72,10 +73,13 @@ enum ASRError: LocalizedError {
 /// the in-flight MLX task BEFORE iOS revokes GPU access. This prevents the
 /// uncatchable `std::runtime_error` crash from MLX's Metal command buffer.
 ///
-/// On iOS 26+ with `BGContinuedProcessingTask` + Background GPU Access entitlement,
-/// GPU work continues uninterrupted and `pauseForBackground()` is a no-op.
-///
-@MainActor @Observable
+/// On iOS 26+ **on devices that support background GPU** (iPad M3+ only),
+    /// a `BGContinuedProcessingTask` is submitted so that GPU work continues
+    /// uninterrupted. `pauseForBackground()` is a no-op only when such a task
+    /// is actually active. All iPhones and unsupported iPads fall through to the
+    /// existing cancel-and-unload path.
+    ///
+    @MainActor @Observable
 final class OnDeviceASRService {
 
     // MARK: - Public State
@@ -103,6 +107,21 @@ final class OnDeviceASRService {
     private let logger = Logger(subsystem: "com.openui", category: "OnDeviceASR")
     private var isLoadInProgress = false
 
+    /// `true` when running on iOS 26+ with a device that supports background GPU
+    /// (iPad M3+ only). Determined at runtime via `BGTaskScheduler.supportedResources`.
+    /// `nonisolated` so it can be safely called from within the `nonisolated transcribe()` method.
+    nonisolated static var supportsBackgroundGPU: Bool {
+        if #available(iOS 26, *) {
+            return BGTaskScheduler.supportedResources.contains(.gpu)
+        }
+        return false
+    }
+
+    /// Holds the active `BGContinuedProcessingTask` (typed as `AnyObject` to avoid
+    /// `@available` annotations on the stored property itself). Non-nil only while
+    /// a continued-processing task has been granted by the system on iOS 26+ iPad M3+.
+    @ObservationIgnored nonisolated(unsafe) private var activeContinuedTask: AnyObject?
+
     #if canImport(MLXAudioSTT)
     // nonisolated(unsafe): Qwen3ASRModel is not Sendable, but all writes happen
     // on @MainActor (loadModel / unloadModel) and reads in transcribe() are
@@ -120,6 +139,50 @@ final class OnDeviceASRService {
     init() {
         let raw = UserDefaults.standard.string(forKey: "sttEngine") ?? "qwen3asr"
         activeVariant = ASRModelVariant(rawValue: raw) ?? .qwen3ASR
+        registerBackgroundTaskHandlerIfNeeded()
+    }
+
+    // MARK: - BGContinuedProcessingTask Registration
+
+    /// Registers the BGTask handler exactly once during app launch (called from `init()`).
+    /// On iOS 26+ devices with background GPU support (iPad M3+), this wires up the
+    /// `BGContinuedProcessingTask` so the system can call back when GPU time is granted.
+    /// On all other devices this is a no-op.
+    private func registerBackgroundTaskHandlerIfNeeded() {
+        if #available(iOS 26, *) {
+            guard OnDeviceASRService.supportsBackgroundGPU else { return }
+            BGTaskScheduler.shared.register(
+                forTaskWithIdentifier: "com.openui.asr.transcription",
+                using: nil
+            ) { [weak self] task in
+                guard let continuedTask = task as? BGContinuedProcessingTask else {
+                    task.setTaskCompleted(success: false)
+                    return
+                }
+                // Store the task so pauseForBackground() knows GPU is live.
+                Task { @MainActor [weak self] in
+                    self?.activeContinuedTask = continuedTask
+                }
+                // If the system needs to reclaim GPU early, cancel gracefully.
+                continuedTask.expirationHandler = { [weak self] in
+                    Task { @MainActor [weak self] in
+                        guard let self else { return }
+                        self.logger.info("BGContinuedProcessingTask expired — pausing ASR")
+                        self.endActiveContinuedTask(success: false)
+                        self.pauseForBackground()
+                    }
+                }
+            }
+        }
+    }
+
+    /// Calls `setTaskCompleted` on the active continued processing task and clears
+    /// the stored reference. Safe to call when no task is active (no-op).
+    private func endActiveContinuedTask(success: Bool) {
+        if #available(iOS 26, *) {
+            (activeContinuedTask as? BGContinuedProcessingTask)?.setTaskCompleted(success: success)
+        }
+        activeContinuedTask = nil
     }
 
     // MARK: - Variant Switching
@@ -222,15 +285,17 @@ final class OnDeviceASRService {
     /// to release GPU resources before iOS revokes access. The caller is responsible
     /// for restarting transcription when the app returns to the foreground.
     func pauseForBackground() {
-        // On iOS 26+ with BGContinuedProcessingTask + Background GPU entitlement,
-        // GPU work continues in the background — no need to cancel.
-        if #available(iOS 26, *) {
-            logger.info("iOS 26+: background GPU access granted — not pausing ASR")
+        // When a BGContinuedProcessingTask is active, the system has explicitly
+        // granted background GPU access for this device (iPad M3+ only).
+        // In that case, transcription can continue — don't cancel.
+        if activeContinuedTask != nil {
+            logger.info("BGContinuedProcessingTask active — GPU access maintained, not pausing ASR")
             return
         }
 
-        // iOS < 26: Metal is not accessible from the background.
-        // Cancel the active task to prevent the C++ runtime_error crash.
+        // No active continued-processing task: Metal is not accessible from the
+        // background. Cancel the active task to prevent the C++ runtime_error crash.
+        // This covers ALL iPhones (regardless of iOS version) and iPads without M3+.
         guard case .transcribing = state else { return }
 
         logger.info("Backgrounding detected — pausing ASR transcription to avoid GPU crash")
@@ -275,6 +340,26 @@ final class OnDeviceASRService {
         #if canImport(MLXAudioSTT)
 
         await MainActor.run { state = .transcribing }
+
+        // On iOS 26+ devices with background GPU support (iPad M3+), submit a
+        // BGContinuedProcessingTask so transcription can survive backgrounding.
+        // The registered handler (see registerBackgroundTaskHandlerIfNeeded) stores
+        // the task reference, which pauseForBackground() checks before cancelling.
+        if #available(iOS 26, *), Self.supportsBackgroundGPU {
+            let request = BGContinuedProcessingTaskRequest(
+                identifier: "com.openui.asr.transcription",
+                title: "Transcribing Audio",
+                subtitle: "Processing audio in the background"
+            )
+            request.requiredResources = [.gpu]
+            do {
+                try BGTaskScheduler.shared.submit(request)
+                logger.info("BGContinuedProcessingTask submitted for background GPU access")
+            } catch {
+                logger.warning("BGContinuedProcessingTask submit failed (will cancel on background): \(error.localizedDescription, privacy: .public)")
+            }
+        }
+
         let variant = await activeVariant
         let logger = self.logger
         let variantDisplayName = await variant.displayName
@@ -333,6 +418,7 @@ final class OnDeviceASRService {
 
             await MainActor.run {
                 activeTranscriptionTask = nil
+                endActiveContinuedTask(success: true)
                 state = .ready
                 Memory.clearCache()
             }
@@ -352,6 +438,7 @@ final class OnDeviceASRService {
             // a spurious "unloaded" message and is a no-op anyway.
             await MainActor.run {
                 activeTranscriptionTask = nil
+                endActiveContinuedTask(success: false)
                 // State is already .paused (set by pauseForBackground()).
                 // Only reset to .unloaded if somehow state wasn't updated.
                 if case .transcribing = state { state = .paused }

@@ -152,7 +152,7 @@ struct LoadingIndicator: View {
                 .scaleEffect(size / 20)
 
             if let message {
-                Text(message)
+                Text(LocalizedStringKey(message))
                     .scaledFont(size: 14)
                     .foregroundStyle(theme.textSecondary)
             }
@@ -180,7 +180,7 @@ struct LoadingOverlay: View {
                     .scaleEffect(1.5)
 
                 if let message {
-                    Text(message)
+                    Text(LocalizedStringKey(message))
                         .scaledFont(size: 16)
                         .foregroundStyle(theme.textSecondary)
                 }

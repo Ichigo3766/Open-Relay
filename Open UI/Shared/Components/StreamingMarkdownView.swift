@@ -168,7 +168,7 @@ struct StreamingMarkdownView: View {
             }
             let codeContent = String(remaining[contentStart..<closeRange.lowerBound])
             let isChart = chartLanguageTags.contains(lang) && looksLikeChartJSON(codeContent)
-            let isHTML = lang == "html" && codeContent.contains("<") && codeContent.contains(">") && codeContent.count >= 10
+            let isHTML = lang == "HTML" && codeContent.contains("<") && codeContent.contains(">") && codeContent.count >= 10
             let isMermaid = lang == "mermaid" && codeContent.trimmingCharacters(in: .whitespacesAndNewlines).count >= 5
             let isSVG = lang == "svg" && looksLikeSVG(codeContent)
 

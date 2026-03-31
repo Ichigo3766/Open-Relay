@@ -50,7 +50,7 @@ struct SharedChatRow: View {
                         .clipShape(Capsule())
                     }
                     .buttonStyle(.plain)
-                    .accessibilityLabel("Copy share link")
+                    .accessibilityLabel("Copy Share Link")
 
                     // Revoke
                     Button {

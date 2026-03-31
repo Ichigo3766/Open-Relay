@@ -261,6 +261,201 @@ final class StorageManager: @unchecked Sendable {
         return report.values.reduce(0, +)
     }
 
+    // MARK: - Full Storage Enumeration (for Storage Settings view)
+
+    /// Represents a single file or folder entry for the storage browser UI.
+    struct StorageEntry: Identifiable, Sendable {
+        let id: String
+        let url: URL
+        let name: String
+        let size: Int64          // Total size (recursive for directories)
+        let isDirectory: Bool
+        let depth: Int           // 0 = root-level item in the scanned directory
+        var children: [StorageEntry]?
+
+        /// Human-readable formatted size string.
+        var formattedSize: String {
+            ByteCountFormatter.string(fromByteCount: size, countStyle: .file)
+        }
+
+        /// SF Symbol name appropriate for the entry type.
+        var systemImage: String {
+            if isDirectory { return "folder.fill" }
+            let ext = url.pathExtension.lowercased()
+            switch ext {
+            case "safetensors", "gguf", "bin", "pt", "pth": return "cpu"
+            case "json":                                      return "doc.text"
+            case "txt", "md":                                 return "text.document"
+            case "jpg", "jpeg", "png", "gif", "webp":        return "photo"
+            case "m4a", "wav", "mp3":                         return "waveform"
+            case "mp4", "mov":                                return "video"
+            case "zip", "tar", "gz":                          return "archivebox"
+            case "sqlite", "db":                              return "cylinder.split.1x2"
+            default:                                          return "doc"
+            }
+        }
+    }
+
+    /// Recursively scans a directory and returns a flat list of top-level
+    /// `StorageEntry` items, each with their total recursive sizes.
+    /// Directories get a `children` array containing their contents.
+    func enumerateDirectory(_ url: URL, depth: Int = 0) -> [StorageEntry] {
+        guard fileManager.fileExists(atPath: url.path) else { return [] }
+
+        do {
+            let contents = try fileManager.contentsOfDirectory(
+                at: url,
+                includingPropertiesForKeys: [.fileSizeKey, .isDirectoryKey, .totalFileSizeKey],
+                options: .skipsHiddenFiles
+            )
+
+            var entries: [StorageEntry] = []
+            for item in contents {
+                let isDir = (try? item.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) ?? false
+                let size = Int64(diskSize(of: isDir ? item : nil) )
+
+                if isDir {
+                    let dirSize = Int64(diskSize(of: item))
+                    let children = enumerateDirectory(item, depth: depth + 1)
+                    entries.append(StorageEntry(
+                        id: item.path,
+                        url: item,
+                        name: item.lastPathComponent,
+                        size: dirSize,
+                        isDirectory: true,
+                        depth: depth,
+                        children: children
+                    ))
+                } else {
+                    let fileSize: Int64
+                    if let fSize = try? item.resourceValues(forKeys: [.totalFileSizeKey]).totalFileSize {
+                        fileSize = Int64(fSize)
+                    } else if let fSize = try? item.resourceValues(forKeys: [.fileSizeKey]).fileSize {
+                        fileSize = Int64(fSize)
+                    } else {
+                        fileSize = 0
+                    }
+                    entries.append(StorageEntry(
+                        id: item.path,
+                        url: item,
+                        name: item.lastPathComponent,
+                        size: fileSize,
+                        isDirectory: false,
+                        depth: depth,
+                        children: nil
+                    ))
+                }
+            }
+
+            // Sort: directories first, then by size descending
+            return entries.sorted {
+                if $0.isDirectory != $1.isDirectory { return $0.isDirectory }
+                return $0.size > $1.size
+            }
+        } catch {
+            logger.error("Failed to enumerate directory \(url.lastPathComponent): \(error.localizedDescription)")
+            return []
+        }
+    }
+
+    /// Returns all storage locations the app writes to, as named root entries.
+    func allStorageLocations() -> [(label: String, icon: String, color: String, url: URL)] {
+        var locations: [(label: String, icon: String, color: String, url: URL)] = []
+
+        // Documents directory (user-visible in Files app)
+        if let docs = fileManager.urls(for: .documentDirectory, in: .userDomainMask).first {
+            locations.append((label: "Documents", icon: "folder.fill", color: "blue", url: docs))
+        }
+
+        // Library/Application Support (Core Data, etc.)
+        if let appSupport = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first {
+            locations.append((label: "Application Support", icon: "internaldrive", color: "purple", url: appSupport))
+        }
+
+        // Library/Caches (image cache, HTTP cache on disk)
+        if let caches = fileManager.urls(for: .cachesDirectory, in: .userDomainMask).first {
+            locations.append((label: "Caches", icon: "cylinder.split.1x2", color: "orange", url: caches))
+        }
+
+        // Temporary directory
+        locations.append((label: "Temporary Files", icon: "clock", color: "gray", url: fileManager.temporaryDirectory))
+
+        return locations
+    }
+
+    /// Safely deletes a file or directory at the given URL. Returns bytes freed.
+    @discardableResult
+    func deleteItem(at url: URL) -> Int64 {
+        let size = Int64(diskSize(of: url))
+        // Check it's file size if not a directory
+        let isDir = (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) ?? false
+        let actualSize: Int64
+        if isDir {
+            actualSize = size
+        } else {
+            actualSize = (try? Int64(url.resourceValues(forKeys: [.totalFileSizeKey]).totalFileSize ?? 0)) ?? size
+        }
+
+        do {
+            try fileManager.removeItem(at: url)
+            logger.info("Deleted item: \(url.lastPathComponent) (\(ByteCountFormatter.string(fromByteCount: actualSize, countStyle: .file)))")
+            return actualSize
+        } catch {
+            logger.error("Failed to delete \(url.lastPathComponent): \(error.localizedDescription)")
+            return 0
+        }
+    }
+
+    /// Returns the total size of the full Documents directory.
+    func documentDirectorySize() -> Int64 {
+        guard let docs = fileManager.urls(for: .documentDirectory, in: .userDomainMask).first else { return 0 }
+        return Int64(diskSize(of: docs))
+    }
+
+    /// Returns the total size of the Library/Application Support directory.
+    func appSupportDirectorySize() -> Int64 {
+        guard let appSupport = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else { return 0 }
+        return Int64(diskSize(of: appSupport))
+    }
+
+    /// Returns the total size of the Library/Caches directory.
+    func cacheDirectorySize() -> Int64 {
+        guard let caches = fileManager.urls(for: .cachesDirectory, in: .userDomainMask).first else { return 0 }
+        return Int64(diskSize(of: caches))
+    }
+
+    /// Returns the total size of the Temporary directory.
+    func tempDirectorySize() -> Int64 {
+        Int64(diskSize(of: fileManager.temporaryDirectory))
+    }
+
+    /// Clears all files from the app's tmp/ directory. Returns bytes freed.
+    @discardableResult
+    func clearTempDirectory() -> Int64 {
+        let tmp = fileManager.temporaryDirectory
+        let before = Int64(diskSize(of: tmp))
+        let items = (try? fileManager.contentsOfDirectory(at: tmp, includingPropertiesForKeys: nil, options: .skipsHiddenFiles)) ?? []
+        for item in items {
+            try? fileManager.removeItem(at: item)
+        }
+        let after = Int64(diskSize(of: tmp))
+        return max(0, before - after)
+    }
+
+    @discardableResult
+    func clearCachesDirectory() -> Int64 {
+        guard let caches = fileManager.urls(for: .cachesDirectory, in: .userDomainMask).first else { return 0 }
+        let freed = Int64(diskSize(of: caches))
+        if let items = try? fileManager.contentsOfDirectory(at: caches, includingPropertiesForKeys: nil) {
+            for item in items { try? fileManager.removeItem(at: item) }
+        }
+        URLCache.shared.removeAllCachedResponses()
+        if freed > 0 {
+            logger.info("Cleared Caches directory: \(ByteCountFormatter.string(fromByteCount: freed, countStyle: .file))")
+        }
+        return freed
+    }
+
     // MARK: - File Upload Cache (Issue #2)
 
     /// Clears the entire file upload cache directory.

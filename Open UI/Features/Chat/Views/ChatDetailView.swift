@@ -1368,21 +1368,21 @@ struct ChatDetailView: View {
     /// Resolves which prompt suggestions to show on the welcome screen.
     ///
     /// Priority:
-    /// 1. Admin-level `default_prompt_suggestions` (from `/api/config`) — if non-empty, use those.
-    /// 2. Per-model `suggestion_prompts` (from the selected model's `meta.suggestion_prompts`) — fallback.
+    /// 1. Per-model `suggestion_prompts` (from the selected model's `meta.suggestion_prompts`) — if non-empty, use those.
+    /// 2. Admin-level `default_prompt_suggestions` (from `/api/config`) — fallback if the model has none.
     /// 3. Neither → empty array (no prompt cards shown).
     private static func resolvePromptSuggestions(
         adminSuggestions: [BackendConfig.PromptSuggestion]?,
         modelSuggestions: [BackendConfig.PromptSuggestion]?,
         count: Int
     ) -> [SuggestedPrompt] {
-        // 1. Admin-configured prompts take priority
-        if let admin = adminSuggestions, !admin.isEmpty {
-            return buildServerPrompts(from: admin, count: count)
-        }
-        // 2. Fall back to per-model prompts
+        // 1. Per-model prompts take priority
         if let model = modelSuggestions, !model.isEmpty {
             return buildServerPrompts(from: model, count: count)
+        }
+        // 2. Fall back to admin-configured prompts
+        if let admin = adminSuggestions, !admin.isEmpty {
+            return buildServerPrompts(from: admin, count: count)
         }
         // 3. Neither → no prompts
         return []
@@ -1705,7 +1705,7 @@ struct ChatDetailView: View {
                     compactActionIcon(icon: "trash", isActive: false)
                 }
                 .buttonStyle(.plain)
-                .accessibilityLabel("Delete version")
+                .accessibilityLabel("Delete Version")
             }
 
             // Usage info — shown whenever the server returned usage data on this message
@@ -1868,7 +1868,7 @@ struct ChatDetailView: View {
         case "txt", "md", "rtf": return "doc.plaintext"
         case "js", "ts", "py", "swift", "dart", "java", "cpp", "c", "h", "rb", "go", "rs":
             return "chevron.left.forwardslash.chevron.right"
-        case "html", "css", "scss": return "globe"
+        case "HTML", "css", "scss": return "globe"
         case "zip", "tar", "gz", "rar", "7z": return "archivebox"
         case "mp3", "wav", "m4a", "flac": return "waveform"
         case "mp4", "mov", "avi", "mkv": return "film"

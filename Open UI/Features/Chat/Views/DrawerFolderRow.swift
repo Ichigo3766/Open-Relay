@@ -172,7 +172,7 @@ struct DrawerFolderRow: View {
                 Button(role: .destructive) {
                     showDeleteConfirmation = true
                 } label: {
-                    Label("Delete Folder", systemImage: "trash")
+                    Label("Delete folder?", systemImage: "trash")
                 }
             }
             .confirmationDialog(

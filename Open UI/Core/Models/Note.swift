@@ -57,7 +57,7 @@ struct Note: Codable, Identifiable, Hashable, Sendable {
         var markdownContent = ""
         if let data = json["data"] as? [String: Any],
            let content = data["content"] as? [String: Any] {
-            markdownContent = content["md"] as? String ?? content["html"] as? String ?? ""
+            markdownContent = content["md"] as? String ?? content["HTML"] as? String ?? ""
         }
 
         // Parse timestamps (nanoseconds → Date)

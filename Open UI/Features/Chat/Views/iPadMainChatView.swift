@@ -910,6 +910,14 @@ struct iPadSidebarContent: View {
                         .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
+                    .contextMenu {
+                        Button(role: .destructive) {
+                            vm.togglePinModel(model.id)
+                            Haptics.play(.medium)
+                        } label: {
+                            Label("Unpin", systemImage: "pin.slash")
+                        }
+                    }
                 }
             }
 
@@ -1976,7 +1984,7 @@ private struct iPadRenameSheet: View {
                         } else {
                             Image(systemName: "sparkles")
                         }
-                        Text(isGeneratingTitle ? "Generating…" : "Generate Title")
+                        Text(isGeneratingTitle ? "Generating..." : "Generate Title")
                     }
                     .scaledFont(size: 14, weight: .medium)
                     .fontWeight(.medium)

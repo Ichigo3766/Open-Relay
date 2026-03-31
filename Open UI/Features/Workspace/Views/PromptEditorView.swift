@@ -277,7 +277,7 @@ struct PromptEditorView: View {
                 Image(systemName: "tag")
                     .scaledFont(size: 13)
                     .foregroundStyle(theme.textTertiary)
-                TextField("Add tag…", text: $newTag)
+                TextField("Add tag", text: $newTag)
                     .scaledFont(size: 14)
                     .foregroundStyle(theme.textPrimary)
                     .focused($focusedField, equals: .newTag)
@@ -497,7 +497,7 @@ struct PromptEditorView: View {
                 Button {
                     Task { await toggleUserPermission(userId: user.id, currentlyWrite: grant.write) }
                 } label: {
-                    Text(grant.write ? "WRITE" : "READ")
+                    Text(grant.write ? "Write" : "Read")
                         .scaledFont(size: 11, weight: .semibold)
                         // WRITE: accent-colored pill (brandOnPrimary text on brandPrimary bg)
                         // READ:  subtle surface pill (textSecondary text on surfaceContainerHighest bg)
@@ -968,7 +968,7 @@ private struct PromptHistoryView: View {
             // ── Top row: LIVE badge + hash + date ────────────────────────────
             HStack(spacing: 6) {
                 if isLive(version) {
-                    Label("LIVE", systemImage: "checkmark.circle.fill")
+                    Label("Live", systemImage: "checkmark.circle.fill")
                         .scaledFont(size: 11, weight: .bold)
                         .foregroundStyle(theme.brandPrimary)
                         .padding(.horizontal, 8).padding(.vertical, 3)

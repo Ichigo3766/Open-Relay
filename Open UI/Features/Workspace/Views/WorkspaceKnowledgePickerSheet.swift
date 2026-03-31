@@ -82,7 +82,7 @@ struct WorkspaceKnowledgePickerSheet: View {
             .background(theme.background)
             .navigationTitle("Add Knowledge")
             .navigationBarTitleDisplayMode(.inline)
-            .searchable(text: $searchText, prompt: selectedSegment == .collections ? "Search collections…" : "Search files…")
+            .searchable(text: $searchText, prompt: selectedSegment == .collections ? "Search Collection" : "Search Files")
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
                     Button("Cancel") { onDismiss() }

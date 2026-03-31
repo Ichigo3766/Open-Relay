@@ -27,11 +27,27 @@ struct ToolCallData: Identifiable {
 /// Represents a parsed reasoning/thinking block extracted from
 /// `<details type="reasoning">` HTML blocks in assistant content.
 struct ReasoningData: Identifiable {
-    let id = UUID().uuidString
+    /// Stable ID derived from the first 80 chars of content so SwiftUI
+    /// preserves the `ReasoningView` identity across streaming re-parses.
+    /// Using UUID() causes a new view to be created on every streaming tick,
+    /// which resets `@State isExpanded` and makes the tap-to-expand unusable
+    /// while streaming.
+    let id: String
     let summary: String
     let content: String
     let duration: String?
     let isDone: Bool
+
+    init(summary: String, content: String, duration: String?, isDone: Bool) {
+        // Use the first 80 characters as a stable anchor — the beginning of
+        // a reasoning block is fixed once streaming starts (only the tail grows).
+        let prefix = String(content.prefix(80))
+        self.id = "reason-\(prefix.hashValue)"
+        self.summary = summary
+        self.content = content
+        self.duration = duration
+        self.isDone = isDone
+    }
 }
 
 // MARK: - Content Segment
@@ -469,7 +485,7 @@ enum ToolCallParser {
                         let innerContent = nsResult.substring(with: match.range(at: 2))
 
                         // Extract summary if present, strip it from content
-                        var summary = "Thinking"
+                        var summary = "Thinking..."
                         var bodyContent = innerContent
                         if let summaryRegex = try? NSRegularExpression(
                             pattern: #"<summary>([\s\S]*?)</summary>"#,
@@ -498,7 +514,7 @@ enum ToolCallParser {
                                     ), psMatch.numberOfRanges > 1 {
                                         summary = nsInner2.substring(with: psMatch.range(at: 1))
                                             .trimmingCharacters(in: .whitespacesAndNewlines)
-                                        if summary.isEmpty { summary = "Thinking" }
+                                        if summary.isEmpty { summary = "Thinking..." }
                                         bodyContent = (bodyContent as NSString)
                                             .replacingCharacters(in: psMatch.range, with: "")
                                             .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1260,11 +1276,12 @@ struct ReasoningView: View {
 
     init(reasoning: ReasoningData) {
         self.reasoning = reasoning
-        // Expanded while thinking is still in progress (if the user allows it),
-        // collapsed once done. Because ReasoningData.id is a fresh UUID on each
-        // re-parse, SwiftUI treats each streaming update as a new view — so
-        // `@State` re-inits each time, giving us the desired auto-collapse on
-        // completion.
+        // Expanded while thinking is in progress, collapsed once done.
+        // ReasoningData.id is now a stable hash of the content prefix, so SwiftUI
+        // reuses this view across streaming ticks and `@State` persists — meaning
+        // user taps to expand/collapse are preserved mid-stream.
+        // The auto-collapse on completion is triggered by the `isDone` flag
+        // changing, which causes the init to be called once with isDone=true.
         let autoExpand = UserDefaults.standard.object(forKey: "expandThinkingWhileStreaming") as? Bool ?? true
         self._isExpanded = State(initialValue: !reasoning.isDone && autoExpand)
     }

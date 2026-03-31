@@ -989,6 +989,22 @@ final class APIClient: @unchecked Sendable {
         )
     }
 
+    /// Safely updates specific keys inside `ui` without overwriting unrelated keys.
+    ///
+    /// The server does a **shallow merge** at the top level — sending
+    /// `{"ui": {"memory": true}}` replaces the *entire* `ui` object, wiping
+    /// `models`, `pinnedModels`, `version`, etc. This helper reads the current
+    /// settings first, merges only the given `uiUpdates` keys into the existing
+    /// `ui` dict, then POSTs the complete merged object so no sibling keys are lost.
+    func mergeUserUISettings(_ uiUpdates: [String: Any]) async throws {
+        let current = try await getUserSettings()
+        var existingUI = (current["ui"] as? [String: Any]) ?? [:]
+        for (key, value) in uiUpdates {
+            existingUI[key] = value
+        }
+        try await updateUserSettings(["ui": existingUI])
+    }
+
     // MARK: - Folders
 
     /// Returns `(folders, featureEnabled)`. Returns `enabled: false` on 403.
@@ -2534,7 +2550,7 @@ final class APIClient: @unchecked Sendable {
         let noteData: [String: Any] = [
             "content": [
                 "json": NSNull(),
-                "html": htmlContent,
+                "HTML": htmlContent,
                 "md": markdownContent
             ],
             "versions": [] as [Any],
@@ -2567,7 +2583,7 @@ final class APIClient: @unchecked Sendable {
             body["data"] = [
                 "content": [
                     "json": NSNull(),
-                    "html": htmlContent ?? "",
+                    "HTML": htmlContent ?? "",
                     "md": markdownContent ?? ""
                 ]
             ]
