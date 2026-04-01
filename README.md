@@ -155,4 +155,4 @@ Special thanks to Conduit by cogwheel — Cross-Platform Open WebUI mobile clien
 
 ## License
 
-This project is licensed under the MIT License. See [LICENSE](LICENSE) for details.
+This project is licensed under the GPL License. See [LICENSE](LICENSE) for details.
