@@ -299,11 +299,12 @@ final class StorageManager: @unchecked Sendable {
     /// Recursively scans a directory and returns a flat list of top-level
     /// `StorageEntry` items, each with their total recursive sizes.
     /// Directories get a `children` array containing their contents.
-    func enumerateDirectory(_ url: URL, depth: Int = 0) -> [StorageEntry] {
-        guard fileManager.fileExists(atPath: url.path) else { return [] }
+    nonisolated func enumerateDirectory(_ url: URL, depth: Int = 0) -> [StorageEntry] {
+        let fm = FileManager.default
+        guard fm.fileExists(atPath: url.path) else { return [] }
 
         do {
-            let contents = try fileManager.contentsOfDirectory(
+            let contents = try fm.contentsOfDirectory(
                 at: url,
                 includingPropertiesForKeys: [.fileSizeKey, .isDirectoryKey, .totalFileSizeKey],
                 options: .skipsHiddenFiles
@@ -312,10 +313,9 @@ final class StorageManager: @unchecked Sendable {
             var entries: [StorageEntry] = []
             for item in contents {
                 let isDir = (try? item.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) ?? false
-                let size = Int64(diskSize(of: isDir ? item : nil) )
 
                 if isDir {
-                    let dirSize = Int64(diskSize(of: item))
+                    let dirSize = Int64(diskSize(of: item, using: fm))
                     let children = enumerateDirectory(item, depth: depth + 1)
                     entries.append(StorageEntry(
                         id: item.path,
@@ -407,26 +407,30 @@ final class StorageManager: @unchecked Sendable {
     }
 
     /// Returns the total size of the full Documents directory.
-    func documentDirectorySize() -> Int64 {
-        guard let docs = fileManager.urls(for: .documentDirectory, in: .userDomainMask).first else { return 0 }
-        return Int64(diskSize(of: docs))
+    nonisolated func documentDirectorySize() -> Int64 {
+        let fm = FileManager.default
+        guard let docs = fm.urls(for: .documentDirectory, in: .userDomainMask).first else { return 0 }
+        return Int64(diskSize(of: docs, using: fm))
     }
 
     /// Returns the total size of the Library/Application Support directory.
-    func appSupportDirectorySize() -> Int64 {
-        guard let appSupport = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else { return 0 }
-        return Int64(diskSize(of: appSupport))
+    nonisolated func appSupportDirectorySize() -> Int64 {
+        let fm = FileManager.default
+        guard let appSupport = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else { return 0 }
+        return Int64(diskSize(of: appSupport, using: fm))
     }
 
     /// Returns the total size of the Library/Caches directory.
-    func cacheDirectorySize() -> Int64 {
-        guard let caches = fileManager.urls(for: .cachesDirectory, in: .userDomainMask).first else { return 0 }
-        return Int64(diskSize(of: caches))
+    nonisolated func cacheDirectorySize() -> Int64 {
+        let fm = FileManager.default
+        guard let caches = fm.urls(for: .cachesDirectory, in: .userDomainMask).first else { return 0 }
+        return Int64(diskSize(of: caches, using: fm))
     }
 
     /// Returns the total size of the Temporary directory.
-    func tempDirectorySize() -> Int64 {
-        Int64(diskSize(of: fileManager.temporaryDirectory))
+    nonisolated func tempDirectorySize() -> Int64 {
+        let fm = FileManager.default
+        return Int64(diskSize(of: fm.temporaryDirectory, using: fm))
     }
 
     /// Clears all files from the app's tmp/ directory. Returns bytes freed.
@@ -743,13 +747,19 @@ final class StorageManager: @unchecked Sendable {
 
     /// Calculates the total disk size of a directory (recursive).
     private func diskSize(of directory: URL?) -> Int {
+        diskSize(of: directory, using: fileManager)
+    }
+
+    /// Nonisolated overload — accepts an explicit FileManager so it can be called
+    /// from `nonisolated` methods without touching the actor-isolated `self.fileManager`.
+    private nonisolated func diskSize(of directory: URL?, using fm: FileManager) -> Int {
         guard let directory else { return 0 }
-        guard fileManager.fileExists(atPath: directory.path) else { return 0 }
+        guard fm.fileExists(atPath: directory.path) else { return 0 }
 
         var totalSize = 0
         let resourceKeys: Set<URLResourceKey> = [.fileSizeKey, .isDirectoryKey]
 
-        guard let enumerator = fileManager.enumerator(
+        guard let enumerator = fm.enumerator(
             at: directory,
             includingPropertiesForKeys: Array(resourceKeys),
             options: [.skipsHiddenFiles]

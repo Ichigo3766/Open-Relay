@@ -29,12 +29,8 @@ struct ChatDetailView: View {
     @State private var isScrolledUp = false
     /// Last known contentOffset.y — used to detect user-initiated upward drags.
     @State private var lastScrollOffset: CGFloat = 0
-    /// Cached scroll content height — updated via a separate onScrollGeometryChange.
-    @State private var viewState_contentHeight: CGFloat = 0
     /// Cached scroll container height — updated via a separate onScrollGeometryChange.
     @State private var viewState_containerHeight: CGFloat = 0
-    /// Timestamp of last animated scroll-to-bottom during active streaming (throttle guard).
-    @State private var lastStreamingScrollTime: Date = .distantPast
 
 
     // MARK: UI state
@@ -769,98 +765,94 @@ struct ChatDetailView: View {
             scrollToBottomFAB
         }
         .onAppear {
-            // Snap instantly to bottom on chat open.
-            scrollPosition.scrollTo(edge: .bottom)
+            // In reversed space, "bottom" (newest content) is at contentOffset.y = 0 (UIKit top).
+            scrollPosition.scrollTo(edge: .top)
         }
-        // Auto-scroll: when a new message arrives and user is near bottom.
+        // Auto-scroll to newest: when a new message arrives and the user is near the bottom
+        // (i.e. near the top in UIKit-reversed space), snap to edge: .top.
         .onChange(of: viewModel.messages.count) { old, new in
             guard new > old, !isScrolledUp else { return }
             if old == 0 {
-                scrollPosition.scrollTo(edge: .bottom)
+                scrollPosition.scrollTo(edge: .top)
             } else if viewModel.shouldAnimateNewMessages {
-                withAnimation { scrollPosition.scrollTo(edge: .bottom) }
+                withAnimation { scrollPosition.scrollTo(edge: .top) }
             } else {
-                scrollPosition.scrollTo(edge: .bottom)
+                scrollPosition.scrollTo(edge: .top)
             }
         }
-        // Streaming: scroll to bottom at start only. During streaming,
-        // `.defaultScrollAnchor(.bottom)` keeps the view pinned. When
-        // streaming ends, do NOT force a scroll — if the user manually
-        // scrolled up during streaming they should stay where they are.
+        // Streaming: when streaming starts, snap to newest (top in reversed space).
+        // During streaming the newest token naturally stays visible because the
+        // LazyVStack grows downward in UIKit space (= upward visually), so no
+        // streaming scroll pump is needed at all.
         .onChange(of: viewModel.isStreaming) { _, streaming in
             if streaming {
                 isScrolledUp = false
-                withAnimation { scrollPosition.scrollTo(edge: .bottom) }
+                withAnimation { scrollPosition.scrollTo(edge: .top) }
             }
         }
-        // Resume auto-scroll: when the user scrolls back to the bottom
-        // (or taps the FAB) during an active stream, re-pin so new
-        // tokens keep the view anchored at the bottom.
+        // Resume auto-scroll: when the user scrolls back to newest
+        // (or taps the FAB) during an active stream.
         .onChange(of: isScrolledUp) { oldValue, newValue in
             if oldValue == true && newValue == false && viewModel.isStreaming {
-                scrollPosition.scrollTo(edge: .bottom)
+                scrollPosition.scrollTo(edge: .top)
             }
         }
     }
 
     private var scrollContent: some View {
+        // The entire ScrollView is rotated 180° so that UIKit's "top" becomes the
+        // visual bottom (newest message). Each message row is counter-rotated 180°
+        // to appear upright. This gives us:
+        //   • A true LazyVStack — only visible rows are rendered (~5-10 at a time).
+        //   • Stable streaming — new tokens append at UIKit-bottom which is visual-top,
+        //     so the view never needs to scroll during streaming; newest content just grows.
+        //   • contentOffset.y ≈ 0 means "at the newest message" (visual bottom).
+        //   • contentOffset.y increasing means scrolling toward older messages (visual top).
         ScrollView {
-            VStack(spacing: 0) {
+            LazyVStack(spacing: 0) {
+                // History sentinel: appears at the UIKit-top of the LazyVStack
+                // (= visual bottom when scrolled all the way up to oldest messages).
+                // Reserved for future history-loading pagination.
+                Color.clear.frame(height: 1)
+
                 if viewModel.isLoadingConversation {
                     loadingPlaceholders
+                        .rotationEffect(.degrees(180))
                 } else {
-                    messagesList
+                    reversedMessagesList
                 }
             }
             .padding(.top, 8)
             .padding(.bottom, 8)
             .frame(maxWidth: iPadMaxContentWidth)
             .frame(maxWidth: .infinity)
-            .frame(minHeight: max(viewState_containerHeight, 0), alignment: .top)
-            .clipped()
         }
+        .rotationEffect(.degrees(180))
         .background(ScrollViewHorizontalLock())
+        .scrollIndicators(.hidden)
         .scrollDismissesKeyboard(.interactively)
-        .defaultScrollAnchor(.bottom)
-        .scrollPosition($scrollPosition, anchor: .bottom)
-        // Detect scroll position to show/hide FAB
+        .scrollPosition($scrollPosition, anchor: .top)
+        // Detect scroll position to show/hide FAB.
+        // In reversed space: contentOffset.y ≈ 0 → at newest (visual bottom).
+        // contentOffset.y increasing → scrolling toward older messages (visual top).
         .onScrollGeometryChange(for: CGPoint.self) { geo in
             geo.contentOffset
         } action: { _, newOffset in
-            let distanceFromBottom = max(0,
-                viewState_contentHeight - newOffset.y - viewState_containerHeight)
-            if distanceFromBottom <= 120 {
+            // Show FAB when user has scrolled more than 120pt away from newest messages
+            if newOffset.y <= 120 {
                 if isScrolledUp { isScrolledUp = false }
-            } else if newOffset.y < lastScrollOffset - 40 {
+            } else if newOffset.y > lastScrollOffset + 40 {
                 if !isScrolledUp { isScrolledUp = true }
             }
             if abs(newOffset.y - lastScrollOffset) > 2 {
                 lastScrollOffset = newOffset.y
             }
         }
-        .onScrollGeometryChange(for: CGSize.self) { geo in
-            CGSize(width: geo.contentSize.height, height: geo.containerSize.height)
-        } action: { oldSize, newSize in
-            let oldContentHeight = viewState_contentHeight
-            if abs(newSize.width - viewState_contentHeight) > 1 {
-                viewState_contentHeight = newSize.width
-            }
-            if abs(newSize.height - viewState_containerHeight) > 1 {
-                viewState_containerHeight = newSize.height
-            }
-            // Smooth scroll-to-bottom during active streaming:
-            // When the content height grows (new tokens pushed layout taller)
-            // and the user hasn't scrolled up, animate to the bottom so new
-            // content slides in smoothly instead of snapping.
-            let grew = newSize.width > oldContentHeight + 1
-            if grew && viewModel.isStreaming && !isScrolledUp {
-                let now = Date()
-                if now.timeIntervalSince(lastStreamingScrollTime) > 0.1 {
-                    lastStreamingScrollTime = now
-                    withAnimation(.easeOut(duration: 0.15)) {
-                        scrollPosition.scrollTo(edge: .bottom)
-                    }
-                }
+        .onScrollGeometryChange(for: CGFloat.self) { geo in
+            geo.containerSize.height
+        } action: { _, newHeight in
+            if abs(newHeight - viewState_containerHeight) > 1 {
+                viewState_containerHeight = newHeight
             }
         }
     }
@@ -885,7 +877,8 @@ struct ChatDetailView: View {
             .contentShape(Circle())
             .highPriorityGesture(
                 TapGesture().onEnded {
-                    withAnimation { scrollPosition.scrollTo(edge: .bottom) }
+                    // In reversed space, "visual bottom" (newest) is UIKit edge: .top
+                    withAnimation { scrollPosition.scrollTo(edge: .top) }
                     Haptics.play(.light)
                 }
             )
@@ -917,10 +910,30 @@ struct ChatDetailView: View {
 
     // MARK: - Messages List
 
-    /// Uses direct `ForEach(viewModel.messages)` with `Identifiable` conformance
-    /// instead of `Array(viewModel.messages.enumerated())` which creates new tuples
-    /// on every evaluation, forcing SwiftUI to re-evaluate identity for all rows.
-    /// Index is resolved via a pre-built O(1) dictionary instead of O(n) `firstIndex(where:)`.
+    /// Reversed messages list for the 180°-rotated LazyVStack.
+    /// Messages are displayed newest-first in UIKit order (which, after the
+    /// 180° ScrollView rotation, appears as oldest-at-top / newest-at-bottom
+    /// visually). Each row is counter-rotated 180° to appear upright.
+    ///
+    /// Index is resolved via an O(1) dictionary keyed on message ID so that
+    /// `isLastAssistant` can still refer to the last element in the original
+    /// chronological array (index == messages.count - 1).
+    @ViewBuilder
+    private var reversedMessagesList: some View {
+        let messages = viewModel.messages
+        let reversed = messages.reversed() as [ChatMessage]
+        let indexMap = Dictionary(messages.enumerated().map { ($1.id, $0) },
+                                  uniquingKeysWith: { first, _ in first })
+
+        ForEach(reversed) { message in
+            let index = indexMap[message.id] ?? 0
+            messageRow(message: message, index: index)
+                .rotationEffect(.degrees(180))
+        }
+    }
+
+    /// Original forward-order list — retained for potential future use
+    /// (e.g. non-reversed fallback path). Not currently called.
     private var messagesList: some View {
         let messages = viewModel.messages
         let indexMap = Dictionary(messages.enumerated().map { ($1.id, $0) },

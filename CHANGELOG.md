@@ -1,5 +1,16 @@
 # Changelog
 
+## 📦 NEXT BUILD
+
+### What's New
+
+### Improvements
+
+### Bug Fixes
+
+
+## Previous Builds
+
 ## v2.4 — March 31, 2026
 
 ### What's New
@@ -19,8 +30,6 @@
 - Fixed thinking/reasoning blocks not responding to taps while a response is streaming — you can now expand or collapse the thinking block at any time during streaming.
 - Fixed memories getting disabled by itself — pinning a model, changing the default model, or toggling memory from any screen no longer wipes other user settings.
 - Fixed default model not sticking — pinning a model was incorrectly overwriting the default model setting with the pinned models list.
-
-## Previous Builds
 
 ## v2.3.1 — March 30, 2026
 
