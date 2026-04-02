@@ -1,7 +1,6 @@
 import SwiftUI
 import UIKit
 import UniformTypeIdentifiers
-import GameController
 
 // MARK: - Pasteable Text View
 
@@ -541,44 +540,44 @@ final class PasteInterceptingTextView: UITextView {
         super.paste(sender)
     }
 
-    // MARK: - Hardware Keyboard Detection
+    // MARK: - Shift Key Tracking
 
-    /// Returns true when a physical keyboard is connected to the device.
-    private var isHardwareKeyboardConnected: Bool {
-        GCKeyboard.coalesced != nil
+    private var isShiftHeld = false
+
+    override func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+        for press in presses {
+            if press.key?.keyCode == .keyboardLeftShift || press.key?.keyCode == .keyboardRightShift {
+                isShiftHeld = true
+            }
+        }
+        super.pressesBegan(presses, with: event)
     }
 
-    // MARK: - Shift Key Detection (Real-Time via GCKeyboard)
+    override func pressesEnded(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+        for press in presses {
+            if press.key?.keyCode == .keyboardLeftShift || press.key?.keyCode == .keyboardRightShift {
+                isShiftHeld = false
+            }
+        }
+        super.pressesEnded(presses, with: event)
+    }
 
-    /// Queries the hardware keyboard's live button state to determine
-    /// whether either Shift key is currently pressed.
-    ///
-    /// This replaces the previous `pressesBegan`/`pressesEnded` tracking
-    /// approach, which suffered from race conditions — `insertText("\n")`
-    /// could fire before the Shift press event was delivered, causing
-    /// Shift+Enter to send instead of inserting a newline.
-    ///
-    /// Reading from `GCKeyboard.coalesced` at the exact moment we need
-    /// the result eliminates the race entirely.
-    private var isShiftCurrentlyPressed: Bool {
-        guard let keyboard = GCKeyboard.coalesced?.keyboardInput else { return false }
-        return keyboard.button(forKeyCode: .leftShift)?.isPressed == true
-            || keyboard.button(forKeyCode: .rightShift)?.isPressed == true
+    override func pressesCancelled(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+        for press in presses {
+            if press.key?.keyCode == .keyboardLeftShift || press.key?.keyCode == .keyboardRightShift {
+                isShiftHeld = false
+            }
+        }
+        super.pressesCancelled(presses, with: event)
     }
 
     // MARK: - Return Key Handling
 
     override func insertText(_ text: String) {
         if text == "\n" && sendOnReturn {
-            if isHardwareKeyboardConnected {
-                // Hardware keyboard: Shift+Enter inserts a newline, bare Enter sends.
-                if isShiftCurrentlyPressed {
-                    super.insertText(text)
-                } else {
-                    onReturnKey?()
-                }
+            if isShiftHeld {
+                super.insertText(text)
             } else {
-                // Software keyboard: honour the sendOnReturn preference (existing behaviour).
                 onReturnKey?()
             }
             return

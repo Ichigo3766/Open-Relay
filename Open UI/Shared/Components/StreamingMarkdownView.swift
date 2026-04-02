@@ -18,14 +18,7 @@ struct StreamingMarkdownView: View {
     let isStreaming: Bool
     let textColor: SwiftUI.Color?
 
-    // The version of content currently shown during streaming.
-    // Updated on the 300ms flush tick, not on every token.
-    @State private var displayContent: String = ""
-    @State private var flushTask: Task<Void, Never>? = nil
-
     @Environment(\.accessibilityScale) private var accessibilityScale
-
-    private static let flushInterval: Double = 0.3
 
     /// Base body font size used by MarkdownTheme.default (UIFont.preferredFont(.body)).
     /// We scale relative to this so the user's content text scale applies correctly.
@@ -47,28 +40,10 @@ struct StreamingMarkdownView: View {
     }
 
     var body: some View {
-        Group {
-            if isStreaming {
-                streamingBody
-            } else {
-                finalBody
-            }
-        }
-        .onAppear {
-            if isStreaming {
-                displayContent = content
-            }
-        }
-        .onChange(of: content) { _, newContent in
-            guard isStreaming else { return }
-            armFlush(newContent: newContent)
-        }
-        .onChange(of: isStreaming) { _, streaming in
-            if !streaming {
-                flushTask?.cancel()
-                flushTask = nil
-                displayContent = content
-            }
+        if isStreaming {
+            streamingBody
+        } else {
+            finalBody
         }
     }
 
@@ -76,13 +51,12 @@ struct StreamingMarkdownView: View {
 
     @ViewBuilder
     private var streamingBody: some View {
-        if displayContent.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        if content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             EmptyView()
         } else {
-            // .codeAutoScroll(true) → CodeView auto-scrolls to bottom as new
-            // lines arrive during streaming. User can scroll up manually and the
-            // FAB appears to jump back to the bottom.
-            MarkdownView(displayContent, theme: scaledTheme).codeAutoScroll(true)
+            // Render content directly — no flush delay.
+            // cmark parses at token rate; only IsolatedAssistantMessage re-evaluates per token.
+            MarkdownView(content, theme: scaledTheme).codeAutoScroll(true)
         }
     }
 
@@ -116,18 +90,6 @@ struct StreamingMarkdownView: View {
                     }
                 }
             }
-        }
-    }
-
-    // MARK: - Throttled Flush
-
-    private func armFlush(newContent: String) {
-        guard flushTask == nil else { return }
-        flushTask = Task { @MainActor in
-            try? await Task.sleep(for: .seconds(Self.flushInterval))
-            guard !Task.isCancelled else { return }
-            displayContent = newContent
-            flushTask = nil
         }
     }
 

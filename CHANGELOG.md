@@ -1,13 +1,12 @@
 # Changelog
 
-## 📦 NEXT BUILD
+## v2.4.1 — April 1, 2026
 
 ### What's New
-
-### Improvements
+- Experimental significant memory reduction approach + a more responsive UI and faster streaming.
 
 ### Bug Fixes
-
+- Fixed Shift+Enter not inserting a new line on the first use after app restart on iPad with a hardware keyboard.
 
 ## Previous Builds
 

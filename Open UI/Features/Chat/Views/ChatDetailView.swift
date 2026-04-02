@@ -780,13 +780,13 @@ struct ChatDetailView: View {
                 scrollPosition.scrollTo(edge: .top)
             }
         }
-        // Streaming: when streaming starts, snap to newest (top in reversed space).
-        // During streaming the newest token naturally stays visible because the
-        // LazyVStack grows downward in UIKit space (= upward visually), so no
-        // streaming scroll pump is needed at all.
+        // Streaming: when a new stream starts and the user is already at the
+        // bottom (not scrolled up reading), snap to newest so the first tokens
+        // are visible. If the user is scrolled up (e.g. reading a previous
+        // message while a follow-up streams), do NOT yank them — the
+        // onScrollPhaseChange lock will keep their position stable.
         .onChange(of: viewModel.isStreaming) { _, streaming in
-            if streaming {
-                isScrolledUp = false
+            if streaming && !isScrolledUp {
                 withAnimation { scrollPosition.scrollTo(edge: .top) }
             }
         }
@@ -822,6 +822,9 @@ struct ChatDetailView: View {
                     reversedMessagesList
                 }
             }
+            // scrollTargetLayout() is critical for iOS 18 ScrollPosition to accurately
+            // track items and offsets even when individual items resize during streaming.
+            .scrollTargetLayout()
             .padding(.top, 8)
             .padding(.bottom, 8)
             .frame(maxWidth: iPadMaxContentWidth)
@@ -853,6 +856,23 @@ struct ChatDetailView: View {
         } action: { _, newHeight in
             if abs(newHeight - viewState_containerHeight) > 1 {
                 viewState_containerHeight = newHeight
+            }
+        }
+        // Lock scroll position when user scrolls away during streaming.
+        // When the user lifts their finger (phase → .idle) and is scrolled
+        // away from newest (lastScrollOffset > 10), we switch from edge
+        // tracking to a fixed y-coordinate. This prevents the streaming
+        // message from pushing the viewport as new tokens grow the content.
+        // When back at the bottom (offset ≤ 10), resume edge tracking so
+        // the stream auto-scrolls again.
+        .onScrollPhaseChange { _, newPhase in
+            guard newPhase == .idle else { return }
+            if lastScrollOffset > 10 && viewModel.isStreaming {
+                // Freeze viewport at current offset — streaming won't move the text
+                scrollPosition = ScrollPosition(y: lastScrollOffset)
+            } else if lastScrollOffset <= 10 {
+                // Back at newest — resume edge-anchored tracking
+                scrollPosition = ScrollPosition(edge: .top)
             }
         }
     }
