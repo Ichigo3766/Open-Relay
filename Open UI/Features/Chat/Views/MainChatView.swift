@@ -843,6 +843,10 @@ struct MainChatView: View {
                     group.addTask { await channelListVM.loadChannels() }
                 }
                 registerSocketReconnectHandler()
+                // Wire up channel notification tap → navigate to that channel
+                NotificationService.shared.onOpenChannel = { channelId in
+                    NotificationCenter.default.post(name: .navigateToChannel, object: channelId)
+                }
             }
             .onChange(of: scenePhase) { oldPhase, newPhase in
                 if newPhase == .active && oldPhase != .active {
@@ -1093,7 +1097,7 @@ struct MainChatView: View {
     private var chatContent: some View {
         if let channelId = activeChannelId {
             // Show channel detail inline (same as how chats work)
-            ChannelDetailView(channelId: channelId)
+            ChannelDetailView(channelId: channelId, channelListVM: channelListVM)
                 .id("channel-\(channelId)")
                 .transition(.opacity)
         } else if let conversationId = activeConversationId {
@@ -2399,6 +2403,10 @@ let conversationId: String?
                         }
                     )
                     .themed()
+                    .presentationBackgroundInteraction(.disabled)
+                    .onDisappear {
+                        Task { await ImageCacheService.shared.clearMemory() }
+                    }
                 }
                 .sheet(item: $editingModelDetail) { detail in
                     NavigationStack {

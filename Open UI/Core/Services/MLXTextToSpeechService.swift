@@ -497,8 +497,8 @@ final class MarvisTTSService {
     private func resolveVoice() -> MarvisTTSModel.Voice? {
         switch config.voice {
         case "conversationalB": return MarvisTTSModel.Voice.conversationalB
-        case "conversationalDE": return MarvisTTSModel.Voice.conversationalDE
-        case "conversationalFR": return MarvisTTSModel.Voice.conversationalFR
+//        case "conversationalDE": return MarvisTTSModel.Voice.conversationalDE
+//        case "conversationalFR": return MarvisTTSModel.Voice.conversationalFR
         default: return MarvisTTSModel.Voice.conversationalA
         }
     }

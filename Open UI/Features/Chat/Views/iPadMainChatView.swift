@@ -167,6 +167,10 @@ struct iPadMainChatView: View {
                 channelListVM.configure(apiClient: apiClient, socket: dependencies.socketService, currentUserId: userId)
             }
             await channelListVM.loadChannels()
+            // Wire up channel notification tap → navigate to that channel
+            NotificationService.shared.onOpenChannel = { channelId in
+                NotificationCenter.default.post(name: .navigateToChannel, object: channelId)
+            }
         }
         .onReceive(NotificationCenter.default.publisher(for: .navigateToChannel)) { notification in
             if let channelId = notification.object as? String {
@@ -365,7 +369,7 @@ struct iPadMainChatView: View {
     @ViewBuilder
     private var chatDetailContent: some View {
         if let channelId = activeChannelId {
-            ChannelDetailView(channelId: channelId)
+            ChannelDetailView(channelId: channelId, channelListVM: channelListVM)
                 .id("channel-\(channelId)")
                 .transition(.opacity)
                 .toolbar {

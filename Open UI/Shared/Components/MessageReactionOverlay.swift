@@ -64,6 +64,10 @@ struct MessageReactionOverlay: View {
                 .background(.ultraThinMaterial)
                 .clipShape(Capsule())
                 .shadow(color: .black.opacity(0.2), radius: 12, y: 4)
+                .transition(.asymmetric(
+                    insertion: .scale(scale: 0.88, anchor: .bottom).combined(with: .opacity),
+                    removal: .opacity
+                ))
                 
                 // Action menu
                 VStack(spacing: 0) {
@@ -91,12 +95,19 @@ struct MessageReactionOverlay: View {
                 .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
                 .shadow(color: .black.opacity(0.15), radius: 12, y: 4)
                 .padding(.horizontal, Spacing.screenPadding)
+                .transition(.asymmetric(
+                    insertion: .scale(scale: 0.92, anchor: .bottom).combined(with: .move(edge: .bottom)).combined(with: .opacity),
+                    removal: .opacity
+                ))
                 
                 Spacer()
             }
             .padding(.vertical, 60)
         }
-        .transition(.opacity)
+        .transition(.asymmetric(
+            insertion: .opacity,
+            removal: .opacity
+        ))
     }
     
     private func actionButton(icon: String, label: String, isDestructive: Bool = false, action: @escaping () -> Void) -> some View {

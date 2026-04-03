@@ -23,11 +23,17 @@ final class NotificationService: NSObject, @unchecked Sendable {
     /// Category for voice call notifications.
     static let voiceCallCategory = "VOICE_CALL"
 
+    /// Category for channel message notifications.
+    static let channelMessageCategory = "CHANNEL_MESSAGE"
+
     /// Action to open the chat from a notification.
     static let openChatAction = "OPEN_CHAT"
 
     /// Action to end a voice call from a notification.
     static let endCallAction = "END_CALL"
+
+    /// Action to open a channel from a notification.
+    static let openChannelAction = "OPEN_CHANNEL"
 
     // MARK: - State
 
@@ -40,9 +46,23 @@ final class NotificationService: NSObject, @unchecked Sendable {
     /// since the user is already looking at it.
     var activeConversationId: String?
 
+    /// The channel ID the user is currently viewing.
+    /// Set by ChannelDetailView on appear/disappear. When a channel
+    /// notification arrives for this channel, it is suppressed in foreground
+    /// since the user is already looking at it.
+    var activeChannelId: String?
+
+    /// When true, the next generation-complete notification bypasses the
+    /// activeConversationId suppression check. Used by recoverFromBackgroundStreaming
+    /// so the user always gets a banner when they return to the app after a
+    /// response completed while they were away — even if they are currently
+    /// looking at that chat.
+    var bypassActiveConversationSuppression: Bool = false
+
     /// Callback when user taps a notification action.
     var onOpenChat: ((String) -> Void)?
     var onEndCall: (() -> Void)?
+    var onOpenChannel: ((String) -> Void)?
 
     // MARK: - Init
 
@@ -71,6 +91,12 @@ final class NotificationService: NSObject, @unchecked Sendable {
             options: [.destructive]
         )
 
+        let openChannelAction = UNNotificationAction(
+            identifier: Self.openChannelAction,
+            title: "Open Channel",
+            options: [.foreground]
+        )
+
         let generationCategory = UNNotificationCategory(
             identifier: Self.generationCompleteCategory,
             actions: [openAction],
@@ -85,7 +111,14 @@ final class NotificationService: NSObject, @unchecked Sendable {
             options: []
         )
 
-        center.setNotificationCategories([generationCategory, voiceCallCategory])
+        let channelCategory = UNNotificationCategory(
+            identifier: Self.channelMessageCategory,
+            actions: [openChannelAction],
+            intentIdentifiers: [],
+            options: []
+        )
+
+        center.setNotificationCategories([generationCategory, voiceCallCategory, channelCategory])
 
         // Request permission if not yet determined, otherwise sync cached state
         let settings = await center.notificationSettings()
@@ -174,6 +207,48 @@ final class NotificationService: NSObject, @unchecked Sendable {
         }
     }
 
+    // MARK: - Channel Messages
+
+    /// Sends a local notification for a new channel message received while the
+    /// user is not actively viewing that channel.
+    ///
+    /// - Parameters:
+    ///   - channelId: The ID of the channel that received the message.
+    ///   - channelName: The display name of the channel (e.g. "#general" or "Alice").
+    ///   - senderName: The display name of the message sender.
+    ///   - preview: A short preview of the message content.
+    func notifyChannelMessage(
+        channelId: String,
+        channelName: String,
+        senderName: String,
+        preview: String
+    ) async {
+        let center = UNUserNotificationCenter.current()
+        let settings = await center.notificationSettings()
+        guard settings.authorizationStatus == .authorized else { return }
+
+        let content = UNMutableNotificationContent()
+        content.title = channelName
+        content.body = preview.isEmpty ? senderName : "\(senderName): \(preview)"
+        content.sound = .default
+        content.categoryIdentifier = Self.channelMessageCategory
+        content.userInfo = ["channelId": channelId]
+        content.threadIdentifier = "channel-\(channelId)"
+
+        let request = UNNotificationRequest(
+            identifier: "channel-\(channelId)-\(Date().timeIntervalSince1970)",
+            content: content,
+            trigger: nil
+        )
+
+        do {
+            try await center.add(request)
+            logger.info("Channel notification scheduled for \(channelId)")
+        } catch {
+            logger.error("Failed to deliver channel notification: \(error.localizedDescription)")
+        }
+    }
+
     // MARK: - Voice Call
 
     /// Shows an ongoing-style notification for an active voice call.
@@ -242,9 +317,24 @@ extension NotificationService: UNUserNotificationCenterDelegate {
 
         // Use raw string to avoid main-actor isolation issue with the static property
         if category == "GENERATION_COMPLETE" {
-            // Suppress if user is already viewing this conversation
+            // Suppress if user is already viewing this conversation,
+            // UNLESS the bypass flag is set (recovery notification after returning from background).
             Task { @MainActor in
-                if let conversationId, conversationId == self.activeConversationId {
+                if self.bypassActiveConversationSuppression {
+                    // One-shot bypass: clear the flag immediately after use
+                    self.bypassActiveConversationSuppression = false
+                    completionHandler([.banner, .sound])
+                } else if let conversationId, conversationId == self.activeConversationId {
+                    completionHandler([])
+                } else {
+                    completionHandler([.banner, .sound])
+                }
+            }
+        } else if category == "CHANNEL_MESSAGE" {
+            // Suppress if the user is already viewing that channel.
+            let channelId = notification.request.content.userInfo["channelId"] as? String
+            Task { @MainActor in
+                if let channelId, channelId == self.activeChannelId {
                     completionHandler([])
                 } else {
                     completionHandler([.banner, .sound])
@@ -265,10 +355,17 @@ extension NotificationService: UNUserNotificationCenterDelegate {
         let actionId = response.actionIdentifier
         let conversationId = response.notification.request.content.userInfo["conversationId"] as? String
 
+        let channelId = response.notification.request.content.userInfo["channelId"] as? String
+        let category = response.notification.request.content.categoryIdentifier
+
         Task { @MainActor in
-            if actionId == Self.openChatAction || actionId == UNNotificationDefaultActionIdentifier {
+            if actionId == Self.openChatAction || (actionId == UNNotificationDefaultActionIdentifier && category == "GENERATION_COMPLETE") {
                 if let conversationId {
                     onOpenChat?(conversationId)
+                }
+            } else if actionId == Self.openChannelAction || (actionId == UNNotificationDefaultActionIdentifier && category == "CHANNEL_MESSAGE") {
+                if let channelId {
+                    onOpenChannel?(channelId)
                 }
             } else if actionId == Self.endCallAction {
                 onEndCall?()

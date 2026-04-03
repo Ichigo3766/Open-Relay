@@ -259,6 +259,89 @@ final class SpeechRecognitionService {
         return transcript
     }
 
+    /// Restarts ONLY the recognition task/request while keeping the audio engine
+    /// and microphone tap running. Used by DictationService for seamless multi-segment
+    /// dictation — intensity never drops to zero between segments.
+    ///
+    /// - Returns: The transcript from the just-finished segment.
+    @discardableResult
+    func restartRecognitionOnly() async throws -> String {
+        guard let recognizer, recognizer.isAvailable else {
+            throw SpeechError.recognizerUnavailable
+        }
+        guard let engine = audioEngine, engine.isRunning else {
+            // Audio engine isn't running — fall back to a full restart.
+            try await startListening()
+            return ""
+        }
+
+        // Capture transcript before ending the current segment.
+        let segmentTranscript = currentTranscript
+
+        // Stop silence detection for the brief handover window.
+        silenceTimer?.invalidate()
+        silenceTimer = nil
+
+        // End the current recognition request gracefully.
+        recognitionRequest?.endAudio()
+        recognitionRequest = nil
+        recognitionTask?.cancel()
+        recognitionTask = nil
+
+        currentTranscript = ""
+        lastSpeechTime = .now
+
+        // Create a fresh recognition request and pipe the *existing* audio tap
+        // into it — the audio engine tap is NOT removed, so intensity stays live.
+        let newRequest = SFSpeechAudioBufferRecognitionRequest()
+        newRequest.shouldReportPartialResults = true
+        newRequest.addsPunctuation = true
+        self.recognitionRequest = newRequest
+
+        // Re-install tap on the running engine to feed the new request.
+        let inputNode = engine.inputNode
+        inputNode.removeTap(onBus: 0)
+        let recordingFormat = inputNode.outputFormat(forBus: 0)
+        inputNode.installTap(onBus: 0, bufferSize: 1024, format: recordingFormat) { [weak self] buffer, _ in
+            newRequest.append(buffer)
+            Task { @MainActor [weak self] in
+                self?.processAudioBuffer(buffer)
+            }
+        }
+
+        // Start the new recognition task.
+        recognitionTask = recognizer.recognitionTask(with: newRequest) { [weak self] result, error in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+
+                if let error {
+                    let nsError = error as NSError
+                    if nsError.domain == "kAFAssistantErrorDomain" && nsError.code == 216 { return }
+                    if nsError.domain == "kAFAssistantErrorDomain" && nsError.code == 209 {
+                        self.finishRecognition()
+                        return
+                    }
+                    self.logger.error("Recognition error (restart): \(error.localizedDescription)")
+                    self.updateState(.error(error.localizedDescription))
+                    self.onError?(error.localizedDescription)
+                    return
+                }
+
+                guard let result else { return }
+                self.currentTranscript = result.bestTranscription.formattedString
+                self.lastSpeechTime = .now
+                if result.isFinal {
+                    self.finishRecognition()
+                }
+            }
+        }
+
+        updateState(.listening)
+        startSilenceDetection()
+
+        return segmentTranscript
+    }
+
     // MARK: - Private Helpers
 
     /// Finishes recognition and fires the final transcript callback.

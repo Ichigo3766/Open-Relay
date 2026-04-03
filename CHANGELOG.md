@@ -1,5 +1,24 @@
 # Changelog
 
+## v2.4.2 — April 3, 2026
+
+### What's New
+- Added voice dictation — tap the mic button in the chat input bar to dictate, then tap Stop to append the transcribed text to your message using on-device or server model.
+- Full prompt versioning support - Version history for every message is properly preserved where previously on worked for assistant messages.  
+
+### Improvements
+- Drastically reduced cpu/memory usage across the app - About 70%+ (scaled with #/length of messages) drop in memory and 20-40% in cpu utilization for same tasks.
+- Tapping "Edit" on a channel message now opens the keyboard automatically so you can start typing right away.
+- The thread replies sheet now opens at a comfortable near-full-height and can be dragged to dismiss.
+
+### Bug Fixes
+- Fixed channel unread badges never clearing — opening a channel now marks it as read and clears the badge immediately.
+- Fixed channels and thread replies ignoring the "Send on Enter" toggle — pressing Return now correctly inserts a new line when the toggle is off.
+- Fixed channel reactions added from the web showing as raw shortcode text (e.g. "sunglasses") instead of the actual emoji.
+- Fixed thinking blocks swallowing the model's actual reply when the model omits the opening think tag — the response now renders correctly below the collapsed reasoning block.
+
+## Previous Builds
+
 ## v2.4.1 — April 1, 2026
 
 ### What's New

@@ -3202,30 +3202,129 @@ final class APIClient: @unchecked Sendable {
         return ordered.compactMap { msgData -> ChatMessage? in
             guard var message = parseSingleMessage(msgData) else { return nil }
 
-            // Attach sibling versions (OpenWebUI regeneration history)
+            // Attach sibling versions (OpenWebUI regeneration/edit history)
             let parentId = msgData["parentId"] as? String
             let msgId = msgData["id"] as? String
             let msgRole = msgData["role"] as? String
 
-            if let parentId, !parentId.isEmpty,
-               let parent = messagesMap[parentId],
-               let childrenIds = parent["childrenIds"] as? [String],
-               childrenIds.count > 1 {
+            // For both root-level (parentId == null) and non-root messages,
+            // we need to look for siblings. For root-level user messages,
+            // we find all root-level nodes with parentId == null.
+            // For non-root messages, we look up the parent's childrenIds.
+            var childrenIds: [String]?
+            var parentNode: [String: Any]?
 
+            if let pid = parentId, !pid.isEmpty {
+                // Non-root: parent exists in messagesMap
+                parentNode = messagesMap[pid]
+                childrenIds = parentNode?["childrenIds"] as? [String]
+            } else {
+                // Root-level (parentId is null or absent): find all root nodes with same role
+                // These are user message edit siblings (each has parentId == null)
+                if msgRole == "user" {
+                    let rootSiblings = messagesMap.keys.filter { key in
+                        guard let node = messagesMap[key] else { return false }
+                        let nodeParentId = node["parentId"] as? String
+                        let nodeRole = node["role"] as? String
+                        let isRootLevel = (nodeParentId == nil || nodeParentId!.isEmpty)
+                        return isRootLevel && nodeRole == "user" && key != msgId
+                    }
+                    if !rootSiblings.isEmpty {
+                        childrenIds = [msgId ?? ""] + rootSiblings
+                    }
+                }
+            }
+
+            if let children = childrenIds, children.count > 1 {
                 var versions: [ChatMessageVersion] = []
-                for siblingId in childrenIds {
+                for siblingId in children {
                     guard siblingId != msgId,
                           let sibling = messagesMap[siblingId],
                           (sibling["role"] as? String) == msgRole
                     else { continue }
 
-                    if let version = parseSiblingAsVersion(sibling, id: siblingId) {
+                    // For user message siblings, find their paired assistant child
+                    // and populate all paired assistant fields so the UI can display
+                    // the correct AI response when navigating between edit versions.
+                    var pairedAssistantId: String?
+                    var pairedAssistantContent: String?
+                    var pairedAssistantModel: String?
+                    var pairedAssistantFiles: [ChatMessageFile] = []
+                    var pairedAssistantSources: [ChatSourceReference] = []
+
+                    var pairedDownstreamMessages: [ChatMessage] = []
+
+                    if msgRole == "user" {
+                        if let siblingChildren = sibling["childrenIds"] as? [String],
+                           let firstChild = siblingChildren.last,
+                           let childMsg = messagesMap[firstChild],
+                           (childMsg["role"] as? String) == "assistant" {
+                            pairedAssistantId = firstChild
+                            pairedAssistantContent = childMsg["content"] as? String
+                            pairedAssistantModel = childMsg["model"] as? String ?? childMsg["modelName"] as? String
+
+                            // Parse paired assistant files
+                            if let rawFiles = childMsg["files"] as? [[String: Any]] {
+                                for file in rawFiles {
+                                    let fileType = file["type"] as? String
+                                    let fileUrl = file["url"] as? String ?? file["id"] as? String
+                                    let fileName = file["name"] as? String
+                                    let contentType = file["content_type"] as? String
+                                        ?? (file["meta"] as? [String: Any])?["content_type"] as? String
+                                    pairedAssistantFiles.append(ChatMessageFile(
+                                        type: fileType, url: fileUrl, name: fileName, contentType: contentType
+                                    ))
+                                }
+                            }
+
+                            // Parse paired assistant sources
+                            if let rawSources = childMsg["sources"] as? [[String: Any]] {
+                                for src in rawSources {
+                                    let srcUrl = (src["url"] as? String) ?? (src["source"] as? String)
+                                    let srcTitle = (src["name"] as? String) ?? (src["title"] as? String)
+                                    let srcId = src["id"] as? String
+                                    pairedAssistantSources.append(ChatSourceReference(id: srcId, title: srcTitle, url: srcUrl))
+                                }
+                            }
+
+                            // Walk the paired assistant's child chain to reconstruct
+                            // downstream messages (messages that came after this branch's
+                            // assistant response). This restores them after an app restart.
+                            var walkId: String? = (childMsg["childrenIds"] as? [String])?.last
+                            var visited = Set<String>()
+                            while let nextId = walkId, !visited.contains(nextId) {
+                                visited.insert(nextId)
+                                guard let nextMsg = messagesMap[nextId] else { break }
+                                if let parsed = parseSingleMessage(nextMsg) {
+                                    pairedDownstreamMessages.append(parsed)
+                                }
+                                walkId = (nextMsg["childrenIds"] as? [String])?.last
+                            }
+                        }
+                    }
+
+                    if var version = parseSiblingAsVersion(sibling, id: siblingId) {
+                        version.pairedAssistantId = pairedAssistantId
+                        version.pairedAssistantContent = pairedAssistantContent
+                        version.pairedAssistantModel = pairedAssistantModel
+                        version.pairedAssistantFiles = pairedAssistantFiles
+                        version.pairedAssistantSources = pairedAssistantSources
+                        version.downstreamMessages = pairedDownstreamMessages
                         versions.append(version)
                     }
                 }
 
                 if !versions.isEmpty {
-                    message.versions = versions
+                    // For user messages, also find the current message's paired assistant
+                    if msgRole == "user" {
+                        // The current message's paired assistant is already in the flat list
+                        // (it will be parsed as the next message). We still want to show
+                        // the version count correctly.
+                        // Sort versions by timestamp so oldest edits come first
+                        message.versions = versions.sorted { $0.timestamp < $1.timestamp }
+                    } else {
+                        message.versions = versions
+                    }
                 }
             }
 
@@ -3519,7 +3618,144 @@ final class APIClient: @unchecked Sendable {
             // OpenWebUI stores regeneration history as siblings: multiple children of
             // the same parent with the same role. The active message must be LAST in
             // childrenIds so the web UI shows it as the current version (N/N).
-            if !msg.versions.isEmpty, let pid = parentId {
+            //
+            // For USER message versions (edits), parentId is nil (root-level siblings).
+            // For ASSISTANT message versions (regenerations), parentId is the user message ID.
+            if !msg.versions.isEmpty && msg.role == .user && parentId == nil {
+                // Root-level user message siblings — each version has parentId: null
+                for version in msg.versions {
+                    let siblingId = version.id
+                    guard messagesMap[siblingId] == nil else { continue }
+
+                    var siblingDict: [String: Any] = [
+                        "id": siblingId,
+                        "parentId": NSNull(),
+                        "childrenIds": [String](),
+                        "role": "user",
+                        "content": version.content,
+                        "timestamp": Int(version.timestamp.timeIntervalSince1970)
+                    ]
+                    if let m = model {
+                        siblingDict["models"] = [m]
+                    }
+                    if let pairedId = version.pairedAssistantId {
+                        siblingDict["childrenIds"] = [pairedId]
+                    }
+                    messagesMap[siblingId] = siblingDict
+
+                    // Also write the paired assistant node into the history tree.
+                    // Without this, the server's tree has a dangling child reference:
+                    // the user sibling points to an assistant ID that doesn't exist.
+                    // This causes the WebUI to fail navigation between edit branches
+                    // and breaks round-trip sync (pairedAssistantContent is lost on reload).
+                    if let pairedId = version.pairedAssistantId,
+                       messagesMap[pairedId] == nil,
+                       let pairedContent = version.pairedAssistantContent {
+                        var pairedDict: [String: Any] = [
+                            "id": pairedId,
+                            "parentId": siblingId,
+                            "childrenIds": [String](),
+                            "role": "assistant",
+                            "content": pairedContent,
+                            "timestamp": Int(version.timestamp.timeIntervalSince1970),
+                            "done": true,
+                            "modelIdx": 0
+                        ]
+                        if let m = version.pairedAssistantModel ?? model {
+                            pairedDict["model"] = m
+                            pairedDict["modelName"] = m
+                        }
+                        if !version.pairedAssistantFiles.isEmpty {
+                            let filesArr: [[String: Any]] = version.pairedAssistantFiles.compactMap { file -> [String: Any]? in
+                                guard let url = file.url else { return nil }
+                                var dict: [String: Any] = ["type": file.type ?? "file", "id": url, "url": url]
+                                if let name = file.name { dict["name"] = name }
+                                if let ct = file.contentType { dict["content_type"] = ct }
+                                return dict
+                            }
+                            if !filesArr.isEmpty { pairedDict["files"] = filesArr }
+                        }
+                        if !version.pairedAssistantSources.isEmpty {
+                            let sourcesArr: [[String: Any]] = version.pairedAssistantSources.map { source in
+                                var dict: [String: Any] = [:]
+                                if let id = source.id { dict["id"] = id }
+                                if let title = source.title { dict["name"] = title }
+                                if let url = source.url { dict["url"] = url; dict["source"] = url }
+                                dict["document"] = [] as [String]
+                                return dict
+                            }
+                            pairedDict["sources"] = sourcesArr
+                        }
+
+                        // Write downstream messages for this old branch into the tree.
+                        // Each downstream message chains off the previous via parentId.
+                        // This allows the WebUI to navigate the full old conversation branch.
+                        var lastDownstreamId = pairedId
+                        var assistantChildIds: [String] = []
+                        for downMsg in version.downstreamMessages {
+                            let downMsgParent: String = {
+                                if downMsg.role == .assistant {
+                                    // The last user message in the downstream chain is the parent
+                                    return lastDownstreamId
+                                }
+                                return lastDownstreamId
+                            }()
+                            var downDict: [String: Any] = [
+                                "id": downMsg.id,
+                                "parentId": downMsgParent,
+                                "childrenIds": [String](),
+                                "role": downMsg.role.rawValue,
+                                "content": downMsg.content,
+                                "timestamp": Int(downMsg.timestamp.timeIntervalSince1970)
+                            ]
+                            if downMsg.role == .assistant {
+                                if let m = downMsg.model { downDict["model"] = m; downDict["modelName"] = m }
+                                downDict["modelIdx"] = 0
+                                downDict["done"] = true
+                            }
+                            if downMsg.role == .user, let m = model {
+                                downDict["models"] = [m]
+                            }
+                            if !downMsg.files.isEmpty {
+                                let filesArr: [[String: Any]] = downMsg.files.compactMap { file -> [String: Any]? in
+                                    guard let url = file.url else { return nil }
+                                    var dict: [String: Any] = ["type": file.type ?? "file", "id": url, "url": url]
+                                    if let name = file.name { dict["name"] = name }
+                                    if let ct = file.contentType { dict["content_type"] = ct }
+                                    return dict
+                                }
+                                if !filesArr.isEmpty { downDict["files"] = filesArr }
+                            }
+                            messagesMap[downMsg.id] = downDict
+                            // Update parent's childrenIds
+                            if var parentDict = messagesMap[downMsgParent] as? [String: Any] {
+                                var children = parentDict["childrenIds"] as? [String] ?? []
+                                if !children.contains(downMsg.id) {
+                                    children.append(downMsg.id)
+                                    parentDict["childrenIds"] = children
+                                    messagesMap[downMsgParent] = parentDict
+                                }
+                            }
+                            lastDownstreamId = downMsg.id
+                            if downMsg.role == .assistant { assistantChildIds = [downMsg.id] }
+                        }
+
+                        // First downstream child of the old assistant
+                        if version.downstreamMessages.isEmpty {
+                            pairedDict["childrenIds"] = []
+                        } else if let firstDown = version.downstreamMessages.first {
+                            pairedDict["childrenIds"] = [firstDown.id]
+                        }
+
+                        messagesMap[pairedId] = pairedDict
+                        // Update sibling's childrenIds to include the paired assistant
+                        if var updated = messagesMap[siblingId] as? [String: Any] {
+                            updated["childrenIds"] = [pairedId]
+                            messagesMap[siblingId] = updated
+                        }
+                    }
+                }
+            } else if !msg.versions.isEmpty, let pid = parentId {
                 for version in msg.versions {
                     let siblingId = version.id
                     guard messagesMap[siblingId] == nil else { continue }

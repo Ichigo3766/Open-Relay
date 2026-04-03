@@ -195,6 +195,9 @@ final class ChannelViewModel {
         Task {
             try? await apiClient.updateMemberActiveStatus(channelId: channelId, isActive: true)
         }
+        
+        // Emit last_read_at so the server resets unread_count for this channel
+        markAsRead()
     }
     
     func loadChannel() async {
@@ -1064,7 +1067,8 @@ final class ChannelViewModel {
         case .channelMessageDelete:
             handleMessageDeleteEvent(data)
             
-        case .channelReactionAdd, .channelReactionRemove:
+        case .channelReactionAdd, .channelReactionRemove,
+             .messageReactionAdd, .messageReactionRemove:
             handleReactionEvent(data)
             
         case nil:
@@ -1184,17 +1188,58 @@ final class ChannelViewModel {
     }
     
     private func handleReactionEvent(_ data: [String: Any]) {
-        if let msgId = data["message_id"] as? String {
+        // DEBUG: Log full payload so we can see exactly what the server sends
+        logger.info("🔔 handleReactionEvent — top-level keys: \(data.keys.sorted().joined(separator: ", "))")
+        for (k, v) in data {
+            logger.info("  [\(k)]: \(String(describing: v))")
+        }
+        if let inner = data["data"] as? [String: Any] {
+            logger.info("  data[\"data\"] keys: \(inner.keys.sorted().joined(separator: ", "))")
+            for (k, v) in inner {
+                logger.info("    inner[\(k)]: \(String(describing: v))")
+            }
+        } else {
+            logger.info("  data[\"data\"] is nil or not a dict (raw: \(String(describing: data["data"])))")
+        }
+
+        // Try to parse an embedded full message first (avoids a round-trip to the server)
+        let msgData = data["data"] as? [String: Any] ?? data
+        if let msg = ChannelMessage.fromJSON(msgData) {
+            logger.info("✅ handleReactionEvent — parsed full message id=\(msg.id), reactions=\(msg.reactions.map(\.name))")
+            let enriched = enrichMessageWithMemberInfo(msg)
+            if let idx = messages.firstIndex(where: { $0.id == enriched.id }) {
+                messages[idx] = enriched
+            }
+            if let idx = threadMessages.firstIndex(where: { $0.id == enriched.id }) {
+                threadMessages[idx] = enriched
+            }
+            return
+        }
+        logger.info("⚠️ handleReactionEvent — could not parse full message, trying API fallback")
+
+        // Fallback: fetch from API when the socket payload only carries a message_id.
+        // The reaction event nests message_id inside data["data"]:
+        // { "type": "channel:reaction:add", "data": { "message_id": "yyy" } }
+        let innerData = data["data"] as? [String: Any]
+        let msgId = data["message_id"] as? String ?? innerData?["message_id"] as? String
+        logger.info("🔍 handleReactionEvent — resolved msgId=\(msgId ?? "nil") (direct=\(String(describing: data["message_id"])), inner=\(String(describing: innerData?["message_id"])))")
+        if let msgId {
             Task {
+                logger.info("🌐 handleReactionEvent — fetching message \(msgId) from API")
                 if let updated = try? await apiClient?.getChannelMessage(channelId: channelId, messageId: msgId) {
+                    logger.info("✅ handleReactionEvent — API returned message, reactions=\(updated.reactions.map(\.name))")
                     if let idx = messages.firstIndex(where: { $0.id == msgId }) {
                         messages[idx] = updated
                     }
                     if let idx = threadMessages.firstIndex(where: { $0.id == msgId }) {
                         threadMessages[idx] = updated
                     }
+                } else {
+                    logger.error("❌ handleReactionEvent — API fetch failed for msgId=\(msgId)")
                 }
             }
+        } else {
+            logger.error("❌ handleReactionEvent — no msgId found, cannot refresh. Full data: \(data)")
         }
     }
     
@@ -1208,9 +1253,26 @@ final class ChannelViewModel {
         return msg
     }
     
+    // MARK: - Read State
+    
+    /// Emits the `events:channel` socket event with `type: last_read_at`.
+    /// This tells the server to reset `unread_count` for the current user in this channel,
+    /// matching the behaviour of OpenWebUI's web client (Channel.svelte → updateLastReadAt).
+    func markAsRead() {
+        guard socketService != nil else { return }
+        socketService?.emit("events:channel", data: [
+            "channel_id": channelId,
+            "message_id": NSNull(),
+            "data": ["type": "last_read_at"]
+        ])
+        logger.debug("Emitted last_read_at for channel \(self.channelId)")
+    }
+    
     // MARK: - Cleanup
     
     func cleanup() {
+        // Emit last_read_at on leave so the server is up-to-date
+        markAsRead()
         channelSubscription?.dispose()
         channelSubscription = nil
         // Note: Do NOT call updateMemberActiveStatus(isActive: false) here.

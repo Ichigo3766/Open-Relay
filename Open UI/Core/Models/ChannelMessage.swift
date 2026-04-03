@@ -13,6 +13,8 @@ enum ChannelSocketEventType: String {
     case channelMessageDelete = "channel:message:delete"
     case channelReactionAdd = "channel:reaction:add"
     case channelReactionRemove = "channel:reaction:remove"
+    case messageReactionAdd = "message:reaction:add"
+    case messageReactionRemove = "message:reaction:remove"
     
     /// Returns the matching event type from a raw string, or nil if unknown.
     static func from(_ raw: String?) -> ChannelSocketEventType? {

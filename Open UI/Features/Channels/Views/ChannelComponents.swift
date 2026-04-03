@@ -300,6 +300,8 @@ struct ThreadDetailSheet: View {
     // Smart local snapshot — syncs when messages arrive, ignores dismiss clearance
     @State private var displayMessages: [ChannelMessage] = []
     
+    // Edit focus
+    @FocusState private var isThreadEditFocused: Bool
     
     // @mention picker state (same as main channel)
     @State private var isShowingMentionPicker = false
@@ -414,6 +416,15 @@ struct ThreadDetailSheet: View {
             // Ignore when cleared to [] during dismiss — protects against crash
             if !newValue.isEmpty || oldValue.isEmpty {
                 displayMessages = newValue
+            }
+        }
+        .onChange(of: viewModel.editingMessage) { _, newValue in
+            if newValue != nil {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                    isThreadEditFocused = true
+                }
+            } else {
+                isThreadEditFocused = false
             }
         }
         // In-app file preview using QuickLook (PDFs, images, docs, etc.)
@@ -544,6 +555,7 @@ struct ThreadDetailSheet: View {
             TextField("Edit message…", text: $viewModel.editingText, axis: .vertical)
                 .scaledFont(size: 13)
                 .lineLimit(1...10)
+                .focused($isThreadEditFocused)
                 .padding(.horizontal, 10)
                 .padding(.vertical, 7)
                 .background(theme.surfaceContainer.opacity(0.8))
@@ -728,143 +740,47 @@ struct ThreadDetailSheet: View {
         }
     }
     
-    // MARK: - Thread Input (same as channel)
-    
-    // BUG-011 fix: Thread uses its own threadAttachments array
+    // MARK: - Thread Input
+
+    // Uses the shared ChannelInputField so sendOnEnter preference is respected
+    // and attachment UI stays in sync with the main channel input.
     private var threadInput: some View {
-        VStack(spacing: 0) {
-            if !viewModel.threadAttachments.isEmpty {
-                threadAttachmentStrip
-                    .padding(.horizontal, Spacing.screenPadding)
-                    .padding(.bottom, 4)
-            }
-            
-            HStack(alignment: .center, spacing: 8) {
-                Button {
-                    showThreadAttachmentPicker = true
-                    Haptics.play(.light)
-                } label: {
-                    Image(systemName: "plus")
-                        .scaledFont(size: 15, weight: .semibold)
-                        .foregroundStyle(theme.textTertiary)
-                        .frame(width: 28, height: 28)
+        ChannelInputField(
+            text: $viewModel.threadInputText,
+            attachments: $viewModel.threadAttachments,
+            placeholder: "Reply in thread…",
+            isEnabled: true,
+            onSend: { await viewModel.sendThreadMessage() },
+            canSend: viewModel.canSendThread,
+            onAttachmentTapped: { showThreadAttachmentPicker = true },
+            onPasteAttachments: { pasted in
+                // BUG-011 fix: Paste into thread-specific attachments
+                withAnimation { viewModel.threadAttachments.append(contentsOf: pasted) }
+                for att in pasted { viewModel.uploadAttachmentImmediately(attachmentId: att.id, isThread: true) }
+            },
+            onRemoveAttachment: { att in
+                withAnimation { viewModel.threadAttachments.removeAll { $0.id == att.id } }
+            },
+            onAtTrigger: { query in
+                mentionQuery = query
+                if !isShowingMentionPicker {
+                    withAnimation(.easeOut(duration: 0.2)) { isShowingMentionPicker = true }
                 }
-                .buttonStyle(.plain)
-                .sheet(isPresented: $showThreadAttachmentPicker) {
-                    UnifiedAttachmentPicker(
-                        onPhotoSelected: { items in
-                            Task { await processThreadPhotos(items) }
-                        },
-                        onFileSelected: { urls in
-                            Task { for url in urls { await processThreadFileURL(url) } }
-                        },
-                        onDismiss: { showThreadAttachmentPicker = false }
-                    )
-                    .presentationDetents([.medium])
-                    .presentationDragIndicator(.hidden)
-                }
-                
-                PasteableTextView(
-                    text: $viewModel.threadInputText,
-                    placeholder: "Reply in thread…",
-                    font: .systemFont(ofSize: 14, weight: .regular),
-                    textColor: UIColor(theme.textPrimary),
-                    placeholderColor: UIColor(theme.textTertiary),
-                    tintColor: UIColor(theme.brandPrimary),
-                    isEnabled: true,
-                    onPasteAttachments: { attachments in
-                        // BUG-011 fix: Paste into thread-specific attachments
-                        withAnimation { viewModel.threadAttachments.append(contentsOf: attachments) }
-                        for att in attachments { viewModel.uploadAttachmentImmediately(attachmentId: att.id, isThread: true) }
-                    },
-                    onSubmit: { Task { await viewModel.sendThreadMessage() } },
-                    onAtTrigger: { query in
-                        mentionQuery = query
-                        if !isShowingMentionPicker {
-                            withAnimation(.easeOut(duration: 0.2)) { isShowingMentionPicker = true }
-                        }
-                    },
-                    onAtDismiss: { dismissMentionPicker() },
-                    sendOnReturn: true
-                )
-                .fixedSize(horizontal: false, vertical: true)
-                
-                if viewModel.canSendThread {
-                    Button {
-                        Task { await viewModel.sendThreadMessage() }
-                        Haptics.play(.light)
-                    } label: {
-                        Circle()
-                            .fill(theme.brandPrimary)
-                            .frame(width: 30, height: 30)
-                            .overlay(
-                                Image(systemName: "arrow.up")
-                                    .scaledFont(size: 13, weight: .bold)
-                                    .foregroundStyle(theme.brandOnPrimary)
-                            )
-                    }
-                    .buttonStyle(.plain)
-                    .transition(.scale.combined(with: .opacity))
-                }
-            }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 10)
-        }
-        .background(theme.isDark ? theme.cardBackground.opacity(0.95) : theme.inputBackground)
-        .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 22, style: .continuous).strokeBorder(theme.cardBorder.opacity(0.4), lineWidth: 0.5))
-        .shadow(color: .black.opacity(theme.isDark ? 0.2 : 0.06), radius: 8, x: 0, y: 2)
-        .padding(.horizontal, Spacing.screenPadding)
-        .padding(.top, 4)
-        .padding(.bottom, 8)
-        .animation(.easeInOut(duration: 0.15), value: viewModel.canSendThread)
-    }
-    
-    // MARK: - Thread Attachment Strip
-    
-    private var threadAttachmentStrip: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 8) {
-                // BUG-011 fix: Use threadAttachments
-                ForEach(viewModel.threadAttachments) { attachment in
-                    ZStack(alignment: .topTrailing) {
-                        if let thumbnail = attachment.thumbnail {
-                            thumbnail.resizable().aspectRatio(contentMode: .fill)
-                                .frame(width: 50, height: 50)
-                                .clipShape(RoundedRectangle(cornerRadius: 8))
-                        } else {
-                            RoundedRectangle(cornerRadius: 8)
-                                .fill(theme.surfaceContainer)
-                                .frame(width: 50, height: 50)
-                                .overlay(
-                                    VStack(spacing: 2) {
-                                        if attachment.isUploading {
-                                            ProgressView().controlSize(.small)
-                                        } else {
-                                            Image(systemName: "doc")
-                                                .scaledFont(size: 14)
-                                                .foregroundStyle(theme.textTertiary)
-                                        }
-                                        Text(attachment.name)
-                                            .scaledFont(size: 7)
-                                            .foregroundStyle(theme.textTertiary)
-                                            .lineLimit(1)
-                                    }
-                                )
-                        }
-                        
-                        Button {
-                            withAnimation { viewModel.threadAttachments.removeAll { $0.id == attachment.id } }
-                        } label: {
-                            Image(systemName: "xmark.circle.fill")
-                                .scaledFont(size: 16)
-                                .symbolRenderingMode(.palette)
-                                .foregroundStyle(.white, .black.opacity(0.55))
-                        }
-                        .offset(x: 4, y: -4)
-                    }
-                }
-            }
+            },
+            onAtDismiss: { dismissMentionPicker() }
+        )
+        .sheet(isPresented: $showThreadAttachmentPicker) {
+            UnifiedAttachmentPicker(
+                onPhotoSelected: { items in
+                    Task { await processThreadPhotos(items) }
+                },
+                onFileSelected: { urls in
+                    Task { for url in urls { await processThreadFileURL(url) } }
+                },
+                onDismiss: { showThreadAttachmentPicker = false }
+            )
+            .presentationDetents([.medium])
+            .presentationDragIndicator(.hidden)
         }
     }
     

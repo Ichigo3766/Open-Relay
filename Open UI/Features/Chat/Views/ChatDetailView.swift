@@ -52,6 +52,19 @@ struct ChatDetailView: View {
     @State private var editingMessageText = ""
     @FocusState private var isEditFieldFocused: Bool
 
+    // MARK: User message version navigation
+    /// Tracks the active version index for user messages (edit history).
+    /// -1 means the current (latest) user message content. 0...N-1 = an older version.
+    @State private var activeUserVersionIndex: [String: Int] = [:]
+
+    /// Maps assistant message ID → content override when viewing an older user version.
+    /// When nil, the assistant shows its own current content.
+    /// When set, the assistant displays this overridden content instead.
+    @State private var assistantContentOverride: [String: String] = [:]
+
+    // MARK: Dictation
+    @State private var isDictating = false
+
     // MARK: Keyboard
     @State private var keyboard = KeyboardTracker()
 
@@ -113,8 +126,13 @@ struct ChatDetailView: View {
             messageListArea
         }
         .safeAreaInset(edge: .bottom, spacing: 0) {
-            inputFieldArea(vm: vm)
-                .padding(.bottom, keyboard.height)
+            if editingMessageId != nil {
+                editInputBar
+                    .padding(.bottom, keyboard.height)
+            } else {
+                inputFieldArea(vm: vm)
+                    .padding(.bottom, keyboard.height)
+            }
         }
         .ignoresSafeArea(.keyboard)
         // Knowledge picker — overlays content (floats over welcome cards / messages)
@@ -524,6 +542,10 @@ struct ChatDetailView: View {
                         }
                     )
                     .themed()
+                    .presentationBackgroundInteraction(.disabled)
+                    .onDisappear {
+                        Task { await ImageCacheService.shared.clearMemory() }
+                    }
                 }
                 .sheet(item: $editingModelDetail) { detail in
                     NavigationStack {
@@ -647,6 +669,11 @@ struct ChatDetailView: View {
                 onCameraCapture: { showCameraPicker = true },
                 onWebAttachment: { showWebURLAlert = true },
                 onVoiceInput: { toggleVoiceInput() },
+                onDictationStart: { startDictation() },
+                onDictationStop: { stopDictation() },
+                onDictationCancel: { cancelDictation() },
+                isDictating: isDictating,
+                dictationService: dependencies.dictationService,
                 onToolsSheetPresented: {
                     Task { await viewModel.loadTools() }
                 },
@@ -833,7 +860,7 @@ struct ChatDetailView: View {
         .rotationEffect(.degrees(180))
         .background(ScrollViewHorizontalLock())
         .scrollIndicators(.hidden)
-        .scrollDismissesKeyboard(.interactively)
+        .scrollDismissesKeyboard(editingMessageId != nil ? .never : .interactively)
         .scrollPosition($scrollPosition, anchor: .top)
         // Detect scroll position to show/hide FAB.
         // In reversed space: contentOffset.y ≈ 0 → at newest (visual bottom).
@@ -1041,28 +1068,44 @@ struct ChatDetailView: View {
                         get: { usagePopoverMessageId == message.id },
                         set: { if !$0 { usagePopoverMessageId = nil } }
                     ), arrowEdge: .bottom) {
-                        UsageInfoPopover(usage: message.usage ?? [:])
+                        let vIdx = activeVersionIndex[message.id] ?? -1
+                        let popoverUsage: [String: Any] = {
+                            if vIdx >= 0 && vIdx < message.versions.count {
+                                return message.versions[vIdx].usage ?? [:]
+                            }
+                            return message.usage ?? [:]
+                        }()
+                        UsageInfoPopover(usage: popoverUsage)
                             .themed()
                             .presentationCompactAdaptation(.popover)
                     }
             }
 
-            // ── User action bar (tap-revealed) ──
-            if message.role == .user && activeActionMessageId == message.id && !viewModel.isStreaming {
-                userActionBar(for: message)
+            // ── User message version arrows (always visible when edit history exists) ──
+            if message.role == .user && !message.versions.isEmpty && !viewModel.isStreaming {
+                userVersionSwitcher(for: message)
                     .padding(.horizontal, Spacing.screenPadding)
-                    .transition(.opacity.combined(with: .scale(scale: 0.95)))
+                    .padding(.top, 2)
             }
 
             // ── Follow-up suggestions (last assistant message only) ──
-            if isLastAssistant && !message.isStreaming && !message.followUps.isEmpty {
-                followUpSuggestions(for: message)
-                    .padding(.horizontal, Spacing.screenPadding)
-                    .padding(.top, Spacing.sm)
-                    // Use simple opacity transition — .move(edge: .bottom) triggers
-                    // a layout re-measurement during animation that can temporarily
-                    // make the scroll content wider than the screen, enabling 2D pan.
-                    .transition(.opacity)
+            if isLastAssistant && !message.isStreaming {
+                let vIdx = activeVersionIndex[message.id] ?? -1
+                let displayFollowUps: [String] = {
+                    if vIdx >= 0 && vIdx < message.versions.count {
+                        return message.versions[vIdx].followUps
+                    }
+                    return message.followUps
+                }()
+                if !displayFollowUps.isEmpty {
+                    followUpSuggestions(displayFollowUps)
+                        .padding(.horizontal, Spacing.screenPadding)
+                        .padding(.top, Spacing.sm)
+                        // Use simple opacity transition — .move(edge: .bottom) triggers
+                        // a layout re-measurement during animation that can temporarily
+                        // make the scroll content wider than the screen, enabling 2D pan.
+                        .transition(.opacity)
+                }
             }
         }
         .accessibilityElement(children: .combine)
@@ -1142,7 +1185,28 @@ struct ChatDetailView: View {
         Divider()
         if !viewModel.isStreaming {
             Button(role: .destructive) {
-                Task { await viewModel.deleteMessage(id: message.id) }
+                let userVIdx = activeUserVersionIndex[message.id] ?? -1
+                Task { await viewModel.deleteMessage(id: message.id, activeVersionIndex: message.role == .user ? userVIdx : nil) }
+                // Clean up local navigation state after deletion
+                if message.role == .user {
+                    if !message.versions.isEmpty {
+                        if userVIdx < 0 {
+                            // Deleted main — reset to main (last version promoted)
+                            activeUserVersionIndex.removeValue(forKey: message.id)
+                        } else if message.versions.count <= 1 {
+                            // Deleted last version — back to main
+                            activeUserVersionIndex.removeValue(forKey: message.id)
+                            // Clear AI override since we're back to main
+                            if let userIdx = viewModel.messages.firstIndex(where: { $0.id == message.id }),
+                               userIdx + 1 < viewModel.messages.count,
+                               viewModel.messages[userIdx + 1].role == .assistant {
+                                assistantContentOverride.removeValue(forKey: viewModel.messages[userIdx + 1].id)
+                            }
+                        } else if userVIdx >= message.versions.count - 1 {
+                            activeUserVersionIndex[message.id] = max(0, userVIdx - 1)
+                        }
+                    }
+                }
             } label: {
                 Label("Delete", systemImage: "trash")
             }
@@ -1154,35 +1218,46 @@ struct ChatDetailView: View {
     @ViewBuilder
     private func messageContent(for message: ChatMessage) -> some View {
         if message.role == .user {
-            if editingMessageId == message.id {
-                inlineEditContent
-            } else {
-                VStack(alignment: .trailing, spacing: Spacing.sm) {
-                    // Inline images inside the bubble
-                    let imageFiles = message.files.filter { $0.type == "image" }
-                    if !imageFiles.isEmpty {
-                        ForEach(Array(imageFiles.prefix(4).enumerated()), id: \.offset) { _, file in
-                            if let fileId = file.url, !fileId.isEmpty {
-                                AuthenticatedImageView(fileId: fileId, apiClient: dependencies.apiClient)
-                                    .frame(maxWidth: 220, maxHeight: 220)
-                                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-                            }
+            // Resolve which user version to display
+            let userVIdx = activeUserVersionIndex[message.id] ?? -1
+            let displayContent: String = {
+                if userVIdx >= 0 && userVIdx < message.versions.count {
+                    return message.versions[userVIdx].content
+                }
+                return message.content
+            }()
+            let displayFiles: [ChatMessageFile] = {
+                if userVIdx >= 0 && userVIdx < message.versions.count {
+                    return message.versions[userVIdx].files
+                }
+                return message.files
+            }()
+
+            VStack(alignment: .trailing, spacing: Spacing.sm) {
+                // Inline images inside the bubble
+                let imageFiles = displayFiles.filter { $0.type == "image" }
+                if !imageFiles.isEmpty {
+                    ForEach(Array(imageFiles.prefix(4).enumerated()), id: \.offset) { _, file in
+                        if let fileId = file.url, !fileId.isEmpty {
+                            AuthenticatedImageView(fileId: fileId, apiClient: dependencies.apiClient)
+                                .frame(maxWidth: 220, maxHeight: 220)
+                                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
                         }
                     }
+                }
 
-                    // Non-image file cards inside the bubble
-                    let nonImageFiles = message.files.filter { $0.type != "image" && $0.type != "collection" && $0.type != "folder" }
-                    if !nonImageFiles.isEmpty {
-                        ForEach(Array(nonImageFiles.enumerated()), id: \.offset) { _, file in
-                            fileAttachmentCard(file: file)
-                        }
+                // Non-image file cards inside the bubble
+                let nonImageFiles = displayFiles.filter { $0.type != "image" && $0.type != "collection" && $0.type != "folder" }
+                if !nonImageFiles.isEmpty {
+                    ForEach(Array(nonImageFiles.enumerated()), id: \.offset) { _, file in
+                        fileAttachmentCard(file: file)
                     }
+                }
 
-                    // Text content
-                    if !message.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                        UserMessageContentView(content: message.content)
-                            .lineSpacing(2)
-                    }
+                // Text content
+                if !displayContent.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    UserMessageContentView(content: displayContent)
+                        .lineSpacing(2)
                 }
             }
         } else {
@@ -1196,6 +1271,7 @@ struct ChatDetailView: View {
                 streamingStore: viewModel.streamingStore,
                 message: message,
                 activeVersionIndex: activeVersionIndex[message.id] ?? -1,
+                contentOverride: assistantContentOverride[message.id],
                 serverBaseURL: viewModel.serverBaseURL,
                 authToken: viewModel.serverAuthToken,
                 apiClient: dependencies.apiClient
@@ -1276,70 +1352,89 @@ struct ChatDetailView: View {
     }
 
 
-    // MARK: - Inline Edit
+    // MARK: - iMessage-Style Edit Input Bar
 
-    private var inlineEditContent: some View {
-        VStack(alignment: .trailing, spacing: Spacing.sm) {
+    /// Replaces the normal input bar when editing a message.
+    /// Lives in the safeAreaInset bottom slot — exactly where the normal
+    /// ChatInputField sits — so iOS keyboard avoidance just works.
+    private var editInputBar: some View {
+        HStack(spacing: 10) {
+            // Cancel button
+            Button {
+                cancelInlineEdit()
+            } label: {
+                ZStack {
+                    Circle()
+                        .fill(theme.surfaceContainer)
+                        .frame(width: 34, height: 34)
+                    Image(systemName: "xmark")
+                        .scaledFont(size: 13, weight: .semibold)
+                        .foregroundStyle(theme.textSecondary)
+                }
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Cancel edit")
+
+            // Text field — fills remaining space, grows vertically up to 6 lines
             TextField("Edit message…", text: $editingMessageText, axis: .vertical)
-                .scaledFont(size: 14)
-                .foregroundStyle(theme.chatBubbleUserText)
-                .tint(theme.chatBubbleUserText)
-                .lineLimit(1...20)
+                .scaledFont(size: 16)
+                .foregroundStyle(theme.textPrimary)
+                .tint(theme.brandPrimary)
+                .lineLimit(1...6)
                 .focused($isEditFieldFocused)
                 .submitLabel(.done)
                 .onSubmit {
                     if !editingMessageText.contains("\n") { submitInlineEdit() }
                 }
-                // Style the placeholder to be visible on the accent-colored bubble
-                .overlay(alignment: .leading) {
-                    if editingMessageText.isEmpty {
-                        Text("Edit message…")
-                            .scaledFont(size: 14)
-                            .foregroundStyle(theme.chatBubbleUserText.opacity(0.5))
-                            .allowsHitTesting(false)
-                    }
-                }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 10)
+                .background(theme.surfaceContainer)
+                .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
 
-            HStack(spacing: Spacing.sm) {
-                Button { cancelInlineEdit() } label: {
-                    Text("Cancel")
-                        .scaledFont(size: 12, weight: .medium)
-                        .fontWeight(.medium)
-                        .foregroundStyle(theme.chatBubbleUserText.opacity(0.7))
+            // Send / confirm button
+            Button {
+                submitInlineEdit()
+            } label: {
+                ZStack {
+                    Circle()
+                        .fill(editingMessageText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                              ? theme.textTertiary.opacity(0.3)
+                              : theme.brandPrimary)
+                        .frame(width: 34, height: 34)
+                    Image(systemName: "arrow.up")
+                        .scaledFont(size: 14, weight: .bold)
+                        .foregroundStyle(.white)
                 }
-                .buttonStyle(.plain)
-
-                Button { submitInlineEdit() } label: {
-                    HStack(spacing: 4) {
-                        Image(systemName: "checkmark").scaledFont(size: 11, weight: .bold)
-                        Text("Save & Resend").scaledFont(size: 12, weight: .medium).fontWeight(.semibold)
-                    }
-                    .foregroundStyle(theme.chatBubbleUserText)
-                    .padding(.horizontal, Spacing.sm)
-                    .padding(.vertical, 5)
-                    .background(Capsule().fill(theme.chatBubbleUserText.opacity(0.2)))
-                }
-                .buttonStyle(.plain)
-                .disabled(editingMessageText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                .opacity(editingMessageText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? 0.5 : 1)
             }
+            .buttonStyle(.plain)
+            .disabled(editingMessageText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            .accessibilityLabel("Save and resend")
+        }
+        .padding(.horizontal, Spacing.md)
+        .padding(.top, 10)
+        .padding(.bottom, 10)
+        .background(theme.background)
+        .overlay(alignment: .top) {
+            Divider().opacity(0.5)
+        }
+        .onAppear {
+            isEditFieldFocused = true
         }
     }
 
     private func beginInlineEdit(message: ChatMessage) {
-        withAnimation(.easeInOut(duration: 0.2)) {
-            editingMessageId = message.id
-            editingMessageText = message.content
-        }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { isEditFieldFocused = true }
+        editingMessageId = message.id
+        editingMessageText = message.content
+        // Focus immediately — no delay needed since we're not fighting scroll layout
+        isEditFieldFocused = true
         Haptics.play(.light)
     }
 
     private func cancelInlineEdit() {
-        withAnimation(.easeInOut(duration: 0.2)) {
+        isEditFieldFocused = false
+        withAnimation(.easeInOut(duration: 0.18)) {
             editingMessageId = nil
             editingMessageText = ""
-            isEditFieldFocused = false
         }
     }
 
@@ -1347,10 +1442,11 @@ struct ChatDetailView: View {
         guard let id = editingMessageId else { return }
         let trimmed = editingMessageText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
-        withAnimation(.easeInOut(duration: 0.2)) {
+        isEditFieldFocused = false
+        withAnimation(.easeInOut(duration: 0.18)) {
             editingMessageId = nil
-            isEditFieldFocused = false
         }
+        editingMessageText = ""
         Task { await viewModel.editMessage(id: id, newContent: trimmed) }
         Haptics.play(.medium)
     }
@@ -1659,18 +1755,25 @@ struct ChatDetailView: View {
             .buttonStyle(.plain)
             .accessibilityLabel("Copy")
 
-            // Version switcher (only when versions exist)
-            if !message.versions.isEmpty && !viewModel.isStreaming {
+            // Version switcher (only when versions exist and not overriding with a user edit version)
+            if !message.versions.isEmpty && !viewModel.isStreaming && assistantContentOverride[message.id] == nil {
                 HStack(spacing: 2) {
                     Button {
-                        withAnimation(MicroAnimation.snappy) {
-                            if currentIdx < 0 {
-                                activeVersionIndex[message.id] = message.versions.count - 1
-                            } else if currentIdx > 0 {
-                                activeVersionIndex[message.id] = currentIdx - 1
-                            }
+                        let newIdx: Int
+                        if currentIdx < 0 {
+                            newIdx = message.versions.count - 1
+                        } else if currentIdx > 0 {
+                            newIdx = currentIdx - 1
+                        } else {
+                            newIdx = currentIdx
                         }
-                        Haptics.play(.light)
+                        if newIdx != currentIdx {
+                            withAnimation(MicroAnimation.snappy) {
+                                activeVersionIndex[message.id] = newIdx
+                            }
+                            viewModel.restoreAssistantVersion(assistantMessageId: message.id, versionIndex: newIdx)
+                            Haptics.play(.light)
+                        }
                     } label: {
                         compactActionIcon(icon: "chevron.left", isActive: false, size: 10)
                     }
@@ -1684,14 +1787,21 @@ struct ChatDetailView: View {
                         .frame(minWidth: 28)
 
                     Button {
-                        withAnimation(MicroAnimation.snappy) {
-                            if currentIdx >= 0 && currentIdx < message.versions.count - 1 {
-                                activeVersionIndex[message.id] = currentIdx + 1
-                            } else if currentIdx == message.versions.count - 1 {
-                                activeVersionIndex[message.id] = -1
-                            }
+                        let newIdx: Int
+                        if currentIdx >= 0 && currentIdx < message.versions.count - 1 {
+                            newIdx = currentIdx + 1
+                        } else if currentIdx == message.versions.count - 1 {
+                            newIdx = -1
+                        } else {
+                            newIdx = currentIdx
                         }
-                        Haptics.play(.light)
+                        if newIdx != currentIdx {
+                            withAnimation(MicroAnimation.snappy) {
+                                activeVersionIndex[message.id] = newIdx
+                            }
+                            viewModel.restoreAssistantVersion(assistantMessageId: message.id, versionIndex: newIdx)
+                            Haptics.play(.light)
+                        }
                     } label: {
                         compactActionIcon(icon: "chevron.right", isActive: false, size: 10)
                     }
@@ -1714,8 +1824,8 @@ struct ChatDetailView: View {
                 .accessibilityLabel("Regenerate")
             }
 
-            // Delete
-            if !viewModel.isStreaming {
+            // Delete (only shown when there are multiple versions / regeneration history)
+            if !viewModel.isStreaming && !message.versions.isEmpty {
                 Button {
                     let vIdx = activeVersionIndex[message.id] ?? -1
                     Task { await viewModel.deleteMessage(id: message.id, activeVersionIndex: vIdx) }
@@ -1742,7 +1852,14 @@ struct ChatDetailView: View {
             }
 
             // Usage info — shown whenever the server returned usage data on this message
-            if let usage = message.usage, !usage.isEmpty {
+            // Version-aware: show the usage for whichever version is currently displayed
+            let displayUsage: [String: Any]? = {
+                if currentIdx >= 0 && currentIdx < message.versions.count {
+                    return message.versions[currentIdx].usage
+                }
+                return message.usage
+            }()
+            if let usage = displayUsage, !usage.isEmpty {
                 Button {
                     withAnimation(MicroAnimation.snappy) {
                         usagePopoverMessageId = usagePopoverMessageId == message.id ? nil : message.id
@@ -1788,7 +1905,94 @@ struct ChatDetailView: View {
             .contentShape(Circle())
     }
 
-    // MARK: - User Action Bar
+    // MARK: - User Version Switcher (always-visible when edit history exists)
+
+    /// Compact ← N/N → version arrows shown directly below the user bubble.
+    /// When navigating to an older user message version, also switches the
+    /// paired AI assistant message to its corresponding version.
+    private func userVersionSwitcher(for message: ChatMessage) -> some View {
+        let totalVersions = message.versions.count + 1
+        let currentUserIdx = activeUserVersionIndex[message.id] ?? -1
+        let displayUserIndex = currentUserIdx < 0 ? totalVersions : (currentUserIdx + 1)
+
+        /// Switch to a user version index, restoring the correct branch context.
+        /// This updates the flat message list so downstream messages match the branch.
+        func switchToUserVersion(_ newIdx: Int) {
+            withAnimation(MicroAnimation.snappy) {
+                activeUserVersionIndex[message.id] = newIdx
+
+                // Clear all assistant version overrides for this user message's pair —
+                // the branch restoration handles displaying the correct content directly
+                // in the flat message list, so no overrides are needed.
+                if let userMsgIdx = viewModel.messages.firstIndex(where: { $0.id == message.id }),
+                   userMsgIdx + 1 < viewModel.messages.count,
+                   viewModel.messages[userMsgIdx + 1].role == .assistant {
+                    let assistantId = viewModel.messages[userMsgIdx + 1].id
+                    assistantContentOverride.removeValue(forKey: assistantId)
+                    activeVersionIndex[assistantId] = -1
+                }
+
+                if newIdx < 0 {
+                    // Restore to the latest (current) branch
+                    viewModel.restoreUserVersion(userMessageId: message.id, version: nil)
+                } else if newIdx < message.versions.count {
+                    let version = message.versions[newIdx]
+                    // Restore the old branch: swap in the old assistant + downstream messages
+                    viewModel.restoreUserVersion(userMessageId: message.id, version: version)
+                    // Also update user message content display
+                    activeUserVersionIndex[message.id] = newIdx
+                }
+            }
+            Haptics.play(.light)
+        }
+
+        return HStack(spacing: 0) {
+            Spacer(minLength: 0)
+            HStack(spacing: 2) {
+                Button {
+                    if currentUserIdx < 0 {
+                        switchToUserVersion(message.versions.count - 1)
+                    } else if currentUserIdx > 0 {
+                        switchToUserVersion(currentUserIdx - 1)
+                    }
+                } label: {
+                    Image(systemName: "chevron.left")
+                        .scaledFont(size: 10, weight: .medium)
+                        .foregroundStyle(theme.textTertiary.opacity(0.8))
+                        .frame(width: 24, height: 24)
+                        .contentShape(Circle())
+                }
+                .buttonStyle(.plain)
+                .disabled(currentUserIdx == 0)
+                .opacity(currentUserIdx == 0 ? 0.35 : 1)
+
+                Text("\(displayUserIndex)/\(totalVersions)")
+                    .scaledFont(size: 11, weight: .semibold)
+                    .foregroundStyle(theme.textTertiary)
+                    .frame(minWidth: 28)
+
+                Button {
+                    if currentUserIdx >= 0 && currentUserIdx < message.versions.count - 1 {
+                        switchToUserVersion(currentUserIdx + 1)
+                    } else if currentUserIdx == message.versions.count - 1 {
+                        switchToUserVersion(-1)
+                    }
+                } label: {
+                    Image(systemName: "chevron.right")
+                        .scaledFont(size: 10, weight: .medium)
+                        .foregroundStyle(theme.textTertiary.opacity(0.8))
+                        .frame(width: 24, height: 24)
+                        .contentShape(Circle())
+                }
+                .buttonStyle(.plain)
+                .disabled(currentUserIdx < 0)
+                .opacity(currentUserIdx < 0 ? 0.35 : 1)
+            }
+            .padding(.trailing, 2)
+        }
+    }
+
+    // MARK: - User Action Bar (kept for backward compat — no longer shown in messageRow)
 
     private func userActionBar(for message: ChatMessage) -> some View {
         HStack(spacing: 0) {
@@ -1973,7 +2177,7 @@ struct ChatDetailView: View {
 
     // MARK: - Follow-Up Suggestions
 
-    private func followUpSuggestions(for message: ChatMessage) -> some View {
+    private func followUpSuggestions(_ followUps: [String]) -> some View {
         VStack(alignment: .leading, spacing: Spacing.sm) {
             HStack(spacing: Spacing.xs) {
                 Image(systemName: "lightbulb").scaledFont(size: 12).foregroundStyle(theme.brandPrimary)
@@ -1982,7 +2186,7 @@ struct ChatDetailView: View {
                     .fontWeight(.medium)
                     .foregroundStyle(theme.textTertiary)
             }
-            ForEach(message.followUps, id: \.self) { suggestion in
+            ForEach(followUps, id: \.self) { suggestion in
                 Button {
                     viewModel.inputText = suggestion
                     Task { await viewModel.sendMessage() }
@@ -2104,6 +2308,35 @@ struct ChatDetailView: View {
         showPhotosPicker = false
         showAudioPicker = false
         showWebURLAlert = false
+    }
+
+    // MARK: - Dictation
+
+    private func startDictation() {
+        let service = dependencies.dictationService
+        service.onTranscriptReady = { [weak viewModel] text in
+            guard let vm = viewModel else { return }
+            if vm.inputText.isEmpty {
+                vm.inputText = text
+            } else {
+                vm.inputText += " " + text
+            }
+        }
+        service.onError = { _ in
+            Task { @MainActor in isDictating = false }
+        }
+        isDictating = true
+        Task { await service.startDictation() }
+    }
+
+    private func stopDictation() {
+        dependencies.dictationService.stopDictation()
+        isDictating = false
+    }
+
+    private func cancelDictation() {
+        dependencies.dictationService.cancelDictation()
+        isDictating = false
     }
 
     private func toggleVoiceInput() {
@@ -2512,6 +2745,10 @@ private struct IsolatedAssistantMessage: View {
     let streamingStore: StreamingContentStore
     let message: ChatMessage
     let activeVersionIndex: Int
+    /// When set, overrides all other content resolution (used when showing an older user message edit version).
+    /// This allows the UI to show the paired AI response for an older user edit WITHOUT creating fake
+    /// regeneration versions on the assistant message.
+    var contentOverride: String? = nil
     let serverBaseURL: String
     /// Auth token passed down to Rich UI embed webviews for localStorage injection.
     var authToken: String? = nil
@@ -2525,6 +2762,8 @@ private struct IsolatedAssistantMessage: View {
         let vIdx = activeVersionIndex
         let rawContent: String = {
             if isActivelyStreaming { return streamingStore.streamingContent }
+            // If there's a content override (older user edit version), use it
+            if let override = contentOverride { return override }
             if vIdx >= 0 && vIdx < message.versions.count { return message.versions[vIdx].content }
             return message.content
         }()

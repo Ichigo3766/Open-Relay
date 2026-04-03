@@ -207,6 +207,9 @@ final class AppDependencyContainer: ServiceContainer {
     /// Audio recording service for voice notes.
     let audioRecordingService = AudioRecordingService()
 
+    /// Dictation service — voice-to-text into the chat input field.
+    let dictationService = DictationService()
+
     /// File attachment service for managing chat/note attachments.
     let fileAttachmentService = FileAttachmentService()
 
@@ -283,6 +286,9 @@ final class AppDependencyContainer: ServiceContainer {
         apiClient = APIClient(serverConfig: config)
         textToSpeechService.configureServerTTS(apiClient: apiClient)
         serverSpeechRecognitionService.configure(apiClient: apiClient)
+        // Wire dictation service to its underlying STT backends
+        dictationService.serverSpeechService = serverSpeechRecognitionService
+        dictationService.onDeviceASRService = asrService
         conversationManager = apiClient.map { ConversationManager(apiClient: $0) }
         folderManager = apiClient.map { FolderManager(apiClient: $0) }
         notesManager = NotesManager(apiClient: apiClient)

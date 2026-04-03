@@ -112,6 +112,14 @@ struct ChatInputField: View {
     var onCameraCapture: (() -> Void)?
     var onWebAttachment: (() -> Void)?
     var onVoiceInput: (() -> Void)?
+
+    // Dictation
+    var onDictationStart: (() -> Void)?
+    var onDictationStop: (() -> Void)?
+    var onDictationCancel: (() -> Void)?
+    var isDictating: Bool = false
+    /// Pass the live DictationService so the overlay can observe it directly.
+    var dictationService: DictationService? = nil
     /// Called when the tools/overflow sheet is about to appear.
     var onToolsSheetPresented: (() -> Void)?
 
@@ -165,23 +173,45 @@ struct ChatInputField: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            // Attachment previews
-            if !attachments.isEmpty {
-                attachmentStrip
-                    .padding(.horizontal, Spacing.screenPadding)
-                    .padding(.bottom, Spacing.xs)
-                    .transition(.asymmetric(
-                        insertion: .move(edge: .bottom).combined(with: .opacity),
-                        removal: .opacity
-                    ))
-            }
+            if isDictating || dictationService?.state == .processing, let svc = dictationService {
+                // Dictation active — replace entire composer with recording bar
+                DictationOverlayView(
+                    service: svc,
+                    onStop: { onDictationStop?() },
+                    onCancel: { onDictationCancel?() }
+                )
+                .transition(.asymmetric(
+                    insertion: .move(edge: .bottom).combined(with: .opacity),
+                    removal: .opacity
+                ))
+            } else {
+                // Normal composer
+                VStack(spacing: 0) {
+                    // Attachment previews
+                    if !attachments.isEmpty {
+                        attachmentStrip
+                            .padding(.horizontal, Spacing.screenPadding)
+                            .padding(.bottom, Spacing.xs)
+                            .transition(.asymmetric(
+                                insertion: .move(edge: .bottom).combined(with: .opacity),
+                                removal: .opacity
+                            ))
+                    }
 
-            // Composer
-            composerShell
-                .padding(.horizontal, Spacing.screenPadding)
+                    // Composer
+                    composerShell
+                        .padding(.horizontal, Spacing.screenPadding)
+                }
+                .transition(.asymmetric(
+                    insertion: .move(edge: .bottom).combined(with: .opacity),
+                    removal: .opacity
+                ))
+            }
         }
         .padding(.top, Spacing.xs)
         .padding(.bottom, Spacing.sm)
+        .animation(.spring(response: 0.3, dampingFraction: 0.8), value: isDictating)
+        .animation(.spring(response: 0.3, dampingFraction: 0.8), value: dictationService?.state == .processing)
         // Widget deep link — focus the text field and show keyboard when
         // the user taps the "New Chat" action button on the home screen widget.
         .onReceive(NotificationCenter.default.publisher(for: .chatInputFieldRequestFocus)) { _ in
@@ -246,6 +276,7 @@ struct ChatInputField: View {
                 inlinePlusButton
                 textField
                 inlineTerminalButton
+                inlineDictationButton
                 trailingButton
             }
             .padding(.horizontal, 12)
@@ -474,6 +505,34 @@ struct ChatInputField: View {
             .opacity(isEnabled ? 1.0 : 0.4)
             .accessibilityLabel("Terminal")
             .accessibilityValue(terminalEnabled ? "Enabled" : "Disabled")
+    }
+
+    // MARK: - Inline Dictation Button
+
+    /// Mic icon button that starts/stops dictation.
+    /// Shown only when `onDictationStart` is wired up.
+    @ViewBuilder
+    private var inlineDictationButton: some View {
+        if onDictationStart != nil {
+            Button {
+                Haptics.play(.medium)
+                onDictationStart?()
+            } label: {
+                Circle()
+                    .fill(Color.clear)
+                    .frame(width: 30, height: 30)
+                    .overlay(
+                        Image(systemName: "mic")
+                            .scaledFont(size: 14, weight: .semibold)
+                            .foregroundStyle(theme.textTertiary)
+                    )
+            }
+            .buttonStyle(.plain)
+            .disabled(!isEnabled)
+            .opacity(isEnabled ? 1.0 : 0.4)
+            .accessibilityLabel("Start dictation")
+            .transition(.scale.combined(with: .opacity))
+        }
     }
 
     // MARK: - Trailing Button (Send / Stop / Voice)

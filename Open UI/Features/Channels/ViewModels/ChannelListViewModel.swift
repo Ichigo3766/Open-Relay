@@ -13,6 +13,10 @@ final class ChannelListViewModel {
     var searchText: String = ""
     var showCreateSheet: Bool = false
     
+    /// The channel ID the user is currently viewing. When set, incoming socket
+    /// messages for that channel do NOT increment the local unread count.
+    var activeChannelId: String?
+    
     // MARK: - Computed
     
     var filteredChannels: [Channel] {
@@ -320,6 +324,17 @@ final class ChannelListViewModel {
         channelSubscription = nil
     }
     
+    // MARK: - Unread Count Management
+    
+    /// Immediately zeroes the unread count for a channel locally.
+    /// Call this when the user opens a channel so the badge clears instantly
+    /// without waiting for the next server refresh.
+    func markChannelRead(id: String) {
+        if let idx = channels.firstIndex(where: { $0.id == id }) {
+            channels[idx].unreadCount = 0
+        }
+    }
+    
     private func handleChannelEvent(_ event: [String: Any]) {
         let data = event["data"] as? [String: Any] ?? event
         let rawType = data["type"] as? String
@@ -341,7 +356,53 @@ final class ChannelListViewModel {
                 // Update the specific channel's timestamp and move to top
                 if let idx = channels.firstIndex(where: { $0.id == channelId }) {
                     channels[idx].updatedAt = .now
-                    channels[idx].unreadCount += 1
+                    
+                    // Only increment unread when the user is NOT actively viewing this channel.
+                    // If they have the channel open, the read state is handled by ChannelViewModel.markAsRead().
+                    if activeChannelId != channelId {
+                        channels[idx].unreadCount += 1
+
+                        // Fire a local push notification for the new message.
+                        let channel = channels[idx]
+                        let msgData: [String: Any] = {
+                            if let d = data["data"] as? [String: Any] { return d }
+                            return data
+                        }()
+                        let senderName: String = {
+                            if let user = msgData["user"] as? [String: Any],
+                               let name = user["name"] as? String, !name.isEmpty { return name }
+                            if let name = msgData["user_name"] as? String, !name.isEmpty { return name }
+                            return "New message"
+                        }()
+                        let preview: String = {
+                            if let content = msgData["content"] as? String {
+                                return String(content.prefix(80))
+                            }
+                            return ""
+                        }()
+                        let userId = msgData["user_id"] as? String ?? (msgData["user"] as? [String: Any])?["id"] as? String
+                        // Don't notify for own messages
+                        if userId != currentUserId {
+                            let channelDisplayName: String = {
+                                if channel.type == .dm {
+                                    let participants = channel.dmParticipants
+                                    if !participants.isEmpty {
+                                        return participants.map { $0.displayName }.joined(separator: ", ")
+                                    }
+                                    return channel.name.isEmpty ? "Direct Message" : channel.name
+                                }
+                                return "#\(channel.name)"
+                            }()
+                            Task {
+                                await NotificationService.shared.notifyChannelMessage(
+                                    channelId: channelId,
+                                    channelName: channelDisplayName,
+                                    senderName: senderName,
+                                    preview: preview
+                                )
+                            }
+                        }
+                    }
                     
                     // MF-001: Un-hide DM if new message arrives
                     if channels[idx].type == .dm && channels[idx].isHiddenDM {

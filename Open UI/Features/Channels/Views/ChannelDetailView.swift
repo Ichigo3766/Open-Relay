@@ -27,6 +27,9 @@ struct ChannelDetailView: View {
     @State private var isShowingMentionPicker = false
     @State private var mentionQuery = ""
     
+    // Edit focus
+    @FocusState private var isEditFocused: Bool
+    
     // #channel picker
     @State private var isShowingChannelPicker = false
     @State private var channelQuery = ""
@@ -61,8 +64,13 @@ struct ChannelDetailView: View {
     @State private var showOperationError = false
     @State private var operationErrorMessage = ""
     
-    init(channelId: String) {
+    /// Optional reference to the parent list VM so we can zero the unread badge
+    /// and suppress badge increments while this channel is actively viewed.
+    var channelListVM: ChannelListViewModel?
+    
+    init(channelId: String, channelListVM: ChannelListViewModel? = nil) {
         self._viewModel = State(initialValue: ChannelViewModel(channelId: channelId))
+        self.channelListVM = channelListVM
     }
     
     var body: some View {
@@ -70,47 +78,7 @@ struct ChannelDetailView: View {
             theme.background.ignoresSafeArea()
             messageListArea
             
-            if let msg = reactionOverlayMessage {
-                let isOwn = msg.userId == viewModel.currentUserId && !viewModel.isModelMessage(msg)
-                MessageReactionOverlay(
-                    message: msg,
-                    isCurrentUser: isOwn,
-                    onReaction: { emoji in
-                        Task { await viewModel.toggleReaction(messageId: msg.id, emoji: emoji) }
-                        withAnimation(.easeOut(duration: 0.2)) { reactionOverlayMessage = nil }
-                    },
-                    onReply: {
-                        viewModel.setReplyTo(msg)
-                    },
-                    onThread: {
-                        Task { await viewModel.openThread(for: msg) }
-                    },
-                    onPin: {
-                        Task { await viewModel.togglePin(messageId: msg.id) }
-                    },
-                    onCopy: {
-                        viewModel.copyMessage(msg)
-                    },
-                    onEdit: isOwn ? {
-                        viewModel.beginEditing(message: msg)
-                    } : nil,
-                    onDelete: isOwn ? {
-                        Task { await viewModel.deleteMessage(id: msg.id) }
-                    } : nil,
-                    onMoreEmoji: {
-                        let targetId = msg.id
-                        withAnimation(.easeOut(duration: 0.2)) { reactionOverlayMessage = nil }
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-                            emojiTargetMessageId = targetId
-                            showEmojiKeyboard = true
-                        }
-                    },
-                    onDismiss: {
-                        withAnimation(.easeOut(duration: 0.2)) { reactionOverlayMessage = nil }
-                    }
-                )
-                .animation(.easeOut(duration: 0.2), value: reactionOverlayMessage?.id)
-            }
+            reactionOverlayView
         }
         .safeAreaInset(edge: .bottom, spacing: 0) {
             VStack(spacing: 0) {
@@ -183,6 +151,8 @@ struct ChannelDetailView: View {
         )) {
             if let parent = viewModel.threadParentMessage {
                 ThreadDetailSheet(viewModel: viewModel, parentMessage: parent)
+                    .presentationDetents([.large, .fraction(0.92)])
+                    .presentationDragIndicator(.visible)
             }
         }
         .sheet(isPresented: $viewModel.showMembersSheet) {
@@ -317,6 +287,11 @@ struct ChannelDetailView: View {
         }
         .task {
             keyboard.start()
+            // Mark this channel as the active one so the list VM suppresses badge increments
+            // and NotificationService suppresses foreground banners for this channel.
+            channelListVM?.activeChannelId = viewModel.channelId
+            channelListVM?.markChannelRead(id: viewModel.channelId)
+            NotificationService.shared.activeChannelId = viewModel.channelId
             if let apiClient = dependencies.apiClient {
                 var userId = dependencies.authViewModel.currentUser?.id
                 if userId == nil || userId?.isEmpty == true {
@@ -336,10 +311,27 @@ struct ChannelDetailView: View {
         }
         .onDisappear {
             keyboard.stop()
+            // Clear active channel tracking so future messages increment the badge again
+            if channelListVM?.activeChannelId == viewModel.channelId {
+                channelListVM?.activeChannelId = nil
+            }
+            if NotificationService.shared.activeChannelId == viewModel.channelId {
+                NotificationService.shared.activeChannelId = nil
+            }
             viewModel.cleanup()
         }
         .onChange(of: selectedPhotos) { _, items in
             Task { await processPhotos(items); selectedPhotos = [] }
+        }
+        .onChange(of: viewModel.editingMessage) { _, newValue in
+            if newValue != nil {
+                // Small delay so the edit bubble has time to appear before focusing
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                    isEditFocused = true
+                }
+            } else {
+                isEditFocused = false
+            }
         }
         .sheet(isPresented: $showFilePicker) {
             DocumentPickerView { urls in
@@ -395,6 +387,41 @@ struct ChannelDetailView: View {
                 emojiTargetMessageId = nil
             }
             .allowsHitTesting(false)
+        }
+    }
+    
+    // MARK: - Reaction Overlay
+    
+    @ViewBuilder
+    private var reactionOverlayView: some View {
+        if let msg = reactionOverlayMessage {
+            let isOwn = msg.userId == viewModel.currentUserId && !viewModel.isModelMessage(msg)
+            MessageReactionOverlay(
+                message: msg,
+                isCurrentUser: isOwn,
+                onReaction: { emoji in
+                    Task { await viewModel.toggleReaction(messageId: msg.id, emoji: emoji) }
+                    withAnimation(.easeOut(duration: 0.2)) { reactionOverlayMessage = nil }
+                },
+                onReply: { viewModel.setReplyTo(msg) },
+                onThread: { Task { await viewModel.openThread(for: msg) } },
+                onPin: { Task { await viewModel.togglePin(messageId: msg.id) } },
+                onCopy: { viewModel.copyMessage(msg) },
+                onEdit: isOwn ? { viewModel.beginEditing(message: msg) } : nil,
+                onDelete: isOwn ? { Task { await viewModel.deleteMessage(id: msg.id) } } : nil,
+                onMoreEmoji: {
+                    let targetId = msg.id
+                    withAnimation(.easeOut(duration: 0.2)) { reactionOverlayMessage = nil }
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                        emojiTargetMessageId = targetId
+                        showEmojiKeyboard = true
+                    }
+                },
+                onDismiss: {
+                    withAnimation(.easeOut(duration: 0.2)) { reactionOverlayMessage = nil }
+                }
+            )
+            .animation(.easeOut(duration: 0.2), value: reactionOverlayMessage?.id)
         }
     }
     
@@ -802,7 +829,9 @@ struct ChannelDetailView: View {
         .simultaneousGesture(
             LongPressGesture(minimumDuration: 0.4)
                 .onEnded { _ in
-                    reactionOverlayMessage = message
+                    withAnimation(.spring(response: 0.35, dampingFraction: 0.75)) {
+                        reactionOverlayMessage = message
+                    }
                     Haptics.play(.medium)
                 }
         )
@@ -892,6 +921,7 @@ struct ChannelDetailView: View {
             TextField("Edit message…", text: $vm.editingText, axis: .vertical)
                 .scaledFont(size: 14)
                 .lineLimit(1...10)
+                .focused($isEditFocused)
                 .padding(.horizontal, 12)
                 .padding(.vertical, 8)
                 .background(theme.surfaceContainer.opacity(0.8))
@@ -928,7 +958,7 @@ struct ChannelDetailView: View {
                 } label: {
                     let isOwn = reaction.userIds.contains(viewModel.currentUserId ?? "")
                     HStack(spacing: 2) {
-                        Text(reaction.name)
+                        Text(reaction.name.emojiFromShortcode)
                             .font(.system(size: 13))
                         if reaction.count > 1 {
                             Text("\(reaction.count)")
@@ -1072,139 +1102,40 @@ struct ChannelDetailView: View {
     }
     
     // MARK: - Input Field
-    
+
     private var channelInputField: some View {
         @Bindable var vm = viewModel
-        
-        return VStack(spacing: 0) {
-            if !viewModel.attachments.isEmpty {
-                attachmentStrip
-                    .padding(.horizontal, Spacing.screenPadding)
-                    .padding(.bottom, 4)
-            }
-            
-            HStack(alignment: .center, spacing: 8) {
-                Button {
-                    showAttachmentPicker = true
-                    Haptics.play(.light)
-                } label: {
-                    Image(systemName: "plus")
-                        .scaledFont(size: 15, weight: .semibold)
-                        .foregroundStyle(theme.textTertiary)
-                        .frame(width: 28, height: 28)
+
+        return ChannelInputField(
+            text: $vm.inputText,
+            attachments: $vm.attachments,
+            placeholder: viewModel.inputPlaceholder,
+            isEnabled: true,
+            onSend: { await viewModel.sendMessage() },
+            canSend: viewModel.canSend,
+            onAttachmentTapped: { showAttachmentPicker = true },
+            onPasteAttachments: { pasted in
+                vm.attachments.append(contentsOf: pasted)
+                for att in pasted { vm.uploadAttachmentImmediately(attachmentId: att.id) }
+            },
+            onRemoveAttachment: { att in
+                vm.attachments.removeAll { $0.id == att.id }
+            },
+            onAtTrigger: { query in
+                mentionQuery = query
+                if !isShowingMentionPicker {
+                    withAnimation(.easeOut(duration: 0.2)) { isShowingMentionPicker = true }
                 }
-                .buttonStyle(.plain)
-                
-                PasteableTextView(
-                    text: $vm.inputText,
-                    placeholder: viewModel.inputPlaceholder,
-                    font: .systemFont(ofSize: 14, weight: .regular),
-                    textColor: UIColor(theme.textPrimary),
-                    placeholderColor: UIColor(theme.textTertiary),
-                    tintColor: UIColor(theme.brandPrimary),
-                    isEnabled: true,
-                    onPasteAttachments: { attachments in
-                        withAnimation { vm.attachments.append(contentsOf: attachments) }
-                        for att in attachments { vm.uploadAttachmentImmediately(attachmentId: att.id) }
-                    },
-                    onSubmit: { Task { await viewModel.sendMessage() } },
-                    onHashTrigger: { query in
-                        channelQuery = query
-                        if !isShowingChannelPicker {
-                            withAnimation(.easeOut(duration: 0.2)) { isShowingChannelPicker = true }
-                        }
-                    },
-                    onHashDismiss: { dismissChannelPicker() },
-                    onAtTrigger: { query in
-                        mentionQuery = query
-                        if !isShowingMentionPicker {
-                            withAnimation(.easeOut(duration: 0.2)) { isShowingMentionPicker = true }
-                        }
-                    },
-                    onAtDismiss: { dismissMentionPicker() },
-                    sendOnReturn: true
-                )
-                .fixedSize(horizontal: false, vertical: true)
-                
-                if viewModel.canSend {
-                    Button {
-                        Task { await viewModel.sendMessage() }
-                        Haptics.play(.light)
-                    } label: {
-                        Circle()
-                            .fill(theme.brandPrimary)
-                            .frame(width: 30, height: 30)
-                            .overlay(
-                                Image(systemName: "arrow.up")
-                                    .scaledFont(size: 13, weight: .bold)
-                                    .foregroundStyle(theme.brandOnPrimary)
-                            )
-                    }
-                    .buttonStyle(.plain)
-                    .transition(.scale.combined(with: .opacity))
+            },
+            onAtDismiss: { dismissMentionPicker() },
+            onHashTrigger: { query in
+                channelQuery = query
+                if !isShowingChannelPicker {
+                    withAnimation(.easeOut(duration: 0.2)) { isShowingChannelPicker = true }
                 }
-            }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 10)
-        }
-        .background(theme.isDark ? theme.cardBackground.opacity(0.95) : theme.inputBackground)
-        .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: 22, style: .continuous)
-                .strokeBorder(theme.cardBorder.opacity(0.4), lineWidth: 0.5)
+            },
+            onHashDismiss: { dismissChannelPicker() }
         )
-        .shadow(color: .black.opacity(theme.isDark ? 0.2 : 0.06), radius: 8, x: 0, y: 2)
-        .padding(.horizontal, Spacing.screenPadding)
-        .padding(.top, 4)
-        .padding(.bottom, 8)
-        .animation(.easeInOut(duration: 0.15), value: viewModel.canSend)
-    }
-    
-    // MARK: - Attachment Strip
-    
-    private var attachmentStrip: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 8) {
-                ForEach(viewModel.attachments) { attachment in
-                    ZStack(alignment: .topTrailing) {
-                        if let thumbnail = attachment.thumbnail {
-                            thumbnail.resizable().aspectRatio(contentMode: .fill)
-                                .frame(width: 50, height: 50)
-                                .clipShape(RoundedRectangle(cornerRadius: 8))
-                        } else {
-                            RoundedRectangle(cornerRadius: 8)
-                                .fill(theme.surfaceContainer)
-                                .frame(width: 50, height: 50)
-                                .overlay(
-                                    VStack(spacing: 2) {
-                                        if attachment.isUploading {
-                                            ProgressView().controlSize(.small)
-                                        } else {
-                                            Image(systemName: "doc")
-                                                .scaledFont(size: 14)
-                                                .foregroundStyle(theme.textTertiary)
-                                        }
-                                        Text(attachment.name)
-                                            .scaledFont(size: 7)
-                                            .foregroundStyle(theme.textTertiary)
-                                            .lineLimit(1)
-                                    }
-                                )
-                        }
-                        
-                        Button {
-                            withAnimation { viewModel.attachments.removeAll { $0.id == attachment.id } }
-                        } label: {
-                            Image(systemName: "xmark.circle.fill")
-                                .scaledFont(size: 16)
-                                .symbolRenderingMode(.palette)
-                                .foregroundStyle(.white, .black.opacity(0.55))
-                        }
-                        .offset(x: 4, y: -4)
-                    }
-                }
-            }
-        }
     }
     
     // MARK: - Empty Channel

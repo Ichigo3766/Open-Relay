@@ -176,8 +176,14 @@ enum ToolCallParser {
                     allToolCalls.append(toolCall)
                 }
             } else if block.contains("type=\"reasoning\"") || block.contains("type='reasoning'") {
-                if let reason = parseReasoningBlock(block) {
-                    segments.append(.reasoning(reason))
+                if let parsed = parseReasoningBlock(block) {
+                    segments.append(.reasoning(parsed.data))
+                    // Spillover: content that was inside the <details> block AFTER
+                    // a raw closing tag (e.g. </thinking>) — this is the real model
+                    // reply that was accidentally captured inside the reasoning block.
+                    if let spillover = parsed.spillover, !spillover.isEmpty {
+                        segments.append(.text(spillover))
+                    }
                 }
             }
 
@@ -198,7 +204,15 @@ enum ToolCallParser {
     }
 
     /// Parses a `<details type="reasoning">` block.
-    private static func parseReasoningBlock(_ block: String) -> ReasoningData? {
+    ///
+    /// Returns a tuple of `(ReasoningData, spilloverText?)`:
+    /// - `ReasoningData` is the collapsible thinking block.
+    /// - `spilloverText` is any actual model reply that was inadvertently
+    ///   swallowed into the reasoning block — caused by some models/servers
+    ///   embedding a raw closing tag (e.g. `</thinking>`, `</details>`) inside
+    ///   the `<details type="reasoning">` block content, with the real response
+    ///   following it before the outer `</details>`.
+    private static func parseReasoningBlock(_ block: String) -> (data: ReasoningData, spillover: String?)? {
         let doneStr = extractAttribute("done", from: block)
         let isDone = doneStr == "true"
         let duration = extractAttribute("duration", from: block)
@@ -218,8 +232,10 @@ enum ToolCallParser {
             return "Reasoning"
         }()
 
-        // Extract content between </summary> and </details>
-        let contentText: String = {
+        // Extract content between </summary> and </details>.
+        // We use a lazy match so nested/model-emitted </details> tags stop
+        // the capture at the right place (handled below for spillover).
+        let rawContentText: String = {
             let contentPattern = #"</summary>([\s\S]*?)</details>"#
             if let regex = try? NSRegularExpression(pattern: contentPattern, options: [.dotMatchesLineSeparators]),
                let match = regex.firstMatch(in: block, range: NSRange(location: 0, length: (block as NSString).length)),
@@ -232,14 +248,64 @@ enum ToolCallParser {
             return ""
         }()
 
+        guard !rawContentText.isEmpty else { return nil }
+
+        // ── Spillover detection ──────────────────────────────────────────
+        // Some models (e.g. Qwen3) skip the opening tag and the server
+        // therefore wraps everything — including the raw close tag AND the
+        // actual reply — inside the <details type="reasoning"> block:
+        //
+        //   <details type="reasoning"><summary>Thought for 2 seconds</summary>
+        //   ...thinking text...
+        //   </thinking>          ← model's own closing tag
+        //   Oczywiście! 💕 ...   ← ACTUAL reply, must NOT be in thinking block
+        //   </details>
+        //
+        // We detect any raw close tag inside the content, split there, and
+        // surface the trailing text as `spillover` so the caller can emit it
+        // as a normal text segment rather than burying it in the thinking view.
+        var contentText = rawContentText
+        var spillover: String? = nil
+
+        for pair in defaultReasoningTagPairs {
+            let closeTag = pair.close
+            let escapedClose = NSRegularExpression.escapedPattern(for: closeTag)
+
+            guard contentText.range(of: closeTag, options: .caseInsensitive) != nil else { continue }
+
+            // Split at the first occurrence: before = reasoning, after = reply
+            if let splitRegex = try? NSRegularExpression(
+                pattern: "^([\\s\\S]*?)\(escapedClose)([\\s\\S]*)$",
+                options: [.dotMatchesLineSeparators, .caseInsensitive]
+            ) {
+                let nsContent = contentText as NSString
+                if let match = splitRegex.firstMatch(
+                    in: contentText,
+                    range: NSRange(location: 0, length: nsContent.length)
+                ), match.numberOfRanges > 2 {
+                    let before = nsContent.substring(with: match.range(at: 1))
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                    let after = nsContent.substring(with: match.range(at: 2))
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
+
+                    contentText = before
+                    if !after.isEmpty {
+                        spillover = after
+                    }
+                    break
+                }
+            }
+        }
+
         guard !contentText.isEmpty else { return nil }
 
-        return ReasoningData(
+        let data = ReasoningData(
             summary: summary,
             content: contentText,
             duration: duration,
             isDone: isDone
         )
+        return (data, spillover)
     }
 
     /// Parses a single tool call `<details>` block into a `ToolCallData`.
@@ -771,22 +837,6 @@ enum ToolCallParser {
 /// inside a sandboxed WKWebView. This brings Open WebUI's "Rich UI" feature
 /// to the iOS app: tools can return interactive HTML (cards, dashboards, charts,
 /// forms, SMS composers, etc.) that render inline in the chat.
-///
-/// ## Key behaviours
-/// - **Auto-sizing**: The embed HTML sends `parent.postMessage({ type: 'iframe:height', height })`.
-///   We inject a bridge script that converts this `postMessage` call into a native
-///   WKScriptMessage so we can resize the webview dynamically.
-/// - **URL scheme routing**: Any navigation (links, buttons, `window.open`) is
-///   intercepted and opened via `UIApplication.shared.open()` — so `sms:`, `tel:`,
-///   `mailto:`, `https:` all work natively on iOS.
-/// - **Tool args injection**: Per the Rich UI spec, `window.args` is set to the
-///   JSON-parsed tool arguments so the embed can access what was passed to the tool.
-/// - **Auth token injection**: The app's JWT token is injected into the WKWebView's
-///   localStorage so the embed's `authFetch()` helper can include it on API calls.
-/// - **Dark mode**: WKWebView inherits the system appearance, so the embed's
-///   `@media (prefers-color-scheme: dark)` CSS rules fire correctly.
-/// - **No wrapping**: The HTML is loaded as-is. We only inject a thin bridge
-///   script for `postMessage` → native message handler translation.
 struct RichUIEmbedView: View {
     let html: String
     /// The tool call arguments JSON string, injected as `window.args`.

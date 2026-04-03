@@ -9,10 +9,9 @@ import SwiftUI
 /// Apple's own font or timezone pickers.
 ///
 /// Performance for 50+ models:
-/// - Parallel avatar prefetch (6 concurrent) fires on appear.
 /// - Debounced search (120 ms) avoids work on every keystroke.
 /// - `EquatableModelRow` skips unchanged rows during scroll.
-/// - `LazyVStack` only instantiates visible rows.
+/// - `LazyVStack` only instantiates visible rows; avatars load on-demand as rows appear.
 struct ModelSelectorSheet: View {
     let models: [AIModel]
     let selectedModelId: String?
@@ -86,18 +85,6 @@ struct ModelSelectorSheet: View {
         }
     }
 
-    private func prefetchAvatars() {
-        // Prefetch all model avatar URLs in the background.
-        // Each URL hits the server endpoint which returns the custom avatar or
-        // the default favicon. Results are stored in ImageCacheService so
-        // subsequent opens of the picker are instant with zero network requests.
-        let urls = models.compactMap { $0.resolveAvatarURL(baseURL: serverBaseURL) }
-        guard !urls.isEmpty else { return }
-        Task(priority: .background) {
-            await ImageCacheService.shared.prefetchWithAuth(urls: urls, authToken: authToken)
-        }
-    }
-
     // MARK: - Body
 
     var body: some View {
@@ -121,14 +108,24 @@ struct ModelSelectorSheet: View {
         .presentationDragIndicator(.hidden)
         .presentationCornerRadius(20)
         .presentationBackground(theme.background)
+        // Disable background interaction so UIKit can use a cheaper,
+        // non-live compositor pass instead of snapshotting the entire
+        // presenting view tree as live Metal textures. Without this,
+        // iOS allocates 200–400 MB of GPU texture memory the instant
+        // the sheet appears — even on the empty welcome screen.
+        .presentationBackgroundInteraction(.disabled)
+        .onDisappear {
+            // Free avatar image memory after the picker closes.
+            // The disk cache is preserved so re-opening is instant.
+            Task { await ImageCacheService.shared.clearMemory() }
+        }
         .onAppear {
             filteredModels = models
-            prefetchAvatars()
         }
         .onChange(of: searchText) { scheduleFilter() }
         .onChange(of: selectedTag) { applyFilters() }
         .onChange(of: selectedConnection) { applyFilters() }
-        .onChange(of: models) { applyFilters(); prefetchAvatars() }
+        .onChange(of: models) { applyFilters() }
     }
 
     // MARK: - Sheet Header

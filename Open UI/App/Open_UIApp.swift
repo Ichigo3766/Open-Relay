@@ -3,6 +3,13 @@ import WidgetKit
 import BackgroundTasks
 import UIKit
 
+// MLX is always present when either audio framework is linked.
+// Import it unconditionally so we can set Memory.cacheLimit at startup
+// before the Metal GPU runtime inflates its buffer pool.
+#if canImport(MLX)
+import MLX
+#endif
+
 // MARK: - App Delegate + Scene Delegate (handles home screen Quick Actions)
 //
 // In a scene-based SwiftUI app (UIApplicationSceneManifest_Generation = YES),
@@ -62,7 +69,20 @@ struct Open_UIApp: App {
     @Environment(\.scenePhase) private var scenePhase
 
     init() {
-        // No-op: mlx-audio-swift handles model caching via HuggingFace Hub
+        // Limit the MLX Metal GPU buffer-recycling cache to 20 MB.
+        //
+        // By default, MLX sizes its cache to `recommendedMaxWorkingSetSize`, which
+        // scales with device RAM (e.g. ~2 GB on an iPhone with 8 GB RAM). The cache
+        // stays inflated even when no model is loaded, causing ~500 MB of "dirty"
+        // memory at startup that iOS counts against our memory footprint. Setting a
+        // small limit here means the cache is immediately trimmed on the next
+        // deallocation event rather than staying large until the app backgrounds.
+        //
+        // 20 MB is the value from Apple's own MLX iOS guide. It's enough for smooth
+        // TTS/ASR inference without the startup memory spike.
+        #if canImport(MLX)
+        Memory.cacheLimit = 20 * 1024 * 1024  // 20 MB
+        #endif
 
         // Remove the default circular/pill-shaped backgrounds from navigation
         // bar toolbar buttons that iOS adds in dark mode (iOS 15+).
