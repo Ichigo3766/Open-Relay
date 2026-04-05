@@ -278,6 +278,97 @@ final class ChatViewModel {
     /// Call this right after appending an attachment to `self.attachments`.
     /// The attachment's `uploadStatus` will progress: uploading → completed/error.
     /// The send button is blocked while any attachment has `isUploading == true`.
+    /// Scrapes a webpage URL, converts the extracted text to a `.txt` file,
+    /// and uploads it through the standard files API so it appears as a file
+    /// attachment pill — identical to attaching a document from the file picker.
+    func processWebURL(urlString: String) {
+        var normalised = urlString.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalised.isEmpty else { return }
+        if !normalised.hasPrefix("http://") && !normalised.hasPrefix("https://") {
+            normalised = "https://\(normalised)"
+        }
+
+        // Derive a short filename from the domain
+        let host = URL(string: normalised)?.host ?? "webpage"
+        let fileName = "\(host).txt"
+
+        // Add a placeholder attachment immediately so the user sees the pill
+        var attachment = ChatAttachment(
+            type: .file,
+            name: fileName,
+            thumbnail: nil,
+            data: nil
+        )
+        attachment.uploadStatus = .uploading
+        attachments.append(attachment)
+        let attachmentId = attachment.id
+
+        Task {
+            guard let apiClient = manager?.apiClient else {
+                if let idx = attachments.firstIndex(where: { $0.id == attachmentId }) {
+                    attachments[idx].uploadStatus = .error
+                    attachments[idx].uploadError = "Not connected to server"
+                }
+                return
+            }
+
+            do {
+                // Phase 1: Scrape the webpage content
+                let content = try await apiClient.processWebPage(url: normalised)
+
+                guard let textData = content.data(using: .utf8), !textData.isEmpty else {
+                    if let idx = attachments.firstIndex(where: { $0.id == attachmentId }) {
+                        attachments[idx].uploadStatus = .error
+                        attachments[idx].uploadError = "No content extracted from webpage"
+                    }
+                    return
+                }
+
+                // Store data on the attachment for the upload
+                if let idx = attachments.firstIndex(where: { $0.id == attachmentId }) {
+                    attachments[idx].data = textData
+                }
+
+                // Phase 2: Upload the text file through the normal files pipeline
+                guard let mgr = manager else { return }
+                let fileId = try await mgr.uploadFile(
+                    data: textData,
+                    fileName: fileName,
+                    onUploaded: { [weak self] _ in
+                        Task { @MainActor [weak self] in
+                            guard let self else { return }
+                            if let idx = self.attachments.firstIndex(where: { $0.id == attachmentId }) {
+                                self.attachments[idx].uploadStatus = .processing
+                            }
+                        }
+                    }
+                )
+
+                // Phase 3: Mark completed
+                if let idx = attachments.firstIndex(where: { $0.id == attachmentId }) {
+                    attachments[idx].uploadStatus = .completed
+                    attachments[idx].uploadedFileId = fileId
+                    attachments[idx].data = nil
+                }
+                logger.info("Web page \(normalised) scraped + uploaded: \(fileId)")
+            } catch {
+                let errorMessage: String
+                if let apiError = error as? APIError,
+                   case .httpError(_, let msg, _) = apiError,
+                   let msg, !msg.isEmpty {
+                    errorMessage = msg
+                } else {
+                    errorMessage = error.localizedDescription
+                }
+                if let idx = attachments.firstIndex(where: { $0.id == attachmentId }) {
+                    attachments[idx].uploadStatus = .error
+                    attachments[idx].uploadError = errorMessage
+                }
+                logger.error("Web page attachment failed: \(errorMessage)")
+            }
+        }
+    }
+
     func uploadAttachmentImmediately(attachmentId: UUID) {
         guard let index = attachments.firstIndex(where: { $0.id == attachmentId }) else { return }
         // Skip audio only when in on-device transcription mode — server mode uploads audio like any file
@@ -1500,7 +1591,9 @@ final class ChatViewModel {
                 userName: nil,
                 userEmail: nil
             )
-            inputText = processed
+            // Append prompt text to whatever the user already typed (after slash token removal)
+            let remaining = inputText.trimmingCharacters(in: .whitespaces)
+            inputText = remaining.isEmpty ? processed : remaining + " " + processed
         } else {
             // Has variables — present the variable input sheet
             pendingPromptForVariables = prompt
@@ -1523,7 +1616,9 @@ final class ChatViewModel {
             userEmail: nil
         )
 
-        inputText = processed
+        // Append prompt text to whatever the user already typed (after slash token removal)
+        let remaining = inputText.trimmingCharacters(in: .whitespaces)
+        inputText = remaining.isEmpty ? processed : remaining + " " + processed
         pendingPromptForVariables = nil
         pendingPromptVariables = []
 

@@ -13,9 +13,18 @@
 
 ## v2.4.3 — April 5, 2026
 
+### What's New
+- Added inline #URL detection — type `#` followed by a URL in the chat input to see a suggestion pill; tap it to scrape and attach the webpage as a file.
+- Added tap-to-preview for all attachment types — tap any image, audio, or file pill in the input bar to see a fullscreen preview.
+
 ### Improvements
-- Sending a message now scrolls your question to the top of the screen so the AI response streams in below it.
-- Reverted back to orginal scrolling behavior until further polishing. The memory will still be significantly lower if code blocks are in the chat.
+- Sending a message now smoothly scrolls your question to the top of the screen so the AI response streams in below it.
+- Reverted back to orginal scrolling behavior until further polishing. The memory will still be significantly lower if code blocks are in the chat. 
+- Adding a website URL via the + button now scrapes the page and attaches it as a file instead of pasting the URL into the text box.
+- Using the prompt library with "/" now appends the selected prompt to your existing text instead of replacing it.
+
+### Bug Fixes
+- Fixed knowledge, prompt, skill, and model picker overlays covering the text input field — the input box now stays visible when any picker is open.
 
 ## v2.4.2 — April 3, 2026
 

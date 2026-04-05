@@ -81,6 +81,9 @@ struct ChatDetailView: View {
     @State private var showWebURLAlert = false
     @State private var webURLInput = ""
 
+    // MARK: #URL inline suggestion
+    @State private var detectedWebURL: String?
+
 
     // MARK: File download & preview
     @State private var isDownloadingFile = false
@@ -139,103 +142,6 @@ struct ChatDetailView: View {
             }
         }
         .ignoresSafeArea(.keyboard)
-        // Knowledge picker — overlays content (floats over welcome cards / messages)
-        .overlay(alignment: .bottom) {
-            if vm.isShowingKnowledgePicker {
-                KnowledgePickerView(
-                    query: vm.knowledgeSearchQuery,
-                    items: vm.knowledgeItems,
-                    isLoading: vm.isLoadingKnowledge,
-                    onSelect: { item in
-                        viewModel.selectKnowledgeItem(item)
-                    },
-                    onDismiss: {
-                        viewModel.dismissKnowledgePicker()
-                    }
-                )
-                .transition(.asymmetric(
-                    insertion: .move(edge: .bottom).combined(with: .opacity),
-                    removal: .opacity
-                ))
-                .animation(.easeOut(duration: 0.2), value: vm.isShowingKnowledgePicker)
-            }
-        }
-        // Prompt picker — overlays content (floats over welcome cards / messages)
-        .overlay(alignment: .bottom) {
-            if vm.isShowingPromptPicker {
-                PromptPickerView(
-                    query: vm.promptSearchQuery,
-                    prompts: vm.availablePrompts,
-                    isLoading: vm.isLoadingPrompts,
-                    onSelect: { prompt in
-                        viewModel.selectPrompt(prompt)
-                    },
-                    onDismiss: {
-                        viewModel.dismissPromptPicker()
-                    }
-                )
-                .transition(.asymmetric(
-                    insertion: .move(edge: .bottom).combined(with: .opacity),
-                    removal: .opacity
-                ))
-                .animation(.easeOut(duration: 0.2), value: vm.isShowingPromptPicker)
-            }
-        }
-        // Skill picker — overlays content (floats over welcome cards / messages)
-        .overlay(alignment: .bottom) {
-            if vm.isShowingSkillPicker {
-                SkillPickerView(
-                    query: vm.skillSearchQuery,
-                    skills: vm.availableSkills,
-                    isLoading: vm.isLoadingSkills,
-                    onSelect: { skill in
-                        viewModel.selectSkill(skill)
-                    },
-                    onDismiss: {
-                        viewModel.dismissSkillPicker()
-                    }
-                )
-                .transition(.asymmetric(
-                    insertion: .move(edge: .bottom).combined(with: .opacity),
-                    removal: .opacity
-                ))
-                .animation(.easeOut(duration: 0.2), value: vm.isShowingSkillPicker)
-            }
-        }
-        // Model picker — overlays content (floats over welcome cards / messages)
-        .overlay(alignment: .bottom) {
-            if isShowingModelPicker {
-                ModelPickerView(
-                    query: modelPickerQuery,
-                    models: vm.availableModels,
-                    serverBaseURL: vm.serverBaseURL,
-                    authToken: vm.serverAuthToken,
-                    onSelect: { model in
-                        withAnimation(.easeOut(duration: 0.15)) {
-                            mentionedModel = model
-                            viewModel.mentionedModelId = model.id
-                        }
-                        viewModel.removeMentionToken()
-                        withAnimation(.easeOut(duration: 0.15)) {
-                            isShowingModelPicker = false
-                            modelPickerQuery = ""
-                        }
-                        Haptics.play(.light)
-                    },
-                    onDismiss: {
-                        withAnimation(.easeOut(duration: 0.15)) {
-                            isShowingModelPicker = false
-                            modelPickerQuery = ""
-                        }
-                    }
-                )
-                .transition(.asymmetric(
-                    insertion: .move(edge: .bottom).combined(with: .opacity),
-                    removal: .opacity
-                ))
-                .animation(.easeOut(duration: 0.2), value: isShowingModelPicker)
-            }
-        }
         .navigationBarTitleDisplayMode(.inline)
         .toolbar { toolbarContent }
         .task {
@@ -574,6 +480,100 @@ struct ChatDetailView: View {
     private func inputFieldArea(vm: ChatViewModel) -> some View {
         @Bindable var vm = vm
         VStack(spacing: 0) {
+            // Picker overlays — rendered above the input field so input stays visible
+            if let url = detectedWebURL {
+                webURLSuggestionPill(url: url)
+                    .transition(.asymmetric(
+                        insertion: .move(edge: .bottom).combined(with: .opacity),
+                        removal: .opacity
+                    ))
+            }
+
+            if vm.isShowingKnowledgePicker {
+                KnowledgePickerView(
+                    query: vm.knowledgeSearchQuery,
+                    items: vm.knowledgeItems,
+                    isLoading: vm.isLoadingKnowledge,
+                    onSelect: { item in
+                        viewModel.selectKnowledgeItem(item)
+                    },
+                    onDismiss: {
+                        viewModel.dismissKnowledgePicker()
+                    }
+                )
+                .transition(.asymmetric(
+                    insertion: .move(edge: .bottom).combined(with: .opacity),
+                    removal: .opacity
+                ))
+            }
+
+            if vm.isShowingPromptPicker {
+                PromptPickerView(
+                    query: vm.promptSearchQuery,
+                    prompts: vm.availablePrompts,
+                    isLoading: vm.isLoadingPrompts,
+                    onSelect: { prompt in
+                        viewModel.selectPrompt(prompt)
+                    },
+                    onDismiss: {
+                        viewModel.dismissPromptPicker()
+                    }
+                )
+                .transition(.asymmetric(
+                    insertion: .move(edge: .bottom).combined(with: .opacity),
+                    removal: .opacity
+                ))
+            }
+
+            if vm.isShowingSkillPicker {
+                SkillPickerView(
+                    query: vm.skillSearchQuery,
+                    skills: vm.availableSkills,
+                    isLoading: vm.isLoadingSkills,
+                    onSelect: { skill in
+                        viewModel.selectSkill(skill)
+                    },
+                    onDismiss: {
+                        viewModel.dismissSkillPicker()
+                    }
+                )
+                .transition(.asymmetric(
+                    insertion: .move(edge: .bottom).combined(with: .opacity),
+                    removal: .opacity
+                ))
+            }
+
+            if isShowingModelPicker {
+                ModelPickerView(
+                    query: modelPickerQuery,
+                    models: vm.availableModels,
+                    serverBaseURL: vm.serverBaseURL,
+                    authToken: vm.serverAuthToken,
+                    onSelect: { model in
+                        withAnimation(.easeOut(duration: 0.15)) {
+                            mentionedModel = model
+                            viewModel.mentionedModelId = model.id
+                        }
+                        viewModel.removeMentionToken()
+                        withAnimation(.easeOut(duration: 0.15)) {
+                            isShowingModelPicker = false
+                            modelPickerQuery = ""
+                        }
+                        Haptics.play(.light)
+                    },
+                    onDismiss: {
+                        withAnimation(.easeOut(duration: 0.15)) {
+                            isShowingModelPicker = false
+                            modelPickerQuery = ""
+                        }
+                    }
+                )
+                .transition(.asymmetric(
+                    insertion: .move(edge: .bottom).combined(with: .opacity),
+                    removal: .opacity
+                ))
+            }
+
             ChatInputField(
                 text: $vm.inputText,
                 attachments: $vm.attachments,
@@ -621,15 +621,40 @@ struct ChatDetailView: View {
                 },
                 selectedKnowledgeItems: $vm.selectedKnowledgeItems,
                 onHashTrigger: { query in
-                    viewModel.knowledgeSearchQuery = query
-                    if !viewModel.isShowingKnowledgePicker {
-                        withAnimation(.easeOut(duration: 0.2)) {
-                            viewModel.isShowingKnowledgePicker = true
+                    // Detect if the query looks like a URL → show inline suggestion pill
+                    let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+                    if trimmed.hasPrefix("http://") || trimmed.hasPrefix("https://") || trimmed.hasPrefix("www.") {
+                        // Dismiss knowledge picker if it was showing
+                        if viewModel.isShowingKnowledgePicker {
+                            withAnimation(.easeOut(duration: 0.15)) {
+                                viewModel.dismissKnowledgePicker()
+                            }
                         }
-                        viewModel.loadKnowledgeItems()
+                        withAnimation(.easeOut(duration: 0.2)) {
+                            detectedWebURL = trimmed
+                        }
+                    } else {
+                        // Not a URL → normal knowledge picker behavior
+                        if detectedWebURL != nil {
+                            withAnimation(.easeOut(duration: 0.15)) {
+                                detectedWebURL = nil
+                            }
+                        }
+                        viewModel.knowledgeSearchQuery = query
+                        if !viewModel.isShowingKnowledgePicker {
+                            withAnimation(.easeOut(duration: 0.2)) {
+                                viewModel.isShowingKnowledgePicker = true
+                            }
+                            viewModel.loadKnowledgeItems()
+                        }
                     }
                 },
                 onHashDismiss: {
+                    if detectedWebURL != nil {
+                        withAnimation(.easeOut(duration: 0.15)) {
+                            detectedWebURL = nil
+                        }
+                    }
                     if viewModel.isShowingKnowledgePicker {
                         withAnimation(.easeOut(duration: 0.15)) {
                             viewModel.dismissKnowledgePicker()
@@ -2686,17 +2711,64 @@ for item in items {
         }
     }
 
+    // MARK: - #URL Suggestion Pill
+
+    /// Floating pill shown when the user types `#https://...` in the input field.
+    /// Tapping the pill triggers the web scraping pipeline and strips the `#URL`
+    /// token from the input text. Dismissing (deleting the `#`) hides the pill
+    /// and leaves the text as-is.
+    private func webURLSuggestionPill(url: String) -> some View {
+        Button {
+            // 1. Strip the #URL token from the input text
+            let token = "#\(url)"
+            if let range = viewModel.inputText.range(of: token) {
+                viewModel.inputText.removeSubrange(range)
+                viewModel.inputText = viewModel.inputText
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+            // 2. Trigger the web scraping → upload → file attachment pipeline
+            viewModel.processWebURL(urlString: url)
+            // 3. Clear the suggestion state
+            withAnimation(.easeOut(duration: 0.15)) {
+                detectedWebURL = nil
+            }
+            Haptics.play(.light)
+        } label: {
+            HStack(spacing: Spacing.sm) {
+                Image(systemName: "globe")
+                    .scaledFont(size: 14, weight: .medium)
+                    .foregroundStyle(theme.brandPrimary)
+                Text(url)
+                    .scaledFont(size: 13, weight: .medium)
+                    .foregroundStyle(theme.textPrimary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Spacer(minLength: 0)
+                Image(systemName: "plus.circle.fill")
+                    .scaledFont(size: 16, weight: .medium)
+                    .foregroundStyle(theme.brandPrimary)
+            }
+            .padding(.horizontal, Spacing.md)
+            .padding(.vertical, Spacing.sm)
+            .background(
+                RoundedRectangle(cornerRadius: CornerRadius.card, style: .continuous)
+                    .fill(theme.surfaceContainer.opacity(theme.isDark ? 0.85 : 0.95))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: CornerRadius.card, style: .continuous)
+                    .strokeBorder(theme.brandPrimary.opacity(0.3), lineWidth: 0.75)
+            )
+            .shadow(color: .black.opacity(0.12), radius: 8, y: 2)
+        }
+        .buttonStyle(.plain)
+        .padding(.horizontal, Spacing.screenPadding)
+        .padding(.bottom, Spacing.sm)
+    }
+
     private func processWebURL() {
-        var urlString = webURLInput.trimmingCharacters(in: .whitespacesAndNewlines)
+        let urlString = webURLInput.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !urlString.isEmpty else { return }
-        if !urlString.hasPrefix("http://") && !urlString.hasPrefix("https://") {
-            urlString = "https://\(urlString)"
-        }
-        if viewModel.inputText.isEmpty {
-            viewModel.inputText = urlString
-        } else {
-            viewModel.inputText += "\n\(urlString)"
-        }
+        viewModel.processWebURL(urlString: urlString)
         webURLInput = ""
     }
 }

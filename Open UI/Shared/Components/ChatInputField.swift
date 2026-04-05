@@ -130,7 +130,7 @@ struct ChatInputField: View {
     @Environment(\.accessibilityScale) private var accessibilityScale
     @FocusState private var isFocused: Bool
     @State private var showToolsSheet = false
-    @State private var previewingTranscript: ChatAttachment? = nil
+    @State private var previewingAttachment: ChatAttachment? = nil
 
     /// Quick pills preference from UserDefaults
     @AppStorage("quickPills") private var quickPillsData: String = ""
@@ -239,8 +239,8 @@ struct ChatInputField: View {
             if isPresented { onToolsSheetPresented?() }
         }
         .animation(.easeOut(duration: 0.2), value: attachments.count)
-        .sheet(item: $previewingTranscript) { attachment in
-            TranscriptPreviewSheet(attachment: attachment)
+        .sheet(item: $previewingAttachment) { attachment in
+            AttachmentPreviewSheet(attachment: attachment)
         }
     }
 
@@ -877,6 +877,12 @@ struct ChatInputField: View {
                         .aspectRatio(contentMode: .fill)
                         .frame(width: 56, height: 56)
                         .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                        .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                        .onTapGesture {
+                            guard !attachment.isUploading else { return }
+                            Haptics.play(.light)
+                            previewingAttachment = attachment
+                        }
                 } else if attachment.type == .audio {
                     // Determine audio mode: server or on-device
                     let audioFileMode = UserDefaults.standard.string(forKey: "audioFileTranscriptionMode") ?? "server"
@@ -957,10 +963,9 @@ struct ChatInputField: View {
                         )
                         .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
                         .onTapGesture {
-                            if hasTranscript {
-                                Haptics.play(.light)
-                                previewingTranscript = attachment
-                            }
+                            guard !attachment.isUploading else { return }
+                            Haptics.play(.light)
+                            previewingAttachment = attachment
                         }
                 } else {
                     RoundedRectangle(cornerRadius: 10, style: .continuous)
@@ -991,6 +996,12 @@ struct ChatInputField: View {
                                     .padding(.horizontal, 4)
                             }
                         )
+                        .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                        .onTapGesture {
+                            guard !attachment.isUploading else { return }
+                            Haptics.play(.light)
+                            previewingAttachment = attachment
+                        }
                 }
             }
             // Upload status overlay for image thumbnails
@@ -1038,32 +1049,27 @@ private struct QuickPill: Identifiable {
     let action: () -> Void
 }
 
-// MARK: - Transcript Preview Sheet
+// MARK: - Attachment Preview Sheet
 
-struct TranscriptPreviewSheet: View {
+/// Universal preview sheet for any attachment type.
+/// - **Image**: shows a zoomable full-size preview from the thumbnail or data.
+/// - **Audio**: shows the transcribed text (same as old TranscriptPreviewSheet).
+/// - **File**: shows file info (name, status, size when available).
+struct AttachmentPreviewSheet: View {
     let attachment: ChatAttachment
     @Environment(\.dismiss) private var dismiss
     @Environment(\.theme) private var theme
 
     var body: some View {
         NavigationStack {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 0) {
-                    if let text = attachment.transcribedText, !text.isEmpty {
-                        Text(text)
-                            .scaledFont(size: 15)
-                            .foregroundStyle(theme.textPrimary)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(20)
-                            .textSelection(.enabled)
-                    } else {
-                        ContentUnavailableView(
-                            "No Transcript",
-                            systemImage: "waveform.slash",
-                            description: Text("This audio file has no transcribed text.")
-                        )
-                        .padding(.top, 60)
-                    }
+            Group {
+                switch attachment.type {
+                case .image:
+                    imagePreview
+                case .audio:
+                    audioPreview
+                case .file:
+                    filePreview
                 }
             }
             .background(theme.background)
@@ -1074,20 +1080,161 @@ struct TranscriptPreviewSheet: View {
                     Button("Done") { dismiss() }
                         .foregroundStyle(theme.brandPrimary)
                 }
-                if let text = attachment.transcribedText, !text.isEmpty {
-                    ToolbarItem(placement: .navigationBarLeading) {
-                        Button {
-                            UIPasteboard.general.string = text
-                            Haptics.play(.light)
-                        } label: {
-                            Label("Copy", systemImage: "doc.on.doc")
-                        }
-                        .foregroundStyle(theme.brandPrimary)
-                    }
-                }
             }
         }
         .presentationDetents([.medium, .large])
         .presentationDragIndicator(.visible)
     }
+
+    // MARK: - Image Preview
+
+    @ViewBuilder
+    private var imagePreview: some View {
+        if let thumbnail = attachment.thumbnail {
+            GeometryReader { geo in
+                ScrollView([.horizontal, .vertical], showsIndicators: false) {
+                    thumbnail
+                        .resizable()
+                        .aspectRatio(contentMode: .fit)
+                        .frame(minWidth: geo.size.width, minHeight: geo.size.height)
+                }
+            }
+        } else if let data = attachment.data, let uiImage = UIImage(data: data) {
+            GeometryReader { geo in
+                ScrollView([.horizontal, .vertical], showsIndicators: false) {
+                    Image(uiImage: uiImage)
+                        .resizable()
+                        .aspectRatio(contentMode: .fit)
+                        .frame(minWidth: geo.size.width, minHeight: geo.size.height)
+                }
+            }
+        } else {
+            ContentUnavailableView(
+                "No Preview",
+                systemImage: "photo",
+                description: Text("Image preview is not available.")
+            )
+            .padding(.top, 60)
+        }
+    }
+
+    // MARK: - Audio Preview
+
+    @ViewBuilder
+    private var audioPreview: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 0) {
+                if let text = attachment.transcribedText, !text.isEmpty {
+                    Text(text)
+                        .scaledFont(size: 15)
+                        .foregroundStyle(theme.textPrimary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(20)
+                        .textSelection(.enabled)
+                } else {
+                    ContentUnavailableView(
+                        "No Transcript",
+                        systemImage: "waveform.slash",
+                        description: Text("This audio file has no transcribed text.")
+                    )
+                    .padding(.top, 60)
+                }
+            }
+        }
+        .toolbar {
+            if let text = attachment.transcribedText, !text.isEmpty {
+                ToolbarItem(placement: .navigationBarLeading) {
+                    Button {
+                        UIPasteboard.general.string = text
+                        Haptics.play(.light)
+                    } label: {
+                        Label("Copy", systemImage: "doc.on.doc")
+                    }
+                    .foregroundStyle(theme.brandPrimary)
+                }
+            }
+        }
+    }
+
+    // MARK: - File Preview
+
+    @ViewBuilder
+    private var filePreview: some View {
+        VStack(spacing: Spacing.lg) {
+            Spacer()
+
+            // File icon
+            Image(systemName: fileIcon)
+                .scaledFont(size: 48)
+                .foregroundStyle(theme.brandPrimary)
+
+            // File name
+            Text(attachment.name)
+                .scaledFont(size: 17, weight: .semibold)
+                .foregroundStyle(theme.textPrimary)
+                .multilineTextAlignment(.center)
+                .padding(.horizontal, 32)
+
+            // Status badge
+            HStack(spacing: 6) {
+                statusIcon
+                Text(statusLabel)
+                    .scaledFont(size: 14)
+                    .foregroundStyle(theme.textSecondary)
+            }
+
+            // File size if data is available
+            if let data = attachment.data {
+                Text(ByteCountFormatter.string(fromByteCount: Int64(data.count), countStyle: .file))
+                    .scaledFont(size: 13)
+                    .foregroundStyle(theme.textTertiary)
+            }
+
+            Spacer()
+        }
+        .frame(maxWidth: .infinity)
+    }
+
+    /// SF Symbol name based on file extension.
+    private var fileIcon: String {
+        let ext = (attachment.name as NSString).pathExtension.lowercased()
+        switch ext {
+        case "pdf": return "doc.richtext"
+        case "txt", "md", "csv", "log": return "doc.plaintext"
+        case "json", "xml", "yaml", "yml": return "curlybraces"
+        case "html", "htm": return "globe"
+        case "zip", "tar", "gz", "rar": return "doc.zipper"
+        case "mp3", "wav", "m4a", "aac": return "waveform"
+        case "mp4", "mov", "avi": return "film"
+        case "png", "jpg", "jpeg", "gif", "webp", "heic": return "photo"
+        default: return "doc"
+        }
+    }
+
+    private var statusLabel: String {
+        switch attachment.uploadStatus {
+        case .pending: return "Pending"
+        case .uploading: return "Uploading…"
+        case .processing: return "Processing…"
+        case .completed: return "Ready"
+        case .error: return attachment.uploadError ?? "Upload failed"
+        }
+    }
+
+    @ViewBuilder
+    private var statusIcon: some View {
+        switch attachment.uploadStatus {
+        case .pending:
+            Image(systemName: "clock").foregroundStyle(theme.textTertiary)
+        case .uploading, .processing:
+            ProgressView().controlSize(.small)
+        case .completed:
+            Image(systemName: "checkmark.circle.fill").foregroundStyle(theme.success)
+        case .error:
+            Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(theme.error)
+        }
+    }
 }
+
+/// Backward-compatible alias so existing call sites still compile.
+typealias TranscriptPreviewSheet = AttachmentPreviewSheet
