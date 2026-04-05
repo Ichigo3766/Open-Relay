@@ -1,5 +1,22 @@
 # Changelog
 
+## 📦 NEXT BUILD
+
+### What's New
+
+### Improvements
+
+### Bug Fixes
+
+
+## Previous Builds
+
+## v2.4.3 — April 5, 2026
+
+### Improvements
+- Sending a message now scrolls your question to the top of the screen so the AI response streams in below it.
+- Reverted back to orginal scrolling behavior until further polishing. The memory will still be significantly lower if code blocks are in the chat.
+
 ## v2.4.2 — April 3, 2026
 
 ### What's New
@@ -16,8 +33,6 @@
 - Fixed channels and thread replies ignoring the "Send on Enter" toggle — pressing Return now correctly inserts a new line when the toggle is off.
 - Fixed channel reactions added from the web showing as raw shortcode text (e.g. "sunglasses") instead of the actual emoji.
 - Fixed thinking blocks swallowing the model's actual reply when the model omits the opening think tag — the response now renders correctly below the collapsed reasoning block.
-
-## Previous Builds
 
 ## v2.4.1 — April 1, 2026
 

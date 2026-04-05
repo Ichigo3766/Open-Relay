@@ -3187,7 +3187,7 @@ final class ChatViewModel {
     /// Called after `editMessage()` when the assistant message already exists in the list.
     private func regenerateIntoExistingMessage(assistantMessageId: String) async {
         guard !isStreaming || isExternallyStreaming else { return }
-        guard let assistantIdx = conversation?.messages.firstIndex(where: { $0.id == assistantMessageId && $0.role == .assistant }) else { return }
+        guard conversation?.messages.contains(where: { $0.id == assistantMessageId && $0.role == .assistant }) == true else { return }
 
         let modelId = selectedModelId ?? conversation?.model ?? ""
         guard let lastUser = conversation?.messages.last(where: { $0.role == .user }) else { return }

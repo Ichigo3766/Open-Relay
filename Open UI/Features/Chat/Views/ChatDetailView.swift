@@ -29,8 +29,12 @@ struct ChatDetailView: View {
     @State private var isScrolledUp = false
     /// Last known contentOffset.y — used to detect user-initiated upward drags.
     @State private var lastScrollOffset: CGFloat = 0
+    /// Cached scroll content height — updated via a separate onScrollGeometryChange.
+    @State private var viewState_contentHeight: CGFloat = 0
     /// Cached scroll container height — updated via a separate onScrollGeometryChange.
     @State private var viewState_containerHeight: CGFloat = 0
+    /// Timestamp of last animated scroll-to-bottom during active streaming (throttle guard).
+    @State private var lastStreamingScrollTime: Date = .distantPast
 
 
     // MARK: UI state
@@ -792,114 +796,119 @@ struct ChatDetailView: View {
             scrollToBottomFAB
         }
         .onAppear {
-            // In reversed space, "bottom" (newest content) is at contentOffset.y = 0 (UIKit top).
-            scrollPosition.scrollTo(edge: .top)
+            // Snap instantly to bottom on chat open.
+            scrollPosition.scrollTo(edge: .bottom)
         }
-        // Auto-scroll to newest: when a new message arrives and the user is near the bottom
-        // (i.e. near the top in UIKit-reversed space), snap to edge: .top.
+        // Auto-scroll: when a new message arrives, scroll to bottom.
+        // The minHeight trick on the last conversation turn ensures that
+        // scrolling to bottom naturally places the user's sent message
+        // near the top of the viewport (ChatGPT-style).
         .onChange(of: viewModel.messages.count) { old, new in
             guard new > old, !isScrolledUp else { return }
+
             if old == 0 {
-                scrollPosition.scrollTo(edge: .top)
-            } else if viewModel.shouldAnimateNewMessages {
-                withAnimation { scrollPosition.scrollTo(edge: .top) }
+                // First message in a new chat — smooth ease-out.
+                withAnimation(.easeOut(duration: 0.3)) {
+                    scrollPosition.scrollTo(edge: .bottom)
+                }
+            } else if keyboard.isVisible {
+                // Keyboard is open — dismiss it first so its collapsing
+                // animation doesn't fight the scroll animation. After a
+                // short delay (keyboard starts collapsing), flow the
+                // content up with a spring.
+                UIApplication.shared.sendAction(
+                    #selector(UIResponder.resignFirstResponder),
+                    to: nil, from: nil, for: nil)
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+                    withAnimation(.spring(response: 0.5, dampingFraction: 0.85)) {
+                        scrollPosition.scrollTo(edge: .bottom)
+                    }
+                }
             } else {
-                scrollPosition.scrollTo(edge: .top)
+                // Keyboard already hidden (follow-ups, etc.) — scroll now.
+                withAnimation(.spring(response: 0.5, dampingFraction: 0.85)) {
+                    scrollPosition.scrollTo(edge: .bottom)
+                }
             }
         }
-        // Streaming: when a new stream starts and the user is already at the
-        // bottom (not scrolled up reading), snap to newest so the first tokens
-        // are visible. If the user is scrolled up (e.g. reading a previous
-        // message while a follow-up streams), do NOT yank them — the
-        // onScrollPhaseChange lock will keep their position stable.
+        // Streaming: when streaming starts, clear scrolledUp flag so the
+        // streaming scroll-pump can keep the view pinned at the bottom
+        // as new tokens arrive. We do NOT force an immediate scroll to
+        // bottom here — the user message should stay visible at the top
+        // until the response grows long enough to push it up.
         .onChange(of: viewModel.isStreaming) { _, streaming in
-            if streaming && !isScrolledUp {
-                withAnimation { scrollPosition.scrollTo(edge: .top) }
+            if streaming {
+                isScrolledUp = false
             }
         }
-        // Resume auto-scroll: when the user scrolls back to newest
-        // (or taps the FAB) during an active stream.
+        // Resume auto-scroll: when the user scrolls back to the bottom
+        // (or taps the FAB) during an active stream, re-pin so new
+        // tokens keep the view anchored at the bottom.
         .onChange(of: isScrolledUp) { oldValue, newValue in
             if oldValue == true && newValue == false && viewModel.isStreaming {
-                scrollPosition.scrollTo(edge: .top)
+                scrollPosition.scrollTo(edge: .bottom)
             }
         }
     }
 
     private var scrollContent: some View {
-        // The entire ScrollView is rotated 180° so that UIKit's "top" becomes the
-        // visual bottom (newest message). Each message row is counter-rotated 180°
-        // to appear upright. This gives us:
-        //   • A true LazyVStack — only visible rows are rendered (~5-10 at a time).
-        //   • Stable streaming — new tokens append at UIKit-bottom which is visual-top,
-        //     so the view never needs to scroll during streaming; newest content just grows.
-        //   • contentOffset.y ≈ 0 means "at the newest message" (visual bottom).
-        //   • contentOffset.y increasing means scrolling toward older messages (visual top).
         ScrollView {
-            LazyVStack(spacing: 0) {
-                // History sentinel: appears at the UIKit-top of the LazyVStack
-                // (= visual bottom when scrolled all the way up to oldest messages).
-                // Reserved for future history-loading pagination.
-                Color.clear.frame(height: 1)
-
+            VStack(spacing: 0) {
                 if viewModel.isLoadingConversation {
                     loadingPlaceholders
-                        .rotationEffect(.degrees(180))
                 } else {
-                    reversedMessagesList
+                    messagesList
                 }
             }
-            // scrollTargetLayout() is critical for iOS 18 ScrollPosition to accurately
-            // track items and offsets even when individual items resize during streaming.
-            .scrollTargetLayout()
             .padding(.top, 8)
             .padding(.bottom, 8)
             .frame(maxWidth: iPadMaxContentWidth)
             .frame(maxWidth: .infinity)
+            .clipped()
         }
-        .rotationEffect(.degrees(180))
         .background(ScrollViewHorizontalLock())
         .scrollIndicators(.hidden)
         .scrollDismissesKeyboard(editingMessageId != nil ? .never : .interactively)
-        .scrollPosition($scrollPosition, anchor: .top)
-        // Detect scroll position to show/hide FAB.
-        // In reversed space: contentOffset.y ≈ 0 → at newest (visual bottom).
-        // contentOffset.y increasing → scrolling toward older messages (visual top).
+        .defaultScrollAnchor(.bottom)
+        .scrollPosition($scrollPosition, anchor: .bottom)
+        // Detect scroll position to show/hide FAB
         .onScrollGeometryChange(for: CGPoint.self) { geo in
             geo.contentOffset
         } action: { _, newOffset in
-            // Show FAB when user has scrolled more than 120pt away from newest messages
-            if newOffset.y <= 120 {
+            let distanceFromBottom = max(0,
+                viewState_contentHeight - newOffset.y - viewState_containerHeight)
+            if distanceFromBottom <= 120 {
                 if isScrolledUp { isScrolledUp = false }
-            } else if newOffset.y > lastScrollOffset + 40 {
+            } else if newOffset.y < lastScrollOffset - 40 {
                 if !isScrolledUp { isScrolledUp = true }
             }
             if abs(newOffset.y - lastScrollOffset) > 2 {
                 lastScrollOffset = newOffset.y
             }
         }
-        .onScrollGeometryChange(for: CGFloat.self) { geo in
-            geo.containerSize.height
-        } action: { _, newHeight in
-            if abs(newHeight - viewState_containerHeight) > 1 {
-                viewState_containerHeight = newHeight
+        .onScrollGeometryChange(for: CGSize.self) { geo in
+            CGSize(width: geo.contentSize.height, height: geo.containerSize.height)
+        } action: { oldSize, newSize in
+            let oldContentHeight = viewState_contentHeight
+            if abs(newSize.width - viewState_contentHeight) > 1 {
+                viewState_contentHeight = newSize.width
             }
-        }
-        // Lock scroll position when user scrolls away during streaming.
-        // When the user lifts their finger (phase → .idle) and is scrolled
-        // away from newest (lastScrollOffset > 10), we switch from edge
-        // tracking to a fixed y-coordinate. This prevents the streaming
-        // message from pushing the viewport as new tokens grow the content.
-        // When back at the bottom (offset ≤ 10), resume edge tracking so
-        // the stream auto-scrolls again.
-        .onScrollPhaseChange { _, newPhase in
-            guard newPhase == .idle else { return }
-            if lastScrollOffset > 10 && viewModel.isStreaming {
-                // Freeze viewport at current offset — streaming won't move the text
-                scrollPosition = ScrollPosition(y: lastScrollOffset)
-            } else if lastScrollOffset <= 10 {
-                // Back at newest — resume edge-anchored tracking
-                scrollPosition = ScrollPosition(edge: .top)
+            if abs(newSize.height - viewState_containerHeight) > 1 {
+                viewState_containerHeight = newSize.height
+            }
+            // Smooth scroll-to-bottom during active streaming:
+            // When the content height grows (new tokens pushed layout taller)
+            // and the user hasn't scrolled up, animate to the bottom so new
+            // content slides in smoothly instead of snapping.
+            let grew = newSize.width > oldContentHeight + 1
+            if grew && viewModel.isStreaming && !isScrolledUp {
+                let now = Date()
+                if now.timeIntervalSince(lastStreamingScrollTime) > 0.1 {
+                    lastStreamingScrollTime = now
+                    withAnimation(.easeOut(duration: 0.15)) {
+                        scrollPosition.scrollTo(edge: .bottom)
+                    }
+                }
             }
         }
     }
@@ -924,8 +933,7 @@ struct ChatDetailView: View {
             .contentShape(Circle())
             .highPriorityGesture(
                 TapGesture().onEnded {
-                    // In reversed space, "visual bottom" (newest) is UIKit edge: .top
-                    withAnimation { scrollPosition.scrollTo(edge: .top) }
+                    withAnimation { scrollPosition.scrollTo(edge: .bottom) }
                     Haptics.play(.light)
                 }
             )
@@ -957,39 +965,46 @@ struct ChatDetailView: View {
 
     // MARK: - Messages List
 
-    /// Reversed messages list for the 180°-rotated LazyVStack.
-    /// Messages are displayed newest-first in UIKit order (which, after the
-    /// 180° ScrollView rotation, appears as oldest-at-top / newest-at-bottom
-    /// visually). Each row is counter-rotated 180° to appear upright.
+    /// Splits messages into two groups around the last conversation turn.
     ///
-    /// Index is resolved via an O(1) dictionary keyed on message ID so that
-    /// `isLastAssistant` can still refer to the last element in the original
-    /// chronological array (index == messages.count - 1).
-    @ViewBuilder
-    private var reversedMessagesList: some View {
-        let messages = viewModel.messages
-        let reversed = messages.reversed() as [ChatMessage]
-        let indexMap = Dictionary(messages.enumerated().map { ($1.id, $0) },
-                                  uniquingKeysWith: { first, _ in first })
-
-        ForEach(reversed) { message in
-            let index = indexMap[message.id] ?? 0
-            messageRow(message: message, index: index)
-                .rotationEffect(.degrees(180))
-        }
-    }
-
-    /// Original forward-order list — retained for potential future use
-    /// (e.g. non-reversed fallback path). Not currently called.
+    /// The **last turn** is defined as the last user message plus any
+    /// assistant/system messages that follow it. This group is wrapped in a
+    /// `VStack` with `minHeight: viewportHeight, alignment: .top` — the
+    /// ChatGPT-style trick that makes scroll-to-bottom place the user's
+    /// sent message near the **top** of the viewport, with the AI response
+    /// streaming in below it.
+    ///
+    /// All earlier messages render at their natural height.
     private var messagesList: some View {
         let messages = viewModel.messages
         let indexMap = Dictionary(messages.enumerated().map { ($1.id, $0) },
                                   uniquingKeysWith: { first, _ in first })
 
-        return ForEach(messages) { message in
-            let index = indexMap[message.id] ?? 0
-            messageRow(message: message, index: index)
-                .id(message.id)
+        // Split point: index of the last user message.
+        // Everything from here to the end is the "last turn".
+        // If there are no user messages, splitAt == count → no split, all normal.
+        let lastUserIdx = messages.lastIndex(where: { $0.role == .user })
+        let splitAt = lastUserIdx ?? messages.count
+
+        return Group {
+            // ── Messages before the last turn (natural height) ──
+            ForEach(Array(messages.prefix(splitAt))) { message in
+                let index = indexMap[message.id] ?? 0
+                messageRow(message: message, index: index)
+                    .id(message.id)
+            }
+
+            // ── Last turn (user msg + assistant reply) with minHeight ──
+            if splitAt < messages.count {
+                VStack(spacing: 0) {
+                    ForEach(Array(messages.suffix(from: splitAt))) { message in
+                        let index = indexMap[message.id] ?? 0
+                        messageRow(message: message, index: index)
+                            .id(message.id)
+                    }
+                }
+                .frame(minHeight: max(viewState_containerHeight, 0), alignment: .top)
+            }
         }
     }
 

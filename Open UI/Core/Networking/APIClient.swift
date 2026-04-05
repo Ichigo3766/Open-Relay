@@ -3691,7 +3691,6 @@ final class APIClient: @unchecked Sendable {
                         // Each downstream message chains off the previous via parentId.
                         // This allows the WebUI to navigate the full old conversation branch.
                         var lastDownstreamId = pairedId
-                        var assistantChildIds: [String] = []
                         for downMsg in version.downstreamMessages {
                             let downMsgParent: String = {
                                 if downMsg.role == .assistant {
@@ -3737,7 +3736,6 @@ final class APIClient: @unchecked Sendable {
                                 }
                             }
                             lastDownstreamId = downMsg.id
-                            if downMsg.role == .assistant { assistantChildIds = [downMsg.id] }
                         }
 
                         // First downstream child of the old assistant
