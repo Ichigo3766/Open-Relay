@@ -1,5 +1,5 @@
 {
-  "originHash" : "5208a9b014fdddccfb6dae67e1d15efaa3f44c9fd2a92dee8e5a81433dd880e6",
+  "originHash" : "c59e507b3376127180a90a39fba7aebd670178922422018092feb9fec10756df",
   "pins" : [
     {
       "identity" : "beautiful-mermaid-swift",
@@ -56,6 +56,15 @@
       }
     },
     {
+      "identity" : "markdownview",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/Ichigo3766/MarkdownView",
+      "state" : {
+        "branch" : "main",
+        "revision" : "739619ab5e4e91c559b60ac02d3dc1c82472586f"
+      }
+    },
+    {
       "identity" : "mlx-audio-swift",
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/Blaizzy/mlx-audio-swift.git",
@@ -80,6 +89,15 @@
       "state" : {
         "revision" : "25b00d4e22e61ec9c41efda47990cd2084ec87ff",
         "version" : "2.31.3"
+      }
+    },
+    {
+      "identity" : "reactioncontextmenu",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/Ichigo3766/ReactionContextMenu",
+      "state" : {
+        "branch" : "main",
+        "revision" : "bb8cb726c8647fad17d3e09a6327a487a2630a61"
       }
     },
     {

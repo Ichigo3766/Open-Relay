@@ -104,6 +104,10 @@ struct PasteableTextView: UIViewRepresentable {
     }
 
     func updateUIView(_ textView: PasteInterceptingTextView, context: Context) {
+        // Sync coordinator parent so onSubmit / onPasteAttachments always capture
+        // the latest struct values (fixes stale-closure "Send on Enter" bug).
+        context.coordinator.parent = self
+
         // Only update text if it actually changed (avoids cursor jump)
         if textView.text != text {
             textView.text = text

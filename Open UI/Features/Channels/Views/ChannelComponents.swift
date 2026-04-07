@@ -1,6 +1,7 @@
 import SwiftUI
 import PhotosUI
 import QuickLook
+import ReactionContextMenu
 
 // MARK: - User & Model Picker (Combined @mention)
 
@@ -310,10 +311,13 @@ struct ThreadDetailSheet: View {
     // Thread attachment picker
     @State private var showThreadAttachmentPicker = false
     
-    // Reaction overlay + inline emoji keyboard (reuses same components as channel)
-    @State private var threadReactionOverlayMessage: ChannelMessage?
+    // Inline emoji keyboard (for quick-reaction from context menu)
     @State private var threadShowEmojiKeyboard = false
     @State private var threadEmojiTargetMessageId: String?
+    
+    // ReactionContextMenu state
+    @State private var threadSelectedReaction: String?
+    @State private var threadReactionTargetMessageId: String?
     
     // QuickLook for file preview
     @State private var quickLookURL: URL?
@@ -324,50 +328,70 @@ struct ThreadDetailSheet: View {
     var body: some View {
         NavigationStack {
             VStack(spacing: 0) {
-                ScrollView {
-                    VStack(spacing: 0) {
-                        // Parent message
-                        threadMessageRow(parentMessage, isParent: true, showHeader: true)
-                            .padding(.bottom, 4)
-                        
-                        // Divider
-                        HStack(spacing: 8) {
-                            VStack { Divider() }
-                            Text("\(parentMessage.replyCount) repl\(parentMessage.replyCount == 1 ? "y" : "ies")")
-                                .scaledFont(size: 11, weight: .semibold)
-                                .foregroundStyle(theme.textTertiary)
-                            VStack { Divider() }
-                        }
-                        .padding(.horizontal, Spacing.screenPadding)
-                        .padding(.vertical, 8)
-                        
-                        if viewModel.isLoadingThread {
-                            ProgressView()
-                                .padding(.vertical, Spacing.xl)
-                        } else if displayMessages.isEmpty {
-                            VStack(spacing: 8) {
-                                Text("No replies yet")
-                                    .scaledFont(size: 15, weight: .medium)
-                                    .foregroundStyle(theme.textSecondary)
-                                Text("Be the first to reply")
-                                    .scaledFont(size: 13)
+                ScrollViewReader { proxy in
+                    ScrollView {
+                        VStack(spacing: 0) {
+                            // Parent message
+                            threadMessageRow(parentMessage, isParent: true, showHeader: true)
+                                .padding(.bottom, 4)
+                            
+                            // Divider
+                            HStack(spacing: 8) {
+                                VStack { Divider() }
+                                Text("\(parentMessage.replyCount) repl\(parentMessage.replyCount == 1 ? "y" : "ies")")
+                                    .scaledFont(size: 11, weight: .semibold)
                                     .foregroundStyle(theme.textTertiary)
+                                VStack { Divider() }
                             }
-                            .padding(.vertical, Spacing.xl)
-                        } else {
-                            // BUG-009 fix: Safe index bounds checking for message grouping
-                            ForEach(Array(displayMessages.enumerated()), id: \.element.id) { index, msg in
-                                let showHeader = index == 0 || msg.effectiveSenderId != displayMessages[index - 1].effectiveSenderId
-                                let showTimestamp: Bool = {
-                                    guard index < displayMessages.count - 1 else { return true }
-                                    return msg.effectiveSenderId != displayMessages[index + 1].effectiveSenderId
-                                }()
-                                threadMessageRow(msg, isParent: false, showHeader: showHeader, showGroupTimestamp: showTimestamp)
+                            .padding(.horizontal, Spacing.screenPadding)
+                            .padding(.vertical, 8)
+                            
+                            if viewModel.isLoadingThread {
+                                ProgressView()
+                                    .padding(.vertical, Spacing.xl)
+                            } else if displayMessages.isEmpty {
+                                VStack(spacing: 8) {
+                                    Text("No replies yet")
+                                        .scaledFont(size: 15, weight: .medium)
+                                        .foregroundStyle(theme.textSecondary)
+                                    Text("Be the first to reply")
+                                        .scaledFont(size: 13)
+                                        .foregroundStyle(theme.textTertiary)
+                                }
+                                .padding(.vertical, Spacing.xl)
+                            } else {
+                                // BUG-009 fix: Safe index bounds checking for message grouping
+                                ForEach(Array(displayMessages.enumerated()), id: \.element.id) { index, msg in
+                                    let showHeader = index == 0 || msg.effectiveSenderId != displayMessages[index - 1].effectiveSenderId
+                                    let showTimestamp: Bool = {
+                                        guard index < displayMessages.count - 1 else { return true }
+                                        return msg.effectiveSenderId != displayMessages[index + 1].effectiveSenderId
+                                    }()
+                                    threadMessageRow(msg, isParent: false, showHeader: showHeader, showGroupTimestamp: showTimestamp)
+                                }
                             }
+                            
+                            // Scroll anchor at the bottom
+                            Color.clear
+                                .frame(height: 1)
+                                .id("threadBottom")
+                        }
+                        .padding(.top, 8)
+                        .padding(.bottom, 8)
+                        // Same fix as ChannelDetailView: prevent keyboard-animation
+                        // frames propagating into CustomContextMenuWrapper geometry
+                        // trackers, which would fire onGeometryChange on every tick.
+                        .transaction { $0.animation = nil }
+                    }
+                    .onAppear {
+                        proxy.scrollTo("threadBottom", anchor: .bottom)
+                    }
+                    .onChange(of: displayMessages.count) { old, new in
+                        guard new > old else { return }
+                        withAnimation {
+                            proxy.scrollTo("threadBottom", anchor: .bottom)
                         }
                     }
-                    .padding(.top, 8)
-                    .padding(.bottom, 8)
                 }
                 
                 threadInput
@@ -405,6 +429,20 @@ struct ThreadDetailSheet: View {
                         removal: .opacity
                     ))
                     .animation(.easeOut(duration: 0.2), value: isShowingMentionPicker)
+                }
+            }
+            .modifier(ContextMenuHost())
+            .environment(\.reactionProvider, ChannelReactionProvider())
+            .onChange(of: threadSelectedReaction) { _, newEmoji in
+                guard let emoji = newEmoji, let msgId = threadReactionTargetMessageId else { return }
+                threadSelectedReaction = nil
+                threadReactionTargetMessageId = nil
+                if emoji == "➕" {
+                    threadEmojiTargetMessageId = msgId
+                    threadShowEmojiKeyboard = true
+                } else {
+                    Task { await viewModel.toggleReaction(messageId: msgId, emoji: emoji) }
+                    Haptics.play(.light)
                 }
             }
         }
@@ -454,50 +492,7 @@ struct ThreadDetailSheet: View {
         } message: {
             Text(downloadErrorMessage)
         }
-        // iMessage-style reaction overlay (same as channel, no "Reply in Thread")
-        .overlay {
-            if let msg = threadReactionOverlayMessage {
-                let isOwn = msg.userId == viewModel.currentUserId && !viewModel.isModelMessage(msg)
-                MessageReactionOverlay(
-                    message: msg,
-                    isCurrentUser: isOwn,
-                    onReaction: { emoji in
-                        Task { await viewModel.toggleReaction(messageId: msg.id, emoji: emoji) }
-                        withAnimation(.easeOut(duration: 0.2)) { threadReactionOverlayMessage = nil }
-                    },
-                    onReply: {
-                        // In thread, "Reply" focuses the thread input
-                        // (thread reply is already the default action)
-                    },
-                    onThread: nil, // Already in a thread — hide this button
-                    onPin: {
-                        Task { await viewModel.togglePin(messageId: msg.id) }
-                    },
-                    onCopy: {
-                        viewModel.copyMessage(msg)
-                    },
-                    onEdit: isOwn ? {
-                        viewModel.beginEditing(message: msg)
-                    } : nil,
-                    onDelete: isOwn ? {
-                        Task { await viewModel.deleteMessage(id: msg.id) }
-                    } : nil,
-                    onMoreEmoji: {
-                        let targetId = msg.id
-                        withAnimation(.easeOut(duration: 0.2)) { threadReactionOverlayMessage = nil }
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-                            threadEmojiTargetMessageId = targetId
-                            threadShowEmojiKeyboard = true
-                        }
-                    },
-                    onDismiss: {
-                        withAnimation(.easeOut(duration: 0.2)) { threadReactionOverlayMessage = nil }
-                    }
-                )
-                .animation(.easeOut(duration: 0.2), value: threadReactionOverlayMessage?.id)
-            }
-        }
-        // Inline emoji keyboard for thread (same as channel)
+        // Inline emoji keyboard for thread (triggered from context menu)
         .background {
             InlineEmojiKeyboard(isActive: $threadShowEmojiKeyboard) { emoji in
                 if let messageId = threadEmojiTargetMessageId {
@@ -582,106 +577,142 @@ struct ThreadDetailSheet: View {
     }
     
     // MARK: - Bubble Colors
-    
-    private var bubbleBg: Color {
+
+    private var receivedBubbleBg: Color {
         theme.isDark ? Color.white.opacity(0.13) : Color.black.opacity(0.06)
     }
-    private var bubbleBorder: Color {
+    private var receivedBubbleBorder: Color {
         theme.isDark ? Color.white.opacity(0.06) : Color.black.opacity(0.04)
     }
-    
+    private var sentBubbleBg: Color { theme.brandPrimary }
+    private var sentBubbleBorderColor: Color { theme.brandPrimary }
+
     // MARK: - Message Row
     
     private func threadMessageRow(_ message: ChannelMessage, isParent: Bool, showHeader: Bool, showGroupTimestamp: Bool = false) -> some View {
         let senderName = viewModel.resolvedSenderName(for: message)
         let isModel = viewModel.isModelMessage(message)
+        let isCurrentUser = message.userId == viewModel.currentUserId && !viewModel.isModelMessage(message)
+        let bubbleBg = isCurrentUser ? sentBubbleBg : receivedBubbleBg
+        let bubbleBd = isCurrentUser ? sentBubbleBorderColor : receivedBubbleBorder
+        let bubbleAlignment: HorizontalAlignment = isCurrentUser ? .trailing : .leading
+        let frameAlignment: Alignment = isCurrentUser ? .trailing : .leading
         
-        return VStack(alignment: .leading, spacing: 0) {
-            if showHeader {
-                HStack(spacing: 8) {
-                    threadAvatar(message, size: 26)
+        return CustomContextMenuWrapper(
+            hapticTouchDuration: .default,
+            contextMenuAppearingSide: .leading,
+            selectedReaction: Binding(
+                get: { threadSelectedReaction },
+                set: { newVal in
+                    if let emoji = newVal {
+                        threadReactionTargetMessageId = message.id
+                        threadSelectedReaction = emoji
+                    }
+                }
+            )
+        ) {
+            VStack(alignment: bubbleAlignment, spacing: 0) {
+                // Sender header — only shown for received messages (not current user)
+                if showHeader && !isCurrentUser {
+                    HStack(spacing: 8) {
+                        threadAvatar(message, size: 26)
+                        HStack(spacing: 4) {
+                            Text(senderName)
+                                .scaledFont(size: 12, weight: .bold)
+                                .foregroundStyle(isModel ? theme.mentionModelText : theme.textPrimary)
+                            if isModel {
+                                Text("BOT")
+                                    .scaledFont(size: 7, weight: .heavy)
+                                    .foregroundStyle(theme.mentionModelText)
+                                    .padding(.horizontal, 3).padding(.vertical, 1)
+                                    .background(theme.mentionModelBackground)
+                                    .clipShape(RoundedRectangle(cornerRadius: 2))
+                            }
+                            if isParent {
+                                Text("OP")
+                                    .scaledFont(size: 7, weight: .heavy)
+                                    .foregroundStyle(theme.brandPrimary)
+                                    .padding(.horizontal, 3).padding(.vertical, 1)
+                                    .background(theme.brandPrimary.opacity(0.12))
+                                    .clipShape(RoundedRectangle(cornerRadius: 2))
+                            }
+                            Text(message.createdAt.channelTime)
+                                .scaledFont(size: 10)
+                                .foregroundStyle(theme.textTertiary)
+                        }
+                    }
+                    .padding(.bottom, 3)
+                }
+                
+                // Pinned indicator
+                if message.isPinned {
                     HStack(spacing: 4) {
-                        Text(senderName)
-                            .scaledFont(size: 12, weight: .bold)
-                            .foregroundStyle(isModel ? theme.mentionModelText : theme.textPrimary)
-                        if isModel {
-                            Text("BOT")
-                                .scaledFont(size: 7, weight: .heavy)
-                                .foregroundStyle(theme.mentionModelText)
-                                .padding(.horizontal, 3).padding(.vertical, 1)
-                                .background(theme.mentionModelBackground)
-                                .clipShape(RoundedRectangle(cornerRadius: 2))
+                        Image(systemName: "pin.fill")
+                            .scaledFont(size: 9)
+                            .rotationEffect(.degrees(45))
+                        Text("Pinned")
+                            .scaledFont(size: 10, weight: .semibold)
+                    }
+                    .foregroundStyle(.yellow.opacity(0.8))
+                    .padding(.bottom, 2)
+                }
+                
+                // Bubble (or edit bubble if editing this message)
+                if viewModel.editingMessage?.id == message.id {
+                    threadEditBubble
+                } else {
+                    VStack(alignment: .leading, spacing: 4) {
+                        if !message.content.isEmpty {
+                            ChannelMarkdownView(
+                                content: message.content,
+                                currentUserId: viewModel.currentUserId,
+                                isCurrentUser: isCurrentUser
+                            )
                         }
-                        if isParent {
-                            Text("OP")
-                                .scaledFont(size: 7, weight: .heavy)
-                                .foregroundStyle(theme.brandPrimary)
-                                .padding(.horizontal, 3).padding(.vertical, 1)
-                                .background(theme.brandPrimary.opacity(0.12))
-                                .clipShape(RoundedRectangle(cornerRadius: 2))
+                        if !message.files.isEmpty {
+                            threadFileAttachments(message.files)
                         }
-                        Text(message.createdAt.channelTime)
-                            .scaledFont(size: 10)
-                            .foregroundStyle(theme.textTertiary)
+                    }
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 9)
+                    .background(bubbleBg)
+                    .clipShape(ChannelBubbleShape(isCurrentUser: isCurrentUser, showTail: showHeader))
+                    .overlay(
+                        ChannelBubbleShape(isCurrentUser: isCurrentUser, showTail: showHeader)
+                            .strokeBorder(bubbleBd, lineWidth: 0.5)
+                    )
+                    .frame(minWidth: 60, maxWidth: UIScreen.main.bounds.width * 0.75, alignment: frameAlignment)
+                }
+                
+                if showGroupTimestamp && !showHeader {
+                    Text(message.createdAt.channelTime)
+                        .scaledFont(size: 10)
+                        .foregroundStyle(theme.textTertiary)
+                        .padding(.top, 2)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: frameAlignment)
+            .padding(.horizontal, Spacing.screenPadding)
+            .padding(.top, showHeader ? 12 : 2)
+            .background(isParent ? theme.brandPrimary.opacity(0.03) : Color.clear)
+        } menu: {
+            CustomMenuView {
+                CustomMenuButton(action: { Task { await viewModel.togglePin(messageId: message.id) } }) {
+                    Label(message.isPinned ? "Unpin" : "Pin", systemImage: message.isPinned ? "pin.slash" : "pin")
+                }
+                CustomMenuButton("Copy", systemImage: "doc.on.doc") {
+                    viewModel.copyMessage(message)
+                }
+                if isCurrentUser {
+                    CustomMenuDivider()
+                    CustomMenuButton("Edit", systemImage: "pencil") {
+                        viewModel.beginEditing(message: message)
+                    }
+                    CustomMenuButton("Delete", systemImage: "trash", role: .destructive) {
+                        Task { await viewModel.deleteMessage(id: message.id) }
                     }
                 }
-                .padding(.bottom, 3)
             }
-            
-            // Pinned indicator
-            if message.isPinned {
-                HStack(spacing: 4) {
-                    Image(systemName: "pin.fill")
-                        .scaledFont(size: 9)
-                        .rotationEffect(.degrees(45))
-                    Text("Pinned")
-                        .scaledFont(size: 10, weight: .semibold)
-                }
-                .foregroundStyle(.yellow.opacity(0.8))
-                .padding(.bottom, 2)
-            }
-            
-            // Bubble (or edit bubble if editing this message)
-            if viewModel.editingMessage?.id == message.id {
-                threadEditBubble
-            } else {
-                VStack(alignment: .leading, spacing: 4) {
-                    if !message.content.isEmpty {
-                        ChannelMarkdownView(
-                            content: message.content,
-                            currentUserId: viewModel.currentUserId,
-                            isCurrentUser: false
-                        )
-                    }
-                    if !message.files.isEmpty {
-                        threadFileAttachments(message.files)
-                    }
-                }
-                .padding(.horizontal, 10)
-                .padding(.vertical, 7)
-                .background(bubbleBg)
-                .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 14, style: .continuous)
-                        .strokeBorder(bubbleBorder, lineWidth: 0.5)
-                )
-            }
-            
-            if showGroupTimestamp && !showHeader {
-                Text(message.createdAt.channelTime)
-                    .scaledFont(size: 10)
-                    .foregroundStyle(theme.textTertiary)
-                    .padding(.top, 2)
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal, Spacing.screenPadding)
-        .padding(.top, showHeader ? 12 : 2)
-        .background(isParent ? theme.brandPrimary.opacity(0.03) : Color.clear)
-        .contentShape(Rectangle())
-        .onLongPressGesture(minimumDuration: 0.4) {
-            threadReactionOverlayMessage = message
-            Haptics.play(.medium)
         }
     }
     

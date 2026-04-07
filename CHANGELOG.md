@@ -1,13 +1,15 @@
 # Changelog
 
-## 📦 NEXT BUILD
-
-### What's New
+## v2.4.4 — April 7, 2026
 
 ### Improvements
+- Reduced memory usage for large conversations!
+- Big Channels UI improvements.
+- Scrolling up during a streaming response now breaks out of auto-scroll immediately.
 
 ### Bug Fixes
-
+- Fixed "Send on Enter" not working in channels and thread replies — pressing Enter now sends the message as expected when the setting is enabled.
+- Fixed thread replies appearing twice in the thread view when sent
 
 ## Previous Builds
 

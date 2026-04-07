@@ -77,7 +77,7 @@ struct ChannelMarkdownView: View {
                 for match in regex.matches(in: result, range: NSRange(location: 0, length: nsText.length)).reversed() {
                     let type = nsText.substring(with: match.range(at: 1))
                     let name = nsText.substring(with: match.range(at: 3))
-                    let replacement = type == "M" ? "**⚡ @\(name)**" : "**@\(name)**"
+                    let replacement = "**@\(name)**"
                     if let matchRange = Range(match.range, in: result) {
                         result.replaceSubrange(matchRange, with: replacement)
                     }

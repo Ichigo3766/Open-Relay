@@ -3,6 +3,7 @@ import PhotosUI
 import QuickLook
 import MarkdownView
 import os.log
+import ReactionContextMenu
 
 /// Channel chat view with:
 /// - Markdown rendering for all message content
@@ -42,10 +43,13 @@ struct ChannelDetailView: View {
     // Message actions
     @State private var activeActionMessageId: String?
     
-    // Emoji picker + reaction overlay
+    // Emoji picker (for quick-reaction from context menu)
     @State private var showEmojiKeyboard = false
     @State private var emojiTargetMessageId: String?
-    @State private var reactionOverlayMessage: ChannelMessage?
+    
+    // ReactionContextMenu state
+    @State private var selectedReaction: String?
+    @State private var reactionTargetMessageId: String?
     
     // Reaction tooltip (MF-003)
     @State private var reactionTooltipText: String?
@@ -77,8 +81,20 @@ struct ChannelDetailView: View {
         ZStack {
             theme.background.ignoresSafeArea()
             messageListArea
-            
-            reactionOverlayView
+        }
+        .modifier(ContextMenuHost())
+        .environment(\.reactionProvider, ChannelReactionProvider())
+        .onChange(of: selectedReaction) { _, newEmoji in
+            guard let emoji = newEmoji, let msgId = reactionTargetMessageId else { return }
+            selectedReaction = nil
+            reactionTargetMessageId = nil
+            if emoji == "➕" {
+                emojiTargetMessageId = msgId
+                showEmojiKeyboard = true
+            } else {
+                Task { await viewModel.toggleReaction(messageId: msgId, emoji: emoji) }
+                Haptics.play(.light)
+            }
         }
         .safeAreaInset(edge: .bottom, spacing: 0) {
             VStack(spacing: 0) {
@@ -390,41 +406,6 @@ struct ChannelDetailView: View {
         }
     }
     
-    // MARK: - Reaction Overlay
-    
-    @ViewBuilder
-    private var reactionOverlayView: some View {
-        if let msg = reactionOverlayMessage {
-            let isOwn = msg.userId == viewModel.currentUserId && !viewModel.isModelMessage(msg)
-            MessageReactionOverlay(
-                message: msg,
-                isCurrentUser: isOwn,
-                onReaction: { emoji in
-                    Task { await viewModel.toggleReaction(messageId: msg.id, emoji: emoji) }
-                    withAnimation(.easeOut(duration: 0.2)) { reactionOverlayMessage = nil }
-                },
-                onReply: { viewModel.setReplyTo(msg) },
-                onThread: { Task { await viewModel.openThread(for: msg) } },
-                onPin: { Task { await viewModel.togglePin(messageId: msg.id) } },
-                onCopy: { viewModel.copyMessage(msg) },
-                onEdit: isOwn ? { viewModel.beginEditing(message: msg) } : nil,
-                onDelete: isOwn ? { Task { await viewModel.deleteMessage(id: msg.id) } } : nil,
-                onMoreEmoji: {
-                    let targetId = msg.id
-                    withAnimation(.easeOut(duration: 0.2)) { reactionOverlayMessage = nil }
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-                        emojiTargetMessageId = targetId
-                        showEmojiKeyboard = true
-                    }
-                },
-                onDismiss: {
-                    withAnimation(.easeOut(duration: 0.2)) { reactionOverlayMessage = nil }
-                }
-            )
-            .animation(.easeOut(duration: 0.2), value: reactionOverlayMessage?.id)
-        }
-    }
-    
     // MARK: - Error Surfacing (SEC-005)
     
     @MainActor
@@ -574,8 +555,16 @@ struct ChannelDetailView: View {
         .overlay(alignment: .bottomTrailing) { scrollToBottomFAB }
         .onAppear { scrollPosition.scrollTo(edge: .bottom) }
         .onChange(of: viewModel.messages.count) { old, new in
-            guard new > old, !isScrolledUp else { return }
-            withAnimation { scrollPosition.scrollTo(edge: .bottom) }
+            guard new > old else { return }
+            // Always scroll when the user sends their own message (last message is theirs).
+            // For incoming messages from others, only scroll if not scrolled up.
+            let lastIsOwn = viewModel.messages.last?.userId == viewModel.currentUserId
+            if lastIsOwn {
+                isScrolledUp = false
+                withAnimation { scrollPosition.scrollTo(edge: .bottom) }
+            } else if !isScrolledUp {
+                withAnimation { scrollPosition.scrollTo(edge: .bottom) }
+            }
         }
     }
     
@@ -608,6 +597,14 @@ struct ChannelDetailView: View {
             .padding(.top, 8)
             .padding(.bottom, 8)
             .frame(minHeight: max(containerHeight, 0), alignment: .top)
+            // Prevent keyboard-animation frames from propagating into this subtree.
+            // Each CustomContextMenuWrapper tracks its frame via
+            // onGeometryChange(frame(in: .global)), which fires on every animation
+            // tick. Stripping the animation here reduces N-messages × ~15-frame
+            // state updates per keyboard event down to one — eliminating input lag.
+            // The .padding(.bottom, keyboard.height) on the input bar lives outside
+            // this subtree and continues to animate correctly.
+            .transaction { $0.animation = nil }
         }
         .scrollDismissesKeyboard(.interactively)
         .defaultScrollAnchor(.bottom)
@@ -677,17 +674,20 @@ struct ChannelDetailView: View {
     }
     
     // MARK: - Bubble Colors
-    
-    private var bubbleBackground: Color {
+
+    private var receivedBubbleBackground: Color {
         theme.isDark ? Color.white.opacity(0.13) : Color.black.opacity(0.06)
     }
-    
-    private var bubbleBorder: Color {
+
+    private var receivedBubbleBorder: Color {
         theme.isDark ? Color.white.opacity(0.06) : Color.black.opacity(0.04)
     }
-    
+
+    private var sentBubbleBackground: Color { theme.brandPrimary }
+    private var sentBubbleBorder: Color { theme.brandPrimary }
+
     // MARK: - Message Row
-    
+
     private let avatarSize: CGFloat = 28
     
     // MARK: - Date Separator
@@ -710,10 +710,28 @@ struct ChannelDetailView: View {
         let isCurrentUser = message.userId == viewModel.currentUserId && !viewModel.isModelMessage(message)
         let isModel = viewModel.isModelMessage(message)
         let resolvedName = viewModel.resolvedSenderName(for: message)
-        let isFirstInGroup = (position == .first || position == .single)
+        let showTail = (position == .last || position == .single)
+        let bubbleBg = isCurrentUser ? sentBubbleBackground : receivedBubbleBackground
+        let bubbleBd = isCurrentUser ? sentBubbleBorder : receivedBubbleBorder
+        let bubbleAlignment: HorizontalAlignment = isCurrentUser ? .trailing : .leading
+        let frameAlignment: Alignment = isCurrentUser ? .trailing : .leading
         
-        VStack(alignment: .leading, spacing: 0) {
-            if showSenderHeader {
+        CustomContextMenuWrapper(
+            hapticTouchDuration: .default,
+            contextMenuAppearingSide: .leading,
+            selectedReaction: Binding(
+                get: { selectedReaction },
+                set: { newVal in
+                    if let emoji = newVal {
+                        reactionTargetMessageId = message.id
+                        selectedReaction = emoji
+                    }
+                }
+            )
+        ) {
+        VStack(alignment: bubbleAlignment, spacing: 0) {
+            // Sender header — only shown for received messages (not current user)
+            if showSenderHeader && !isCurrentUser {
                 HStack(spacing: 8) {
                     senderAvatar(message, size: avatarSize)
                     
@@ -765,7 +783,7 @@ struct ChannelDetailView: View {
                         ChannelMarkdownView(
                             content: message.content,
                             currentUserId: viewModel.currentUserId,
-                            isCurrentUser: false,
+                            isCurrentUser: isCurrentUser,
                             accessibleChannelIds: viewModel.accessibleChannelIds
                         )
                     }
@@ -774,14 +792,15 @@ struct ChannelDetailView: View {
                         messageAttachments(message.files)
                     }
                 }
-                .padding(.horizontal, 11)
-                .padding(.vertical, 7)
-                .background(bubbleBackground)
-                .clipShape(ChannelBubbleShape(isFirstInGroup: isFirstInGroup))
+                .padding(.horizontal, 14)
+                .padding(.vertical, 9)
+                .background(bubbleBg)
+                .clipShape(ChannelBubbleShape(isCurrentUser: isCurrentUser, showTail: showTail))
                 .overlay(
-                    ChannelBubbleShape(isFirstInGroup: isFirstInGroup)
-                        .strokeBorder(bubbleBorder, lineWidth: 0.5)
+                    ChannelBubbleShape(isCurrentUser: isCurrentUser, showTail: showTail)
+                        .strokeBorder(bubbleBd, lineWidth: 0.5)
                 )
+                .frame(minWidth: 60, maxWidth: UIScreen.main.bounds.width * 0.75, alignment: frameAlignment)
             }
             
             // Reactions (MF-003: with tooltip on long-press)
@@ -823,18 +842,41 @@ struct ChannelDetailView: View {
                 .buttonStyle(.plain)
             }
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .frame(maxWidth: .infinity, alignment: frameAlignment)
         .padding(.horizontal, Spacing.screenPadding)
         .padding(.top, showSenderHeader ? 12 : 2)
-        .simultaneousGesture(
-            LongPressGesture(minimumDuration: 0.4)
-                .onEnded { _ in
-                    withAnimation(.spring(response: 0.35, dampingFraction: 0.75)) {
-                        reactionOverlayMessage = message
-                    }
-                    Haptics.play(.medium)
+        } menu: {
+            CustomMenuView {
+                CustomMenuButton("Reply", systemImage: "arrowshape.turn.up.left") {
+                    viewModel.setReplyTo(message)
                 }
-        )
+                
+                CustomMenuButton("Reply in Thread", systemImage: "bubble.left.and.bubble.right") {
+                    Task { await viewModel.openThread(for: message) }
+                    Haptics.play(.light)
+                }
+                
+                CustomMenuButton(action: { Task { await viewModel.togglePin(messageId: message.id) } }) {
+                    Label(message.isPinned ? "Unpin" : "Pin", systemImage: message.isPinned ? "pin.slash" : "pin")
+                }
+                
+                CustomMenuButton("Copy", systemImage: "doc.on.doc") {
+                    viewModel.copyMessage(message)
+                }
+                
+                if isCurrentUser {
+                    CustomMenuDivider()
+                    
+                    CustomMenuButton("Edit", systemImage: "pencil") {
+                        viewModel.beginEditing(message: message)
+                    }
+                    
+                    CustomMenuButton("Delete", systemImage: "trash", role: .destructive) {
+                        Task { await viewModel.deleteMessage(id: message.id) }
+                    }
+                }
+            }
+        }
         .opacity(message.isOptimistic ? 0.6 : 1.0)
     }
     
@@ -1312,40 +1354,145 @@ struct ChannelDetailView: View {
     }
 }
 
+// MARK: - Channel Reaction Provider
+
+struct ChannelReactionProvider: ReactionProvider {
+    func reactions() -> [String] {
+        ["👍", "❤️", "😂", "😮", "😢", "🔥", "🎉", "➕"]
+    }
+}
+
 // MARK: - Channel Bubble Shape
+//
+// iMessage-style speech bubble using UIBezierPath with smooth cubic bezier curves.
+//
+// • showTail = true  → the "last" or "single" bubble in a group gets a smooth pointed tail.
+//   - Sent (isCurrentUser): tail at bottom-right, curving outward to the right.
+//   - Received           : tail at bottom-left, curving outward to the left.
+// • showTail = false → plain rounded rectangle (all four corners smooth).
+//
+// Adapted from the classic iMessage recreation technique — all corners and the tail
+// use addCurve (cubic bezier) for a smooth, natural look with no sharp angular edges.
 
 struct ChannelBubbleShape: InsettableShape {
-    let isFirstInGroup: Bool
+    let isCurrentUser: Bool
+    let showTail: Bool
     var insetAmount: CGFloat = 0
-    
-    private let standardRadius: CGFloat = 16
-    private let tailRadius: CGFloat = 4
-    
+
     func inset(by amount: CGFloat) -> ChannelBubbleShape {
         var copy = self
         copy.insetAmount += amount
         return copy
     }
-    
+
     func path(in rect: CGRect) -> Path {
-        let r = rect.insetBy(dx: insetAmount, dy: insetAmount)
-        let tl = isFirstInGroup ? tailRadius : standardRadius
-        let tr = standardRadius
-        let br = standardRadius
-        let bl = standardRadius
-        
-        return Path { p in
-            p.move(to: CGPoint(x: r.minX + tl, y: r.minY))
-            p.addLine(to: CGPoint(x: r.maxX - tr, y: r.minY))
-            p.addArc(center: CGPoint(x: r.maxX - tr, y: r.minY + tr), radius: tr, startAngle: .degrees(-90), endAngle: .degrees(0), clockwise: false)
-            p.addLine(to: CGPoint(x: r.maxX, y: r.maxY - br))
-            p.addArc(center: CGPoint(x: r.maxX - br, y: r.maxY - br), radius: br, startAngle: .degrees(0), endAngle: .degrees(90), clockwise: false)
-            p.addLine(to: CGPoint(x: r.minX + bl, y: r.maxY))
-            p.addArc(center: CGPoint(x: r.minX + bl, y: r.maxY - bl), radius: bl, startAngle: .degrees(90), endAngle: .degrees(180), clockwise: false)
-            p.addLine(to: CGPoint(x: r.minX, y: r.minY + tl))
-            p.addArc(center: CGPoint(x: r.minX + tl, y: r.minY + tl), radius: tl, startAngle: .degrees(180), endAngle: .degrees(270), clockwise: false)
-            p.closeSubpath()
+        let b = rect.insetBy(dx: insetAmount, dy: insetAmount)
+        let width = b.width
+        let height = b.height
+        // Offset so coordinates are relative to b.origin
+        let minX = b.minX
+        let minY = b.minY
+
+        let bezier = UIBezierPath()
+
+        if !isCurrentUser {
+            // ── Received bubble: tail at bottom-left ──
+            if showTail {
+                bezier.move(to: CGPoint(x: minX + 20, y: minY + height))
+                bezier.addLine(to: CGPoint(x: minX + width - 15, y: minY + height))
+                bezier.addCurve(to: CGPoint(x: minX + width, y: minY + height - 15),
+                                controlPoint1: CGPoint(x: minX + width - 8, y: minY + height),
+                                controlPoint2: CGPoint(x: minX + width, y: minY + height - 8))
+                bezier.addLine(to: CGPoint(x: minX + width, y: minY + 15))
+                bezier.addCurve(to: CGPoint(x: minX + width - 15, y: minY),
+                                controlPoint1: CGPoint(x: minX + width, y: minY + 8),
+                                controlPoint2: CGPoint(x: minX + width - 8, y: minY))
+                bezier.addLine(to: CGPoint(x: minX + 20, y: minY))
+                bezier.addCurve(to: CGPoint(x: minX + 5, y: minY + 15),
+                                controlPoint1: CGPoint(x: minX + 12, y: minY),
+                                controlPoint2: CGPoint(x: minX + 5, y: minY + 8))
+                bezier.addLine(to: CGPoint(x: minX + 5, y: minY + height - 10))
+                bezier.addCurve(to: CGPoint(x: minX, y: minY + height),
+                                controlPoint1: CGPoint(x: minX + 5, y: minY + height - 1),
+                                controlPoint2: CGPoint(x: minX, y: minY + height))
+                bezier.addLine(to: CGPoint(x: minX - 1, y: minY + height))
+                bezier.addCurve(to: CGPoint(x: minX + 12, y: minY + height - 4),
+                                controlPoint1: CGPoint(x: minX + 4, y: minY + height + 1),
+                                controlPoint2: CGPoint(x: minX + 8, y: minY + height - 1))
+                bezier.addCurve(to: CGPoint(x: minX + 20, y: minY + height),
+                                controlPoint1: CGPoint(x: minX + 15, y: minY + height),
+                                controlPoint2: CGPoint(x: minX + 20, y: minY + height))
+            } else {
+                // Plain rounded rect — no tail
+                bezier.move(to: CGPoint(x: minX + 20, y: minY + height))
+                bezier.addLine(to: CGPoint(x: minX + width - 15, y: minY + height))
+                bezier.addCurve(to: CGPoint(x: minX + width, y: minY + height - 15),
+                                controlPoint1: CGPoint(x: minX + width - 8, y: minY + height),
+                                controlPoint2: CGPoint(x: minX + width, y: minY + height - 8))
+                bezier.addLine(to: CGPoint(x: minX + width, y: minY + 15))
+                bezier.addCurve(to: CGPoint(x: minX + width - 15, y: minY),
+                                controlPoint1: CGPoint(x: minX + width, y: minY + 8),
+                                controlPoint2: CGPoint(x: minX + width - 8, y: minY))
+                bezier.addLine(to: CGPoint(x: minX + 20, y: minY))
+                bezier.addCurve(to: CGPoint(x: minX + 5, y: minY + 15),
+                                controlPoint1: CGPoint(x: minX + 12, y: minY),
+                                controlPoint2: CGPoint(x: minX + 5, y: minY + 8))
+                bezier.addLine(to: CGPoint(x: minX + 5, y: minY + height - 15))
+                bezier.addCurve(to: CGPoint(x: minX + 20, y: minY + height),
+                                controlPoint1: CGPoint(x: minX + 5, y: minY + height - 8),
+                                controlPoint2: CGPoint(x: minX + 12, y: minY + height))
+            }
+        } else {
+            // ── Sent bubble: tail at bottom-right ──
+            if showTail {
+                bezier.move(to: CGPoint(x: minX + width - 20, y: minY + height))
+                bezier.addLine(to: CGPoint(x: minX + 15, y: minY + height))
+                bezier.addCurve(to: CGPoint(x: minX, y: minY + height - 15),
+                                controlPoint1: CGPoint(x: minX + 8, y: minY + height),
+                                controlPoint2: CGPoint(x: minX, y: minY + height - 8))
+                bezier.addLine(to: CGPoint(x: minX, y: minY + 15))
+                bezier.addCurve(to: CGPoint(x: minX + 15, y: minY),
+                                controlPoint1: CGPoint(x: minX, y: minY + 8),
+                                controlPoint2: CGPoint(x: minX + 8, y: minY))
+                bezier.addLine(to: CGPoint(x: minX + width - 20, y: minY))
+                bezier.addCurve(to: CGPoint(x: minX + width - 5, y: minY + 15),
+                                controlPoint1: CGPoint(x: minX + width - 12, y: minY),
+                                controlPoint2: CGPoint(x: minX + width - 5, y: minY + 8))
+                bezier.addLine(to: CGPoint(x: minX + width - 5, y: minY + height - 12))
+                bezier.addCurve(to: CGPoint(x: minX + width, y: minY + height),
+                                controlPoint1: CGPoint(x: minX + width - 5, y: minY + height - 1),
+                                controlPoint2: CGPoint(x: minX + width, y: minY + height))
+                bezier.addLine(to: CGPoint(x: minX + width + 1, y: minY + height))
+                bezier.addCurve(to: CGPoint(x: minX + width - 12, y: minY + height - 4),
+                                controlPoint1: CGPoint(x: minX + width - 4, y: minY + height + 1),
+                                controlPoint2: CGPoint(x: minX + width - 8, y: minY + height - 1))
+                bezier.addCurve(to: CGPoint(x: minX + width - 20, y: minY + height),
+                                controlPoint1: CGPoint(x: minX + width - 15, y: minY + height),
+                                controlPoint2: CGPoint(x: minX + width - 20, y: minY + height))
+            } else {
+                // Plain rounded rect — no tail
+                bezier.move(to: CGPoint(x: minX + width - 20, y: minY + height))
+                bezier.addLine(to: CGPoint(x: minX + 15, y: minY + height))
+                bezier.addCurve(to: CGPoint(x: minX, y: minY + height - 15),
+                                controlPoint1: CGPoint(x: minX + 8, y: minY + height),
+                                controlPoint2: CGPoint(x: minX, y: minY + height - 8))
+                bezier.addLine(to: CGPoint(x: minX, y: minY + 15))
+                bezier.addCurve(to: CGPoint(x: minX + 15, y: minY),
+                                controlPoint1: CGPoint(x: minX, y: minY + 8),
+                                controlPoint2: CGPoint(x: minX + 8, y: minY))
+                bezier.addLine(to: CGPoint(x: minX + width - 20, y: minY))
+                bezier.addCurve(to: CGPoint(x: minX + width - 5, y: minY + 15),
+                                controlPoint1: CGPoint(x: minX + width - 12, y: minY),
+                                controlPoint2: CGPoint(x: minX + width - 5, y: minY + 8))
+                bezier.addLine(to: CGPoint(x: minX + width - 5, y: minY + height - 15))
+                bezier.addCurve(to: CGPoint(x: minX + width - 20, y: minY + height),
+                                controlPoint1: CGPoint(x: minX + width - 5, y: minY + height - 8),
+                                controlPoint2: CGPoint(x: minX + width - 12, y: minY + height))
+            }
         }
+
+        bezier.close()
+        return Path(bezier.cgPath)
     }
 }
 

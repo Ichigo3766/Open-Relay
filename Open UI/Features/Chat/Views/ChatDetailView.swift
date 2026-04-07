@@ -36,6 +36,17 @@ struct ChatDetailView: View {
     /// Timestamp of last animated scroll-to-bottom during active streaming (throttle guard).
     @State private var lastStreamingScrollTime: Date = .distantPast
 
+    // MARK: Message pagination (sliding window — memory optimization)
+    /// The ending index (exclusive) of the visible message window.
+    /// `nil` means "pinned to latest" — the window always includes the newest messages.
+    @State private var windowEnd: Int? = nil
+    /// Number of messages currently in the window. Starts small, grows to `maxWindowSize`.
+    @State private var windowSize: Int = 5
+    /// Guard to prevent rapid-fire pagination triggers.
+    @State private var isLoadingMoreMessages = false
+    /// Maximum messages rendered at once (the sliding-window cap).
+    private let maxWindowSize = 10
+
 
     // MARK: UI state
     @State private var showCopiedToast = false
@@ -829,6 +840,17 @@ struct ChatDetailView: View {
         // scrolling to bottom naturally places the user's sent message
         // near the top of the viewport (ChatGPT-style).
         .onChange(of: viewModel.messages.count) { old, new in
+            // ── Keep pagination window pinned to latest on new messages ──
+            // When new messages arrive (user sent or assistant appended),
+            // reset the window to show the latest messages so they're visible.
+            // Skip bulk loads (old == 0) — those start paginated at 5.
+            if new > old && old > 0 {
+                // Pin window to the end (latest messages)
+                windowEnd = nil
+                // Grow the window to include the new messages, capped at maxWindowSize
+                windowSize = min(max(windowSize, maxWindowSize), new)
+            }
+
             guard new > old, !isScrolledUp else { return }
 
             if old == 0 {
@@ -856,14 +878,13 @@ struct ChatDetailView: View {
                 }
             }
         }
-        // Streaming: when streaming starts, clear scrolledUp flag so the
-        // streaming scroll-pump can keep the view pinned at the bottom
-        // as new tokens arrive. We do NOT force an immediate scroll to
-        // bottom here — the user message should stay visible at the top
-        // until the response grows long enough to push it up.
+        // Streaming: when streaming starts, only clear the scrolledUp flag
+        // if the user is already near the bottom. If they've manually
+        // scrolled up, respect that position and don't yank them back.
         .onChange(of: viewModel.isStreaming) { _, streaming in
-            if streaming {
-                isScrolledUp = false
+            if streaming && !isScrolledUp {
+                // Already at bottom — ensure auto-scroll stays active.
+                scrollPosition.scrollTo(edge: .bottom)
             }
         }
         // Resume auto-scroll: when the user scrolls back to the bottom
@@ -896,19 +917,73 @@ struct ChatDetailView: View {
         .scrollDismissesKeyboard(editingMessageId != nil ? .never : .interactively)
         .defaultScrollAnchor(.bottom)
         .scrollPosition($scrollPosition, anchor: .bottom)
-        // Detect scroll position to show/hide FAB
+        // Detect scroll position to show/hide FAB + auto-load pagination
         .onScrollGeometryChange(for: CGPoint.self) { geo in
             geo.contentOffset
         } action: { _, newOffset in
             let distanceFromBottom = max(0,
                 viewState_contentHeight - newOffset.y - viewState_containerHeight)
-            if distanceFromBottom <= 120 {
+            if distanceFromBottom <= 100 {
+                // User scrolled very close to the bottom — re-engage auto-scroll.
                 if isScrolledUp { isScrolledUp = false }
-            } else if newOffset.y < lastScrollOffset - 40 {
-                if !isScrolledUp { isScrolledUp = true }
+            } else {
+                // During active streaming, any upward movement at all breaks out
+                // immediately so the scroll pump can't fight the user's finger.
+                // Outside of streaming, require a small but intentional drag (8pt)
+                // to avoid accidental break-out from bounce/inertia.
+                let threshold: CGFloat = viewModel.isStreaming ? 2 : 8
+                if newOffset.y < lastScrollOffset - threshold {
+                    if !isScrolledUp { isScrolledUp = true }
+                }
             }
             if abs(newOffset.y - lastScrollOffset) > 2 {
                 lastScrollOffset = newOffset.y
+            }
+
+            // ── Sliding window: load older messages when near the top ──
+            let total = viewModel.messages.count
+            let effectiveEnd = windowEnd ?? total
+            let effectiveStart = max(0, effectiveEnd - windowSize)
+
+            if newOffset.y < 200,
+               !isLoadingMoreMessages,
+               effectiveStart > 0,
+               !viewModel.isLoadingConversation {
+                isLoadingMoreMessages = true
+                let anchorId = viewModel.messages[effectiveStart].id
+                let slideBy = min(5, effectiveStart)
+
+                // Detach from "pinned to latest" on first upward scroll
+                if windowEnd == nil { windowEnd = total }
+
+                // Slide window backwards: keep size capped, shift windowEnd so start moves up
+                windowSize = min(windowSize + slideBy, maxWindowSize)
+                let newStart = max(0, effectiveStart - slideBy)
+                windowEnd = min(newStart + windowSize, total)
+
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                    scrollPosition.scrollTo(id: anchorId, anchor: .top)
+                    isLoadingMoreMessages = false
+                }
+            }
+
+            // ── Sliding window: load newer messages when near the bottom ──
+            if let wEnd = windowEnd, wEnd < total,
+               distanceFromBottom < 200,
+               !isLoadingMoreMessages,
+               !viewModel.isLoadingConversation {
+                isLoadingMoreMessages = true
+                let anchorId = viewModel.messages[min(wEnd - 1, total - 1)].id
+                let slideBy = min(5, total - wEnd)
+                windowEnd = wEnd + slideBy
+
+                // Re-pin to latest when we've scrolled all the way back down
+                if windowEnd! >= total { windowEnd = nil }
+
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                    scrollPosition.scrollTo(id: anchorId, anchor: .bottom)
+                    isLoadingMoreMessages = false
+                }
             }
         }
         .onScrollGeometryChange(for: CGSize.self) { geo in
@@ -958,7 +1033,15 @@ struct ChatDetailView: View {
             .contentShape(Circle())
             .highPriorityGesture(
                 TapGesture().onEnded {
-                    withAnimation { scrollPosition.scrollTo(edge: .bottom) }
+                    // Disengage auto-scroll lock first so the streaming pump
+                    // doesn't fight the scroll animation we're about to start.
+                    isScrolledUp = false
+                    // Reset sliding window to latest messages
+                    windowEnd = nil
+                    windowSize = min(maxWindowSize, viewModel.messages.count)
+                    withAnimation(.spring(response: 0.45, dampingFraction: 0.82)) {
+                        scrollPosition.scrollTo(edge: .bottom)
+                    }
                     Haptics.play(.light)
                 }
             )
@@ -1001,17 +1084,39 @@ struct ChatDetailView: View {
     ///
     /// All earlier messages render at their natural height.
     private var messagesList: some View {
-        let messages = viewModel.messages
-        let indexMap = Dictionary(messages.enumerated().map { ($1.id, $0) },
+        let allMessages = viewModel.messages
+        let total = allMessages.count
+
+        // ── Sliding window: compute the visible slice ──
+        let effectiveEnd = windowEnd ?? total
+        let effectiveStart = max(0, effectiveEnd - windowSize)
+        let clampedEnd = min(effectiveEnd, total)
+        let messages = Array(allMessages[effectiveStart..<clampedEnd])
+        let hasMoreAbove = effectiveStart > 0
+        let hasMoreBelow = clampedEnd < total
+
+        let indexMap = Dictionary(allMessages.enumerated().map { ($1.id, $0) },
                                   uniquingKeysWith: { first, _ in first })
 
-        // Split point: index of the last user message.
+        // Split point: index of the last user message *within the visible slice*.
         // Everything from here to the end is the "last turn".
         // If there are no user messages, splitAt == count → no split, all normal.
         let lastUserIdx = messages.lastIndex(where: { $0.role == .user })
         let splitAt = lastUserIdx ?? messages.count
 
+        // Only apply minHeight trick when the window includes the actual last message
+        let windowIncludesEnd = (windowEnd == nil || clampedEnd >= total)
+
         return Group {
+            // ── "Loading more" indicator at the top ──
+            if hasMoreAbove {
+                ProgressView()
+                    .controlSize(.small)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, Spacing.md)
+                    .id("pagination-spinner-top")
+            }
+
             // ── Messages before the last turn (natural height) ──
             ForEach(Array(messages.prefix(splitAt))) { message in
                 let index = indexMap[message.id] ?? 0
@@ -1028,7 +1133,17 @@ struct ChatDetailView: View {
                             .id(message.id)
                     }
                 }
-                .frame(minHeight: max(viewState_containerHeight, 0), alignment: .top)
+                .frame(minHeight: windowIncludesEnd ? max(viewState_containerHeight, 0) : nil,
+                       alignment: .top)
+            }
+
+            // ── "Loading newer" indicator at the bottom ──
+            if hasMoreBelow {
+                ProgressView()
+                    .controlSize(.small)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, Spacing.md)
+                    .id("pagination-spinner-bottom")
             }
         }
     }
@@ -1319,77 +1434,6 @@ struct ChatDetailView: View {
         }
     }
 
-    private func preprocessCitations(_ content: String, sources: [ChatSourceReference]) -> String {
-        guard !sources.isEmpty else { return content }
-        let pattern = #"\[(\d+)\](?!\()"#
-        guard let regex = try? NSRegularExpression(pattern: pattern) else { return content }
-        var result = ""
-        var searchStart = content.startIndex
-        let nsContent = content as NSString
-        let matches = regex.matches(in: content, range: NSRange(location: 0, length: nsContent.length))
-        for match in matches {
-            guard let fullRange = Range(match.range, in: content),
-                  let numberRange = Range(match.range(at: 1), in: content) else { continue }
-            guard let index = Int(content[numberRange]) else { continue }
-            result += content[searchStart..<fullRange.lowerBound]
-            let sourceIdx = index - 1
-            if sourceIdx >= 0 && sourceIdx < sources.count,
-               let url = sources[sourceIdx].resolvedURL, !url.isEmpty {
-                let label = sources[sourceIdx].displayLabel ?? "\(index)"
-                // #cite suffix triggers small pill badge rendering in MarkdownView
-                result += " [\(label)](\(url)#cite) "
-            } else {
-                result += content[fullRange]
-            }
-            searchStart = fullRange.upperBound
-        }
-        result += content[searchStart...]
-        return result
-    }
-
-    /// Rewrites relative server URLs (like `/api/v1/files/{id}/content`) in markdown
-    /// link targets to absolute URLs using the server's base URL, so they can be
-    /// opened by iOS when tapped.
-    private func resolveRelativeURLs(_ content: String) -> String {
-        let base = viewModel.serverBaseURL.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-        guard !base.isEmpty else { return content }
-
-        // Match markdown links: [text](url)
-        // Capture the URL part — replace if it starts with /api/
-        let pattern = #"(\]\()(/api/[^\s\)]+)"#
-        guard let regex = try? NSRegularExpression(pattern: pattern) else { return content }
-        let nsContent = content as NSString
-        let matches = regex.matches(in: content, range: NSRange(location: 0, length: nsContent.length))
-
-        guard !matches.isEmpty else { return content }
-
-        var result = ""
-        var currentIndex = 0
-
-        for match in matches {
-            let fullRange = match.range
-            // Text before this match
-            if fullRange.location > currentIndex {
-                result += nsContent.substring(with: NSRange(location: currentIndex, length: fullRange.location - currentIndex))
-            }
-            // The "](" prefix
-            let prefixRange = match.range(at: 1)
-            let prefix = nsContent.substring(with: prefixRange)
-            // The relative path
-            let pathRange = match.range(at: 2)
-            let relativePath = nsContent.substring(with: pathRange)
-            // Build absolute URL
-            result += "\(prefix)\(base)\(relativePath)"
-            currentIndex = fullRange.location + fullRange.length
-        }
-
-        // Remaining content
-        if currentIndex < nsContent.length {
-            result += nsContent.substring(from: currentIndex)
-        }
-
-        return result
-    }
 
 
     // MARK: - iMessage-Style Edit Input Bar
