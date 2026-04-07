@@ -31,6 +31,9 @@ struct OpenNewChatControlIntent: AppIntent {
     static var title: LocalizedStringResource = "New Chat"
     static var description = IntentDescription("Open a new chat in Open Relay.")
     static var openAppWhenRun: Bool = true
+    // Prevent this Control Center-only intent from appearing in the Shortcuts app.
+    // The main app's NewChatIntent (in AppIntentsService.swift) is the canonical shortcut.
+    static var isDiscoverable: Bool = false
 
     func perform() async throws -> some IntentResult & OpensIntent {
         // Open the app via the deep link URL, which triggers the .onOpenURL

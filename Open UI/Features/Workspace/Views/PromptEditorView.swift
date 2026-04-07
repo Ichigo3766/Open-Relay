@@ -30,6 +30,10 @@ struct PromptEditorView: View {
     @State private var isUpdatingAccess: Bool = false
     @State private var accessUpdateError: String?
 
+    // MARK: Auto-fill state
+    @State private var commandManuallyEdited = false
+    @State private var isAutoSettingCommand = false
+
     // MARK: UI state
     @State private var newTag: String = ""
     @State private var showTagSuggestions: Bool = false
@@ -180,6 +184,12 @@ struct PromptEditorView: View {
                             .foregroundStyle(theme.textPrimary)
                             .focused($focusedField, equals: .name)
                             .autocorrectionDisabled()
+                            .onChange(of: name) { _, newValue in
+                                if !commandManuallyEdited {
+                                    isAutoSettingCommand = true
+                                    command = newValue.lowercased().replacingOccurrences(of: " ", with: "")
+                                }
+                            }
                     }
                     .padding(.vertical, 12)
 
@@ -203,6 +213,11 @@ struct PromptEditorView: View {
                                 .onChange(of: command) { _, new in
                                     if new.hasPrefix("/") { command = String(new.dropFirst()) }
                                     command = command.replacingOccurrences(of: " ", with: "")
+                                    if isAutoSettingCommand {
+                                        isAutoSettingCommand = false
+                                    } else {
+                                        commandManuallyEdited = true
+                                    }
                                 }
                         }
                     }
@@ -791,6 +806,7 @@ struct PromptEditorView: View {
 
     private func populateFromExisting() {
         guard let existing else { return }
+        commandManuallyEdited = true  // Don't auto-generate command when editing
         name = existing.name
         command = existing.command
         content = existing.content

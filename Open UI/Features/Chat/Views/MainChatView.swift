@@ -2356,6 +2356,7 @@ let conversationId: String?
                     .lineLimit(1)
             } else {
                 Button {
+                    Haptics.play(.light)
                     vm.refreshModelsInBackground()
                     isShowingModelSelectorSheet = true
                 } label: {
@@ -2374,14 +2375,23 @@ let conversationId: String?
                             .foregroundStyle(theme.textPrimary)
                             .lineLimit(1)
                             .truncationMode(.tail)
-                            .fixedSize(horizontal: true, vertical: false)
-                            .frame(maxWidth: 160, alignment: .leading)
                         Image(systemName: "chevron.down")
                             .scaledFont(size: 10, weight: .semibold)
                             .foregroundStyle(theme.textTertiary)
                             .fixedSize()
+                            .layoutPriority(1)
                     }
-                    .fixedSize(horizontal: true, vertical: true)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
+                    .background(
+                        RoundedRectangle(cornerRadius: 12, style: .continuous)
+                            .fill(theme.cardBackground.opacity(0.9))
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 12, style: .continuous)
+                            .strokeBorder(theme.cardBorder.opacity(0.5), lineWidth: 0.5)
+                    )
+                    .frame(maxWidth: 220)
                 }
                 .buttonStyle(.plain)
                 .sheet(isPresented: $isShowingModelSelectorSheet) {

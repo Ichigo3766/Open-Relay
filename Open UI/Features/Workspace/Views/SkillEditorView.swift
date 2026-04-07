@@ -181,7 +181,6 @@ struct SkillEditorView: View {
                                 if !slugManuallyEdited {
                                     isAutoSettingSlug = true
                                     slug = generateSlug(from: newValue)
-                                    isAutoSettingSlug = false
                                 }
                             }
                     }
@@ -190,7 +189,7 @@ struct SkillEditorView: View {
                     Divider().background(theme.inputBorder.opacity(0.4))
 
                     HStack {
-                        Text("ID (Slug)")
+                        Text("ID")
                             .scaledFont(size: 14)
                             .foregroundStyle(theme.textSecondary)
                             .frame(width: 80, alignment: .leading)
@@ -201,7 +200,11 @@ struct SkillEditorView: View {
                             .autocorrectionDisabled()
                             .autocapitalization(.none)
                             .onChange(of: slug) { _, _ in
-                                if !isAutoSettingSlug { slugManuallyEdited = true }
+                                if isAutoSettingSlug {
+                                    isAutoSettingSlug = false
+                                } else {
+                                    slugManuallyEdited = true
+                                }
                             }
                     }
                     .padding(.vertical, 12)

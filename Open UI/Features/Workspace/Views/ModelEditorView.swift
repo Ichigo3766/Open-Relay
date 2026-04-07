@@ -353,7 +353,18 @@ struct ModelEditorView: View {
             }
             .sheet(isPresented: $showBaseModelPicker) {
                 BaseModelPickerSheet(
-                    availableModels: availableModels.filter { $0.id != modelId },
+                    availableModels: availableModels.filter { model in
+                        // Exclude self
+                        guard model.id != modelId else { return false }
+                        // Exclude workspace models — models that have a base_model_id set
+                        // are custom models wrapping another model, not provider models.
+                        if let info = model.rawModelItem?["info"] as? [String: Any],
+                           let baseId = info["base_model_id"] as? String,
+                           !baseId.isEmpty {
+                            return false
+                        }
+                        return true
+                    },
                     selectedModelId: baseModelId,
                     serverBaseURL: serverBaseURL,
                     authToken: authToken,
@@ -518,11 +529,13 @@ struct ModelEditorView: View {
                             .focused($focusedField, equals: .name)
                             .autocorrectionDisabled()
                             .onChange(of: name) { _, newValue in
-                                // Auto-fill Model ID with slugified name unless user edited it manually
+                                // Auto-fill Model ID with slugified name unless user edited it manually.
+                                // isAutoSettingId is intentionally left true here; it is cleared in the
+                                // modelId onChange handler which fires in the same render pass after the
+                                // binding is updated, ensuring the flag is still set when that fires.
                                 if !idManuallyEdited {
                                     isAutoSettingId = true
                                     modelId = Self.slugify(newValue)
-                                    isAutoSettingId = false
                                 }
                             }
                     }
@@ -545,7 +558,14 @@ struct ModelEditorView: View {
                             .autocapitalization(.none)
                             .disabled(isEditing)
                             .onChange(of: modelId) { _, _ in
-                                if !isAutoSettingId { idManuallyEdited = true }
+                                if isAutoSettingId {
+                                    // This change was triggered programmatically by the name field.
+                                    // Clear the flag here (correct render cycle) so future user
+                                    // edits are correctly detected.
+                                    isAutoSettingId = false
+                                } else {
+                                    idManuallyEdited = true
+                                }
                             }
                     }
                     .padding(.vertical, 12)
