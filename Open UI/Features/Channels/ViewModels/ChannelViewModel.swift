@@ -529,7 +529,13 @@ final class ChannelViewModel {
                 data: msgData.isEmpty ? nil : msgData
             )
             if let msg {
-                threadMessages.append(msg)
+                // Dedup: socket may have already delivered this message while the API
+                // call was in flight — update in place rather than appending a duplicate.
+                if let idx = threadMessages.firstIndex(where: { $0.id == msg.id }) {
+                    threadMessages[idx] = msg
+                } else {
+                    threadMessages.append(msg)
+                }
                 await loadThreadMessageData(for: msg.id)
                 // BUG-005 fix: Don't manually increment — let the API refresh handle it
                 // The socket event will trigger a refresh of the parent message

@@ -245,6 +245,7 @@ struct MainChatView: View {
                         }
                     }
             }
+            .ignoresSafeArea(.keyboard)
             .allowsHitTesting(drawerFraction < 0.01 && !isDraggingDrawer && !isDraggingFileBrowser)
 
             // MARK: Dimming overlay

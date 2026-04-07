@@ -19,8 +19,8 @@ struct MessageReactionOverlay: View {
     
     @Environment(\.theme) private var theme
     
-    /// Quick reaction emojis shown in the horizontal strip
-    private let quickEmojis = ["👍", "❤️", "😂", "😮", "😢", "🔥"]
+    /// Quick reaction emojis shown in the horizontal strip (➕ at end opens full picker)
+    private let quickEmojis = ["👍", "❤️", "😂", "😮", "😢", "🔥", "🎉", "🙏", "💯", "❓", "➕"]
     
     var body: some View {
         ZStack {
@@ -33,31 +33,25 @@ struct MessageReactionOverlay: View {
                 Spacer()
                 
                 // Emoji reaction strip
-                HStack(spacing: 8) {
-                    ForEach(quickEmojis, id: \.self) { emoji in
-                        Button {
-                            onReaction(emoji)
-                            Haptics.play(.light)
-                        } label: {
-                            Text(emoji)
-                                .font(.system(size: 28))
-                                .frame(width: 44, height: 44)
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 8) {
+                        ForEach(quickEmojis, id: \.self) { emoji in
+                            Button {
+                                if emoji == "➕" {
+                                    onMoreEmoji()
+                                } else {
+                                    onReaction(emoji)
+                                    Haptics.play(.light)
+                                }
+                            } label: {
+                                Text(emoji)
+                                    .font(.system(size: 28))
+                                    .frame(width: 44, height: 44)
+                            }
+                            .buttonStyle(.plain)
                         }
-                        .buttonStyle(.plain)
                     }
-                    
-                    // More emoji button → opens full picker
-                    Button {
-                        onMoreEmoji()
-                    } label: {
-                        Image(systemName: "face.smiling")
-                            .scaledFont(size: 20, weight: .medium)
-                            .foregroundStyle(theme.textSecondary)
-                            .frame(width: 44, height: 44)
-                            .background(.ultraThinMaterial)
-                            .clipShape(Circle())
-                    }
-                    .buttonStyle(.plain)
+                    .padding(.horizontal, 12)
                 }
                 .padding(.horizontal, 12)
                 .padding(.vertical, 8)

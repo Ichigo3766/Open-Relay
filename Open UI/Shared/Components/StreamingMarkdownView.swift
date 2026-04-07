@@ -30,12 +30,21 @@ struct StreamingMarkdownView: View {
         self.textColor = textColor
     }
 
-    /// Returns a MarkdownTheme with fonts scaled by the user's accessibility content scale.
+    /// Returns a MarkdownTheme with fonts scaled by the user's accessibility content scale,
+    /// and optionally with the body text color overridden (for rendering on coloured backgrounds
+    /// like the blue "sent" bubble in channels — UIKit-backed MarkdownView ignores SwiftUI
+    /// foregroundStyle, so we must set the color directly in the theme).
     private var scaledTheme: MarkdownTheme {
         let scale = accessibilityScale.scale(for: .content)
-        guard abs(scale - 1.0) > 0.01 else { return .default }
         var theme = MarkdownTheme.default
-        theme.align(to: Self.baseBodyFontSize * scale)
+        if abs(scale - 1.0) > 0.01 {
+            theme.align(to: Self.baseBodyFontSize * scale)
+        }
+        if let swiftUIColor = textColor {
+            let uiColor = UIColor(swiftUIColor)
+            theme.colors.body = uiColor
+            theme.colors.code = uiColor
+        }
         return theme
     }
 
