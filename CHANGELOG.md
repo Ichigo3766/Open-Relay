@@ -1,5 +1,20 @@
 # Changelog
 
+## v2.5 — April 7, 2026
+
+### What's New
+- Redesigned appstore screenshots and the icon!
+
+### Improvements
+- Added haptic feedback when tapping the model selector.
+
+### Bug Fixes
+- Base model picker when creating a workspace model now only shows provider models, not other workspace models.
+- Model ID, Prompt command, Skill ID, and Tool ID fields now correctly auto-fill from the name when creating new items in the workspace.
+- Added consistent pill background to the navigation bar model selector chip.
+
+## Previous Builds
+
 ## v2.4.4 — April 7, 2026
 
 ### Improvements

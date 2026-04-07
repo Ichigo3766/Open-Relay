@@ -272,12 +272,18 @@ struct ChatInputField: View {
 
             // Main text input row — center alignment keeps + and send/voice
             // button symmetrically aligned with the text on all line counts.
+            // The trailing buttons are grouped into a single fixed-size HStack
+            // so SwiftUI treats them as one atomic block and allocates their
+            // space first; the text field fills whatever remains.
             HStack(alignment: .center, spacing: 8) {
                 inlinePlusButton
                 textField
-                inlineTerminalButton
-                inlineDictationButton
-                trailingButton
+                HStack(spacing: 8) {
+                    inlineTerminalButton
+                    inlineDictationButton
+                    trailingButton
+                }
+                .fixedSize(horizontal: true, vertical: false)
             }
             .padding(.horizontal, 12)
             .padding(.top, selectedKnowledgeItems.isEmpty ? 10 : 6)
@@ -483,10 +489,10 @@ struct ChatInputField: View {
                     ? theme.brandPrimary.opacity(0.12)
                     : Color.clear
             )
-            .frame(width: 30, height: 30)
+            .frame(width: 26, height: 26)
             .overlay(
                 Image(systemName: "terminal")
-                    .scaledFont(size: 13, weight: .semibold)
+                    .scaledFont(size: 11, weight: .semibold)
                     .foregroundStyle(
                         terminalEnabled
                             ? theme.brandPrimary
@@ -520,10 +526,10 @@ struct ChatInputField: View {
             } label: {
                 Circle()
                     .fill(Color.clear)
-                    .frame(width: 30, height: 30)
+                    .frame(width: 26, height: 26)
                     .overlay(
                         Image(systemName: "mic")
-                            .scaledFont(size: 14, weight: .semibold)
+                            .scaledFont(size: 12, weight: .semibold)
                             .foregroundStyle(theme.textTertiary)
                     )
             }
@@ -547,10 +553,10 @@ struct ChatInputField: View {
                 } label: {
                     Circle()
                         .fill(theme.error.opacity(0.15))
-                        .frame(width: 30, height: 30)
+                        .frame(width: 26, height: 26)
                         .overlay(
                             Image(systemName: "stop.fill")
-                                .scaledFont(size: 11, weight: .bold)
+                                .scaledFont(size: 10, weight: .bold)
                                 .foregroundStyle(theme.error)
                         )
                 }
@@ -566,10 +572,10 @@ struct ChatInputField: View {
                 } label: {
                     Circle()
                         .fill(theme.brandPrimary)
-                        .frame(width: 30, height: 30)
+                        .frame(width: 26, height: 26)
                         .overlay(
                             Image(systemName: "arrow.up")
-                                .scaledFont(size: 13, weight: .bold)
+                                .scaledFont(size: 11, weight: .bold)
                                 .foregroundStyle(theme.brandOnPrimary)
                         )
                 }
@@ -595,10 +601,10 @@ struct ChatInputField: View {
                             ),
                             lineWidth: 1.5
                         )
-                        .frame(width: 30, height: 30)
+                        .frame(width: 26, height: 26)
                         .overlay(
                             Image(systemName: "waveform")
-                                .scaledFont(size: 13, weight: .semibold)
+                                .scaledFont(size: 11, weight: .semibold)
                                 .foregroundStyle(theme.brandPrimary)
                         )
                 }

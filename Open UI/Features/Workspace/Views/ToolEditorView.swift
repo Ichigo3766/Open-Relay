@@ -508,7 +508,6 @@ struct ToolEditorView: View {
                                 if !idManuallyEdited {
                                     isAutoSettingId = true
                                     toolId = generateId(from: newValue)
-                                    isAutoSettingId = false
                                 }
                             }
                     }
@@ -528,7 +527,11 @@ struct ToolEditorView: View {
                             .autocorrectionDisabled()
                             .autocapitalization(.none)
                             .onChange(of: toolId) { _, _ in
-                                if !isAutoSettingId { idManuallyEdited = true }
+                                if isAutoSettingId {
+                                    isAutoSettingId = false
+                                } else {
+                                    idManuallyEdited = true
+                                }
                             }
                     }
                     .padding(.vertical, 12)

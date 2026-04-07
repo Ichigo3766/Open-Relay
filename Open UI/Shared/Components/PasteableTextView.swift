@@ -67,6 +67,7 @@ struct PasteableTextView: UIViewRepresentable {
         textView.textColor = textColor
         textView.tintColor = tintColor
         textView.backgroundColor = .clear
+        textView.clipsToBounds = true
         // Start with scrolling OFF so the view sizes to its content.
         // We toggle it on in updateUIView when content exceeds max height.
         textView.isScrollEnabled = false
@@ -427,11 +428,12 @@ final class PasteInterceptingTextView: UITextView {
         let label = UILabel()
         label.translatesAutoresizingMaskIntoConstraints = false
         label.numberOfLines = 1
+        label.lineBreakMode = .byTruncatingTail
         addSubview(label)
         NSLayoutConstraint.activate([
             label.leadingAnchor.constraint(equalTo: leadingAnchor),
             label.topAnchor.constraint(equalTo: topAnchor),
-            label.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor),
+            label.trailingAnchor.constraint(equalTo: trailingAnchor),
         ])
         return label
     }()
