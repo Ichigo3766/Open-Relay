@@ -185,9 +185,19 @@ final class NotificationService: NSObject, @unchecked Sendable {
 
         isAuthorized = true
 
+        // Truncate to ~120 chars for the preview snippet
+        let showPreview = UserDefaults.standard.bool(forKey: "notificationShowResponsePreview")
+        let bodyText: String
+        if showPreview {
+            let snippet = preview.prefix(120)
+            bodyText = snippet.count < preview.count ? "\(snippet)…" : String(snippet)
+        } else {
+            bodyText = "Response is ready"
+        }
+
         let content = UNMutableNotificationContent()
         content.title = title
-        content.body = "Response is ready"
+        content.body = bodyText
         content.sound = .default
         content.categoryIdentifier = Self.generationCompleteCategory
         content.userInfo = ["conversationId": conversationId]

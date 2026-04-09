@@ -72,6 +72,9 @@ final class VoiceCallViewModel {
     private let logger = Logger(subsystem: "com.openui", category: "VoiceCall")
     private var durationTimer: Task<Void, Never>?
     private var callStartTime: Date?
+    /// Tracks the task running `handleFinalTranscript` → `waitForResponseAndSpeak`.
+    /// Cancelled in `endCall()` so TTS stops immediately when the user disconnects.
+    private var responseTask: Task<Void, Never>?
 
     // MARK: - Init (Apple on-device STT)
 
@@ -175,6 +178,10 @@ final class VoiceCallViewModel {
     /// Ends the current voice call.
     func endCall() async {
         stopActiveSTT()
+        // Cancel the response pipeline first so waitForResponseAndSpeak() stops looping
+        // and cannot call finishStreamingTTS() or startListening() after we end the call.
+        responseTask?.cancel()
+        responseTask = nil
         ttsService.stop()
         await callKitManager.endCall()
 
@@ -564,15 +571,25 @@ final class VoiceCallViewModel {
         // Brief yield so sendMessage() can set isStreaming = true before we poll
         try? await Task.sleep(for: .milliseconds(120))
 
-        await waitForResponseAndSpeak()
+        // Store the task so endCall() can cancel it if the user disconnects mid-response.
+        responseTask = Task { [weak self] in
+            await self?.waitForResponseAndSpeak()
+        }
+        await responseTask?.value
+        responseTask = nil
     }
 
     /// Waits for the streaming response and speaks it incrementally.
     /// Sentences are fed to TTS as soon as they're complete (not waiting for full response).
     /// When TTS finishes, the `onComplete` callback (set up in `setupCallbacks()`)
     /// automatically restarts listening — no need to poll state here.
+    ///
+    /// This method runs inside `responseTask` so it can be cancelled immediately by
+    /// `endCall()`. All early-exit paths check `Task.isCancelled` before restarting
+    /// the microphone or feeding text to TTS.
     private func waitForResponseAndSpeak() async {
         guard let chatViewModel else { return }
+        guard !Task.isCancelled else { return }
 
         if !isMuted {
             ttsService.startStreamingTTS()
@@ -588,6 +605,11 @@ final class VoiceCallViewModel {
         // until streaming fully completes. We must read directly from the streaming store.
         var lastContent = ""
         while chatViewModel.isStreaming {
+            guard !Task.isCancelled else {
+                ttsService.stop()
+                return
+            }
+
             // Prefer live content from the streaming store; fall back to messages array
             // for socket-based external streams that bypass the store.
             let newContent: String
@@ -604,6 +626,12 @@ final class VoiceCallViewModel {
                 }
             }
             try? await Task.sleep(for: .milliseconds(60))
+        }
+
+        // Bail out if the call was ended while we were polling
+        guard !Task.isCancelled else {
+            ttsService.stop()
+            return
         }
 
         // Send any remaining text to TTS.

@@ -5254,12 +5254,15 @@ final class ContentAccumulator: @unchecked Sendable {
     /// the system has low scheduling latency.
     private nonisolated(unsafe) var _lastDispatchTime: CFAbsoluteTime = 0
 
-    /// Minimum interval between dispatches. Set to 0 for immediate (real-time)
-    /// token dispatch — every token arrives on screen as fast as the SSE stream
-    /// delivers it. Safe because IsolatedAssistantMessage ensures only ONE view
-    /// body re-evaluates per token, and StreamingMarkdownView renders directly
-    /// without an additional flush delay.
-    nonisolated private static let minDispatchInterval: CFAbsoluteTime = 0
+    /// Minimum interval between MainActor dispatches.
+    ///
+    /// 1/30 s ≈ 33 ms — limits SwiftUI body re-evaluations + cmark re-parses to
+    /// ≤ 30 per second.  Human perception of streaming text maxes out at ~25 fps,
+    /// so 30 fps is indistinguishable from real-time delivery while freeing the
+    /// remaining 120 Hz frame budget for Core Animation (scroll, animations,
+    /// touch).  Without this, fast models firing 50-100+ tokens/sec saturate the
+    /// main thread, forcing Core Animation to drop from 120 Hz → 60 Hz.
+    nonisolated private static let minDispatchInterval: CFAbsoluteTime = 1.0 / 30.0
 
     /// Callback invoked on the main actor with the latest accumulated
     /// content.  Set by the view model when socket handlers are registered.
