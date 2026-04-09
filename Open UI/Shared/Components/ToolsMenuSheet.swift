@@ -40,6 +40,7 @@ struct ToolsMenuSheet: View {
     var onPhotoAttachment: (() -> Void)?
     var onCameraCapture: (() -> Void)?
     var onWebAttachment: (() -> Void)?
+    var onReferenceChatAttachment: (() -> Void)?
     /// Optional custom photo picker view (e.g. SwiftUI PhotosPicker).
     var photoPicker: AnyView?
 
@@ -60,21 +61,16 @@ struct ToolsMenuSheet: View {
                     attachmentActionsRow
                         .padding(.horizontal, Spacing.md)
 
-                    // Web search toggle (only shown when model has capability)
-                    if isWebSearchAvailable {
-                        webSearchToggle
+                    // Reference Chats row
+                    if let onReferenceChatAttachment {
+                        referenceChatRow(action: onReferenceChatAttachment)
                             .padding(.horizontal, Spacing.md)
                     }
 
-                    // Image generation toggle (only shown when enabled on server)
-                    if isImageGenerationAvailable {
-                        imageGenerationToggle
-                            .padding(.horizontal, Spacing.md)
-                    }
-
-                    // Code interpreter toggle (only shown when enabled on server)
-                    if isCodeInterpreterAvailable {
-                        codeInterpreterToggle
+                    // Built-in Tools section (web search, image gen, code interpreter)
+                    let hasBuiltins = isWebSearchAvailable || isImageGenerationAvailable || isCodeInterpreterAvailable
+                    if hasBuiltins {
+                        builtinToolsSection
                             .padding(.horizontal, Spacing.md)
                     }
 
@@ -288,6 +284,64 @@ struct ToolsMenuSheet: View {
         .accessibilityLabel(title)
         .accessibilityValue(isOn.wrappedValue ? "On" : "Off")
         .accessibilityAddTraits(.isToggle)
+    }
+
+    // MARK: - Reference Chat Row
+
+    private func referenceChatRow(action: @escaping () -> Void) -> some View {
+        Button {
+            dismiss()
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { action() }
+        } label: {
+            HStack(spacing: Spacing.sm) {
+                toolGlyph(systemImage: "bubble.left.and.bubble.right", isSelected: false)
+                VStack(alignment: .leading, spacing: Spacing.xs) {
+                    Text("Reference Chats")
+                        .scaledFont(size: 14, weight: .medium)
+                        .foregroundStyle(theme.textPrimary)
+                    Text("Include a previous conversation as context")
+                        .scaledFont(size: 12, weight: .medium)
+                        .foregroundStyle(theme.textSecondary)
+                        .lineLimit(1)
+                }
+                Spacer()
+                Image(systemName: "chevron.right")
+                    .scaledFont(size: 12, weight: .semibold)
+                    .foregroundStyle(theme.textTertiary)
+            }
+            .padding(Spacing.sm)
+            .background(theme.surfaceContainer.opacity(theme.isDark ? 0.32 : 0.12))
+            .clipShape(RoundedRectangle(cornerRadius: CornerRadius.input, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: CornerRadius.input, style: .continuous)
+                    .strokeBorder(theme.cardBorder.opacity(0.55), lineWidth: 0.5)
+            )
+        }
+        .buttonStyle(.plain)
+    }
+
+    // MARK: - Built-in Tools Section
+
+    private var builtinToolsSection: some View {
+        VStack(alignment: .leading, spacing: Spacing.xs) {
+            Text("Built-in Tools")
+                .scaledFont(size: 11, weight: .semibold)
+                .textCase(.uppercase)
+                .foregroundStyle(theme.textTertiary)
+                .padding(.bottom, 2)
+
+            if isWebSearchAvailable {
+                webSearchToggle
+            }
+
+            if isImageGenerationAvailable {
+                imageGenerationToggle
+            }
+
+            if isCodeInterpreterAvailable {
+                codeInterpreterToggle
+            }
+        }
     }
 
     // MARK: - Tools Section

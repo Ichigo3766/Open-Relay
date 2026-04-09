@@ -154,10 +154,11 @@ final class VoiceCallViewModel {
         let voiceId = UserDefaults.standard.string(forKey: "ttsVoiceIdentifier") ?? ""
         ttsService.voiceIdentifier = voiceId.isEmpty ? nil : voiceId
 
-        // Preload MarvisTTS model only if the user explicitly chose Marvis
-        if ttsService.preferredEngine == .marvis {
-            logger.info("Voice call: preloading MarvisTTS model...")
-            await ttsService.preloadMarvisModel()
+        // Preload on-device TTS model if the user chose Kokoro or Qwen3
+        if ttsService.preferredEngine == .kokoro || ttsService.preferredEngine == .qwen3 {
+            let modelName = ttsService.preferredEngine == .qwen3 ? "Qwen3" : "Kokoro"
+            logger.info("Voice call: preloading \(modelName) TTS model...")
+            await ttsService.preloadKokoroModel()
         }
 
         // Enable speaker override in TTS service for the duration of this call

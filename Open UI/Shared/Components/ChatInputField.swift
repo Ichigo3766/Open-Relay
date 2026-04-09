@@ -95,6 +95,8 @@ struct ChatInputField: View {
 
     // Knowledge base bindings
     @Binding var selectedKnowledgeItems: [KnowledgeItem]
+    // Reference chat bindings
+    @Binding var selectedReferenceChats: [ReferenceChatItem]
     var onHashTrigger: ((String) -> Void)?
     var onHashDismiss: (() -> Void)?
 
@@ -111,6 +113,7 @@ struct ChatInputField: View {
     var onPhotoAttachment: (() -> Void)?
     var onCameraCapture: (() -> Void)?
     var onWebAttachment: (() -> Void)?
+    var onReferenceChatAttachment: (() -> Void)?
     var onVoiceInput: (() -> Void)?
 
     // Dictation
@@ -232,6 +235,7 @@ struct ChatInputField: View {
                 onPhotoAttachment: onPhotoAttachment,
                 onCameraCapture: onCameraCapture,
                 onWebAttachment: onWebAttachment,
+                onReferenceChatAttachment: onReferenceChatAttachment,
                 photoPicker: photoPicker
             )
         }
@@ -270,6 +274,17 @@ struct ChatInputField: View {
                     ))
             }
 
+            // Reference chat chips (above text input)
+            if !selectedReferenceChats.isEmpty {
+                referenceChatChipsStrip
+                    .padding(.horizontal, 10)
+                    .padding(.top, (mentionedModel != nil || !selectedKnowledgeItems.isEmpty) ? 4 : 8)
+                    .transition(.asymmetric(
+                        insertion: .move(edge: .top).combined(with: .opacity),
+                        removal: .opacity
+                    ))
+            }
+
             // Main text input row — center alignment keeps + and send/voice
             // button symmetrically aligned with the text on all line counts.
             // The trailing buttons are grouped into a single fixed-size HStack
@@ -286,7 +301,7 @@ struct ChatInputField: View {
                 .fixedSize(horizontal: true, vertical: false)
             }
             .padding(.horizontal, 12)
-            .padding(.top, selectedKnowledgeItems.isEmpty ? 10 : 6)
+            .padding(.top, (selectedKnowledgeItems.isEmpty && selectedReferenceChats.isEmpty && mentionedModel == nil) ? 10 : 6)
             .padding(.bottom, hasQuickPills ? 6 : 10)
 
             // Quick pills row (only when pills are configured)
@@ -806,6 +821,51 @@ struct ChatInputField: View {
 
             Spacer()
         }
+    }
+
+    // MARK: - Reference Chat Chips Strip
+
+    private var referenceChatChipsStrip: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 6) {
+                ForEach(selectedReferenceChats) { item in
+                    referenceChatChip(item)
+                }
+            }
+        }
+    }
+
+    private func referenceChatChip(_ item: ReferenceChatItem) -> some View {
+        HStack(spacing: 5) {
+            Image(systemName: "bubble.left.and.bubble.right")
+                .scaledFont(size: 10, weight: .semibold)
+                .foregroundStyle(theme.brandPrimary)
+            Text(item.title.isEmpty ? "Untitled" : item.title)
+                .scaledFont(size: 12, weight: .medium)
+                .foregroundStyle(theme.textPrimary)
+                .lineLimit(1)
+            Text("Chat")
+                .scaledFont(size: 9, weight: .semibold)
+                .foregroundStyle(theme.textTertiary)
+                .padding(.horizontal, 4)
+                .padding(.vertical, 1)
+                .background(Capsule().fill(theme.surfaceContainer.opacity(0.8)))
+            Button {
+                withAnimation(.easeOut(duration: 0.15)) {
+                    selectedReferenceChats.removeAll { $0.id == item.id }
+                }
+                Haptics.play(.light)
+            } label: {
+                Image(systemName: "xmark")
+                    .scaledFont(size: 8, weight: .bold)
+                    .foregroundStyle(theme.textTertiary)
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 5)
+        .background(Capsule().fill(theme.brandPrimary.opacity(0.08)))
+        .overlay(Capsule().strokeBorder(theme.brandPrimary.opacity(0.25), lineWidth: 0.5))
     }
 
     // MARK: - Knowledge Chips Strip

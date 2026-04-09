@@ -1,5 +1,5 @@
 {
-  "originHash" : "c59e507b3376127180a90a39fba7aebd670178922422018092feb9fec10756df",
+  "originHash" : "296a3f1cd0f340171a9c7cf3a9af9f17cd823b9023a650e5eccb56da614590dd",
   "pins" : [
     {
       "identity" : "beautiful-mermaid-swift",
@@ -67,10 +67,10 @@
     {
       "identity" : "mlx-audio-swift",
       "kind" : "remoteSourceControl",
-      "location" : "https://github.com/Blaizzy/mlx-audio-swift.git",
+      "location" : "https://github.com/Ichigo3766/mlx-audio-swift.git",
       "state" : {
         "branch" : "main",
-        "revision" : "2fd41458059e2d80403436167d5263f585d120d4"
+        "revision" : "c1fb7c37aa09e9da024d1e5467fc435cb10f31ad"
       }
     },
     {

@@ -24,7 +24,11 @@ struct ModelAvatar: View {
 
     var body: some View {
         if let imageURL {
-            CachedAsyncImage(url: imageURL, authToken: authToken) { image in
+            CachedAsyncImage(
+                url: imageURL,
+                authToken: authToken,
+                targetPixelSize: Int(size * UIScreen.main.scale)
+            ) { image in
                 image
                     .resizable()
                     .aspectRatio(contentMode: .fill)

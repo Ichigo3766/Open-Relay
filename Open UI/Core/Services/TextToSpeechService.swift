@@ -4,14 +4,14 @@ import os.log
 import NaturalLanguage
 
 /// Manages text-to-speech with support for both Apple's AVSpeechSynthesizer,
-/// on-device MarvisTTS, and server-side TTS.
+/// on-device neural TTS (Kokoro or Qwen3), and server-side TTS.
 ///
 /// ## TTS Engine Default
 /// **AVSpeechSynthesizer** (system) is the default — works instantly with no
-/// downloads. Users can opt in to MarvisTTS or Server TTS in Settings.
+/// downloads. Users can opt in to on-device neural TTS or Server TTS in Settings.
 ///
 /// ## Auto Mode Priority (when selected by user)
-/// 1. **MarvisTTS** (on-device neural) — if model is downloaded and loaded
+/// 1. **On-device neural TTS** (Kokoro or Qwen3) — if model is downloaded and loaded
 /// 2. **Server TTS** (OpenWebUI API) — if configured
 /// 3. **AVSpeechSynthesizer** (system) — fallback
 @MainActor @Observable
@@ -20,10 +20,11 @@ final class TextToSpeechService: NSObject {
     // MARK: - Engine Selection
 
     enum TTSEngine: String, Sendable {
-        case marvis   // On-device MarvisTTS
+        case kokoro   // On-device Kokoro TTS
+        case qwen3    // On-device Qwen3 TTS (multilingual)
         case server   // Server-side TTS via OpenWebUI API
         case system   // Apple AVSpeechSynthesizer
-        case auto     // Prefer MarvisTTS if loaded → server → system
+        case auto     // Prefer on-device neural if loaded → server → system
     }
 
     // MARK: - State
@@ -38,9 +39,12 @@ final class TextToSpeechService: NSObject {
     private(set) var isAvailable: Bool = true
     private(set) var activeEngine: TTSEngine = .system
 
-    var isMarvisAvailable: Bool { marvisService.isAvailable }
-    var marvisState: MarvisTTSState { marvisService.state }
-    var marvisDownloadProgress: Double { marvisService.downloadProgress }
+    var isKokoroAvailable: Bool { kokoroService.isAvailable }
+    var kokoroState: KokoroTTSState { kokoroService.state }
+    var kokoroDownloadProgress: Double { kokoroService.downloadProgress }
+
+    /// Convenience for the on-device model state (alias for kokoroState when using any on-device model).
+    var onDeviceTTSState: KokoroTTSState { kokoroService.state }
 
     // MARK: - Callbacks
 
@@ -78,7 +82,8 @@ final class TextToSpeechService: NSObject {
     // MARK: - Private
 
     private let synthesizer = AVSpeechSynthesizer()
-    let marvisService = MarvisTTSService()
+    /// Unified on-device TTS service — supports both Kokoro and Qwen3 models.
+    let kokoroService = KokoroTTSService()
     private let logger = Logger(subsystem: "com.openui", category: "TTS")
 
     // System TTS queue
@@ -112,7 +117,7 @@ final class TextToSpeechService: NSObject {
     private var playerItemEndObserver: (any NSObjectProtocol)?
 
     // Active engine flags
-    private var isUsingMarvis = false
+    private var isUsingKokoro = false
     private var isUsingServer = false
 
     // MARK: - Streaming TTS State
@@ -129,13 +134,22 @@ final class TextToSpeechService: NSObject {
         super.init()
         synthesizer.delegate = self
 
-        // Restore saved engine preference
+        // Restore saved engine preference.
+        // Migration: "marvis" and "mlx" both map to the new "kokoro" engine.
         if let saved = UserDefaults.standard.string(forKey: "ttsEngine") {
             switch saved {
-            case "marvis", "mlx": preferredEngine = .marvis
-            case "server":        preferredEngine = .server
-            case "system":        preferredEngine = .system
-            default:              preferredEngine = .auto
+            case "kokoro", "marvis", "mlx": preferredEngine = .kokoro
+            case "qwen3":                   preferredEngine = .qwen3
+            case "server":                  preferredEngine = .server
+            case "system":                  preferredEngine = .system
+            case "ondevice":
+                // New unified "On-Device" selection — determine sub-model from ttsOnDeviceModel key
+                if UserDefaults.standard.string(forKey: "ttsOnDeviceModel") == "qwen3" {
+                    preferredEngine = .qwen3
+                } else {
+                    preferredEngine = .kokoro
+                }
+            default:                        preferredEngine = .auto
             }
         }
 
@@ -143,65 +157,100 @@ final class TextToSpeechService: NSObject {
         let savedServerVoice = UserDefaults.standard.string(forKey: "ttsServerVoiceId") ?? ""
         serverVoiceId = savedServerVoice.isEmpty ? nil : savedServerVoice
 
-        // Restore Marvis voice & quality from UserDefaults so the user's
-        // selection survives cold starts / model unload-reload cycles.
-        let savedMarvisVoice = UserDefaults.standard.string(forKey: "ttsMarvisVoice") ?? "conversationalA"
-        let savedMarvisQuality = UserDefaults.standard.integer(forKey: "ttsMarvisQuality")
-        marvisService.config.voice = savedMarvisVoice
-        marvisService.config.qualityLevel = savedMarvisQuality > 0 ? savedMarvisQuality : 32
+        // Restore on-device model selection from UserDefaults.
+        // IMPORTANT: Always derive activeModel from preferredEngine first so the
+        // cold-start path is never stuck with a mismatched model (e.g. engine=.qwen3
+        // but activeModel=.kokoro). The ttsOnDeviceModel key is used as a tiebreak
+        // when the engine is "ondevice" / "auto".
+        switch preferredEngine {
+        case .kokoro:
+            kokoroService.config.activeModel = .kokoro
+        case .qwen3:
+            kokoroService.config.activeModel = .qwen3
+        default:
+            // For server/system/auto, restore whatever was saved explicitly
+            if let savedModelRaw = UserDefaults.standard.string(forKey: "ttsOnDeviceModel"),
+               let savedModel = OnDeviceTTSModel(rawValue: savedModelRaw) {
+                kokoroService.config.activeModel = savedModel
+            }
+        }
 
-        // Wire MarvisTTS callbacks
-        marvisService.onSpeakingStarted = { [weak self] in
+        // Restore Kokoro voice & speed from UserDefaults so the user's
+        // selection survives cold starts / model unload-reload cycles.
+        // Migration: map legacy Marvis voice keys to valid Kokoro voice IDs.
+        let rawVoice = UserDefaults.standard.string(forKey: "ttsKokoroVoice")
+            ?? UserDefaults.standard.string(forKey: "ttsMarvisVoice")
+            ?? ""
+        let kokoroVoice: String
+        switch rawVoice {
+        case "conversationalB": kokoroVoice = "af_bella"
+        case "conversationalA", "": kokoroVoice = "af_heart"
+        default: kokoroVoice = KokoroVoiceCatalog.allVoiceIds.contains(rawVoice) ? rawVoice : "af_heart"
+        }
+        let savedSpeed = UserDefaults.standard.float(forKey: "ttsKokoroSpeed")
+        kokoroService.config.kokoroVoice = kokoroVoice
+        kokoroService.config.speed = savedSpeed > 0 ? savedSpeed : 1.0
+
+        // Restore Qwen3 voice, language, and speed from UserDefaults
+        let savedQwen3Voice = UserDefaults.standard.string(forKey: "ttsQwen3Voice") ?? "Aiden"
+        let savedQwen3Language = UserDefaults.standard.string(forKey: "ttsQwen3Language") ?? "auto"
+        kokoroService.config.qwen3Voice = Qwen3VoiceCatalog.allVoiceIds.contains(savedQwen3Voice) ? savedQwen3Voice : "Aiden"
+        kokoroService.config.qwen3Language = savedQwen3Language
+        kokoroService.config.qwen3Speed = 1.1
+
+        // Wire on-device TTS callbacks
+        kokoroService.onSpeakingStarted = { [weak self] in
             Task { @MainActor [weak self] in
                 self?.state = .speaking
                 self?.onStart?()
             }
         }
 
-        marvisService.onSpeakingComplete = { [weak self] in
+        kokoroService.onSpeakingComplete = { [weak self] in
             Task { @MainActor [weak self] in
                 guard let self else { return }
                 // If streaming mode is still active, more text may arrive — don't complete yet.
                 if self.isStreamingTTS {
-                    self.logger.info("MarvisTTS done but streaming still active — waiting")
+                    self.logger.info("On-device TTS done but streaming still active — waiting")
                     return
                 }
                 self.state = .idle
-                self.isUsingMarvis = false
+                self.isUsingKokoro = false
                 // Model stays loaded for fast re-use; unloaded only on background/explicit stop
                 self.onComplete?()
             }
         }
 
-        marvisService.onError = { [weak self] error in
+        kokoroService.onError = { [weak self] error in
             Task { @MainActor [weak self] in
                 guard let self else { return }
-                self.logger.error("MarvisTTS error: \(error)")
-                self.isUsingMarvis = false
+                self.logger.error("On-device TTS error: \(error)")
+                self.isUsingKokoro = false
                 self.onError?(error)
             }
         }
     }
 
-    // MARK: - MarvisTTS Configuration
+    // MARK: - On-Device TTS Configuration
 
-    var marvisConfig: MarvisTTSConfig {
-        get { marvisService.config }
-        set { marvisService.config = newValue }
+    /// Kokoro-specific voice/speed config (legacy accessor for Kokoro voices).
+    var kokoroConfig: KokoroTTSConfig {
+        get { kokoroService.kokoroLegacyConfig }
+        set { kokoroService.kokoroLegacyConfig = newValue }
     }
 
-    func preloadMarvisModel() async {
-        guard marvisService.isAvailable else { return }
+    func preloadKokoroModel() async {
+        guard kokoroService.isAvailable else { return }
         do {
-            try await marvisService.loadModel()
-            logger.info("MarvisTTS model preloaded")
+            try await kokoroService.loadModel()
+            logger.info("\(self.kokoroService.config.activeModel.displayName) TTS model preloaded")
         } catch {
-            logger.warning("MarvisTTS preload failed: \(error.localizedDescription)")
+            logger.warning("On-device TTS preload failed: \(error.localizedDescription)")
         }
     }
 
-    func unloadMarvisModel() {
-        marvisService.unloadModel()
+    func unloadKokoroModel() {
+        kokoroService.unloadModel()
     }
 
     // MARK: - Public API
@@ -217,8 +266,8 @@ final class TextToSpeechService: NSObject {
         activeEngine = engine
 
         switch engine {
-        case .marvis:
-            speakWithMarvis(cleaned)
+        case .kokoro, .qwen3:
+            speakWithKokoro(cleaned)
         case .server:
             speakWithServer(cleaned)
         case .system, .auto:
@@ -228,9 +277,9 @@ final class TextToSpeechService: NSObject {
 
     /// Stops all speech and clears all queues.
     func stop() {
-        // Stop MarvisTTS
-        marvisService.stop()
-        isUsingMarvis = false
+        // Stop on-device TTS
+        kokoroService.stop()
+        isUsingKokoro = false
 
         // Stop server TTS — cancel prefetch and tear down queue player
         stopServerPlayback()
@@ -280,8 +329,8 @@ final class TextToSpeechService: NSObject {
     }
 
     func pause() {
-        if isUsingMarvis {
-            marvisService.stop()
+        if isUsingKokoro {
+            kokoroService.stop()
             state = .paused
         } else if synthesizer.isSpeaking {
             synthesizer.pauseSpeaking(at: .word)
@@ -341,8 +390,8 @@ final class TextToSpeechService: NSObject {
     /// Does NOT unload the model — only stops playback and clears queues.
     func startStreamingTTS() {
         // Stop any active speech without unloading the model
-        marvisService.stop()
-        isUsingMarvis = false
+        kokoroService.stop()
+        isUsingKokoro = false
 
         stopServerPlayback()
 
@@ -369,8 +418,8 @@ final class TextToSpeechService: NSObject {
         let engine = resolveEngine()
         activeEngine = engine
 
-        // For MarvisTTS, join all chunks into one — the library handles streaming internally
-        if engine == .marvis {
+        // For on-device TTS, join all chunks into one — sentence-level streaming handles it
+        if engine == .kokoro || engine == .qwen3 {
             let joined = newChunks.joined(separator: " ")
             enqueueChunk(joined, engine: engine)
         } else {
@@ -396,17 +445,17 @@ final class TextToSpeechService: NSObject {
 
         if remaining.isEmpty {
             // Nothing left to speak — check if TTS is already idle
-            let marvisBusy = isUsingMarvis && marvisService.isPlaying
+            let kokoroBusy = isUsingKokoro && kokoroService.isPlaying
             let serverBusy = isUsingServer
             let systemBusy = isSpeakingSystemChunk
-            if !marvisBusy && !serverBusy && !systemBusy {
+            if !kokoroBusy && !serverBusy && !systemBusy {
                 state = .idle
                 onComplete?()
             }
             return
         }
 
-        if engine == .marvis {
+        if engine == .kokoro || engine == .qwen3 {
             let joined = remaining.joined(separator: " ")
             enqueueChunk(joined, engine: engine)
         } else {
@@ -420,26 +469,28 @@ final class TextToSpeechService: NSObject {
 
     private func resolveEngine() -> TTSEngine {
         switch preferredEngine {
-        case .marvis:
-            return marvisService.isAvailable ? .marvis : .system
+        case .kokoro:
+            return kokoroService.isAvailable ? .kokoro : .system
+        case .qwen3:
+            return kokoroService.isAvailable ? .qwen3 : .system
         case .server:
             return isServerAvailable ? .server : .system
         case .system:
             return .system
         case .auto:
-            if marvisService.isAvailable && marvisService.isReady { return .marvis }
+            if kokoroService.isAvailable && kokoroService.isReady { return .kokoro }
             if isServerAvailable { return .server }
             return .system
         }
     }
 
-    // MARK: - MarvisTTS
+    // MARK: - On-Device TTS (Kokoro + Qwen3)
 
-    private func speakWithMarvis(_ text: String) {
-        isUsingMarvis = true
+    private func speakWithKokoro(_ text: String) {
+        isUsingKokoro = true
         state = .speaking
         Task {
-            await marvisService.speak(text)
+            await kokoroService.speak(text)
         }
     }
 
@@ -638,7 +689,7 @@ final class TextToSpeechService: NSObject {
     private func speakNextSystemChunk() {
         guard !systemQueue.isEmpty else {
             isSpeakingSystemChunk = false
-            if !isStreamingTTS && !isUsingMarvis && !isUsingServer {
+            if !isStreamingTTS && !isUsingKokoro && !isUsingServer {
                 state = .idle
                 deactivateAudioSession()
                 onComplete?()
@@ -716,9 +767,9 @@ final class TextToSpeechService: NSObject {
 
     private func enqueueChunk(_ chunk: String, engine: TTSEngine) {
         switch engine {
-        case .marvis:
-            isUsingMarvis = true
-            Task { await marvisService.enqueue(chunk) }
+        case .kokoro, .qwen3:
+            isUsingKokoro = true
+            Task { await kokoroService.enqueue(chunk) }
         case .server:
             isUsingServer = true
             serverQueue.append(chunk)

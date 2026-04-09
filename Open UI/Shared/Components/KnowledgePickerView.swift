@@ -15,10 +15,23 @@ struct KnowledgePickerView: View {
     let query: String
     let items: [KnowledgeItem]
     let isLoading: Bool
+    let keyboardHeight: CGFloat
     let onSelect: (KnowledgeItem) -> Void
     let onDismiss: () -> Void
 
     @Environment(\.theme) private var theme
+
+    private var availableHeight: CGFloat {
+        let scene = UIApplication.shared.connectedScenes
+            .compactMap { $0 as? UIWindowScene }.first
+        let screen = scene?.screen.bounds.height
+            ?? UIScreen.main.bounds.height
+        let topSafeArea = scene?.windows.first?.safeAreaInsets.top ?? 59
+        let bottomSafeArea = scene?.windows.first?.safeAreaInsets.bottom ?? 34
+        let reserved = topSafeArea + 44 + 16
+        let usable = screen - reserved - keyboardHeight - bottomSafeArea - 56
+        return max(120, usable)
+    }
 
     // MARK: - Filtered Items
 
@@ -60,7 +73,7 @@ struct KnowledgePickerView: View {
             }
         }
         .frame(maxWidth: .infinity)
-        .frame(maxHeight: 240)
+        .frame(maxHeight: availableHeight)
         .background(pickerBackground)
         .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
         .overlay(

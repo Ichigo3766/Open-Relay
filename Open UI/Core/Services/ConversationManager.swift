@@ -159,13 +159,15 @@ final class ConversationManager: @unchecked Sendable {
         messages: [ChatMessage],
         model: String?,
         systemPrompt: String? = nil,
-        title: String? = nil
+        title: String? = nil,
+        chatParams: ChatAdvancedParams? = nil
     ) async throws {
         try await apiClient.syncConversationMessages(
             id: id,
             messages: messages,
             model: model,
             systemPrompt: systemPrompt,
+            chatParams: chatParams,
             title: title
         )
     }

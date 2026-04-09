@@ -73,6 +73,9 @@ final class ChatViewModel {
     /// Pinned model IDs synced with server `ui.pinnedModels`.
     var pinnedModelIds: [String] = []
     var isTemporaryChat: Bool = false
+    /// Chat params set before the conversation is created (new-chat flow).
+    /// Applied to `conversation.chatParams` as soon as the conversation is created.
+    var pendingChatParams: ChatAdvancedParams?
     var availableTools: [ToolItem] = []
     var selectedToolIds: Set<String> = [] {
         didSet {
@@ -88,6 +91,8 @@ final class ChatViewModel {
     private var userDisabledToolIds: Set<String> = []
     var selectedKnowledgeItems: [KnowledgeItem] = []
     var knowledgeItems: [KnowledgeItem] = []
+    /// Reference chat conversations selected for context in the next message.
+    var selectedReferenceChats: [ReferenceChatItem] = []
     var isLoadingTools: Bool = false
     /// Available terminal servers fetched from the backend.
     var availableTerminalServers: [TerminalServer] = []
@@ -1532,6 +1537,16 @@ final class ChatViewModel {
         knowledgeSearchQuery = ""
     }
 
+    // MARK: - Reference Chats
+
+    /// Called when a reference chat is selected from the picker.
+    /// Adds the chat to the selected list (avoiding duplicates).
+    func selectReferenceChat(_ item: ReferenceChatItem) {
+        guard !selectedReferenceChats.contains(where: { $0.id == item.id }) else { return }
+        selectedReferenceChats.append(item)
+        Haptics.play(.light)
+    }
+
     // MARK: - Prompt Slash Commands
 
     /// Fetches the prompt library from the server.
@@ -2166,7 +2181,8 @@ final class ChatViewModel {
             self.conversation?.id = created.id
             // Sync all messages
             try await manager.syncConversationMessages(
-                id: created.id, messages: conversation.messages, model: modelId)
+                id: created.id, messages: conversation.messages, model: modelId,
+                chatParams: conversation.chatParams)
             isTemporaryChat = false
             logger.info("Temporary chat saved as \(created.id)")
             NotificationCenter.default.post(name: .conversationListNeedsRefresh, object: nil)
@@ -2228,6 +2244,9 @@ final class ChatViewModel {
         // The server handles RAG retrieval per-message from the files array.
         let currentKnowledgeItems = selectedKnowledgeItems
         selectedKnowledgeItems = []
+        // Capture and clear reference chats — they attach to this message only.
+        let currentReferenceChats = selectedReferenceChats
+        selectedReferenceChats = []
 
         // Capture and clear skill IDs — sent as skill_ids in the API request.
         let currentSkillIds = selectedSkillIds
@@ -2322,9 +2341,15 @@ final class ChatViewModel {
                 }
             }
             let localId = isTemporaryChat ? "local:\(UUID().uuidString)" : (serverId ?? UUID().uuidString)
-            conversation = Conversation(
+            var newConv = Conversation(
                 id: localId,
                 title: chatTitle, model: modelId, messages: [userMessage])
+            // Apply any chat params that were set before the conversation existed
+            if let pending = pendingChatParams {
+                newConv.chatParams = pending
+                pendingChatParams = nil
+            }
+            conversation = newConv
             // Update active conversation ID so notifications are suppressed
             // while the user is viewing this newly created chat
             NotificationService.shared.activeConversationId = localId
@@ -2407,7 +2432,7 @@ final class ChatViewModel {
             do {
                 try await manager.syncConversationMessages(
                     id: chatId, messages: conversation?.messages ?? [], model: modelId,
-                    title: conversation?.title)
+                    title: conversation?.title, chatParams: conversation?.chatParams)
             } catch {
                 logger.warning("Pre-sync failed: \(error.localizedDescription)")
             }
@@ -2429,6 +2454,9 @@ final class ChatViewModel {
                 var allFileRefs = fileRefs
                 for knowledgeItem in currentKnowledgeItems {
                     allFileRefs.append(knowledgeItem.toChatFileRef())
+                }
+                for refChat in currentReferenceChats {
+                    allFileRefs.append(refChat.toChatFileRef())
                 }
                 if !allFileRefs.isEmpty { request.files = allFileRefs }
 
@@ -2465,12 +2493,34 @@ final class ChatViewModel {
                 // config from the list endpoint which doesn't include params.
                 await self.modelConfigTask?.value
 
+                // Build request params: start from chat-level overrides, then layer
+                // model-level function_calling on top.
+                var requestParams: [String: Any] = [:]
+
+                // Apply chat-level advanced param overrides (temperature, top_p, etc.)
+                if let chatP = self.conversation?.chatParams {
+                    requestParams = chatP.mergedOver(base: requestParams)
+                }
+
+                // System prompt: goes in both messages[0] (already done above) AND
+                // params["system"] so the server / filter pipeline also sees it.
+                let effectiveSP: String? = {
+                    if let cp = self.conversation?.chatParams?.systemPrompt,
+                       !cp.trimmingCharacters(in: .whitespaces).isEmpty { return cp }
+                    return self.conversation?.systemPrompt
+                }()
+                if let sp = effectiveSP, !sp.trimmingCharacters(in: .whitespaces).isEmpty {
+                    requestParams["system"] = sp
+                }
+
                 // Only include function_calling param when explicitly set to "native".
                 // When nil/empty (default mode), omit the param entirely — the server
                 // uses its own default (non-native) handling when the param is absent.
                 if let fc = self.selectedModel?.functionCallingMode, fc == "native" {
-                    request.params = ["function_calling": "native"]
+                    requestParams["function_calling"] = "native"
                 }
+
+                if !requestParams.isEmpty { request.params = requestParams }
 
                 // Request usage statistics in the streaming response.
                 // Matches the web UI payload: "stream_options": {"include_usage": true}
@@ -2737,7 +2787,7 @@ final class ChatViewModel {
                 let modelId = selectedModelId ?? conversation?.model ?? ""
                 try? await manager.syncConversationMessages(
                     id: chatId, messages: conversation?.messages ?? [], model: modelId,
-                    title: conversation?.title)
+                    title: conversation?.title, chatParams: conversation?.chatParams)
             }
         }
     }
@@ -2860,7 +2910,7 @@ final class ChatViewModel {
             do {
                 try await manager?.syncConversationMessages(
                     id: chatId, messages: conversation?.messages ?? [], model: modelId,
-                    title: conversation?.title)
+                    title: conversation?.title, chatParams: conversation?.chatParams)
             } catch {
                 logger.warning("Pre-sync for regeneration failed: \(error.localizedDescription)")
             }
@@ -2898,12 +2948,27 @@ final class ChatViewModel {
                 // functionCallingMode is populated before reading it.
                 await self.modelConfigTask?.value
 
+                // Build request params: start from chat-level overrides, then layer
+                // model-level function_calling on top.
+                var regenRequestParams: [String: Any] = [:]
+                if let chatP = self.conversation?.chatParams {
+                    regenRequestParams = chatP.mergedOver(base: regenRequestParams)
+                }
+                let regenEffectiveSP: String? = {
+                    if let cp = self.conversation?.chatParams?.systemPrompt,
+                       !cp.trimmingCharacters(in: .whitespaces).isEmpty { return cp }
+                    return self.conversation?.systemPrompt
+                }()
+                if let sp = regenEffectiveSP, !sp.trimmingCharacters(in: .whitespaces).isEmpty {
+                    regenRequestParams["system"] = sp
+                }
                 // Only include function_calling param when explicitly set to "native".
                 // When nil/empty (default mode), omit the param entirely — the server
                 // uses its own default (non-native) handling when the param is absent.
                 if let fc = self.selectedModel?.functionCallingMode, fc == "native" {
-                    request.params = ["function_calling": "native"]
+                    regenRequestParams["function_calling"] = "native"
                 }
+                if !regenRequestParams.isEmpty { request.params = regenRequestParams }
 
                 // Request usage statistics in the streaming response (matches web UI).
                 request.streamOptions = ["include_usage": true]
@@ -3114,7 +3179,7 @@ final class ChatViewModel {
             let modelId = selectedModelId ?? conversation?.model ?? ""
             try? await manager.syncConversationMessages(
                 id: chatId, messages: conversation?.messages ?? [], model: modelId,
-                title: conversation?.title)
+                title: conversation?.title, chatParams: conversation?.chatParams)
         }
 
         // Generate into the new assistant message
@@ -3327,7 +3392,7 @@ final class ChatViewModel {
             do {
                 try await manager?.syncConversationMessages(
                     id: chatId, messages: conversation?.messages ?? [], model: modelId,
-                    title: conversation?.title)
+                    title: conversation?.title, chatParams: conversation?.chatParams)
             } catch {
                 logger.warning("Pre-sync for edit-regen failed: \(error.localizedDescription)")
             }
@@ -3355,9 +3420,23 @@ final class ChatViewModel {
                 request.features = self.buildChatFeatures()
                 await self.modelConfigTask?.value
 
-                if let fc = self.selectedModel?.functionCallingMode, fc == "native" {
-                    request.params = ["function_calling": "native"]
+                // Build request params with chat-level overrides + function_calling
+                var editRegenParams: [String: Any] = [:]
+                if let chatP = self.conversation?.chatParams {
+                    editRegenParams = chatP.mergedOver(base: editRegenParams)
                 }
+                let editRegenSP: String? = {
+                    if let cp = self.conversation?.chatParams?.systemPrompt,
+                       !cp.trimmingCharacters(in: .whitespaces).isEmpty { return cp }
+                    return self.conversation?.systemPrompt
+                }()
+                if let sp = editRegenSP, !sp.trimmingCharacters(in: .whitespaces).isEmpty {
+                    editRegenParams["system"] = sp
+                }
+                if let fc = self.selectedModel?.functionCallingMode, fc == "native" {
+                    editRegenParams["function_calling"] = "native"
+                }
+                if !editRegenParams.isEmpty { request.params = editRegenParams }
                 request.streamOptions = ["include_usage": true]
 
                 let toolIds = Array(self.selectedToolIds)
@@ -3499,7 +3578,7 @@ final class ChatViewModel {
             let modelId = selectedModelId ?? conversation?.model ?? ""
             try? await manager.syncConversationMessages(
                 id: chatId, messages: conversation?.messages ?? [], model: modelId,
-                title: conversation?.title)
+                title: conversation?.title, chatParams: conversation?.chatParams)
         }
 
         NotificationCenter.default.post(name: .conversationListNeedsRefresh, object: nil)
@@ -4651,7 +4730,12 @@ final class ChatViewModel {
     private func buildSimpleAPIMessages() -> [[String: Any]] {
         guard let conversation else { return [] }
         var msgs: [[String: Any]] = []
-        if let sp = conversation.systemPrompt, !sp.trimmingCharacters(in: .whitespaces).isEmpty {
+        let simpleEffectiveSP: String? = {
+            if let cp = conversation.chatParams?.systemPrompt,
+               !cp.trimmingCharacters(in: .whitespaces).isEmpty { return cp }
+            return conversation.systemPrompt
+        }()
+        if let sp = simpleEffectiveSP, !sp.trimmingCharacters(in: .whitespaces).isEmpty {
             msgs.append(["role": "system", "content": sp])
         }
         for msg in conversation.messages where !msg.isStreaming {
@@ -4663,7 +4747,12 @@ final class ChatViewModel {
     private func buildAPIMessagesAsync() async -> [[String: Any]] {
         guard let conversation else { return [] }
         var apiMessages: [[String: Any]] = []
-        if let sp = conversation.systemPrompt, !sp.trimmingCharacters(in: .whitespaces).isEmpty {
+        let asyncEffectiveSP: String? = {
+            if let cp = conversation.chatParams?.systemPrompt,
+               !cp.trimmingCharacters(in: .whitespaces).isEmpty { return cp }
+            return conversation.systemPrompt
+        }()
+        if let sp = asyncEffectiveSP, !sp.trimmingCharacters(in: .whitespaces).isEmpty {
             apiMessages.append(["role": "system", "content": sp])
         }
         for message in conversation.messages where !message.isStreaming {

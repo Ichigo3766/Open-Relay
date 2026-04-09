@@ -593,7 +593,17 @@ final class StorageManager: @unchecked Sendable {
         modelSize(patterns: ["Qwen3-ASR", "parakeet-tdt"])
     }
 
-    /// Returns the on-disk size of the MarvisTTS model files.
+    /// Returns the on-disk size of the Kokoro TTS model files.
+    func kokoroTTSModelSize() -> Int64 {
+        modelSize(patterns: ["Kokoro", "kokoro"])
+    }
+
+    /// Returns the on-disk size of the Qwen3 TTS model files.
+    func qwen3TTSModelSize() -> Int64 {
+        modelSize(patterns: ["Qwen3-TTS", "qwen3-tts"])
+    }
+
+    /// Returns the on-disk size of the legacy MarvisTTS model files (if any remain).
     func marvisTTSModelSize() -> Int64 {
         modelSize(patterns: ["marvis-tts", "Marvis-AI", "MarvisTTS"])
     }
@@ -613,12 +623,32 @@ final class StorageManager: @unchecked Sendable {
         return size
     }
 
-    /// Deletes only MarvisTTS model files from Documents/Models.
+    /// Deletes only Kokoro TTS model files from Documents/Models.
+    @discardableResult
+    func deleteKokoroTTSModelFiles() -> Int64 {
+        let freed = deleteModelDirs(patterns: ["Kokoro", "kokoro"])
+        if freed > 0 {
+            logger.info("Deleted Kokoro TTS model files: \(ByteCountFormatter.string(fromByteCount: freed, countStyle: .file))")
+        }
+        return freed
+    }
+
+    /// Deletes only Qwen3 TTS model files from Documents/Models.
+    @discardableResult
+    func deleteQwen3TTSModelFiles() -> Int64 {
+        let freed = deleteModelDirs(patterns: ["Qwen3-TTS", "qwen3-tts"])
+        if freed > 0 {
+            logger.info("Deleted Qwen3 TTS model files: \(ByteCountFormatter.string(fromByteCount: freed, countStyle: .file))")
+        }
+        return freed
+    }
+
+    /// Deletes legacy MarvisTTS model files from Documents/Models (if any remain after migration).
     @discardableResult
     func deleteMarvisTTSModelFiles() -> Int64 {
         let freed = deleteModelDirs(patterns: ["marvis-tts", "Marvis-AI", "MarvisTTS"])
         if freed > 0 {
-            logger.info("Deleted MarvisTTS model files: \(ByteCountFormatter.string(fromByteCount: freed, countStyle: .file))")
+            logger.info("Deleted legacy MarvisTTS model files: \(ByteCountFormatter.string(fromByteCount: freed, countStyle: .file))")
         }
         return freed
     }

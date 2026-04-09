@@ -324,32 +324,30 @@ struct ModelSelectorSheet: View {
         } else if filteredModels.isEmpty {
             emptyState
         } else {
-            ScrollView {
-                LazyVStack(spacing: 0) {
-                    // ── CURRENTLY SELECTED ──
-                    if let current = currentModel {
-                        sectionHeader("Currently Selected")
-                        modelRow(current, isLast: pinnedModels.isEmpty && remainingModels.isEmpty)
-                    }
+            List {
+                // ── CURRENTLY SELECTED ──
+                if let current = currentModel {
+                    Section { modelRow(current) } header: { sectionHeader("Currently Selected") }
+                }
 
-                    // ── PINNED ──
-                    if !pinnedModels.isEmpty {
-                        sectionHeader("Pinned")
-                        ForEach(Array(pinnedModels.enumerated()), id: \.element.id) { idx, model in
-                            modelRow(model, isLast: idx == pinnedModels.count - 1 && remainingModels.isEmpty)
-                        }
-                    }
+                // ── PINNED ──
+                if !pinnedModels.isEmpty {
+                    Section {
+                        ForEach(pinnedModels, id: \.id) { modelRow($0) }
+                    } header: { sectionHeader("Pinned") }
+                }
 
-                    // ── ALL MODELS ──
-                    if !remainingModels.isEmpty {
-                        sectionHeader("All Models")
-                        ForEach(Array(remainingModels.enumerated()), id: \.element.id) { idx, model in
-                            modelRow(model, isLast: idx == remainingModels.count - 1)
-                        }
-                    }
+                // ── ALL MODELS ──
+                if !remainingModels.isEmpty {
+                    Section {
+                        ForEach(remainingModels, id: \.id) { modelRow($0) }
+                    } header: { sectionHeader("All Models") }
                 }
             }
+            .listStyle(.plain)
+            .scrollContentBackground(.hidden)
             .scrollDismissesKeyboard(.interactively)
+            .textCase(nil)
         }
     }
 
@@ -363,90 +361,88 @@ struct ModelSelectorSheet: View {
             .padding(.horizontal, 16)
             .padding(.top, 14)
             .padding(.bottom, 6)
+            .listRowInsets(EdgeInsets())
+            .listRowBackground(Color.clear)
     }
 
     // MARK: - Model Row (with pin button)
 
-    private func modelRow(_ model: AIModel, isLast: Bool) -> some View {
+    private func modelRow(_ model: AIModel) -> some View {
         let isPinned = pinnedModelIds.contains(model.id)
         let isSelected = model.id == selectedModelId
 
-        return VStack(spacing: 0) {
-            Button {
-                Haptics.play(.light)
-                onSelect(model)
-                dismiss()
-            } label: {
-                HStack(spacing: 12) {
-                    ModelAvatar(
-                        size: 36,
-                        imageURL: model.resolveAvatarURL(baseURL: serverBaseURL),
-                        label: model.shortName,
-                        authToken: authToken
-                    )
+        return Button {
+            Haptics.play(.light)
+            onSelect(model)
+            dismiss()
+        } label: {
+            HStack(spacing: 12) {
+                ModelAvatar(
+                    size: 36,
+                    imageURL: model.resolveAvatarURL(baseURL: serverBaseURL),
+                    label: model.shortName,
+                    authToken: authToken
+                )
 
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(model.name)
-                            .scaledFont(size: 15, weight: .semibold)
-                            .foregroundStyle(theme.textPrimary)
-                            .lineLimit(1)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(model.name)
+                        .scaledFont(size: 15, weight: .semibold)
+                        .foregroundStyle(theme.textPrimary)
+                        .lineLimit(1)
 
-                        modelSubtitle(model)
-                    }
-
-                    Spacer(minLength: 0)
-
-                    // Pin/unpin button
-                    if let onTogglePin {
-                        Button {
-                            Haptics.play(.light)
-                            onTogglePin(model.id)
-                        } label: {
-                            Image(systemName: isPinned ? "star.fill" : "star")
-                                .scaledFont(size: 14, weight: .medium)
-                                .foregroundStyle(isPinned ? .yellow : theme.textTertiary)
-                                .frame(width: 32, height: 32)
-                                .contentShape(Rectangle())
-                        }
-                        .buttonStyle(.plain)
-                    }
-
-                    // Admin edit button
-                    if isAdmin, let onEdit {
-                        Button {
-                            Haptics.play(.light)
-                            onEdit(model)
-                        } label: {
-                            Image(systemName: "slider.horizontal.3")
-                                .scaledFont(size: 14, weight: .medium)
-                                .foregroundStyle(theme.textTertiary)
-                                .frame(width: 32, height: 32)
-                                .background(theme.surfaceContainer.opacity(0.7))
-                                .clipShape(Circle())
-                        }
-                        .buttonStyle(.plain)
-                    }
-
-                    // Checkmark for selected model
-                    if isSelected {
-                        Image(systemName: "checkmark")
-                            .scaledFont(size: 14, weight: .semibold)
-                            .foregroundStyle(theme.brandPrimary)
-                            .transition(.scale(scale: 0.7).combined(with: .opacity))
-                    }
+                    modelSubtitle(model)
                 }
-                .padding(.horizontal, 16)
-                .padding(.vertical, 10)
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(ModelRowButtonStyle())
 
-            if !isLast {
-                Divider()
-                    .background(theme.divider.opacity(0.5))
-                    .padding(.leading, 16 + 36 + 12)
+                Spacer(minLength: 0)
+
+                // Pin/unpin button
+                if let onTogglePin {
+                    Button {
+                        Haptics.play(.light)
+                        onTogglePin(model.id)
+                    } label: {
+                        Image(systemName: isPinned ? "star.fill" : "star")
+                            .scaledFont(size: 14, weight: .medium)
+                            .foregroundStyle(isPinned ? .yellow : theme.textTertiary)
+                            .frame(width: 32, height: 32)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                }
+
+                // Admin edit button
+                if isAdmin, let onEdit {
+                    Button {
+                        Haptics.play(.light)
+                        onEdit(model)
+                    } label: {
+                        Image(systemName: "slider.horizontal.3")
+                            .scaledFont(size: 14, weight: .medium)
+                            .foregroundStyle(theme.textTertiary)
+                            .frame(width: 32, height: 32)
+                            .background(theme.surfaceContainer.opacity(0.7))
+                            .clipShape(Circle())
+                    }
+                    .buttonStyle(.plain)
+                }
+
+                // Checkmark for selected model
+                if isSelected {
+                    Image(systemName: "checkmark")
+                        .scaledFont(size: 14, weight: .semibold)
+                        .foregroundStyle(theme.brandPrimary)
+                        .transition(.scale(scale: 0.7).combined(with: .opacity))
+                }
             }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 10)
+            .contentShape(Rectangle())
         }
+        .buttonStyle(ModelRowButtonStyle())
+        .listRowInsets(EdgeInsets())
+        .listRowBackground(Color.clear)
+        .listRowSeparatorTint(theme.divider.opacity(0.5))
+        .alignmentGuide(.listRowSeparatorLeading) { _ in 16 + 36 + 12 }
     }
 
     @ViewBuilder

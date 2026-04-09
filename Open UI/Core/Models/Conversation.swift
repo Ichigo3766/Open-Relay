@@ -14,6 +14,9 @@ struct Conversation: Codable, Identifiable, Hashable, Sendable {
     var shareId: String?
     var folderId: String?
     var tags: [String]
+    /// Per-chat advanced params override. When non-nil, these values are merged
+    /// on top of the selected model's params for every message sent in this chat.
+    var chatParams: ChatAdvancedParams?
 
     init(
         id: String = UUID().uuidString,

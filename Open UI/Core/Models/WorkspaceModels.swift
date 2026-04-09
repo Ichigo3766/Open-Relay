@@ -1158,6 +1158,11 @@ struct ModelDetail: Identifiable, Sendable {
     var advStreamDeltaChunkSize: Int?
     var advFunctionCalling: String?
     var advReasoningEffort: String?
+    /// nil = Default (omit), true = Enabled, false = Disabled.
+    /// When set to nil and advReasoningTagStart/End are also nil → Default (omit).
+    /// When non-nil → send `"reasoning_tags": true/false`.
+    /// When advReasoningTagStart/End are set → Custom: send `"reasoning_tags": [start, end]`.
+    var advReasoningTagsEnabled: Bool?
     var advReasoningTagStart: String?
     var advReasoningTagEnd: String?
     var advSeed: Int?
@@ -1178,7 +1183,9 @@ struct ModelDetail: Identifiable, Sendable {
     var advRepeatPenalty: Double?
     var advUseMmap: Bool?
     var advUseMlock: Bool?
+    /// 4-state think: nil=default, true=on, false=off, advThinkCustom non-nil=custom string
     var advThink: Bool?
+    var advThinkCustom: String?
     var advFormat: String?
     var advNumKeep: Int?
     var advNumCtx: Int?
@@ -1226,7 +1233,8 @@ struct ModelDetail: Identifiable, Sendable {
         self.toolIds = []; self.filterIds = []; self.defaultFilterIds = []; self.actionIds = []
         self.ttsVoice = ttsVoice; self.customParams = []
         self.advStreamResponse = nil; self.advStreamDeltaChunkSize = nil; self.advFunctionCalling = nil
-        self.advReasoningEffort = nil; self.advReasoningTagStart = nil; self.advReasoningTagEnd = nil
+        self.advReasoningEffort = nil; self.advReasoningTagsEnabled = nil
+        self.advReasoningTagStart = nil; self.advReasoningTagEnd = nil
         self.advSeed = nil; self.advStopSequences = nil; self.advTemperature = nil; self.advLogitBias = nil
         self.advMaxTokens = nil; self.advTopK = nil; self.advTopP = nil; self.advMinP = nil
         self.advFrequencyPenalty = nil; self.advPresencePenalty = nil; self.advMirostat = nil
@@ -1321,9 +1329,18 @@ struct ModelDetail: Identifiable, Sendable {
         self.advStreamDeltaChunkSize = params["stream_delta_chunk_size"] as? Int
         self.advFunctionCalling = params["function_calling"] as? String
         self.advReasoningEffort = params["reasoning_effort"] as? String
-        if let rtags = params["reasoning_tags"] as? [String], rtags.count >= 2 {
-            self.advReasoningTagStart = rtags[0]; self.advReasoningTagEnd = rtags[1]
+        // reasoning_tags can be: absent (Default), true (Enabled), false (Disabled),
+        // or ["start","end"] (Custom)
+        if let bval = params["reasoning_tags"] as? Bool {
+            self.advReasoningTagsEnabled = bval
+            self.advReasoningTagStart = nil
+            self.advReasoningTagEnd = nil
+        } else if let rtags = params["reasoning_tags"] as? [String], rtags.count >= 2 {
+            self.advReasoningTagsEnabled = nil
+            self.advReasoningTagStart = rtags[0]
+            self.advReasoningTagEnd = rtags[1]
         } else {
+            self.advReasoningTagsEnabled = nil
             self.advReasoningTagStart = params["reasoning_tag_start"] as? String
             self.advReasoningTagEnd = params["reasoning_tag_end"] as? String
         }
@@ -1375,7 +1392,12 @@ struct ModelDetail: Identifiable, Sendable {
         if let v = advStreamDeltaChunkSize { p["stream_delta_chunk_size"] = v }
         if let v = advFunctionCalling, !v.isEmpty { p["function_calling"] = v }
         if let v = advReasoningEffort, !v.isEmpty { p["reasoning_effort"] = v }
-        if let s = advReasoningTagStart, let e = advReasoningTagEnd { p["reasoning_tags"] = [s, e] }
+        // reasoning_tags: Custom=[start,end], Enabled=true, Disabled=false, Default=omit
+        if let s = advReasoningTagStart, let e = advReasoningTagEnd {
+            p["reasoning_tags"] = [s, e]
+        } else if let enabled = advReasoningTagsEnabled {
+            p["reasoning_tags"] = enabled
+        }
         if let v = advSeed { p["seed"] = v }
         if let stops = advStopSequences, !stops.isEmpty { p["stop"] = stops }
         if let v = advTemperature { p["temperature"] = v }
@@ -1446,8 +1468,7 @@ struct ModelDetail: Identifiable, Sendable {
             "id": id, "name": name,
             "meta": buildMetaPayload(),
             "params": buildParamsPayload(),
-            "is_active": isActive,
-            "access_grants": buildGrantsPayload()
+            "is_active": isActive
         ]
         if let base = baseModelId, !base.isEmpty { body["base_model_id"] = base }
         return body

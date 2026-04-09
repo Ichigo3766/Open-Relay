@@ -1,5 +1,27 @@
 # Changelog
 
+## v2.6 — April 9, 2026
+
+### What's New
+- Added per-chat advanced parameters panel — tap the sliders icon in any chat to override temperature, top-p, system prompt, and 20+ other parameters for that specific conversation.
+- Added Reference Chats — include a previous conversation as context in any message via the + attachment menu.
+- Replaced Marvis TTS with:
+    - Qwen3 TTS (Recomended) — supporting English, Chinese, Korean, Japanese, German, Spanish, French, Italian, Portuguese, Russian, and Arabic, with multiple speaker voices and language selection in Settings.
+    - Added Kokoro TTS as a secondary option — 54 voices across 9 languages (American/British English, Spanish, French, Hindi, Italian, Japanese, Portuguese, Chinese) with adjustable speed.
+
+### Improvements
+- Corrected slider ranges and states in the workspace model editor.
+
+### Bug Fixes
+- Fixed tapping the edit button in the model picker not opening the model editor for certain models.
+- Fixed saving a new workspace model showing a false "session expired" error.
+- Model picker no longer floods the server with hundreds of simultaneous image requests during fast scrolling
+- Fixed prompt library, knowledge, model, and skill pickers going behind the navigation bar when using a large third-party keyboard.
+- Fixed pinning a model in model selector would not update the star immediately. 
+- System prompt is now also sent in request params for better compatibility with server-side prompt handling.
+
+## Previous Builds
+
 ## v2.5 — April 7, 2026
 
 ### What's New
