@@ -466,8 +466,8 @@ final class AppDependencyContainer: ServiceContainer {
         case .ready, .transcribing: asrService.unloadModel()
         default: break
         }
-        // Marvis TTS — stop playback and unload GPU model
-        textToSpeechService.unloadMarvisModel()
+        // Kokoro TTS — stop playback and unload GPU model
+        textToSpeechService.unloadKokoroModel()
     }
 
     /// Called whenever a new `socketService` is created, wires its state to

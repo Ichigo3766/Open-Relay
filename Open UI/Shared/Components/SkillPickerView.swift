@@ -12,10 +12,23 @@ struct SkillPickerView: View {
     let query: String
     let skills: [SkillItem]
     let isLoading: Bool
+    let keyboardHeight: CGFloat
     let onSelect: (SkillItem) -> Void
     let onDismiss: () -> Void
 
     @Environment(\.theme) private var theme
+
+    private var availableHeight: CGFloat {
+        let scene = UIApplication.shared.connectedScenes
+            .compactMap { $0 as? UIWindowScene }.first
+        let screen = scene?.screen.bounds.height
+            ?? UIScreen.main.bounds.height
+        let topSafeArea = scene?.windows.first?.safeAreaInsets.top ?? 59
+        let bottomSafeArea = scene?.windows.first?.safeAreaInsets.bottom ?? 34
+        let reserved = topSafeArea + 44 + 16
+        let usable = screen - reserved - keyboardHeight - bottomSafeArea - 56
+        return max(120, usable)
+    }
 
     /// Skills filtered by the current query, matching on name and description.
     /// Only shows active skills (isActive == true).
@@ -78,7 +91,7 @@ struct SkillPickerView: View {
         .shadow(color: theme.isDark ? .black.opacity(0.3) : .black.opacity(0.12), radius: 16, y: -4)
         .padding(.horizontal, Spacing.screenPadding)
         .padding(.bottom, Spacing.xs)
-        .frame(maxHeight: 320)
+        .frame(maxHeight: availableHeight)
     }
 
     // MARK: - Loading State

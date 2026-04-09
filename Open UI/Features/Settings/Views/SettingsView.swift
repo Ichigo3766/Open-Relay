@@ -694,13 +694,17 @@ struct TTSSettingsView: View {
     @AppStorage("ttsSpeechRate") private var speechRate = 1.0
     @AppStorage("ttsVoiceIdentifier") private var voiceIdentifier: String = ""
     @AppStorage("ttsEngine") private var selectedEngine: String = "system"
-    @AppStorage("ttsMarvisVoice") private var marvisVoice: String = "conversationalA"
-    @AppStorage("ttsMarvisQuality") private var marvisQuality: Int = 32
+    @AppStorage("ttsOnDeviceModel") private var onDeviceModelRaw: String = "kokoro"
+    @AppStorage("ttsKokoroVoice") private var kokoroVoice: String = "af_heart"
+    @AppStorage("ttsKokoroSpeed") private var kokoroSpeed: Double = 1.0
+    @AppStorage("ttsQwen3Voice") private var qwen3Voice: String = "Aiden"
+    @AppStorage("ttsQwen3Language") private var qwen3Language: String = "auto"
     @AppStorage("ttsServerVoiceId") private var serverVoiceId: String = ""
     @State private var isSpeaking = false
     @State private var availableVoices: [AVSpeechSynthesisVoice] = []
     @State private var isDownloadingModel = false
-    @State private var marvisModelSize: String = "–"
+    @State private var kokoroModelSize: String = "–"
+    @State private var qwen3ModelSize: String = "–"
     @State private var serverVoices: [(id: String, name: String)] = []
     @State private var isLoadingServerVoices = false
     /// Model name configured on the server (from /api/v1/audio/config).
@@ -712,10 +716,14 @@ struct TTSSettingsView: View {
         dependencies.textToSpeechService
     }
 
+    private var selectedOnDeviceModel: OnDeviceTTSModel {
+        OnDeviceTTSModel(rawValue: onDeviceModelRaw) ?? .kokoro
+    }
+
     private var engineOptions: [(String, String, String)] {
         var options: [(String, String, String)] = [
-            ("auto", "Auto", "Best available: Marvis → Server → System"),
-            ("system", "System (Apple)", "Built-in AVSpeechSynthesizer")
+            ("auto",     "Auto",           "Best available: On-Device → Server → System"),
+            ("system",   "System (Apple)", "Built-in AVSpeechSynthesizer"),
         ]
         if ttsService.isServerAvailable {
             options.insert(
@@ -723,9 +731,9 @@ struct TTSSettingsView: View {
                 at: options.count - 1
             )
         }
-        if ttsService.isMarvisAvailable {
+        if ttsService.isKokoroAvailable {
             options.insert(
-                ("marvis", "Marvis Neural (On-Device)", "On-device AI voice — Marvis TTS"),
+                ("ondevice", "On-Device", "Neural TTS running locally on your device"),
                 at: 1
             )
         }
@@ -752,7 +760,7 @@ struct TTSSettingsView: View {
                                         .fontWeight(.medium)
                                         .foregroundStyle(theme.textPrimary)
 
-                                    if value == "marvis" {
+                                    if value == "qwen3" {
                                         Text("New")
                                             .scaledFont(size: 9, weight: .heavy)
                                             .foregroundStyle(.white)
@@ -790,124 +798,99 @@ struct TTSSettingsView: View {
                 Text("TTS Engine")
             } footer: {
                 if selectedEngine == "auto" {
-                    Text("Auto mode prefers the Marvis neural voice when the model is downloaded and ready, otherwise uses the system voice.")
-                } else if selectedEngine == "marvis" {
-                    Text("Marvis TTS runs locally on your device. Downloads on first use (~250MB).")
+                    Text("Auto mode uses the on-device model when loaded, otherwise falls back to server or system.")
+                } else if selectedEngine == "kokoro" {
+                    Text("Kokoro runs locally on your device. Supports 54 voices across 9 languages.")
+                } else if selectedEngine == "qwen3" {
+                    Text("Qwen3 runs locally on your device. Supports English, Korean, German, Spanish, and 7 more languages.")
                 }
             }
 
-            // Marvis Model Settings (shown when Marvis is selected)
-            if (selectedEngine == "marvis" || selectedEngine == "auto") && ttsService.isMarvisAvailable {
+            // On-Device Model Settings (unified section with model picker)
+            if selectedEngine == "ondevice" && ttsService.isKokoroAvailable {
+                let isKokoro = selectedOnDeviceModel == .kokoro
+
                 Section {
+                    // Model selector — segmented picker inside the section
+                    Picker("Model", selection: $onDeviceModelRaw) {
+                        Text("Kokoro").tag(OnDeviceTTSModel.kokoro.rawValue)
+                        Text("Qwen3").tag(OnDeviceTTSModel.qwen3.rawValue)
+                    }
+                    .pickerStyle(.segmented)
+                    .listRowInsets(EdgeInsets(top: Spacing.sm, leading: Spacing.md, bottom: Spacing.sm, trailing: Spacing.md))
+                    .onChange(of: onDeviceModelRaw) { _, _ in syncEngineToService() }
+
                     // Model status
                     HStack {
                         Text("Status")
                             .scaledFont(size: 16)
                             .foregroundStyle(theme.textPrimary)
                         Spacer()
-                        marvisStatusBadge
+                        onDeviceStatusBadge
                     }
 
-                    // Voice picker
-                    Picker("Voice", selection: $marvisVoice) {
-                        Text("Conversational A").tag("conversationalA")
-                        Text("Conversational B").tag("conversationalB")
-                        Text("Conversational DE 🇩🇪").tag("conversationalDE")
-                        Text("Conversational FR 🇫🇷").tag("conversationalFR")
-                    }
-                    .onChange(of: marvisVoice) { _, _ in
-                        syncMarvisConfig()
-                    }
-
-                    // Quality picker
-                    Picker("Quality", selection: $marvisQuality) {
-                        Text("Low (fastest)").tag(8)
-                        Text("Medium").tag(16)
-                        Text("High").tag(24)
-                        Text("Maximum (best)").tag(32)
-                    }
-                    .onChange(of: marvisQuality) { _, _ in
-                        syncMarvisConfig()
-                    }
-
-                    // Download / Preload button
-                    if case .unloaded = ttsService.marvisState {
-                        Button {
-                            preloadMarvisModel()
-                        } label: {
-                            HStack(spacing: Spacing.sm) {
-                                Image(systemName: marvisFilesOnDisk ? "bolt.circle" : "arrow.down.circle")
-                                    .scaledFont(size: 16, weight: .medium)
-                                Text(marvisFilesOnDisk ? "Load Model" : "Download & Load Model")
-                                    .scaledFont(size: 16)
-                                    .fontWeight(.medium)
+                    if isKokoro {
+                        // Kokoro: Voice picker grouped by language
+                        Picker("Voice", selection: $kokoroVoice) {
+                            ForEach(KokoroVoiceCatalog.groups, id: \.language) { group in
+                                Section(header: Text("\(group.flag) \(group.language)")) {
+                                    ForEach(group.voices, id: \.id) { voice in
+                                        Text(voice.name).tag(voice.id)
+                                    }
+                                }
                             }
-                            .foregroundStyle(theme.brandPrimary)
                         }
-                    } else if case .downloading(let progress) = ttsService.marvisState {
-                        VStack(alignment: .leading, spacing: Spacing.sm) {
-                            HStack(spacing: Spacing.sm) {
-                                ProgressView()
-                                    .controlSize(.small)
-                                Text("Downloading model…")
+                        .onChange(of: kokoroVoice) { _, _ in syncKokoroConfig() }
+
+                        // Speed slider (Kokoro only)
+                        VStack(alignment: .leading, spacing: Spacing.xs) {
+                            HStack {
+                                Text("Speed")
                                     .scaledFont(size: 16)
-                                    .foregroundStyle(theme.textSecondary)
+                                    .foregroundStyle(theme.textPrimary)
                                 Spacer()
-                                Text("\(Int(progress * 100))%")
-                                    .scaledFont(size: 12, weight: .medium)
-                                    .fontWeight(.semibold)
-                                    .foregroundStyle(theme.brandPrimary)
+                                Text(String(format: "%.1f×", kokoroSpeed))
+                                    .scaledFont(size: 14, weight: .medium)
+                                    .foregroundStyle(theme.textSecondary)
                             }
-                            ProgressView(value: progress)
+                            Slider(value: $kokoroSpeed, in: 0.5...2.0, step: 0.1)
                                 .tint(theme.brandPrimary)
-                            Text("Please keep the app open")
-                                .scaledFont(size: 12, weight: .medium)
-                                .foregroundStyle(theme.textTertiary)
+                                .onChange(of: kokoroSpeed) { _, _ in syncKokoroConfig() }
                         }
-                    } else if case .ready = ttsService.marvisState {
-                        Button(role: .destructive) {
-                            ttsService.unloadMarvisModel()
-                        } label: {
-                            HStack(spacing: Spacing.sm) {
-                                Image(systemName: "xmark.circle")
-                                    .scaledFont(size: 16, weight: .medium)
-                                Text("Unload Model (Free Memory)")
-                                    .scaledFont(size: 16)
-                                    .fontWeight(.medium)
+                    } else {
+                        // Qwen3: Speaker picker
+                        Picker("Speaker", selection: $qwen3Voice) {
+                            ForEach(Qwen3VoiceCatalog.groups, id: \.language) { group in
+                                Section(header: Text("\(group.flag) \(group.language)")) {
+                                    ForEach(group.voices, id: \.id) { voice in
+                                        Text(voice.name).tag(voice.id)
+                                    }
+                                }
                             }
                         }
+                        .onChange(of: qwen3Voice) { _, _ in syncQwen3Config() }
 
-                        // STORAGE FIX: Option to delete the downloaded model files
-                        // from disk, freeing ~250MB of storage.
-                        Button(role: .destructive) {
-                            ttsService.marvisService.unloadAndDeleteModel()
-                        } label: {
-                            HStack(spacing: Spacing.sm) {
-                                Image(systemName: "trash.circle")
-                                    .scaledFont(size: 16, weight: .medium)
-                                Text("Delete Downloaded Model (~250MB)")
-                                    .scaledFont(size: 16)
-                                    .fontWeight(.medium)
+                        // Qwen3: Language picker
+                        Picker("Language", selection: $qwen3Language) {
+                            ForEach(Qwen3VoiceCatalog.supportedLanguages, id: \.id) { lang in
+                                Text(lang.name).tag(lang.id)
                             }
                         }
-                    } else if case .error = ttsService.marvisState {
-                        Button {
-                            retryMarvisLoad()
-                        } label: {
-                            HStack(spacing: Spacing.sm) {
-                                Image(systemName: "arrow.clockwise.circle")
-                                    .scaledFont(size: 16, weight: .medium)
-                                Text("Retry Download")
-                                    .scaledFont(size: 16)
-                                    .fontWeight(.medium)
-                            }
-                            .foregroundStyle(theme.warning)
-                        }
+                        .onChange(of: qwen3Language) { _, _ in syncQwen3Config() }
+
                     }
+
+                    // Load / Download / Unload controls
+                    onDeviceModelControls(isKokoro: isKokoro)
+
                 } header: {
-                    Text("Marvis Neural Voice")
+                    Text("On-Device Neural Voice")
                 } footer: {
-                    Text("The model downloads from HuggingFace on first use (~250MB) and is cached locally. Unloading frees memory.")
+                    if isKokoro {
+                        Text("Kokoro · 54 voices · 9 languages. Downloads from HuggingFace on first use.")
+                    } else {
+                        Text("Qwen3 · 7 speakers · 11 languages including Korean, German & Spanish. Speaker sets the voice timbre — any speaker can speak any language.")
+                    }
                 }
             }
 
@@ -977,7 +960,6 @@ struct TTSSettingsView: View {
                             .foregroundStyle(theme.brandPrimary)
                         }
                     } else {
-                        // Voice picker from server
                         Picker("Voice", selection: $serverVoiceId) {
                             Text("Server Default").tag("")
                             ForEach(serverVoices, id: \.id) { voice in
@@ -1060,10 +1042,12 @@ struct TTSSettingsView: View {
                         } else {
                             let engineLabel: String = {
                                 switch selectedEngine {
-                                case "marvis": return "Marvis"
-                                case "server": return "Server"
-                                case "system": return "System"
-                                default: return "Auto"
+                                case "ondevice": return selectedOnDeviceModel == .qwen3 ? "Qwen3" : "Kokoro"
+                                case "kokoro":   return "Kokoro"
+                                case "qwen3":    return "Qwen3"
+                                case "server":   return "Server"
+                                case "system":   return "System"
+                                default:         return "Auto"
                                 }
                             }()
                             Text(engineLabel)
@@ -1077,18 +1061,38 @@ struct TTSSettingsView: View {
             // Model Storage Management
             Section {
                 HStack {
-                    Text("Marvis TTS")
+                    Text("Kokoro TTS")
                         .scaledFont(size: 16)
                         .foregroundStyle(theme.textPrimary)
                     Spacer()
-                    Text(marvisModelSize)
+                    Text(kokoroModelSize)
                         .scaledFont(size: 14)
                         .foregroundStyle(theme.textSecondary)
                 }
                 .swipeActions(edge: .trailing, allowsFullSwipe: true) {
                     Button(role: .destructive) {
-                        ttsService.marvisService.unloadAndDeleteModel()
-                        refreshMarvisModelSize()
+                        ttsService.kokoroService.config.activeModel = .kokoro
+                        ttsService.kokoroService.unloadAndDeleteModel()
+                        refreshModelSizes()
+                    } label: {
+                        Label("Delete", systemImage: "trash")
+                    }
+                }
+
+                HStack {
+                    Text("Qwen3 TTS")
+                        .scaledFont(size: 16)
+                        .foregroundStyle(theme.textPrimary)
+                    Spacer()
+                    Text(qwen3ModelSize)
+                        .scaledFont(size: 14)
+                        .foregroundStyle(theme.textSecondary)
+                }
+                .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                    Button(role: .destructive) {
+                        ttsService.kokoroService.config.activeModel = .qwen3
+                        ttsService.kokoroService.unloadAndDeleteModel()
+                        refreshModelSizes()
                     } label: {
                         Label("Delete", systemImage: "trash")
                     }
@@ -1105,8 +1109,9 @@ struct TTSSettingsView: View {
             availableVoices = dependencies.textToSpeechService.availableVoices()
             syncSettingsToService()
             syncEngineToService()
-            syncMarvisConfig()
-            refreshMarvisModelSize()
+            syncKokoroConfig()
+            syncQwen3Config()
+            refreshModelSizes()
         }
         .task {
             // Always fetch fresh config from server when the user opens this screen
@@ -1117,29 +1122,19 @@ struct TTSSettingsView: View {
         }
     }
 
-    // MARK: - Marvis Status Badge
-
-    /// True when Marvis TTS model files are already cached on disk (but not necessarily loaded into memory).
-    private var marvisFilesOnDisk: Bool {
-        marvisModelSize != "–" && marvisModelSize != "Not downloaded"
-    }
+    // MARK: - On-Device Status Badge
 
     @ViewBuilder
-    private var marvisStatusBadge: some View {
-        switch ttsService.marvisState {
+    private var onDeviceStatusBadge: some View {
+        switch ttsService.kokoroState {
         case .unloaded:
-            statusPill(marvisFilesOnDisk ? "Not Loaded" : "Not Downloaded", color: theme.textTertiary)
-        case .downloading(let progress):
-            VStack(alignment: .trailing, spacing: 2) {
-                HStack(spacing: 4) {
-                    ProgressView().controlSize(.mini)
-                    Text("Downloading… \(Int(progress * 100))%")
-                        .scaledFont(size: 12, weight: .medium)
-                        .foregroundStyle(theme.warning)
-                }
-                ProgressView(value: progress)
-                    .tint(theme.brandPrimary)
-                    .frame(width: 100)
+            statusPill("Not Loaded", color: theme.textTertiary)
+        case .downloading:
+            HStack(spacing: 4) {
+                ProgressView().controlSize(.mini)
+                Text("Downloading…")
+                    .scaledFont(size: 12, weight: .medium)
+                    .foregroundStyle(theme.warning)
             }
         case .loading:
             HStack(spacing: 4) {
@@ -1155,6 +1150,79 @@ struct TTSSettingsView: View {
         case .error(let msg):
             statusPill("Error", color: theme.error)
                 .help(msg)
+        }
+    }
+
+    @ViewBuilder
+    private func onDeviceModelControls(isKokoro: Bool) -> some View {
+        switch ttsService.kokoroState {
+        case .unloaded:
+            Button {
+                preloadOnDeviceModel()
+            } label: {
+                HStack(spacing: Spacing.sm) {
+                    Image(systemName: "arrow.down.circle")
+                        .scaledFont(size: 16, weight: .medium)
+                    Text("Download & Load Model")
+                        .scaledFont(size: 16)
+                        .fontWeight(.medium)
+                }
+                .foregroundStyle(theme.brandPrimary)
+            }
+        case .downloading:
+            VStack(alignment: .leading, spacing: Spacing.sm) {
+                HStack(spacing: Spacing.sm) {
+                    ProgressView().controlSize(.small)
+                    Text("Downloading model…")
+                        .scaledFont(size: 16)
+                        .foregroundStyle(theme.textSecondary)
+                    Spacer()
+                }
+                ProgressView()
+                    .tint(theme.brandPrimary)
+                Text("Please keep the app open")
+                    .scaledFont(size: 12, weight: .medium)
+                    .foregroundStyle(theme.textTertiary)
+            }
+        case .ready:
+            Button(role: .destructive) {
+                ttsService.unloadKokoroModel()
+            } label: {
+                HStack(spacing: Spacing.sm) {
+                    Image(systemName: "xmark.circle")
+                        .scaledFont(size: 16, weight: .medium)
+                    Text("Unload Model (Free Memory)")
+                        .scaledFont(size: 16)
+                        .fontWeight(.medium)
+                }
+            }
+            Button(role: .destructive) {
+                ttsService.kokoroService.unloadAndDeleteModel()
+                refreshModelSizes()
+            } label: {
+                HStack(spacing: Spacing.sm) {
+                    Image(systemName: "trash.circle")
+                        .scaledFont(size: 16, weight: .medium)
+                    Text("Delete Downloaded Model")
+                        .scaledFont(size: 16)
+                        .fontWeight(.medium)
+                }
+            }
+        case .error:
+            Button {
+                retryOnDeviceLoad()
+            } label: {
+                HStack(spacing: Spacing.sm) {
+                    Image(systemName: "arrow.clockwise.circle")
+                        .scaledFont(size: 16, weight: .medium)
+                    Text("Retry Download")
+                        .scaledFont(size: 16)
+                        .fontWeight(.medium)
+                }
+                .foregroundStyle(theme.warning)
+            }
+        case .loading, .generating:
+            EmptyView()
         }
     }
 
@@ -1178,8 +1246,6 @@ struct TTSSettingsView: View {
     }
 
     /// Fetches the server's audio config from `/api/v1/audio/config`.
-    /// Always stores the server-configured default voice so it can be used as
-    /// the fallback when the user selects "Server Default" in the picker.
     @MainActor
     private func loadServerConfig() async {
         guard let apiClient = dependencies.apiClient else { return }
@@ -1187,18 +1253,12 @@ struct TTSSettingsView: View {
         defer { isLoadingServerConfig = false }
         do {
             let config = try await apiClient.getAudioConfig()
-            // Parse tts.MODEL for the model name display
             if let tts = config["tts"] as? [String: Any] {
                 let model = (tts["MODEL"] as? String) ?? ""
                 serverConfiguredModel = model
-
-                // Always store the server-configured voice as the fallback default.
-                // When the user picks "Server Default" (empty serverVoiceId) we send
-                // this voice to the API so the server honours the admin configuration.
                 let configVoice = (tts["VOICE"] as? String) ?? ""
                 if !configVoice.isEmpty {
                     ttsService.serverDefaultVoice = configVoice
-                    // If user hasn't manually chosen a voice, apply it automatically
                     if serverVoiceId.isEmpty {
                         ttsService.serverVoiceId = configVoice
                     }
@@ -1230,8 +1290,23 @@ struct TTSSettingsView: View {
     private func syncEngineToService() {
         let service = dependencies.textToSpeechService
         switch selectedEngine {
-        case "marvis", "mlx":
-            service.preferredEngine = .marvis
+        case "ondevice":
+            // Sub-model is governed by onDeviceModelRaw (Kokoro or Qwen3)
+            let model = OnDeviceTTSModel(rawValue: onDeviceModelRaw) ?? .kokoro
+            service.kokoroService.config.activeModel = model
+            if model == .qwen3 {
+                service.preferredEngine = .qwen3
+            } else {
+                service.preferredEngine = .kokoro
+            }
+        case "kokoro", "marvis", "mlx":
+            service.preferredEngine = .kokoro
+            service.kokoroService.config.activeModel = .kokoro
+            onDeviceModelRaw = "kokoro"
+        case "qwen3":
+            service.preferredEngine = .qwen3
+            service.kokoroService.config.activeModel = .qwen3
+            onDeviceModelRaw = "qwen3"
         case "server":
             service.preferredEngine = .server
         case "system":
@@ -1239,29 +1314,50 @@ struct TTSSettingsView: View {
         default:
             service.preferredEngine = .auto
         }
+        UserDefaults.standard.set(selectedEngine, forKey: "ttsEngine")
     }
 
-    private func syncMarvisConfig() {
+    private func syncKokoroConfig() {
         let service = dependencies.textToSpeechService
-        service.marvisConfig.voice = marvisVoice
-        service.marvisConfig.qualityLevel = marvisQuality
+        service.kokoroConfig.voice = kokoroVoice
+        service.kokoroConfig.speed = Float(kokoroSpeed)
+        UserDefaults.standard.set(kokoroVoice, forKey: "ttsKokoroVoice")
+        UserDefaults.standard.set(Float(kokoroSpeed), forKey: "ttsKokoroSpeed")
+        service.kokoroService.prepareG2PForVoice(kokoroVoice)
     }
 
-    private func preloadMarvisModel() {
+    private func syncQwen3Config() {
+        let service = dependencies.textToSpeechService
+        service.kokoroService.config.qwen3Voice = qwen3Voice
+        service.kokoroService.config.qwen3Language = qwen3Language
+        service.kokoroService.config.qwen3Speed = 1.1
+        UserDefaults.standard.set(qwen3Voice, forKey: "ttsQwen3Voice")
+        UserDefaults.standard.set(qwen3Language, forKey: "ttsQwen3Language")
+    }
+
+    private func preloadOnDeviceModel() {
         isDownloadingModel = true
         Task {
-            await ttsService.preloadMarvisModel()
+            await ttsService.preloadKokoroModel()
+            isDownloadingModel = false
+            refreshModelSizes()
+        }
+    }
+
+    private func retryOnDeviceLoad() {
+        ttsService.unloadKokoroModel()
+        isDownloadingModel = true
+        Task {
+            await ttsService.preloadKokoroModel()
             isDownloadingModel = false
         }
     }
 
-    private func retryMarvisLoad() {
-        ttsService.unloadMarvisModel()
-        isDownloadingModel = true
-        Task {
-            await ttsService.preloadMarvisModel()
-            isDownloadingModel = false
-        }
+    private func refreshModelSizes() {
+        let kokoro = StorageManager.shared.kokoroTTSModelSize()
+        let qwen3  = StorageManager.shared.qwen3TTSModelSize()
+        kokoroModelSize = kokoro > 0 ? ByteCountFormatter.string(fromByteCount: kokoro, countStyle: .file) : "Not downloaded"
+        qwen3ModelSize  = qwen3  > 0 ? ByteCountFormatter.string(fromByteCount: qwen3,  countStyle: .file) : "Not downloaded"
     }
 
     private func previewVoice() {
@@ -1272,7 +1368,8 @@ struct TTSSettingsView: View {
         } else {
             syncSettingsToService()
             syncEngineToService()
-            syncMarvisConfig()
+            syncKokoroConfig()
+            syncQwen3Config()
             isSpeaking = true
             service.onComplete = { [self] in
                 isSpeaking = false
@@ -1283,12 +1380,12 @@ struct TTSSettingsView: View {
         }
     }
 
-    private func refreshMarvisModelSize() {
-        let size = StorageManager.shared.marvisTTSModelSize()
+    private func refreshKokoroModelSize() {
+        let size = StorageManager.shared.kokoroTTSModelSize()
         if size > 0 {
-            marvisModelSize = ByteCountFormatter.string(fromByteCount: size, countStyle: .file)
+            kokoroModelSize = ByteCountFormatter.string(fromByteCount: size, countStyle: .file)
         } else {
-            marvisModelSize = "Not downloaded"
+            kokoroModelSize = "Not downloaded"
         }
     }
 
@@ -1340,7 +1437,7 @@ struct STTSettingsView: View {
                     engineRow(
                         value: "device",
                         label: "On-Device (Apple)",
-                        description: "Apple Speech framework — fast, private, no internet required",
+                        description: "Apple Speech framework",
                         selected: selectedSTTEngine == "device"
                     )
                 }

@@ -901,13 +901,15 @@ final class APIClient: @unchecked Sendable {
         messages: [ChatMessage],
         model: String?,
         systemPrompt: String? = nil,
+        chatParams: ChatAdvancedParams? = nil,
         title: String? = nil
     ) async throws {
         let chatData = buildChatPayload(
             title: title ?? "",
             messages: messages,
             model: model,
-            systemPrompt: systemPrompt
+            systemPrompt: systemPrompt,
+            chatParams: chatParams
         )
         try await network.requestVoidJSON(
             path: "/api/v1/chats/\(id)",
@@ -3152,6 +3154,7 @@ final class APIClient: @unchecked Sendable {
         var model: String?
         var systemPrompt: String?
         var messages: [ChatMessage] = []
+        var chatParams: ChatAdvancedParams?
 
         if let chat = json["chat"] as? [String: Any] {
             if let models = chat["models"] as? [String], let first = models.first {
@@ -3159,9 +3162,17 @@ final class APIClient: @unchecked Sendable {
             }
             systemPrompt = chat["system"] as? String
             messages = parseMessages(from: chat)
+
+            // Parse server-side params (set via web UI or another client)
+            if let params = chat["params"] as? [String: Any], !params.isEmpty {
+                let parsed = ChatAdvancedParams(from: params)
+                if parsed.hasAnyOverride {
+                    chatParams = parsed
+                }
+            }
         }
 
-        return Conversation(
+        var conv = Conversation(
             id: id,
             title: title,
             createdAt: createdAt,
@@ -3175,6 +3186,8 @@ final class APIClient: @unchecked Sendable {
             folderId: folderId,
             tags: tags
         )
+        conv.chatParams = chatParams
+        return conv
     }
 
     private func parseMessages(from chat: [String: Any]) -> [ChatMessage] {
@@ -3513,7 +3526,8 @@ final class APIClient: @unchecked Sendable {
         title: String,
         messages: [ChatMessage],
         model: String?,
-        systemPrompt: String?
+        systemPrompt: String?,
+        chatParams: ChatAdvancedParams? = nil
     ) -> [String: Any] {
         var messagesMap: [String: Any] = [:]
         var messagesArray: [[String: Any]] = []
@@ -3840,11 +3854,21 @@ final class APIClient: @unchecked Sendable {
             if msg.role == .user { lastUserId = msg.id }
         }
 
+        // Build the params dict — start with chatParams overrides (if any),
+        // then layer in the system prompt so both are persisted together.
+        var paramsDict: [String: Any] = chatParams?.toRequestParams() ?? [:]
+        // Also write system into params so Open WebUI's web UI shows it correctly.
+        if let systemPrompt, !systemPrompt.trimmingCharacters(in: .whitespaces).isEmpty {
+            paramsDict["system"] = systemPrompt
+        } else if let sp = chatParams?.systemPrompt, !sp.trimmingCharacters(in: .whitespaces).isEmpty {
+            paramsDict["system"] = sp
+        }
+
         var chat: [String: Any] = [
             "id": "",
             "title": title,
             "models": model.map { [$0] } ?? [],
-            "params": [String: Any](),
+            "params": paramsDict,
             "history": [
                 "messages": messagesMap,
                 "currentId": (currentId as Any?) ?? NSNull()
@@ -3854,8 +3878,12 @@ final class APIClient: @unchecked Sendable {
             "timestamp": Int(Date().timeIntervalSince1970 * 1000)
         ]
 
+        // Also write system at the top-level chat key for backwards compatibility
+        // (some older Open WebUI versions read chat.system instead of chat.params.system).
         if let systemPrompt, !systemPrompt.trimmingCharacters(in: .whitespaces).isEmpty {
             chat["system"] = systemPrompt
+        } else if let sp = chatParams?.systemPrompt, !sp.trimmingCharacters(in: .whitespaces).isEmpty {
+            chat["system"] = sp
         }
 
         return chat

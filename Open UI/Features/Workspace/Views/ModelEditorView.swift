@@ -121,6 +121,7 @@ struct ModelEditorView: View {
     @State private var advStreamDeltaChunkSize: Int? = nil
     @State private var advFunctionCalling: String? = nil
     @State private var advReasoningEffort: String? = nil
+    @State private var advReasoningTagsEnabled: Bool? = nil
     @State private var advReasoningTagStart: String? = nil
     @State private var advReasoningTagEnd: String? = nil
     @State private var advSeed: Int? = nil
@@ -142,6 +143,7 @@ struct ModelEditorView: View {
     @State private var advUseMmap: Bool? = nil
     @State private var advUseMlock: Bool? = nil
     @State private var advThink: Bool? = nil
+    @State private var advThinkCustom: String? = nil
     @State private var advFormat: String? = nil
     @State private var advNumKeep: Int? = nil
     @State private var advNumCtx: Int? = nil
@@ -262,6 +264,7 @@ struct ModelEditorView: View {
                         advStreamDeltaChunkSize: $advStreamDeltaChunkSize,
                         advFunctionCalling: $advFunctionCalling,
                         advReasoningEffort: $advReasoningEffort,
+                        advReasoningTagsEnabled: $advReasoningTagsEnabled,
                         advReasoningTagStart: $advReasoningTagStart,
                         advReasoningTagEnd: $advReasoningTagEnd,
                         advSeed: $advSeed,
@@ -1451,6 +1454,7 @@ struct ModelEditorView: View {
         advStreamDeltaChunkSize = model.advStreamDeltaChunkSize
         advFunctionCalling = model.advFunctionCalling
         advReasoningEffort = model.advReasoningEffort
+        advReasoningTagsEnabled = model.advReasoningTagsEnabled
         advReasoningTagStart = model.advReasoningTagStart
         advReasoningTagEnd = model.advReasoningTagEnd
         advSeed = model.advSeed
@@ -1655,6 +1659,7 @@ struct ModelEditorView: View {
         detail.advStreamDeltaChunkSize = advStreamDeltaChunkSize
         detail.advFunctionCalling = advFunctionCalling
         detail.advReasoningEffort = advReasoningEffort
+        detail.advReasoningTagsEnabled = advReasoningTagsEnabled
         detail.advReasoningTagStart = advReasoningTagStart
         detail.advReasoningTagEnd = advReasoningTagEnd
         detail.advSeed = advSeed
@@ -2067,6 +2072,7 @@ struct ModelAdvancedParamsSection: View {
     @Binding var advStreamDeltaChunkSize: Int?
     @Binding var advFunctionCalling: String?
     @Binding var advReasoningEffort: String?
+    @Binding var advReasoningTagsEnabled: Bool?
     @Binding var advReasoningTagStart: String?
     @Binding var advReasoningTagEnd: String?
     @Binding var advSeed: Int?
@@ -2143,7 +2149,7 @@ struct ModelAdvancedParamsSection: View {
         VStack(spacing: 0) {
             advBoolRow(label: "Stream Chat Response", value: $advStreamResponse)
             divider
-            advIntSliderRow(label: "Stream Delta Chunk Size", value: $advStreamDeltaChunkSize, range: 1...1000, step: 1)
+            advIntSliderRow(label: "Stream Delta Chunk Size", value: $advStreamDeltaChunkSize, range: 1...128, step: 1, defaultValue: 1)
             divider
             advNativeToggleRow(label: "Function Calling", value: $advFunctionCalling)
             divider
@@ -2159,9 +2165,9 @@ struct ModelAdvancedParamsSection: View {
             divider
             advTextRow(label: "logit_bias", placeholder: "Enter comma-separated \"token:bias_value\" pairs (example: 5432:100, 413:-100)", value: $advLogitBias)
             divider
-            advIntSliderRow(label: "max_tokens", value: $advMaxTokens, range: 0...32768, step: 128)
+            advIntSliderRow(label: "max_tokens", value: $advMaxTokens, range: 0...131072, step: 128)
             divider
-            advIntSliderRow(label: "top_k", value: $advTopK, range: 0...100, step: 1)
+            advIntSliderRow(label: "top_k", value: $advTopK, range: 0...1000, step: 1)
             divider
             advDoubleSliderRow(label: "top_p", tooltip: nil, value: $advTopP, range: 0...1, step: 0.05)
             divider
@@ -2190,27 +2196,27 @@ struct ModelAdvancedParamsSection: View {
             divider
             advDoubleSliderRow(label: "mirostat_tau", tooltip: nil, value: $advMirostatTau, range: 0...10, step: 0.1)
             divider
-            advIntSliderRow(label: "repeat_last_n", value: $advRepeatLastN, range: 0...512, step: 8)
+            advIntSliderRow(label: "repeat_last_n", value: $advRepeatLastN, range: 0...128, step: 1)
             divider
             advDoubleSliderRow(label: "tfs_z", tooltip: nil, value: $advTfsZ, range: 0...2, step: 0.05)
             divider
-            advDoubleSliderRow(label: "repeat_penalty", tooltip: nil, value: $advRepeatPenalty, range: 0...2, step: 0.05)
+            advDoubleSliderRow(label: "repeat_penalty", tooltip: nil, value: $advRepeatPenalty, range: 0...2, step: 0.01)
             divider
-            advBoolRow(label: "use_mmap", value: $advUseMmap)
+            advBoolRow(label: "use_mmap", value: $advUseMmap, defaultValue: true)
             divider
-            advBoolRow(label: "use_mlock", value: $advUseMlock)
+            advBoolRow(label: "use_mlock", value: $advUseMlock, defaultValue: false)
             divider
             advBoolRow(label: "think (Ollama)", value: $advThink)
             divider
             advTextRow(label: "format (Ollama)", placeholder: "e.g. json", value: $advFormat)
             divider
-            advIntSliderRow(label: "num_keep (Ollama)", value: $advNumKeep, range: 0...512, step: 8)
+            advIntSliderRow(label: "num_keep (Ollama)", value: $advNumKeep, range: 0...10240000, step: 1)
             divider
-            advIntSliderRow(label: "num_ctx (Ollama)", value: $advNumCtx, range: 512...32768, step: 512)
+            advIntSliderRow(label: "num_ctx (Ollama)", value: $advNumCtx, range: 512...10240000, step: 512)
             divider
-            advIntSliderRow(label: "num_batch (Ollama)", value: $advNumBatch, range: 1...1024, step: 16)
+            advIntSliderRow(label: "num_batch (Ollama)", value: $advNumBatch, range: 256...8192, step: 256)
             divider
-            advIntSliderRow(label: "num_thread (Ollama)", value: $advNumThread, range: 1...32, step: 1)
+            advIntSliderRow(label: "num_thread (Ollama)", value: $advNumThread, range: 1...256, step: 1)
             divider
             VStack(alignment: .leading, spacing: 4) {
                 Text("Set the number of layers, which will be off-loaded to GPU. Increasing this value can significantly improve performance for models that are optimized for GPU acceleration but may also consume more power and GPU resources.")
@@ -2219,7 +2225,7 @@ struct ModelAdvancedParamsSection: View {
                     .padding(.horizontal, Spacing.md)
                     .padding(.top, 8)
             }
-            advIntSliderRow(label: "num_gpu (Ollama)", value: $advNumGpu, range: 0...128, step: 1)
+            advIntSliderRow(label: "num_gpu (Ollama)", value: $advNumGpu, range: 0...256, step: 1)
             divider
             advTextRow(label: "keep_alive (Ollama)", placeholder: "e.g. 5m", value: $advKeepAlive)
             divider
@@ -2232,60 +2238,103 @@ struct ModelAdvancedParamsSection: View {
     }
 
     // MARK: - Reasoning Tags Row
+    // 4 states matching Open WebUI (cycling pill pattern):
+    //   Default  → advReasoningTagsEnabled == nil && advReasoningTagStart == nil
+    //   Enabled  → advReasoningTagsEnabled == true
+    //   Disabled → advReasoningTagsEnabled == false
+    //   Custom   → advReasoningTagStart != nil (advReasoningTagsEnabled ignored)
+
+    private var currentReasoningIsCustom: Bool {
+        advReasoningTagStart != nil
+    }
+
+    private var currentReasoningModeLabel: String {
+        if currentReasoningIsCustom { return "Custom" }
+        guard let enabled = advReasoningTagsEnabled else { return "Default" }
+        return enabled ? "Enabled" : "Disabled"
+    }
+
+    private var reasoningTagsIsActive: Bool {
+        advReasoningTagsEnabled != nil || currentReasoningIsCustom
+    }
+
+    /// Cycle: Enabled → Disabled → Custom → Enabled
+    private func cycleReasoningMode() {
+        if currentReasoningIsCustom {
+            // Custom → Enabled
+            advReasoningTagStart = nil
+            advReasoningTagEnd = nil
+            advReasoningTagsEnabled = true
+        } else if let enabled = advReasoningTagsEnabled {
+            if enabled {
+                // Enabled → Disabled
+                advReasoningTagsEnabled = false
+            } else {
+                // Disabled → Custom
+                advReasoningTagsEnabled = nil
+                advReasoningTagStart = ""
+                advReasoningTagEnd = ""
+            }
+        } else {
+            // Default → Enabled (via initial activation)
+            advReasoningTagsEnabled = true
+        }
+        Haptics.play(.light)
+    }
 
     private var advReasoningTagsRow: some View {
-        VStack(alignment: .leading, spacing: 4) {
+        VStack(alignment: .leading, spacing: 0) {
             HStack {
                 Text("Reasoning Tags")
                     .scaledFont(size: 14)
                     .foregroundStyle(theme.textPrimary)
                 Spacer()
-                let isCustom = advReasoningTagStart != nil || advReasoningTagEnd != nil
-                if isCustom {
-                    Button {
-                        advReasoningTagStart = nil
-                        advReasoningTagEnd = nil
-                        Haptics.play(.light)
-                    } label: { defaultPill }
-                    .buttonStyle(.plain)
-                } else {
-                    Button {
-                        advReasoningTagStart = "<think>"
-                        advReasoningTagEnd = "</think>"
-                        Haptics.play(.light)
-                    } label: { defaultPill }
-                    .buttonStyle(.plain)
+                // Single pill cycles: Default → Enabled → Disabled → Custom → Default
+                Button {
+                    cycleReasoningMode()
+                } label: {
+                    Text(reasoningTagsIsActive ? currentReasoningModeLabel : "Default")
+                        .scaledFont(size: 12, weight: .semibold)
+                        .foregroundStyle(theme.brandPrimary)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 3)
+                        .background(theme.brandPrimary.opacity(0.12))
+                        .clipShape(Capsule())
                 }
+                .buttonStyle(.plain)
             }
             .padding(.horizontal, Spacing.md)
-            .padding(.top, 10)
+            .padding(.vertical, 10)
 
-            if advReasoningTagStart != nil || advReasoningTagEnd != nil {
+            // Custom text fields (only shown in Custom mode)
+            if currentReasoningIsCustom {
                 HStack(spacing: Spacing.md) {
-                    TextField("Start Tag", text: Binding(
+                    TextField("<think>", text: Binding(
                         get: { advReasoningTagStart ?? "" },
                         set: { advReasoningTagStart = $0 }
                     ))
                     .scaledFont(size: 13)
                     .foregroundStyle(theme.textPrimary)
+                    .autocorrectionDisabled()
+                    .autocapitalization(.none)
                     .padding(8)
                     .background(theme.surfaceContainer.opacity(0.5))
                     .clipShape(RoundedRectangle(cornerRadius: 6))
 
-                    TextField("End Tag", text: Binding(
+                    TextField("</think>", text: Binding(
                         get: { advReasoningTagEnd ?? "" },
                         set: { advReasoningTagEnd = $0 }
                     ))
                     .scaledFont(size: 13)
                     .foregroundStyle(theme.textPrimary)
+                    .autocorrectionDisabled()
+                    .autocapitalization(.none)
                     .padding(8)
                     .background(theme.surfaceContainer.opacity(0.5))
                     .clipShape(RoundedRectangle(cornerRadius: 6))
                 }
                 .padding(.horizontal, Spacing.md)
-                .padding(.bottom, 8)
-            } else {
-                Spacer().frame(height: 10)
+                .padding(.bottom, 10)
             }
         }
     }
@@ -2366,30 +2415,40 @@ struct ModelAdvancedParamsSection: View {
 
     // MARK: - Row Builders
 
+    /// Single cycling pill: Default → On → Off → Default
     @ViewBuilder
-    private func advBoolRow(label: String, value: Binding<Bool?>) -> some View {
-        let isCustom = value.wrappedValue != nil
+    private func advBoolRow(label: String, value: Binding<Bool?>, defaultValue: Bool = false) -> some View {
+        let current = value.wrappedValue
+        let currentLabel: String = {
+            switch current {
+            case .some(true):  return "On"
+            case .some(false): return "Off"
+            case .none:        return "Default"
+            }
+        }()
         HStack {
             Text(label)
                 .scaledFont(size: 14)
                 .foregroundStyle(theme.textPrimary)
             Spacer()
-            if isCustom {
-                Text(value.wrappedValue == true ? "On" : "Off")
+            Button {
+                // Cycle: nil (Default) → true (On) → false (Off) → nil
+                switch current {
+                case .none:        value.wrappedValue = true
+                case .some(true):  value.wrappedValue = false
+                case .some(false): value.wrappedValue = nil
+                }
+                Haptics.play(.light)
+            } label: {
+                Text(currentLabel)
                     .scaledFont(size: 12, weight: .semibold)
                     .foregroundStyle(theme.brandPrimary)
-                Toggle("", isOn: Binding(
-                    get: { value.wrappedValue ?? false },
-                    set: { value.wrappedValue = $0 }
-                ))
-                .tint(theme.brandPrimary)
-                .labelsHidden()
-                Button { value.wrappedValue = nil; Haptics.play(.light) } label: { defaultPill }
-                    .buttonStyle(.plain)
-            } else {
-                Button { value.wrappedValue = false; Haptics.play(.light) } label: { defaultPill }
-                    .buttonStyle(.plain)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 3)
+                    .background(theme.brandPrimary.opacity(0.12))
+                    .clipShape(Capsule())
             }
+            .buttonStyle(.plain)
         }
         .padding(.horizontal, Spacing.md)
         .padding(.vertical, 10)
@@ -2432,8 +2491,9 @@ struct ModelAdvancedParamsSection: View {
     }
 
     @ViewBuilder
-    private func advIntSliderRow(label: String, value: Binding<Int?>, range: ClosedRange<Double>, step: Double) -> some View {
+    private func advIntSliderRow(label: String, value: Binding<Int?>, range: ClosedRange<Double>, step: Double, defaultValue: Int? = nil) -> some View {
         let isCustom = value.wrappedValue != nil
+        let activationValue = defaultValue ?? Int((range.lowerBound + range.upperBound) / 2)
         VStack(alignment: .leading, spacing: 4) {
             HStack {
                 Text(label).scaledFont(size: 14).foregroundStyle(theme.textPrimary)
@@ -2443,7 +2503,7 @@ struct ModelAdvancedParamsSection: View {
                         .scaledFont(size: 12, weight: .semibold).foregroundStyle(theme.brandPrimary).monospacedDigit()
                     Button { value.wrappedValue = nil; Haptics.play(.light) } label: { defaultPill }.buttonStyle(.plain)
                 } else {
-                    Button { value.wrappedValue = Int((range.lowerBound + range.upperBound) / 2); Haptics.play(.light) } label: { defaultPill }.buttonStyle(.plain)
+                    Button { value.wrappedValue = activationValue; Haptics.play(.light) } label: { defaultPill }.buttonStyle(.plain)
                 }
             }
             .padding(.horizontal, Spacing.md)
@@ -2485,24 +2545,27 @@ struct ModelAdvancedParamsSection: View {
         .padding(.vertical, 10)
     }
 
-    /// Simple Default / Native toggle for function_calling.
-    /// nil = Default (not sent), "native" = Native
+    /// Single cycling pill for function_calling: Default → Native → Default
     @ViewBuilder
     private func advNativeToggleRow(label: String, value: Binding<String?>) -> some View {
         let isNative = value.wrappedValue == "native"
+        let currentLabel = isNative ? "Native" : "Default"
         HStack {
             Text(label).scaledFont(size: 14).foregroundStyle(theme.textPrimary)
             Spacer()
-            if isNative {
-                Text("Native")
+            Button {
+                value.wrappedValue = isNative ? nil : "native"
+                Haptics.play(.light)
+            } label: {
+                Text(currentLabel)
                     .scaledFont(size: 12, weight: .semibold)
                     .foregroundStyle(theme.brandPrimary)
-                Button { value.wrappedValue = nil; Haptics.play(.light) } label: { defaultPill }
-                    .buttonStyle(.plain)
-            } else {
-                Button { value.wrappedValue = "native"; Haptics.play(.light) } label: { defaultPill }
-                    .buttonStyle(.plain)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 3)
+                    .background(theme.brandPrimary.opacity(0.12))
+                    .clipShape(Capsule())
             }
+            .buttonStyle(.plain)
         }
         .padding(.horizontal, Spacing.md)
         .padding(.vertical, 10)

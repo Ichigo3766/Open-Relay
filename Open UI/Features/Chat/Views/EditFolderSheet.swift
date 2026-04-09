@@ -405,6 +405,7 @@ struct EditFolderSheet: View {
                     !attachedKnowledge.contains(where: { $0.id == item.id })
                 },
                 isLoading: isLoadingKnowledge,
+                keyboardHeight: 0,
                 onSelect: { item in
                     let ki = FolderKnowledgeItem(id: item.id, name: item.name, type: item.type.rawValue)
                     if !attachedKnowledge.contains(where: { $0.id == item.id }) {

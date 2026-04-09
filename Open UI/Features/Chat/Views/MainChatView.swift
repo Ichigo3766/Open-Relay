@@ -1018,7 +1018,7 @@ struct MainChatView: View {
         Haptics.play(.light)
         Task {
             await withTaskGroup(of: Void.self) { group in
-                group.addTask { await listViewModel.refreshIfStale() }
+                group.addTask { await listViewModel.refreshConversations() }
                 group.addTask { await listViewModel.folderViewModel.refreshFolders() }
                 group.addTask { await channelListVM.refreshChannels() }
             }
@@ -2404,7 +2404,10 @@ let conversationId: String?
                         pinnedModelIds: vm.pinnedModelIds,
                         onEdit: dependencies.authViewModel.currentUser?.role == .admin ? { model in
                             isShowingModelSelectorSheet = false
-                            Task { await openModelEditor(for: model) }
+                            Task {
+                                try? await Task.sleep(nanoseconds: 600_000_000)
+                                await openModelEditor(for: model)
+                            }
                         } : nil,
                         onTogglePin: { modelId in
                             vm.togglePinModel(modelId)
@@ -2419,23 +2422,33 @@ let conversationId: String?
                         Task { await ImageCacheService.shared.clearMemory() }
                     }
                 }
-                .sheet(item: $editingModelDetail) { detail in
-                    NavigationStack {
-                        ModelEditorView(existingModel: detail) { _ in
-                            Task { vm.refreshModelsInBackground() }
-                            editingModelDetail = nil
-                        }
-                    }
-                    .themed()
+            }
+        }
+        .sheet(item: $editingModelDetail) { detail in
+            NavigationStack {
+                ModelEditorView(existingModel: detail) { _ in
+                    Task { vm.refreshModelsInBackground() }
+                    editingModelDetail = nil
                 }
             }
+            .themed()
         }
     }
 
     private func openModelEditor(for model: AIModel) async {
         guard let apiClient = dependencies.apiClient else { return }
-        if let detail = try? await apiClient.getWorkspaceModelDetail(id: model.id) {
+        do {
+            let detail = try await apiClient.getWorkspaceModelDetail(id: model.id)
             editingModelDetail = detail
+        } catch {
+            // Base models (not yet customized as workspace models) return 404.
+            // Construct a default ModelDetail so the editor opens in "create" mode.
+            editingModelDetail = ModelDetail(
+                id: model.id,
+                name: model.name,
+                description: model.description,
+                profileImageURL: model.profileImageURL
+            )
         }
     }
 }

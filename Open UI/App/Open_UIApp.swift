@@ -134,11 +134,11 @@ struct Open_UIApp: App {
                         }
                     }
                     if newPhase == .inactive || newPhase == .background {
-                        // Stop MarvisTTS and unload model before backgrounding to prevent
+                        // Stop Kokoro TTS and unload model before backgrounding to prevent
                         // Metal GPU crash (kIOGPUCommandBufferCallbackErrorBackgroundExecutionNotPermitted).
                         // .inactive fires before .background, giving us time to release GPU resources.
                         dependencies.textToSpeechService.stop()
-                        dependencies.textToSpeechService.marvisService.stopAndUnload()
+                        dependencies.textToSpeechService.kokoroService.stopAndUnload()
 
                         // ASR background safety: pause on-device transcription on iOS < 26.
                         //

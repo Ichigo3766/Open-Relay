@@ -13,11 +13,29 @@ struct PromptPickerView: View {
     let query: String
     let prompts: [PromptItem]
     let isLoading: Bool
+    let keyboardHeight: CGFloat
     let onSelect: (PromptItem) -> Void
     let onDismiss: () -> Void
 
     @Environment(\.theme) private var theme
     @State private var highlightedIndex: Int = 0
+
+    /// The maximum height the picker may occupy.
+    /// Computed from screen dimensions so it's always known before layout,
+    /// avoiding the circular-dependency bug that the old GeometryReader approach had.
+    private var availableHeight: CGFloat {
+        let scene = UIApplication.shared.connectedScenes
+            .compactMap { $0 as? UIWindowScene }.first
+        let screen = scene?.screen.bounds.height
+            ?? UIScreen.main.bounds.height
+        let topSafeArea = scene?.windows.first?.safeAreaInsets.top ?? 59
+        let bottomSafeArea = scene?.windows.first?.safeAreaInsets.bottom ?? 34
+        // Approximate heights: nav bar ~44, input field ~56, spacing buffer ~16
+        let reserved = topSafeArea + 44 + 16
+        let usable = screen - reserved - keyboardHeight - bottomSafeArea - 56
+        return max(120, usable)
+    }
+
 
     /// Prompts filtered by the current query, matching on command and name.
     /// Only shows active prompts (is_active == true).
@@ -80,7 +98,7 @@ struct PromptPickerView: View {
         .shadow(color: theme.isDark ? .black.opacity(0.3) : .black.opacity(0.12), radius: 16, y: -4)
         .padding(.horizontal, Spacing.screenPadding)
         .padding(.bottom, Spacing.xs)
-        .frame(maxHeight: 320)
+        .frame(maxHeight: availableHeight)
         .onChange(of: query) { _, _ in
             highlightedIndex = 0
         }

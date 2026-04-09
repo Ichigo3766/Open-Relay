@@ -8,10 +8,35 @@ import NaturalLanguage
 /// `TextToSpeechService.splitTextForSpeech` behavior.
 enum TTSTextPreprocessor {
 
+    // MARK: - Script Detection
+
+    /// Returns true if the text is predominantly non-Latin (Hindi, Japanese, Chinese, etc.).
+    /// Used to skip English-specific preprocessing transforms that would mangle non-Latin scripts.
+    private static func isNonLatinScript(_ text: String) -> Bool {
+        let sample = text.prefix(200)
+        var nonLatinCount = 0
+        var letterCount = 0
+        for scalar in sample.unicodeScalars {
+            guard scalar.properties.isAlphabetic else { continue }
+            letterCount += 1
+            // Non-Latin: Devanagari (hi), CJK (zh, ja), Arabic, Hebrew, Korean, etc.
+            let v = scalar.value
+            let isLatin = (0x0041...0x007A).contains(v)   // Basic Latin A-Z, a-z
+                || (0x00C0...0x024F).contains(v)           // Latin Extended
+                || (0x1E00...0x1EFF).contains(v)           // Latin Extended Additional
+            if !isLatin { nonLatinCount += 1 }
+        }
+        guard letterCount > 3 else { return false }
+        return Double(nonLatinCount) / Double(letterCount) > 0.5
+    }
+
     // MARK: - Full Pipeline
 
     /// Prepares raw assistant response text for speech synthesis.
     /// Strips markdown, removes tool calls and code blocks, cleans whitespace.
+    /// For non-Latin scripts (Hindi, Japanese, Chinese, etc.), English-specific
+    /// transforms (abbreviation expansion, bullet→sentence, compound hyphens) are skipped
+    /// to avoid mangling text that Kokoro's language-specific G2P will handle natively.
     static func prepareForSpeech(_ text: String) -> String {
         var result = text
 
@@ -30,17 +55,50 @@ enum TTSTextPreprocessor {
         // 5. Remove HTML tags (tool call details blocks, etc.)
         result = removeHTMLTags(result)
 
+        // Detect script early so we can skip English-specific transforms below
+        let nonLatin = isNonLatinScript(result)
+
+        if nonLatin {
+            // For non-Latin scripts: minimal cleanup only.
+            // Kokoro's language-specific G2P (lexicon or neural byT5) handles phonemization.
+            // We must NOT apply English markdown/abbreviation transforms that would mangle
+            // Devanagari, CJK, or other non-Latin characters.
+
+            // Remove URLs
+            result = removeURLs(result)
+
+            // Remove emoji
+            result = removeEmoji(result)
+
+            // Light whitespace cleanup (no paragraph-to-period conversion)
+            result = result.replacingOccurrences(of: "\n", with: " ")
+            result = result.replacingOccurrences(
+                of: "\\s{2,}", with: " ", options: .regularExpression
+            )
+            return result.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+
         // 6. Strip markdown formatting — headers become sentence boundaries,
         //    tables are dropped, abbreviations are expanded for natural pauses
         result = stripMarkdown(result)
 
-        // 7. Remove URLs
+        // 7. Replace compound-word hyphens with spaces so Kokoro reads them naturally.
+        //    "Account-Level" → "Account Level", "Auto-created" → "Auto created"
+        //    Only matches hyphens directly between word characters (no spaces around them),
+        //    so em dashes (— or " - ") and markdown horizontal rules are unaffected.
+        result = result.replacingOccurrences(
+            of: "(\\w)-(\\w)",
+            with: "$1 $2",
+            options: .regularExpression
+        )
+
+        // 8. Remove URLs
         result = removeURLs(result)
 
-        // 8. Remove emoji (they sound terrible when read aloud)
+        // 9. Remove emoji (they sound terrible when read aloud)
         result = removeEmoji(result)
 
-        // 9. Clean up whitespace
+        // 10. Clean up whitespace
         result = cleanWhitespace(result)
 
         return result
@@ -153,29 +211,39 @@ enum TTSTextPreprocessor {
         return (chunks, cleaned.count)
     }
 
-    /// Finds the character offset of the end of the last complete sentence.
+    /// Finds the character offset of the end of the last complete sentence or clause.
     /// A sentence ends at `.`, `!`, `?`, or `:` followed by a space or end of string.
+    /// Also treats `,` followed by space as a minor clause boundary (lower priority)
+    /// so streaming TTS can start sooner when the first sentence hasn't finished yet.
     private static func findLastSentenceEnd(in text: String) -> Int {
-        // Includes ':' so "Here are three tips:" creates a pause boundary
-        let terminators: Set<Character> = [".", "!", "?", ":"]
-        var lastEnd = 0
+        // Primary terminators — always safe to split here
+        let strongTerminators: Set<Character> = [".", "!", "?", ":"]
+        var lastStrongEnd = 0
+        var lastCommaEnd = 0
 
         for (i, char) in text.enumerated() {
-            if terminators.contains(char) {
+            let isStrong = strongTerminators.contains(char)
+            let isComma = char == ","
+
+            if isStrong || isComma {
                 // Check it's followed by a space, newline, or is the last char
                 let nextIndex = text.index(text.startIndex, offsetBy: i + 1, limitedBy: text.endIndex)
                 if nextIndex == nil || nextIndex == text.endIndex {
-                    lastEnd = i + 1
+                    if isStrong { lastStrongEnd = i + 1 }
+                    else { lastCommaEnd = i + 1 }
                 } else if let next = nextIndex {
                     let nextChar = text[next]
                     if nextChar == " " || nextChar == "\n" || nextChar == "\t" {
-                        lastEnd = i + 1
+                        if isStrong { lastStrongEnd = i + 1 }
+                        else { lastCommaEnd = i + 1 }
                     }
                 }
             }
         }
 
-        return lastEnd
+        // Prefer strong terminator; fall back to comma boundary only if
+        // no strong terminator found yet (helps start streaming sooner)
+        return lastStrongEnd > 0 ? lastStrongEnd : lastCommaEnd
     }
 
     // MARK: - Legacy Compatibility (sentence-count based)
@@ -351,11 +419,12 @@ enum TTSTextPreprocessor {
         )
     }
 
-    /// Removes inline code (`...`).
+    /// Strips backtick delimiters from inline code, preserving the content.
+    /// e.g. `policyScope` → policyScope  (word is still spoken, backticks are not)
     static func removeInlineCode(_ text: String) -> String {
         text.replacingOccurrences(
-            of: "`[^`]+`",
-            with: "",
+            of: "`([^`]+)`",
+            with: "$1",
             options: .regularExpression
         )
     }
@@ -547,11 +616,11 @@ enum TTSTextPreprocessor {
 
     // MARK: - Private Helpers
 
-    /// Splits a long sentence at major clause boundaries (semicolon, dash).
-    /// Commas are NOT used as split points — they are part of natural sentence
-    /// flow and splitting on them produces unnatural, fragmented speech.
+    /// Splits a long sentence at major clause boundaries (semicolon only).
+    /// Dashes (—, –, -) are intentionally NOT split points — splitting on them
+    /// creates unnatural pauses mid-phrase. Commas are also not split points.
     private static func splitLongSentence(_ sentence: String) -> [String] {
-        let delimiters: [Character] = [";", "—", "–"]
+        let delimiters: [Character] = [";"]
         var chunks: [String] = []
         var current = ""
 
@@ -578,7 +647,8 @@ enum TTSTextPreprocessor {
         return chunks.isEmpty ? [sentence] : chunks
     }
 
-    /// Merges very short fragments with their neighbors.
+    /// Merges very short fragments with their neighbors to avoid excessive
+    /// per-sentence generation overhead for tiny pieces.
     private static func mergeShortFragments(_ sentences: [String], minLength: Int) -> [String] {
         guard sentences.count > 1 else { return sentences }
 
@@ -597,7 +667,12 @@ enum TTSTextPreprocessor {
         }
 
         if !buffer.isEmpty {
-            merged.append(buffer)
+            // Append to previous if final fragment is very short
+            if !merged.isEmpty && buffer.count < minLength {
+                merged[merged.count - 1] += " " + buffer
+            } else {
+                merged.append(buffer)
+            }
         }
 
         return merged

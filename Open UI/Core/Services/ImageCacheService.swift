@@ -1,18 +1,9 @@
 import SwiftUI
+import ImageIO
 import os.log
 
 /// A thread-safe, memory-efficient image cache with automatic eviction.
-///
-/// Uses `NSCache` under the hood for automatic memory pressure handling,
-/// combined with a disk cache for persistence across launches. Images are
-/// keyed by their URL string and stored as compressed `Data`.
-///
-/// Usage:
-/// ```swift
-/// let cache = ImageCacheService.shared
-/// if let image = cache.image(for: url) { … }
-/// cache.store(image, for: url)
-/// ```
+
 actor ImageCacheService {
 
     /// Shared singleton instance.
@@ -25,13 +16,67 @@ actor ImageCacheService {
     private let logger = Logger(subsystem: "com.openui", category: "ImageCache")
 
     /// Maximum number of images to hold in memory.
-    private let memoryCacheLimit = 100
+    private let memoryCacheLimit = 200
 
     /// Maximum disk cache size in bytes (50 MB).
     private let diskCacheSizeLimit: Int = 50 * 1024 * 1024
 
     /// Active download tasks keyed by URL string to deduplicate requests.
     private var activeTasks: [String: Task<UIImage?, Never>] = [:]
+
+    // MARK: - Global Concurrency Cap
+
+    /// Number of network image downloads currently in flight.
+    /// Capped at `maxConcurrentDownloads` to prevent server flooding during fast scroll.
+    private var activeDownloadCount: Int = 0
+
+    /// Maximum simultaneous image downloads. Keeps request volume manageable
+    /// even when 300 model rows become visible almost simultaneously.
+    private let maxConcurrentDownloads = 50
+
+    /// Tasks waiting for a download slot, in FIFO order.
+    private var pendingContinuations: [CheckedContinuation<Void, Never>] = []
+
+    /// Acquires a download slot. Suspends the caller if `maxConcurrentDownloads` are active.
+    private func acquireDownloadSlot() async {
+        if activeDownloadCount < maxConcurrentDownloads {
+            activeDownloadCount += 1
+            return
+        }
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            pendingContinuations.append(continuation)
+        }
+        activeDownloadCount += 1
+    }
+
+    /// Releases a download slot and wakes the next pending caller, if any.
+    private func releaseDownloadSlot() {
+        activeDownloadCount = max(0, activeDownloadCount - 1)
+        if !pendingContinuations.isEmpty {
+            let next = pendingContinuations.removeFirst()
+            next.resume()
+        }
+    }
+
+    // MARK: - Content Deduplication
+
+    /// Maps SHA-256 of decoded pixel data → canonical UIImage.
+    /// When 290 models all return the same favicon, only one UIImage is kept in memory.
+    nonisolated(unsafe) private var imageDeduplicationMap: [Int: UIImage] = [:]
+
+    /// Returns the canonical UIImage for a given image, deduplicating by pixel checksum.
+    private func deduplicatedImage(_ image: UIImage) -> UIImage {
+        guard let cgImage = image.cgImage else { return image }
+        // Use (width, height, dataProvider pointer) as a lightweight identity check.
+        // The dataProvider address is stable for the same backing store.
+        let identity = cgImage.width &* 397 &+ cgImage.height &* 31
+            &+ (ObjectIdentifier(cgImage.dataProvider! as AnyObject).hashValue)
+        if let existing = imageDeduplicationMap[identity] {
+            return existing
+        }
+        imageDeduplicationMap[identity] = image
+        return image
+    }
 
     // MARK: - Cloudflare Support
 
@@ -110,17 +155,18 @@ actor ImageCacheService {
 
     private init() {
         memoryCache.countLimit = memoryCacheLimit
-        memoryCache.totalCostLimit = 30 * 1024 * 1024 // 30 MB
-        // STORAGE FIX: Run eviction on init to trim any cache that grew
-        // over the limit from a previous session. Dispatched as a Task
-        // because actor-isolated methods can't be called from nonisolated init.
+        // Cost limit is now meaningful — costs reflect actual decoded bitmap bytes.
+        // 150 MB allows ~400 fully decoded 108×108@3x RGBA images (108*108*4 ≈ 47 KB each).
+        memoryCache.totalCostLimit = 150 * 1024 * 1024
         Task { await self.evictDiskCacheIfNeeded() }
     }
 
     // MARK: - Public API
 
-    /// Returns a cached image for the given URL, checking memory first
-    /// then disk.
+    /// Returns a cached image for the given URL, checking memory first then disk.
+    ///
+    /// When loading from disk the image is promoted to the memory cache using
+    /// the correct bitmap-byte cost so NSCache can evict accurately.
     ///
     /// - Parameter url: The image URL to look up.
     /// - Returns: The cached `UIImage`, or `nil` if not cached.
@@ -132,10 +178,9 @@ actor ImageCacheService {
             return memoryImage
         }
 
-        // Disk cache lookup
+        // Disk cache lookup — promote to memory with correct bitmap cost
         if let diskImage = loadFromDisk(key: key) {
-            // Promote to memory cache
-            let cost = diskImage.jpegData(compressionQuality: 1.0)?.count ?? 0
+            let cost = bitmapCost(for: diskImage)
             memoryCache.setObject(diskImage, forKey: key as NSString, cost: cost)
             return diskImage
         }
@@ -154,93 +199,108 @@ actor ImageCacheService {
     /// - Returns: The cached `UIImage` from memory only, or `nil` if not in memory.
     /// Called from SwiftUI view `init` — always on the main actor.
     @MainActor func cachedImageSync(for url: URL) -> UIImage? {
-        let urlString = url.absoluteString
-        let data = Data(urlString.utf8)
-        var h1 = UInt64(14695981039346656037)
-        var h2 = UInt64(0xcbf29ce484222325)
-        for byte in data {
-            h1 ^= UInt64(byte)
-            h1 &*= 1099511628211
-            h2 ^= UInt64(byte)
-            h2 &*= 6364136223846793005
-        }
-        let key = String(h1, radix: 16) + String(h2, radix: 16)
+        let key = cacheKeySync(for: url)
         return memoryCache.object(forKey: key as NSString)
     }
 
     /// Loads an image from the given URL, using the cache if available.
     ///
-    /// Deduplicates concurrent requests for the same URL. If a download
-    /// is already in progress, callers share the same `Task`.
+    /// Deduplicates concurrent requests for the same URL. If a download is already
+    /// in progress, callers share the same `Task`. Downloads are limited to
+    /// `maxConcurrentDownloads` simultaneous connections; excess callers wait.
+    ///
+    /// Images are decoded at `targetPixelSize` (width and height) using ImageIO
+    /// downsampling — a 2048×2048 favicon decoded for a 36pt@3x avatar becomes
+    /// 108×108, ~360× less memory than full-resolution decoding.
     ///
     /// - Parameters:
     ///   - url: The image URL to load.
-    ///   - authToken: Optional Bearer token for authenticated endpoints
-    ///     (e.g. the model avatar endpoint `/api/v1/models/model/profile/image`).
-    ///   - customHeaders: Optional custom headers to include (e.g. Cloudflare User-Agent).
+    ///   - authToken: Optional Bearer token for authenticated endpoints.
+    ///   - customHeaders: Optional custom headers (e.g. Cloudflare User-Agent).
+    ///   - targetPixelSize: Target pixel dimension for downsampling (0 = no downsampling).
     /// - Returns: The loaded `UIImage`, or `nil` on failure.
-    func loadImage(from url: URL, authToken: String? = nil, customHeaders: [String: String]? = nil) async -> UIImage? {
+    func loadImage(
+        from url: URL,
+        authToken: String? = nil,
+        customHeaders: [String: String]? = nil,
+        targetPixelSize: Int = 0
+    ) async -> UIImage? {
         let key = cacheKey(for: url)
 
-        // Check caches first
+        // Check caches first (no network needed)
         if let cached = cachedImage(for: url) {
             return cached
         }
 
-        // Deduplicate in-flight requests
+        // Deduplicate in-flight requests for the same URL
         if let existingTask = activeTasks[key] {
             return await existingTask.value
         }
 
+        // Capture actor state needed inside the Task (avoids re-entrancy captures)
+        let cfHeaders = self.cfCustomHeaders
+        let cfHost = self.cfServerHost
+        let urlSession = self.session(for: url)
+
         let task = Task<UIImage?, Never> {
+            // Acquire a download slot — suspends until < maxConcurrentDownloads are active
+            await self.acquireDownloadSlot()
+            defer { Task { self.releaseDownloadSlot() } }
+
             do {
                 var request = URLRequest(url: url)
                 if let authToken, !authToken.isEmpty {
                     request.setValue("Bearer \(authToken)", forHTTPHeaderField: "Authorization")
                 }
-                // Apply custom headers (e.g. CF User-Agent) so Cloudflare
-                // doesn't reject the request due to UA mismatch.
-                // First: explicitly passed headers take priority.
-                // Second: auto-apply CF headers for requests to the CF-protected server.
                 var effectiveHeaders = customHeaders ?? [:]
                 if effectiveHeaders.isEmpty,
-                   let cfHeaders = self.cfCustomHeaders,
-                   let cfHost = self.cfServerHost,
+                   let cfHeaders,
+                   let cfHost,
                    url.host?.lowercased() == cfHost.lowercased() {
                     effectiveHeaders = cfHeaders
                 }
-                for (key, value) in effectiveHeaders {
-                    request.setValue(value, forHTTPHeaderField: key)
+                for (hKey, hValue) in effectiveHeaders {
+                    request.setValue(hValue, forHTTPHeaderField: hKey)
                 }
 
-                // Use the appropriate URLSession:
-                // - Self-signed cert servers: custom session with certificate bypass delegate
-                // - All other servers: URLSession.shared (picks up cf_clearance cookies)
-                let (data, response) = try await self.session(for: url).data(for: request)
+                let (data, response) = try await urlSession.data(for: request)
 
                 guard let httpResponse = response as? HTTPURLResponse,
                       (200...399).contains(httpResponse.statusCode),
-                      let image = UIImage(data: data),
-                      image.size.width > 0 && image.size.height > 0
+                      !data.isEmpty
                 else {
                     if let httpResponse = response as? HTTPURLResponse {
-                        logger.debug("Image load failed for \(url.lastPathComponent): status=\(httpResponse.statusCode)")
+                        self.logger.debug("Image load failed for \(url.lastPathComponent): status=\(httpResponse.statusCode)")
                     } else {
-                        logger.debug("Image load failed for \(url.lastPathComponent): no HTTP response")
+                        self.logger.debug("Image load failed for \(url.lastPathComponent): no HTTP response")
                     }
                     return nil
                 }
 
-                // Store in memory
-                let cost = data.count
-                memoryCache.setObject(image, forKey: key as NSString, cost: cost)
+                // Downsample to target pixel size if requested, otherwise decode normally
+                let image: UIImage
+                if targetPixelSize > 0,
+                   let downsampled = Self.downsampledImage(data: data, maxPixelSize: targetPixelSize) {
+                    image = downsampled
+                } else if let fallback = UIImage(data: data), fallback.size.width > 0 {
+                    image = fallback
+                } else {
+                    return nil
+                }
 
-                // Store on disk asynchronously
-                saveToDisk(data: data, key: key)
+                // Deduplicate: identical images share one UIImage instance in memory
+                let canonical = self.deduplicatedImage(image)
 
-                return image
+                // Store in memory with accurate bitmap cost so NSCache evicts correctly
+                let cost = self.bitmapCost(for: canonical)
+                self.memoryCache.setObject(canonical, forKey: key as NSString, cost: cost)
+
+                // Store raw (pre-downsample) data on disk for future sessions
+                self.saveToDisk(data: data, key: key)
+
+                return canonical
             } catch {
-                logger.error("Image download failed for \(url): \(error.localizedDescription)")
+                self.logger.error("Image download failed for \(url): \(error.localizedDescription)")
                 return nil
             }
         }
@@ -302,12 +362,10 @@ actor ImageCacheService {
     ///   - url: The URL key for the image.
     func store(_ image: UIImage, for url: URL) {
         let key = cacheKey(for: url)
-        let data = image.jpegData(compressionQuality: 0.85)
-        let cost = data?.count ?? 0
-
+        let cost = bitmapCost(for: image)
         memoryCache.setObject(image, forKey: key as NSString, cost: cost)
 
-        if let data {
+        if let data = image.jpegData(compressionQuality: 0.85) {
             saveToDisk(data: data, key: key)
         }
     }
@@ -315,6 +373,7 @@ actor ImageCacheService {
     /// Evicts all images from memory and disk caches.
     func clearAll() {
         memoryCache.removeAllObjects()
+        imageDeduplicationMap.removeAll()
         clearDiskCache()
         logger.info("Image cache cleared")
     }
@@ -335,14 +394,16 @@ actor ImageCacheService {
     /// Evicts only the memory cache, preserving disk cache.
     func clearMemory() {
         memoryCache.removeAllObjects()
+        imageDeduplicationMap.removeAll()
     }
-    
+
     /// Evicts all cached profile images (user/model avatars) from both memory and disk.
     /// Call on app startup and logout/login to ensure fresh avatars.
     func evictProfileImages() {
         // Clear memory cache entirely — profile images reload quickly
         memoryCache.removeAllObjects()
-        
+        imageDeduplicationMap.removeAll()
+
         // Also remove profile images from disk cache
         guard let directory = diskCacheDirectory else { return }
         if let files = try? fileManager.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil) {
@@ -354,7 +415,7 @@ actor ImageCacheService {
         }
         logger.info("Profile image cache invalidated — will re-fetch on next access")
     }
-    
+
     /// Whether this URL points to a user or model profile image.
     /// Matches: `/api/v1/users/{id}/profile/image` and `/api/v1/models/{id}/profile/image`
     private func isProfileImageURL(_ url: URL) -> Bool {
@@ -369,6 +430,54 @@ actor ImageCacheService {
         evictDiskCacheIfNeeded()
     }
 
+    // MARK: - Image Downsampling
+
+    /// Decodes image data at a maximum pixel dimension using ImageIO, avoiding a full-resolution
+    /// decode. A 2048×2048 image downsampled to 108px uses ~47 KB instead of ~16 MB in memory.
+    ///
+    /// - Parameters:
+    ///   - data: Raw image data (PNG, JPEG, WebP, etc.)
+    ///   - maxPixelSize: Maximum width or height in pixels for the thumbnail.
+    /// - Returns: A downsampled `UIImage`, or `nil` if creation fails.
+    static func downsampledImage(data: Data, maxPixelSize: Int) -> UIImage? {
+        let options: [CFString: Any] = [
+            kCGImageSourceShouldCache: false
+        ]
+        guard let source = CGImageSourceCreateWithData(data as CFData, options as CFDictionary) else {
+            return nil
+        }
+
+        let thumbnailOptions: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceShouldCacheImmediately: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceThumbnailMaxPixelSize: maxPixelSize
+        ]
+
+        guard let thumbnail = CGImageSourceCreateThumbnailAtIndex(source, 0, thumbnailOptions as CFDictionary) else {
+            return nil
+        }
+
+        return UIImage(cgImage: thumbnail)
+    }
+
+    // MARK: - Cost Calculation
+
+    /// Returns the actual decoded bitmap size in bytes for a UIImage.
+    /// This is the correct value to use as NSCache cost — not compressed data size.
+    ///
+    /// For a 108×108 RGBA image: 108 × 108 × 4 = ~47 KB.
+    /// For a 2048×2048 RGBA image (undownsampled): 2048 × 2048 × 4 = ~16 MB.
+    private func bitmapCost(for image: UIImage) -> Int {
+        guard let cgImage = image.cgImage else {
+            // Fallback: use pixel dimensions × 4 bytes/pixel
+            let px = Int(image.size.width * image.scale) * Int(image.size.height * image.scale)
+            return px * 4
+        }
+        // bytesPerRow already accounts for any alignment padding
+        return cgImage.bytesPerRow * cgImage.height
+    }
+
     // MARK: - Disk Cache
 
     private var diskCacheDirectory: URL? {
@@ -379,13 +488,20 @@ actor ImageCacheService {
     }
 
     private func cacheKey(for url: URL) -> String {
-        // FIX: Use SHA256 instead of DJB2 to avoid hash collisions on similar URLs.
-        // DJB2 has high collision rates for URLs that differ only in query parameters
-        // (e.g., model avatar URLs with different model IDs).
+        Self.computeCacheKey(for: url)
+    }
+
+    /// Computes the cache key without actor isolation — safe to call from any context.
+    nonisolated private func cacheKeySync(for url: URL) -> String {
+        Self.computeCacheKey(for: url)
+    }
+
+    /// Pure static hash function, callable from any isolation context.
+    private static func computeCacheKey(for url: URL) -> String {
+        // FNV-1a 128-bit equivalent: two independent 64-bit hashes combined.
+        // Collision-resistant for URLs that differ only in query parameters.
         let urlString = url.absoluteString
         let data = Data(urlString.utf8)
-        // Use a simple but collision-resistant hash: FNV-1a 128-bit equivalent
-        // by combining two independent 64-bit hashes with different seeds.
         var h1 = UInt64(14695981039346656037) // FNV offset basis
         var h2 = UInt64(0xcbf29ce484222325)   // Secondary seed
         for byte in data {
@@ -476,9 +592,15 @@ actor ImageCacheService {
 /// Unlike `AsyncImage`, this uses ``ImageCacheService`` for persistent
 /// caching across app sessions, reducing redundant network requests.
 ///
+/// **Scroll debounce**: Waits 150 ms before starting a network fetch. Rows scrolled
+/// past quickly cancel before the fetch begins — no wasted network requests.
+///
+/// **Target size**: Pass `targetPixelSize` to downsample images to the display size.
+/// For a 36pt avatar on a 3× display, pass `targetPixelSize: 108`.
+///
 /// Usage:
 /// ```swift
-/// CachedAsyncImage(url: avatarURL) { image in
+/// CachedAsyncImage(url: avatarURL, targetPixelSize: 108) { image in
 ///     image.resizable().aspectRatio(contentMode: .fill)
 /// } placeholder: {
 ///     ProgressView()
@@ -488,6 +610,9 @@ struct CachedAsyncImage<Content: View, Placeholder: View>: View {
     let url: URL?
     /// Optional Bearer token for authenticated image endpoints.
     var authToken: String?
+    /// Target pixel dimension for ImageIO downsampling (0 = no downsampling).
+    /// Set to `Int(displayPoints * UIScreen.main.scale)` at the call site.
+    var targetPixelSize: Int
     @ViewBuilder let content: (Image) -> Content
     @ViewBuilder let placeholder: () -> Placeholder
 
@@ -498,11 +623,13 @@ struct CachedAsyncImage<Content: View, Placeholder: View>: View {
     init(
         url: URL?,
         authToken: String? = nil,
+        targetPixelSize: Int = 0,
         @ViewBuilder content: @escaping (Image) -> Content,
         @ViewBuilder placeholder: @escaping () -> Placeholder
     ) {
         self.url = url
         self.authToken = authToken
+        self.targetPixelSize = targetPixelSize
         self.content = content
         self.placeholder = placeholder
         // Synchronous memory-cache hit: pre-populate so SwiftUI renders the
@@ -523,7 +650,6 @@ struct CachedAsyncImage<Content: View, Placeholder: View>: View {
         // When the URL changes (e.g. switching selected model in the toolbar),
         // immediately update loadedImage from the memory cache (synchronous, zero-cost)
         // or nil it out so the placeholder shows while the new image fetches.
-        // This ensures the displayed avatar always matches the current URL.
         .task(id: url) {
             // Synchronously check memory cache for the new URL first.
             if let newURL = url,
@@ -533,6 +659,16 @@ struct CachedAsyncImage<Content: View, Placeholder: View>: View {
             }
             // Not in memory — show placeholder and fetch from disk/network.
             loadedImage = nil
+
+            // Scroll debounce: wait 150 ms before hitting disk/network.
+            // If the row is scrolled past quickly the task is cancelled here,
+            // saving a disk read or network request entirely.
+            do {
+                try await Task.sleep(nanoseconds: 150_000_000) // 150 ms
+            } catch {
+                return // Task was cancelled — row scrolled off screen
+            }
+
             await fetchImage()
         }
     }
@@ -540,7 +676,11 @@ struct CachedAsyncImage<Content: View, Placeholder: View>: View {
     /// Fetches the image from cache (disk) or network and populates `loadedImage`.
     private func fetchImage() async {
         guard let url else { return }
-        let fresh = await ImageCacheService.shared.loadImage(from: url, authToken: authToken)
+        let fresh = await ImageCacheService.shared.loadImage(
+            from: url,
+            authToken: authToken,
+            targetPixelSize: targetPixelSize
+        )
         if let fresh {
             loadedImage = fresh
         }

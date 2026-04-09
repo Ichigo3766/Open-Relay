@@ -18,6 +18,7 @@ struct ChatDetailView: View {
 
     // MARK: Model selector sheet
     @State private var isShowingModelSelectorSheet = false
+    @State private var isShowingChatParams = false
     @State private var editingModelDetail: ModelDetail? = nil
     @State private var isLoadingModelDetail = false
 
@@ -33,8 +34,11 @@ struct ChatDetailView: View {
     @State private var viewState_contentHeight: CGFloat = 0
     /// Cached scroll container height — updated via a separate onScrollGeometryChange.
     @State private var viewState_containerHeight: CGFloat = 0
-    /// Timestamp of last animated scroll-to-bottom during active streaming (throttle guard).
-    @State private var lastStreamingScrollTime: Date = .distantPast
+    /// Timestamp of the last *programmatic* scroll-to-bottom.
+    /// Used both as a streaming throttle guard (prevent pump-scroll more than 10hz)
+    /// and as a suppressor to prevent the offset-change handler from falsely
+    /// interpreting a programmatic scroll animation as a manual upward drag.
+    @State private var lastProgrammaticScrollTime: Date = .distantPast
 
     // MARK: Message pagination (sliding window — memory optimization)
     /// The ending index (exclusive) of the visible message window.
@@ -53,6 +57,7 @@ struct ChatDetailView: View {
     @State private var activeActionMessageId: String?
     @State private var activeVersionIndex: [String: Int] = [:]
     @State private var speakingMessageId: String?
+    @State private var ttsGeneratingMessageId: String?
     @State private var usagePopoverMessageId: String?
     @State private var sourcesSheetMessage: ChatMessage?
     @State private var randomPrompts: [SuggestedPrompt] = []
@@ -91,6 +96,7 @@ struct ChatDetailView: View {
     @State private var showCameraPicker = false
     @State private var showWebURLAlert = false
     @State private var webURLInput = ""
+    @State private var showReferenceChatPicker = false
 
     // MARK: #URL inline suggestion
     @State private var detectedWebURL: String?
@@ -211,18 +217,20 @@ struct ChatDetailView: View {
         .onDisappear {
             keyboard.stop()
             // Stop TTS playback and clear state when navigating away from chat
-            if speakingMessageId != nil {
+            if speakingMessageId != nil || ttsGeneratingMessageId != nil {
                 dependencies.textToSpeechService.stop()
                 speakingMessageId = nil
+                ttsGeneratingMessageId = nil
             }
             NotificationService.shared.activeConversationId = nil
         }
         // Stop TTS when app enters background to prevent Metal GPU crashes
         // and keep the speakingMessageId state in sync with actual playback.
         .onReceive(NotificationCenter.default.publisher(for: UIApplication.willResignActiveNotification)) { _ in
-            if speakingMessageId != nil {
+            if speakingMessageId != nil || ttsGeneratingMessageId != nil {
                 dependencies.textToSpeechService.stop()
                 speakingMessageId = nil
+                ttsGeneratingMessageId = nil
             }
         }
         // Toasts & banners
@@ -353,6 +361,31 @@ struct ChatDetailView: View {
         }
         // In-app file preview using QuickLook (PDFs, images, docs, etc.)
         .quickLookPreview($previewFileURL)
+        // Chat advanced parameters sheet (slider icon in toolbar)
+        .sheet(isPresented: $isShowingChatParams) {
+            ChatAdvancedParamsSheet(
+                params: Binding(
+                    get: { viewModel.conversation?.chatParams ?? viewModel.pendingChatParams ?? ChatAdvancedParams() },
+                    set: { newParams in
+                        if viewModel.conversation != nil {
+                            viewModel.conversation?.chatParams = newParams
+                        } else {
+                            viewModel.pendingChatParams = newParams
+                        }
+                    }
+                )
+            )
+            .themed()
+        }
+        .sheet(item: $editingModelDetail) { detail in
+            NavigationStack {
+                ModelEditorView(existingModel: detail) { _ in
+                    Task { viewModel.refreshModelsInBackground() }
+                    editingModelDetail = nil
+                }
+            }
+            .themed()
+        }
         .applyWidgetAndPickerHandlers(
             showCameraPicker: $showCameraPicker,
             showPhotosPicker: $showPhotosPicker,
@@ -384,6 +417,18 @@ struct ChatDetailView: View {
             .id(viewModel.selectedModelId ?? "none")
         }
         ToolbarItemGroup(placement: .topBarTrailing) {
+            Button {
+                Haptics.play(.light)
+                isShowingChatParams = true
+            } label: {
+                Image(systemName: "slider.horizontal.3")
+                    .scaledFont(size: 13, weight: .medium)
+                    .foregroundStyle((viewModel.conversation?.chatParams != nil || viewModel.pendingChatParams != nil) ? theme.brandPrimary : theme.textTertiary)
+                    .frame(width: 34, height: 34)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Chat parameters")
             if viewModel.messages.isEmpty {
                 Button {
                     withAnimation(MicroAnimation.snappy) {
@@ -461,7 +506,10 @@ struct ChatDetailView: View {
                         pinnedModelIds: viewModel.pinnedModelIds,
                         onEdit: dependencies.authViewModel.currentUser?.role == .admin ? { model in
                             isShowingModelSelectorSheet = false
-                            Task { await openModelEditorFromPicker(model) }
+                            Task {
+                                try? await Task.sleep(nanoseconds: 600_000_000)
+                                await openModelEditorFromPicker(model)
+                            }
                         } : nil,
                         onTogglePin: { modelId in
                             viewModel.togglePinModel(modelId)
@@ -477,16 +525,6 @@ struct ChatDetailView: View {
                     .onDisappear {
                         Task { await ImageCacheService.shared.clearMemory() }
                     }
-                }
-                .sheet(item: $editingModelDetail) { detail in
-                    NavigationStack {
-                        ModelEditorView(existingModel: detail) { updatedDetail in
-                            // Refresh models list so changes are reflected immediately
-                            Task { viewModel.refreshModelsInBackground() }
-                            editingModelDetail = nil
-                        }
-                    }
-                    .themed()
                 }
             }
         }
@@ -515,6 +553,7 @@ struct ChatDetailView: View {
                     query: vm.knowledgeSearchQuery,
                     items: vm.knowledgeItems,
                     isLoading: vm.isLoadingKnowledge,
+                    keyboardHeight: keyboard.height,
                     onSelect: { item in
                         viewModel.selectKnowledgeItem(item)
                     },
@@ -533,6 +572,7 @@ struct ChatDetailView: View {
                     query: vm.promptSearchQuery,
                     prompts: vm.availablePrompts,
                     isLoading: vm.isLoadingPrompts,
+                    keyboardHeight: keyboard.height,
                     onSelect: { prompt in
                         viewModel.selectPrompt(prompt)
                     },
@@ -551,6 +591,7 @@ struct ChatDetailView: View {
                     query: vm.skillSearchQuery,
                     skills: vm.availableSkills,
                     isLoading: vm.isLoadingSkills,
+                    keyboardHeight: keyboard.height,
                     onSelect: { skill in
                         viewModel.selectSkill(skill)
                     },
@@ -570,6 +611,7 @@ struct ChatDetailView: View {
                     models: vm.availableModels,
                     serverBaseURL: vm.serverBaseURL,
                     authToken: vm.serverAuthToken,
+                    keyboardHeight: keyboard.height,
                     onSelect: { model in
                         withAnimation(.easeOut(duration: 0.15)) {
                             mentionedModel = model
@@ -641,6 +683,7 @@ struct ChatDetailView: View {
                     }
                 },
                 selectedKnowledgeItems: $vm.selectedKnowledgeItems,
+                selectedReferenceChats: $vm.selectedReferenceChats,
                 onHashTrigger: { query in
                     // Detect if the query looks like a URL → show inline suggestion pill
                     let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -718,6 +761,7 @@ struct ChatDetailView: View {
                 onPhotoAttachment: nil,
                 onCameraCapture: { showCameraPicker = true },
                 onWebAttachment: { showWebURLAlert = true },
+                onReferenceChatAttachment: { showReferenceChatPicker = true },
                 onVoiceInput: { toggleVoiceInput() },
                 onDictationStart: { startDictation() },
                 onDictationStop: { stopDictation() },
@@ -742,6 +786,15 @@ struct ChatDetailView: View {
         .background(theme.background)
         .animation(.easeOut(duration: 0.2), value: vm.isShowingKnowledgePicker)
         .animation(.easeOut(duration: 0.15), value: vm.selectedKnowledgeItems.count)
+        .animation(.easeOut(duration: 0.15), value: vm.selectedReferenceChats.count)
+        .sheet(isPresented: $showReferenceChatPicker) {
+            ReferenceChatPickerView(
+                isPresented: $showReferenceChatPicker,
+                conversationManager: dependencies.conversationManager
+            ) { item in
+                viewModel.selectReferenceChat(item)
+            }
+        }
         // Sync mentionedModel → viewModel.mentionedModelId when user taps × on chip
         .onChange(of: mentionedModel) { _, newModel in
             viewModel.mentionedModelId = newModel?.id
@@ -861,7 +914,14 @@ struct ChatDetailView: View {
                 windowSize = min(max(windowSize, maxWindowSize), new)
             }
 
-            guard new > old, !isScrolledUp else { return }
+            guard new > old else { return }
+
+            // ── ALWAYS scroll to bottom when a new message is added ──
+            // No matter where the user is scrolled, sending a message must
+            // bring the new message into view. Re-engage auto-scroll so the
+            // response streams in below it.
+            isScrolledUp = false
+            lastProgrammaticScrollTime = Date()
 
             if old == 0 {
                 // First message in a new chat — smooth ease-out.
@@ -877,6 +937,7 @@ struct ChatDetailView: View {
                     #selector(UIResponder.resignFirstResponder),
                     to: nil, from: nil, for: nil)
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+                    lastProgrammaticScrollTime = Date()
                     withAnimation(.spring(response: 0.5, dampingFraction: 0.85)) {
                         scrollPosition.scrollTo(edge: .bottom)
                     }
@@ -937,6 +998,13 @@ struct ChatDetailView: View {
                 // User scrolled very close to the bottom — re-engage auto-scroll.
                 if isScrolledUp { isScrolledUp = false }
             } else {
+                // Suppress false "user scrolled up" detection for 0.6s after any
+                // programmatic scroll. The scroll animation itself causes the offset
+                // to momentarily move in various directions, which would otherwise
+                // trigger isScrolledUp = true and break auto-scroll for streaming.
+                let timeSinceProgrammatic = Date().timeIntervalSince(lastProgrammaticScrollTime)
+                guard timeSinceProgrammatic > 0.6 else { return }
+
                 // During active streaming, any upward movement at all breaks out
                 // immediately so the scroll pump can't fight the user's finger.
                 // Outside of streaming, require a small but intentional drag (8pt)
@@ -1013,8 +1081,8 @@ struct ChatDetailView: View {
             let grew = newSize.width > oldContentHeight + 1
             if grew && viewModel.isStreaming && !isScrolledUp {
                 let now = Date()
-                if now.timeIntervalSince(lastStreamingScrollTime) > 0.1 {
-                    lastStreamingScrollTime = now
+                if now.timeIntervalSince(lastProgrammaticScrollTime) > 0.1 {
+                    lastProgrammaticScrollTime = now
                     withAnimation(.easeOut(duration: 0.15)) {
                         scrollPosition.scrollTo(edge: .bottom)
                     }
@@ -1834,10 +1902,18 @@ struct ChatDetailView: View {
                 toggleSpeech(for: message)
                 Haptics.play(.light)
             } label: {
-                compactActionIcon(
-                    icon: speakingMessageId == message.id ? "stop.fill" : "speaker.wave.2",
-                    isActive: speakingMessageId == message.id
-                )
+                if ttsGeneratingMessageId == message.id {
+                    ProgressView()
+                        .progressViewStyle(.circular)
+                        .scaleEffect(0.65)
+                        .frame(width: 28, height: 28)
+                        .tint(theme.brandPrimary)
+                } else {
+                    compactActionIcon(
+                        icon: speakingMessageId == message.id ? "stop.fill" : "speaker.wave.2",
+                        isActive: speakingMessageId == message.id
+                    )
+                }
             }
             .buttonStyle(.plain)
             .accessibilityLabel(speakingMessageId == message.id ? "Stop speaking" : "Speak")
@@ -2391,7 +2467,15 @@ struct ChatDetailView: View {
             isLoadingModelDetail = false
             editingModelDetail = detail
         } catch {
+            // Base models (not yet customized as workspace models) return 404.
+            // Construct a default ModelDetail so the editor opens in "create" mode.
             isLoadingModelDetail = false
+            editingModelDetail = ModelDetail(
+                id: model.id,
+                name: model.name,
+                description: model.description,
+                profileImageURL: model.profileImageURL
+            )
         }
     }
 
@@ -2448,16 +2532,27 @@ struct ChatDetailView: View {
 
     private func toggleSpeech(for message: ChatMessage) {
         let tts = dependencies.textToSpeechService
-        if speakingMessageId == message.id {
+        if speakingMessageId == message.id || ttsGeneratingMessageId == message.id {
             tts.stop()
             speakingMessageId = nil
+            ttsGeneratingMessageId = nil
         } else {
             tts.stop()
+            speakingMessageId = nil
+            ttsGeneratingMessageId = nil
             let rate = UserDefaults.standard.double(forKey: "ttsSpeechRate")
             if rate > 0 { tts.speechRate = Float(rate) * AVSpeechUtteranceDefaultSpeechRate }
             let voiceId = UserDefaults.standard.string(forKey: "ttsVoiceIdentifier") ?? ""
             tts.voiceIdentifier = voiceId.isEmpty ? nil : voiceId
-            tts.onComplete = { speakingMessageId = nil }
+            let messageId = message.id
+            tts.onStart = {
+                speakingMessageId = messageId
+                ttsGeneratingMessageId = nil
+            }
+            tts.onComplete = {
+                speakingMessageId = nil
+                ttsGeneratingMessageId = nil
+            }
 
             let vIdx = activeVersionIndex[message.id] ?? -1
             let content: String = {
@@ -2465,7 +2560,7 @@ struct ChatDetailView: View {
                 return message.content
             }()
             guard !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
-            speakingMessageId = message.id
+            ttsGeneratingMessageId = message.id
             tts.speak(content)
         }
     }
