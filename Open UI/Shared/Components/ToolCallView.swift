@@ -1452,13 +1452,17 @@ struct AssistantMessageContent: View {
         // OPT 3: Synchronous cache lookup — no 1-frame stale race.
         // The class mutation happens inline during body, so the next
         // body call in the same layout pass sees the updated cache.
+        // Fix 4: Quantize cache key to 64-byte buckets during streaming so we
+        // don't re-parse on every single token. Non-streaming uses exact length
+        // so the final parse is always correct.
         let contentLength = content.utf8.count
+        let cacheKey = isStreaming ? (contentLength & ~63) : contentLength
         let ordered: ToolCallParser.OrderedParseResult = {
-            if contentLength == parseCache.lastLength, let cached = parseCache.lastResult {
+            if cacheKey == parseCache.lastLength, let cached = parseCache.lastResult {
                 return cached
             }
             let result = ToolCallParser.parseOrdered(content)
-            parseCache.lastLength = contentLength
+            parseCache.lastLength = cacheKey
             parseCache.lastResult = result
             return result
         }()

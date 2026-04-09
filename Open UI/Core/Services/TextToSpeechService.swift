@@ -1,6 +1,5 @@
 import Foundation
 import AVFoundation
-import os.log
 import NaturalLanguage
 
 /// Manages text-to-speech with support for both Apple's AVSpeechSynthesizer,
@@ -84,7 +83,6 @@ final class TextToSpeechService: NSObject {
     private let synthesizer = AVSpeechSynthesizer()
     /// Unified on-device TTS service — supports both Kokoro and Qwen3 models.
     let kokoroService = KokoroTTSService()
-    private let logger = Logger(subsystem: "com.openui", category: "TTS")
 
     // System TTS queue
     private var systemQueue: [String] = []
@@ -211,7 +209,6 @@ final class TextToSpeechService: NSObject {
                 guard let self else { return }
                 // If streaming mode is still active, more text may arrive — don't complete yet.
                 if self.isStreamingTTS {
-                    self.logger.info("On-device TTS done but streaming still active — waiting")
                     return
                 }
                 self.state = .idle
@@ -224,7 +221,6 @@ final class TextToSpeechService: NSObject {
         kokoroService.onError = { [weak self] error in
             Task { @MainActor [weak self] in
                 guard let self else { return }
-                self.logger.error("On-device TTS error: \(error)")
                 self.isUsingKokoro = false
                 self.onError?(error)
             }
@@ -241,12 +237,7 @@ final class TextToSpeechService: NSObject {
 
     func preloadKokoroModel() async {
         guard kokoroService.isAvailable else { return }
-        do {
-            try await kokoroService.loadModel()
-            logger.info("\(self.kokoroService.config.activeModel.displayName) TTS model preloaded")
-        } catch {
-            logger.warning("On-device TTS preload failed: \(error.localizedDescription)")
-        }
+        try? await kokoroService.loadModel()
     }
 
     func unloadKokoroModel() {
@@ -277,6 +268,10 @@ final class TextToSpeechService: NSObject {
 
     /// Stops all speech and clears all queues.
     func stop() {
+        // Clear streaming mode flag BEFORE stopping the on-device service so the
+        // queue pipeline's wait-loop exits cleanly rather than waiting for more text.
+        kokoroService.streamingModeActive = false
+
         // Stop on-device TTS
         kokoroService.stop()
         isUsingKokoro = false
@@ -402,6 +397,11 @@ final class TextToSpeechService: NSObject {
         state = .idle
         isStreamingTTS = true
         streamingSpokenLength = 0
+
+        // Tell the on-device queue pipeline to keep its audio session alive
+        // while text is still being streamed — prevents premature pipeline exit
+        // that causes pauses, skipped sentences, and double-generation.
+        kokoroService.streamingModeActive = true
     }
 
     /// Feed accumulated streaming text. Extracts new complete sentences and enqueues them.
@@ -420,8 +420,7 @@ final class TextToSpeechService: NSObject {
 
         // For on-device TTS, join all chunks into one — sentence-level streaming handles it
         if engine == .kokoro || engine == .qwen3 {
-            let joined = newChunks.joined(separator: " ")
-            enqueueChunk(joined, engine: engine)
+            enqueueChunk(newChunks.joined(separator: " "), engine: engine)
         } else {
             for chunk in newChunks {
                 enqueueChunk(chunk, engine: engine)
@@ -444,25 +443,31 @@ final class TextToSpeechService: NSObject {
         activeEngine = engine
 
         if remaining.isEmpty {
-            // Nothing left to speak — check if TTS is already idle
-            let kokoroBusy = isUsingKokoro && kokoroService.isPlaying
-            let serverBusy = isUsingServer
-            let systemBusy = isSpeakingSystemChunk
-            if !kokoroBusy && !serverBusy && !systemBusy {
+            // No final chunks to enqueue — clear the streaming flag so the queue
+            // pipeline drains its remaining buffer and completes naturally.
+            kokoroService.streamingModeActive = false
+
+            // If TTS is already idle (no buffered audio), fire onComplete now.
+            if !(isUsingKokoro && kokoroService.isPlaying) && !isUsingServer && !isSpeakingSystemChunk {
                 state = .idle
                 onComplete?()
             }
             return
         }
 
+        // Enqueue any final chunks, then clear the streaming flag so the queue
+        // pipeline knows no more input is coming and can finish after these chunks.
         if engine == .kokoro || engine == .qwen3 {
-            let joined = remaining.joined(separator: " ")
-            enqueueChunk(joined, engine: engine)
+            enqueueChunk(remaining.joined(separator: " "), engine: engine)
         } else {
             for chunk in remaining {
                 enqueueChunk(chunk, engine: engine)
             }
         }
+
+        // Clear the streaming mode flag AFTER enqueuing all final chunks.
+        // The queue pipeline will drain the last sentences and then exit cleanly.
+        kokoroService.streamingModeActive = false
     }
 
     // MARK: - Engine Resolution
@@ -519,7 +524,6 @@ final class TextToSpeechService: NSObject {
     /// it goes nil and the producer is done, we know all audio has played.
     private func startServerPipeline() {
         guard let apiClient else {
-            logger.error("Server TTS: no API client, falling back to system")
             isRunningServerQueue = false
             isUsingServer = false
             let remaining = serverQueue.joined(separator: " ")
@@ -639,9 +643,7 @@ final class TextToSpeechService: NSObject {
                         }
                     }
                 } catch {
-                    await MainActor.run {
-                        self.logger.error("Server TTS fetch failed: \(error.localizedDescription)")
-                    }
+                    // Server TTS fetch failed for this chunk — skip it
                 }
             }
 
@@ -729,7 +731,7 @@ final class TextToSpeechService: NSObject {
                 try session.setActive(true)
             }
         } catch {
-            logger.warning("Audio session config skipped: \(error.localizedDescription)")
+            // Audio session config failed — proceed anyway, system will use defaults
         }
 
         isSpeakingSystemChunk = true

@@ -1966,6 +1966,7 @@ struct TTSVoicePickerView: View {
 struct NotificationSettingsView: View {
     @Environment(\.theme) private var theme
     @AppStorage("notificationsEnabled") private var notificationsEnabled = true
+    @AppStorage("notificationShowResponsePreview") private var showResponsePreview = false
     @State private var systemPermissionGranted = NotificationService.shared.isAuthorized
 
     var body: some View {
@@ -1973,10 +1974,13 @@ struct NotificationSettingsView: View {
             Section {
                 Toggle("Generation Complete", isOn: $notificationsEnabled)
                     .tint(theme.brandPrimary)
+                Toggle("Show Response Preview", isOn: $showResponsePreview)
+                    .tint(theme.brandPrimary)
+                    .disabled(!notificationsEnabled)
             } header: {
                 Text("Notification Types")
             } footer: {
-                Text("Receive a notification when an AI response finishes generating. Works both when the app is in the background and when you're on a different screen.")
+                Text("Receive a notification when an AI response finishes generating. When \"Show Response Preview\" is on, the first lines of the response appear in the notification.")
             }
 
             Section {

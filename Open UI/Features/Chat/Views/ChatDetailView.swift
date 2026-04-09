@@ -998,12 +998,24 @@ struct ChatDetailView: View {
                 // User scrolled very close to the bottom — re-engage auto-scroll.
                 if isScrolledUp { isScrolledUp = false }
             } else {
-                // Suppress false "user scrolled up" detection for 0.6s after any
-                // programmatic scroll. The scroll animation itself causes the offset
-                // to momentarily move in various directions, which would otherwise
-                // trigger isScrolledUp = true and break auto-scroll for streaming.
+                // Suppress false "user scrolled up" detection after any programmatic
+                // scroll. The scroll animation itself causes the offset to momentarily
+                // move in various directions, which would otherwise trigger
+                // isScrolledUp = true and break auto-scroll for streaming.
                 let timeSinceProgrammatic = Date().timeIntervalSince(lastProgrammaticScrollTime)
-                guard timeSinceProgrammatic > 0.6 else { return }
+                // During streaming the scroll pump fires every 0.1 s, so we use a
+                // shorter suppression window (0.15 s) to still catch animation bounce
+                // from each pump cycle, while giving the user a window to register
+                // an intentional upward drag.  Outside streaming, keep 0.6 s.
+                let suppressionWindow: TimeInterval = viewModel.isStreaming ? 0.15 : 0.6
+                // A strong upward drag (>30 pt in one callback) is unambiguously
+                // intentional — bypass the time guard entirely so it registers
+                // immediately even during the 0.1 s scroll-pump interval.
+                let dragDelta = lastScrollOffset - newOffset.y  // positive = upward
+                let isStrongDrag = dragDelta > 30
+                if !isStrongDrag {
+                    guard timeSinceProgrammatic > suppressionWindow else { return }
+                }
 
                 // During active streaming, any upward movement at all breaks out
                 // immediately so the scroll pump can't fight the user's finger.

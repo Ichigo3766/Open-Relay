@@ -1,5 +1,5 @@
 {
-  "originHash" : "296a3f1cd0f340171a9c7cf3a9af9f17cd823b9023a650e5eccb56da614590dd",
+  "originHash" : "12f8435b6d74cff02950ef55d6e899ff354438f283537e3d61e8f87096836c1b",
   "pins" : [
     {
       "identity" : "beautiful-mermaid-swift",
@@ -61,7 +61,7 @@
       "location" : "https://github.com/Ichigo3766/MarkdownView",
       "state" : {
         "branch" : "main",
-        "revision" : "739619ab5e4e91c559b60ac02d3dc1c82472586f"
+        "revision" : "678f63f2566d59a9bb6484ada34a73e34f30b582"
       }
     },
     {

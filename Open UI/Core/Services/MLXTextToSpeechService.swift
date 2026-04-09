@@ -1,6 +1,7 @@
 import Foundation
 import UIKit
 import AVFoundation
+import NaturalLanguage
 import os.log
 
 #if canImport(MLXAudioTTS)
@@ -185,6 +186,10 @@ final class OnDeviceTTSService {
     private var backgroundObserver: NSObjectProtocol?
     /// Queue of sentences waiting to be generated + played (used by streaming enqueue).
     private var sentenceQueue: [String] = []
+    /// When true, the queue pipeline keeps its audio streaming session open and waits
+    /// for more sentences even when the queue is momentarily empty.
+    /// Set by TextToSpeechService.startStreamingTTS(); cleared by finishStreamingTTS()/stop().
+    var streamingModeActive: Bool = false
 
     // MARK: - Model Loading
 
@@ -324,7 +329,20 @@ final class OnDeviceTTSService {
             return
         }
 
-        stop()
+        // Cancel any running generation and give the Task a chance to observe
+        // cancellation before we start a new one. Without this yield, the old
+        // detached Task may still be in mid-generation when we call
+        // audioPlayer.startStreaming() again, causing corrupted audio state
+        // (stuck output, yawning artifacts, silence after stop+replay).
+        if isRunning {
+            stop()
+            // Allow the run-loop to propagate cancellation to the detached Task
+            await Task.yield()
+            try? await Task.sleep(for: .milliseconds(50))
+        } else {
+            stop()
+        }
+
         startGeneration(cleaned)
     }
 
@@ -428,6 +446,9 @@ final class OnDeviceTTSService {
     /// Kokoro: splits text into sentences, generates one shot per sentence.
     /// Qwen3: autoregressive — streams token chunks via `streamingInterval: 0.32`.
     ///
+    /// Language detection (Qwen3 "auto"): detected from the full `text` once upfront
+    /// and reused for every sentence so the accent stays consistent.
+    ///
     /// NOTE: Runs in Task.detached context (off MainActor). All state mutations
     /// hop back to MainActor explicitly via `await MainActor.run { }`.
     private nonisolated func runGeneration(_ text: String) async {
@@ -456,13 +477,13 @@ final class OnDeviceTTSService {
         let model = modelRef.value
         let sampleRate = model.sampleRate
 
-        // Set MLX memory limit once before generation begins (not inside the per-sentence loop)
+        // Set MLX memory limit once before generation begins
         Memory.cacheLimit = 512 * 1024 * 1024
 
         await MainActor.run {
             self.state = .generating
-            // For Qwen3, divide the sample rate by the speed factor so the OS plays audio
-            // faster — Qwen3 has no native speed property, this is the only control point.
+            // For Qwen3, multiply the declared sample rate by the speed factor so
+            // AVAudioEngine plays audio faster — Qwen3 has no built-in speed property.
             let effectiveSampleRate: Double
             if activeModel == .qwen3 && qwen3Speed > 0 {
                 effectiveSampleRate = Double(sampleRate) * Double(qwen3Speed)
@@ -484,6 +505,11 @@ final class OnDeviceTTSService {
         let sentences = await MainActor.run { TTSTextPreprocessor.splitIntoSentences(text) }
         let pieces = sentences.isEmpty ? [text] : sentences
 
+        // Detect language once from the full text so all sentences share the same accent.
+        let resolvedLanguage: String? = await activeModel == .qwen3
+            ? (qwen3Language == "auto" ? detectQwen3Language(for: text) : qwen3Language)
+            : nil
+
         var firedStart = false
 
         do {
@@ -491,67 +517,17 @@ final class OnDeviceTTSService {
                 try Task.checkCancellation()
                 guard !piece.trimmingCharacters(in: .whitespaces).isEmpty else { continue }
 
-                // Kokoro uses the model's default parameters (temp 0.9).
-                // Qwen3 uses temperature 0.2 for a stable, consistent reading
-                // voice — the default 0.9 causes wildly varying emotion/prosody
-                // each generation (excited, sad, slow, etc.).
-                let parameters = GenerateParameters(
-                    temperature: activeModel == .qwen3 ? 0.2 : 0.9,
-                    topP: activeModel == .qwen3 ? 0.9 : 1.0
+                try await generateOneSentence(
+                    sentence: piece,
+                    model: model,
+                    activeModel: activeModel,
+                    kokoroVoice: kokoroVoice,
+                    qwen3Voice: qwen3Voice,
+                    resolvedLanguage: resolvedLanguage,
+                    speed: speed,
+                    firedStart: &firedStart,
+                    onStarted: onStarted
                 )
-
-                // Build the stream based on active model
-                let stream: AsyncThrowingStream<AudioGeneration, Error>
-
-                switch activeModel {
-                case .kokoro:
-                    // Apply speed setting (Kokoro-specific property)
-                    if let kokoroModel = model as? KokoroModel {
-                        kokoroModel.speed = speed
-                    }
-                    stream = model.generateStream(
-                        text: piece,
-                        voice: kokoroVoice,
-                        refAudio: nil,
-                        refText: nil,
-                        language: nil,
-                        generationParameters: parameters
-                    )
-
-                case .qwen3:
-                    let lang: String? = qwen3Language == "auto" ? nil : qwen3Language
-                    stream = model.generateStream(
-                        text: piece,
-                        voice: qwen3Voice,
-                        refAudio: nil,
-                        refText: nil,
-                        language: lang,
-                        generationParameters: parameters,
-                        streamingInterval: 0.32
-                    )
-                }
-
-                for try await event in stream {
-                    try Task.checkCancellation()
-
-                    switch event {
-                    case .token:
-                        break
-                    case .info:
-                        break
-                    case .audio(let audioData):
-                        let samples = audioData.asArray(Float.self)
-                        await MainActor.run {
-                            self.audioPlayer.scheduleAudioChunk(samples, withCrossfade: activeModel == .kokoro)
-                        }
-                        if !firedStart {
-                            firedStart = true
-                            await MainActor.run { onStarted?() }
-                        }
-                    }
-                }
-
-                Memory.clearCache()
             }
 
             await MainActor.run { self.audioPlayer.finishStreamingInput() }
@@ -575,7 +551,6 @@ final class OnDeviceTTSService {
             }
         }
     }
-    #endif
 
     // MARK: - Queue Pipeline (for streaming TTS / voice calls)
 
@@ -598,11 +573,18 @@ final class OnDeviceTTSService {
         #endif
     }
 
-    #if canImport(MLXAudioTTS)
     private nonisolated func runQueuePipeline() async {
-        let (modelRef, activeModelForSetup, qwen3SpeedForSetup, onStarted) = await MainActor.run {
-            (self.model.map(ModelRef.init), self.config.activeModel, self.config.qwen3Speed, self.onSpeakingStarted)
-        }
+        let (modelRef, activeModel, kokoroVoice, qwen3Voice, qwen3Language, speed, qwen3Speed, onStarted)
+            = await MainActor.run {
+                (self.model.map(ModelRef.init),
+                 self.config.activeModel,
+                 self.config.kokoroVoice,
+                 self.config.qwen3Voice,
+                 self.config.qwen3Language,
+                 self.config.speed,
+                 self.config.qwen3Speed,
+                 self.onSpeakingStarted)
+            }
 
         guard let modelRef else {
             await MainActor.run {
@@ -615,12 +597,15 @@ final class OnDeviceTTSService {
         let model = modelRef.value
         let sampleRate = model.sampleRate
 
+        // Set MLX memory limit once before generation begins (matches runGeneration)
+        Memory.cacheLimit = 512 * 1024 * 1024
+
         await MainActor.run {
             self.state = .generating
             // Apply Qwen3 speed at the AudioPlayer level (same as runGeneration)
             let effectiveSampleRate: Double
-            if activeModelForSetup == .qwen3 && qwen3SpeedForSetup > 0 {
-                effectiveSampleRate = Double(sampleRate) * Double(qwen3SpeedForSetup)
+            if activeModel == .qwen3 && qwen3Speed > 0 {
+                effectiveSampleRate = Double(sampleRate) * Double(qwen3Speed)
             } else {
                 effectiveSampleRate = Double(sampleRate)
             }
@@ -638,89 +623,60 @@ final class OnDeviceTTSService {
             }
         }
 
+        // For voice calls, the first sentence arrives incrementally from the LLM stream —
+        // detect language from it and reuse for subsequent sentences in this response.
+        // Language will be resolved on the first non-empty sentence below.
+        var resolvedLanguage: String?? = nil  // nil = not yet resolved; .some(nil) = English/auto
+
         var firedStart = false
 
         while !Task.isCancelled {
+            // Pull the next sentence off the queue (MainActor-safe).
             let sentence: String? = await MainActor.run {
                 guard !self.sentenceQueue.isEmpty else { return nil }
                 return self.sentenceQueue.removeFirst()
             }
 
             guard let sentence else {
-                try? await Task.sleep(for: .milliseconds(200))
-                let hasMore = await MainActor.run { !self.sentenceQueue.isEmpty }
-                if !hasMore { break }
-                continue
+                // Queue is momentarily empty — check if the caller signalled that
+                // streaming is still active (more sentences will arrive shortly).
+                let stillStreaming = await MainActor.run { self.streamingModeActive }
+                if stillStreaming {
+                    // Keep the audio session open and wait for the next sentence.
+                    try? await Task.sleep(for: .milliseconds(60))
+                    continue
+                } else {
+                    // Streaming is finished and queue is drained — we're done.
+                    break
+                }
             }
 
             guard !sentence.trimmingCharacters(in: .whitespaces).isEmpty else { continue }
 
-            // Fetch latest config on every sentence
-            let (activeModel, kokoroVoice, qwen3Voice, qwen3Language, speed) = await MainActor.run {
-                (self.config.activeModel,
-                 self.config.kokoroVoice,
-                 self.config.qwen3Voice,
-                 self.config.qwen3Language,
-                 self.config.speed)
+            // Resolve language on the first real sentence and reuse it for the whole response
+            if resolvedLanguage == nil {
+                if activeModel == .qwen3 {
+                    resolvedLanguage = await qwen3Language == "auto"
+                        ? detectQwen3Language(for: sentence)
+                        : qwen3Language
+                } else {
+                    resolvedLanguage = .some(nil)
+                }
             }
+            let effectiveLanguage: String? = resolvedLanguage ?? nil
 
             do {
-                // Same temperature logic as runGeneration — Qwen3 uses 0.2 for
-                // a stable, consistent reading voice; Kokoro keeps its default 0.9.
-                let parameters = GenerateParameters(
-                    temperature: activeModel == .qwen3 ? 0.2 : 0.9,
-                    topP: activeModel == .qwen3 ? 0.9 : 1.0
+                try await generateOneSentence(
+                    sentence: sentence,
+                    model: model,
+                    activeModel: activeModel,
+                    kokoroVoice: kokoroVoice,
+                    qwen3Voice: qwen3Voice,
+                    resolvedLanguage: effectiveLanguage,
+                    speed: speed,
+                    firedStart: &firedStart,
+                    onStarted: onStarted
                 )
-                let stream: AsyncThrowingStream<AudioGeneration, Error>
-
-                switch activeModel {
-                case .kokoro:
-                    if let kokoroModel = model as? KokoroModel {
-                        kokoroModel.speed = speed
-                    }
-                    stream = model.generateStream(
-                        text: sentence,
-                        voice: kokoroVoice,
-                        refAudio: nil,
-                        refText: nil,
-                        language: nil,
-                        generationParameters: parameters
-                    )
-
-                case .qwen3:
-                    let lang: String? = qwen3Language == "auto" ? nil : qwen3Language
-                    stream = model.generateStream(
-                        text: sentence,
-                        voice: qwen3Voice,
-                        refAudio: nil,
-                        refText: nil,
-                        language: lang,
-                        generationParameters: parameters,
-                        streamingInterval: 0.32
-                    )
-                }
-
-                for try await event in stream {
-                    try Task.checkCancellation()
-
-                    switch event {
-                    case .token:
-                        break
-                    case .info:
-                        break
-                    case .audio(let audioData):
-                        let samples = audioData.asArray(Float.self)
-                        await MainActor.run {
-                            self.audioPlayer.scheduleAudioChunk(samples, withCrossfade: activeModel == .kokoro)
-                        }
-                        if !firedStart {
-                            firedStart = true
-                            await MainActor.run { onStarted?() }
-                        }
-                    }
-                }
-
-                Memory.clearCache()
             } catch is CancellationError {
                 break
             } catch {
@@ -732,8 +688,11 @@ final class OnDeviceTTSService {
         }
 
         if !Task.isCancelled {
+            // Signal the AudioPlayer that no more audio chunks are coming.
+            // This lets it play out the remaining buffer and fire onDidFinishStreaming.
             await MainActor.run { self.audioPlayer.finishStreamingInput() }
         } else {
+            // Task was cancelled (e.g. endCall / stop()) — tear down immediately.
             Memory.clearCache()
             await MainActor.run {
                 self.audioPlayer.stop()
@@ -743,6 +702,97 @@ final class OnDeviceTTSService {
             }
         }
 
+        Memory.clearCache()
+    }
+
+    // MARK: - Shared Per-Sentence Generation
+
+    /// Generates TTS audio for a single sentence and schedules chunks on the AudioPlayer.
+    /// Called by both `runGeneration` and `runQueuePipeline` — they share identical
+    /// per-sentence logic: build parameters, switch on model, stream events, clear cache.
+    ///
+    /// - Parameters:
+    ///   - sentence: The text to synthesise.
+    ///   - model: The already-loaded SpeechGenerationModel.
+    ///   - activeModel: Which on-device model is in use (Kokoro / Qwen3).
+    ///   - kokoroVoice: Voice ID for Kokoro (ignored when Qwen3 is active).
+    ///   - qwen3Voice: Speaker name for Qwen3 (ignored when Kokoro is active).
+    ///   - resolvedLanguage: Language string for Qwen3, pre-resolved by the caller
+    ///     from the full text / first sentence so accent stays consistent. Pass `nil`
+    ///     to let the model use its built-in "auto" logic (English input).
+    ///   - speed: Kokoro speed multiplier.
+    ///   - firedStart: Inout flag — set to `true` after the first audio chunk so
+    ///     `onSpeakingStarted` is only fired once per TTS session.
+    ///   - onStarted: Closure to call when the first audio chunk arrives.
+    private nonisolated func generateOneSentence(
+        sentence: String,
+        model: any SpeechGenerationModel,
+        activeModel: OnDeviceTTSModel,
+        kokoroVoice: String,
+        qwen3Voice: String,
+        resolvedLanguage: String?,
+        speed: Float,
+        firedStart: inout Bool,
+        onStarted: (() -> Void)?
+    ) async throws {
+        // Qwen3 uses temperature 0.2 for a stable, consistent voice.
+        // The default 0.9 causes wildly varying prosody (excited, sad, etc.).
+        // Kokoro keeps its default 0.9.
+        let parameters = GenerateParameters(
+            temperature: activeModel == .qwen3 ? 0.2 : 0.9,
+            topP:        activeModel == .qwen3 ? 0.9 : 1.0
+        )
+
+        let stream: AsyncThrowingStream<AudioGeneration, Error>
+
+        switch activeModel {
+        case .kokoro:
+            if let kokoroModel = model as? KokoroModel {
+                kokoroModel.speed = speed
+            }
+            stream = model.generateStream(
+                text: sentence,
+                voice: kokoroVoice,
+                refAudio: nil,
+                refText: nil,
+                language: nil,
+                generationParameters: parameters
+            )
+
+        case .qwen3:
+            await MainActor.run {
+                self.logger.info("[Qwen3 generateOneSentence] sentence=\"\(sentence)\" → voice=\(qwen3Voice) language=\(resolvedLanguage ?? "<nil/auto>")")
+            }
+            stream = model.generateStream(
+                text: sentence,
+                voice: qwen3Voice,
+                refAudio: nil,
+                refText: nil,
+                language: resolvedLanguage,
+                generationParameters: parameters,
+                streamingInterval: 0.32
+            )
+        }
+
+        for try await event in stream {
+            try Task.checkCancellation()
+
+            switch event {
+            case .token, .info:
+                break
+            case .audio(let audioData):
+                let samples = audioData.asArray(Float.self)
+                await MainActor.run {
+                    self.audioPlayer.scheduleAudioChunk(samples, withCrossfade: activeModel == .kokoro)
+                }
+                if !firedStart {
+                    firedStart = true
+                    await MainActor.run { onStarted?() }
+                }
+            }
+        }
+
+        // Clear MLX graph cache after each sentence to prevent unbounded GPU memory growth
         Memory.clearCache()
     }
     #endif
@@ -755,6 +805,63 @@ final class OnDeviceTTSService {
             backgroundObserver = nil
         }
     }
+
+}
+
+// MARK: - Qwen3 Language Auto-Detection
+
+/// Detects the dominant language of `text` using NLLanguageRecognizer and maps it
+/// to a full English language name that Qwen3-TTS understands (e.g. "Spanish", "French", "Chinese").
+/// Returns `nil` if the detected language is English, unsupported, or detection
+/// confidence is too low — in those cases the caller should pass `nil` to Qwen3
+/// so the model uses its built-in "auto" logic.
+private let detectLogger = Logger(subsystem: "com.openui", category: "OnDeviceTTS")
+
+private func detectQwen3Language(for text: String) -> String? {
+    let recognizer = NLLanguageRecognizer()
+    recognizer.processString(text)
+
+    let allHypotheses = recognizer.languageHypotheses(withMaximum: 5)
+    let sortedHypotheses = allHypotheses.sorted { $0.value > $1.value }
+    let hypothesesDesc = sortedHypotheses.map { "\($0.key.rawValue)=\(String(format: "%.2f", $0.value))" }.joined(separator: ", ")
+    detectLogger.info("[detectQwen3Language] text=(\(text.prefix(60))) dominant=\(recognizer.dominantLanguage?.rawValue ?? "nil") hypotheses=[\(hypothesesDesc)]")
+
+    // Require ≥ 60% confidence before overriding "auto"
+    guard let dominant = recognizer.dominantLanguage,
+          dominant != .undetermined,
+          dominant != .english else {
+        detectLogger.info("[detectQwen3Language] → returning nil (English or undetermined)")
+        return nil
+    }
+
+    let hypotheses = recognizer.languageHypotheses(withMaximum: 1)
+    guard let confidence = hypotheses[dominant], confidence >= 0.60 else {
+        detectLogger.info("[detectQwen3Language] → returning nil (confidence \(String(format: "%.2f", hypotheses[dominant] ?? 0)) < 0.60)")
+        return nil
+    }
+
+    // Map NLLanguage → full English language names Qwen3 accepts
+    // Supported: Chinese, Korean, Japanese, German, Spanish, French, Italian, Portuguese, Russian, Arabic
+    let map: [NLLanguage: String] = [
+        .simplifiedChinese:  "Chinese",
+        .traditionalChinese: "Chinese",
+        .korean:             "Korean",
+        .japanese:           "Japanese",
+        .german:             "German",
+        .spanish:            "Spanish",
+        .french:             "French",
+        .italian:            "Italian",
+        .portuguese:         "Portuguese",
+        .russian:            "Russian",
+        .arabic:             "Arabic",
+    ]
+
+    let result = map[dominant]
+    detectLogger.info("[detectQwen3Language] → returning \(result ?? "<nil, unmapped>") (dominant=\(dominant.rawValue) confidence=\(String(format: "%.2f", confidence)))")
+    return result
+}
+
+extension OnDeviceTTSService {
 
 }
 

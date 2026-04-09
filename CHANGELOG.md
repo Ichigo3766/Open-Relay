@@ -1,5 +1,25 @@
 # Changelog
 
+## v2.6.1 — April 9, 2026
+
+### What's New
+- Added "Show Response Preview" option in Settings → Notifications — when enabled, the first lines of the AI response appear in the completion notification. Off by default.
+
+### Improvements
+- Significant Markdown library performance updates. Increased smoothness while streaming long responses!
+- User avatars are not fetched at app restart instead of using stale data.
+
+### Bug Fixes
+- Fixed Qwen3 TTS switching to an English accent mid-response when speaking non-English text — the voice now stays in the correct language.
+- Fixed Qwen3 TTS producing corrupted/distorted audio during voice calls after a few sentences due to unbounded GPU memory growth — memory is now properly cleared after each sentence.
+- Fixed voice call TTS continuing to speak the full response after disconnecting — ending a call now stops playback immediately.
+- Fixed voice call TTS randomly pausing and skipping sentences — the audio pipeline now stays open for the full response instead of tearing down between sentences.
+- Fixed the same response being spoken twice during voice calls — the streaming and speak pipelines no longer overlap.
+- Fixed switching from a voice call to chat read-aloud causing audio glitches — each session now cleanly resets state before starting.
+
+
+## Previous Builds
+
 ## v2.6 — April 9, 2026
 
 ### What's New

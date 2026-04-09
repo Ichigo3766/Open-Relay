@@ -160,6 +160,10 @@ struct Open_UIApp: App {
                     }
                 }
                 .task {
+                    // Evict cached profile/user avatars so the latest server-side
+                    // avatar is always fetched fresh on each app launch.
+                    await ImageCacheService.shared.evictProfileImages()
+
                     // STORAGE FIX: Run cleanup on app launch to handle accumulated
                     // data from previous sessions (orphaned files, stale caches, etc.)
                     StorageManager.shared.performRoutineCleanup()
