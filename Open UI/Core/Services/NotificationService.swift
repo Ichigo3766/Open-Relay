@@ -189,8 +189,12 @@ final class NotificationService: NSObject, @unchecked Sendable {
         let showPreview = UserDefaults.standard.bool(forKey: "notificationShowResponsePreview")
         let bodyText: String
         if showPreview {
-            let snippet = preview.prefix(120)
-            bodyText = snippet.count < preview.count ? "\(snippet)…" : String(snippet)
+            let cleaned = Self.stripThinkingAndToolBlocks(from: preview)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let snippet = cleaned.prefix(120)
+            bodyText = snippet.isEmpty
+                ? "Response is ready"
+                : (snippet.count < cleaned.count ? "\(snippet)…" : String(snippet))
         } else {
             bodyText = "Response is ready"
         }
@@ -203,10 +207,19 @@ final class NotificationService: NSObject, @unchecked Sendable {
         content.userInfo = ["conversationId": conversationId]
         content.threadIdentifier = conversationId
 
+        // Use trigger: nil (immediate delivery).
+        // The 2-second delay was intended to let the user background the app
+        // first, but it was the PRIMARY cause of missed notifications:
+        // when iOS suspends the process after endBackgroundTask(), any pending
+        // time-interval triggers are cancelled. With trigger: nil the notification
+        // is delivered to the system immediately and survives process suspension.
+        // The willPresent delegate already handles foreground suppression — if
+        // the user is still viewing the chat, it returns [] (no banner), so
+        // there is no visual noise when the notification fires while in-app.
         let request = UNNotificationRequest(
             identifier: "generation-\(conversationId)-\(Date().timeIntervalSince1970)",
             content: content,
-            trigger: nil // Deliver immediately
+            trigger: nil
         )
 
         do {
@@ -215,6 +228,74 @@ final class NotificationService: NSObject, @unchecked Sendable {
         } catch {
             logger.error("Failed to deliver generation notification: \(error.localizedDescription)")
         }
+    }
+
+    // MARK: - Preview Cleaning
+
+    /// Removes thinking/reasoning blocks and tool-call `<details>` blocks from
+    /// raw AI content so only the main response text appears in notifications.
+    ///
+    /// Handles:
+    /// - Raw model tags: `<think>`, `<thinking>`, `<reasoning>`, `<reason>`,
+    ///   `<thought>`, `<|begin_of_thought|>`, `◁think▷` (and closing variants)
+    /// - Server-normalised: `<details type="reasoning">…</details>`
+    /// - Tool-call blocks: `<details>…</details>` (any remaining)
+    private static func stripThinkingAndToolBlocks(from content: String) -> String {
+        var result = content
+
+        // 1. <details …>…</details> blocks (reasoning + tool calls)
+        if let detailsRegex = try? NSRegularExpression(
+            pattern: #"<details[^>]*>[\s\S]*?</details>"#,
+            options: [.caseInsensitive]
+        ) {
+            result = detailsRegex.stringByReplacingMatches(
+                in: result,
+                range: NSRange(result.startIndex..., in: result),
+                withTemplate: ""
+            )
+        }
+
+        // 2. Raw model reasoning tags
+        let rawTagPairs: [(String, String)] = [
+            ("<|begin_of_thought|>", "<|end_of_thought|>"),
+            ("◁think▷", "◁/think▷"),
+            ("<thinking>", "</thinking>"),
+            ("<reasoning>", "</reasoning>"),
+            ("<thought>", "</thought>"),
+            ("<reason>", "</reason>"),
+            ("<think>", "</think>"),
+        ]
+        for (open, close) in rawTagPairs {
+            guard result.contains(open) else { continue }
+            let escapedOpen = NSRegularExpression.escapedPattern(for: open)
+            let escapedClose = NSRegularExpression.escapedPattern(for: close)
+            // Complete pairs
+            if let regex = try? NSRegularExpression(
+                pattern: "\(escapedOpen)[\\s\\S]*?\(escapedClose)",
+                options: [.caseInsensitive]
+            ) {
+                result = regex.stringByReplacingMatches(
+                    in: result,
+                    range: NSRange(result.startIndex..., in: result),
+                    withTemplate: ""
+                )
+            }
+            // Unclosed opening tag (still streaming) — strip from tag to end
+            if result.range(of: open, options: .caseInsensitive) != nil {
+                if let escapedOpenRegex = try? NSRegularExpression(
+                    pattern: "\(escapedOpen)[\\s\\S]*$",
+                    options: [.caseInsensitive]
+                ) {
+                    result = escapedOpenRegex.stringByReplacingMatches(
+                        in: result,
+                        range: NSRange(result.startIndex..., in: result),
+                        withTemplate: ""
+                    )
+                }
+            }
+        }
+
+        return result
     }
 
     // MARK: - Channel Messages
