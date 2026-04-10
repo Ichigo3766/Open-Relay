@@ -1,5 +1,16 @@
 # Changelog
 
+## v2.6.2 — April 9, 2026
+
+### Improvements
+- Reverted streaming responses back to appearing character-by-character instead of arriving in chunks - Feels smoother!
+
+### Bug Fixes
+- Fixed scrolling to bottom when entering chats.
+- Fixed background notifications not reliably delivering
+
+## Previous Builds
+
 ## v2.6.1 — April 9, 2026
 
 ### What's New

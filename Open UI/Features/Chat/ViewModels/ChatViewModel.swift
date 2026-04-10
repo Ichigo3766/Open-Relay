@@ -3624,8 +3624,8 @@ final class ChatViewModel {
                 let payload = data["data"] as? [String: Any]
                 let content = payload?["content"] as? String ?? ""
                 if !content.isEmpty {
-                    // Append directly — the accumulator's onUpdate callback
-                    // handles dispatching to the main actor at throttled rate.
+                    // Append directly — the accumulator dispatches to
+                    // the main actor immediately on every token.
                     acc.append(content)
                     return
                 }
@@ -3939,7 +3939,10 @@ final class ChatViewModel {
         recoveryDelayTask?.cancel()
         recoveryDelayTask = nil
         emptyPollCount = 0
-        endBackgroundTask()
+        // NOTE: endBackgroundTask() is intentionally called INSIDE the
+        // completionTask below, AFTER the notification has been awaited.
+        // Calling it here (before the Task) causes iOS to immediately suspend
+        // the process, preventing the notification from ever being scheduled.
 
         // Capture the current subscriptions by value so the async Task below
         // disposes ONLY the subscriptions that belong to this streaming session.
@@ -3959,8 +3962,13 @@ final class ChatViewModel {
         // Store as completionTask so it can be cancelled if user sends a new
         // message before it finishes (prevents content overwrite bug).
         completionTask = Task {
-            // Send notification first before any metadata refresh
+            // Send notification first, THEN end the background task.
+            // This ordering is critical: if endBackgroundTask() is called first,
+            // iOS may immediately suspend the process before the notification
+            // is scheduled — causing the banner to never appear.
             await sendCompletionNotificationIfNeeded(content: acc.content)
+            // Now it is safe to release the background time assertion.
+            self.endBackgroundTask()
 
             if let chatId = effectiveChatId {
                 await manager?.sendChatCompleted(
@@ -4166,6 +4174,8 @@ final class ChatViewModel {
                         self.logger.info("Recovery: server says done with \(serverContent.count) chars")
                         self.updateAssistantMessage(
                             id: assistantMessageId, content: lastAssistant.content, isStreaming: false)
+                        let doneContent = lastAssistant.content
+                        Task { await self.sendCompletionNotificationIfNeeded(content: doneContent) }
                         self.cleanupStreaming()
                         return
                     }
@@ -4198,10 +4208,12 @@ final class ChatViewModel {
             // indefinitely until the server finishes or the user cancels.
             if self.emptyPollCount >= 12 {
                 self.logger.warning("Recovery: giving up after \(self.emptyPollCount) polls (no active tools)")
+                let giveUpContent = self.conversation?.messages.last(where: { $0.role == .assistant })?.content ?? ""
                 self.updateAssistantMessage(
                     id: assistantMessageId,
-                    content: self.conversation?.messages.last(where: { $0.role == .assistant })?.content ?? "",
+                    content: giveUpContent,
                     isStreaming: false)
+                Task { await self.sendCompletionNotificationIfNeeded(content: giveUpContent) }
                 self.cleanupStreaming()
             }
         }
@@ -4241,21 +4253,18 @@ final class ChatViewModel {
         selfInitiatedStream = false
         activeTaskId = nil
 
-        // Fix 2: If the app is backgrounded and cleanup was called from a path
-        // that does NOT call sendCompletionNotificationIfNeeded first (e.g. the
-        // SSE fallback polling path, or a recovery path), fire the notification
-        // now so the user always gets a banner when generation finishes off-screen.
-        // Paths that already call sendCompletionNotificationIfNeeded before
-        // cleanupStreaming() are safe — the notification service de-duplicates
-        // requests by conversation ID, so a second call within the same second
-        // is a no-op.
-        let appState = UIApplication.shared.applicationState
-        if appState == .background || appState == .inactive {
-            let content = conversation?.messages.last(where: { $0.role == .assistant })?.content ?? ""
-            if !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                Task {
-                    await self.sendCompletionNotificationIfNeeded(content: content)
-                }
+        // Always fire the notification — the UNUserNotificationCenterDelegate's
+        // willPresent handler suppresses the banner when the user is actively
+        // viewing this chat. Checking applicationState here is unreliable because
+        // this method is called from async Task contexts where the app state value
+        // may already be stale or incorrect at the time of the call.
+        // The notification service de-duplicates by conversation ID, so a second
+        // call within the same second from a path that already called
+        // sendCompletionNotificationIfNeeded is a no-op.
+        let content = conversation?.messages.last(where: { $0.role == .assistant })?.content ?? ""
+        if !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            Task {
+                await self.sendCompletionNotificationIfNeeded(content: content)
             }
         }
 
@@ -5236,36 +5245,18 @@ final class ChatViewModel {
 
 // MARK: - Content Accumulator
 
-/// Thread-safe token accumulator with coalesced main-actor dispatch.
+/// Thread-safe token accumulator with immediate main-actor dispatch.
 ///
-/// Uses a pending-flag + time-floor strategy to batch rapid token arrivals
-/// into ~30fps UI updates, rather than creating a new Task per token.
+/// Accumulates token deltas from background socket/SSE callbacks into a
+/// single string and dispatches every token to the main actor immediately,
+/// giving smooth character-by-character streaming in the UI.
 final class ContentAccumulator: @unchecked Sendable {
     private let lock = NSLock()
     private nonisolated(unsafe) var _content: String = ""
     private nonisolated(unsafe) var _onUpdate: (@MainActor @Sendable (_ content: String) -> Void)?
-    /// Guards against flooding the main actor with redundant Tasks.
-    /// When true, a Task is already queued and will read the latest content
-    /// when it executes — no need to create another one.
-    private nonisolated(unsafe) var _pendingUpdate: Bool = false
-
-    /// OPT 5: Timestamp of the last dispatch. Enforces a minimum interval
-    /// between MainActor dispatches to prevent rapid-fire updates when
-    /// the system has low scheduling latency.
-    private nonisolated(unsafe) var _lastDispatchTime: CFAbsoluteTime = 0
-
-    /// Minimum interval between MainActor dispatches.
-    ///
-    /// 1/30 s ≈ 33 ms — limits SwiftUI body re-evaluations + cmark re-parses to
-    /// ≤ 30 per second.  Human perception of streaming text maxes out at ~25 fps,
-    /// so 30 fps is indistinguishable from real-time delivery while freeing the
-    /// remaining 120 Hz frame budget for Core Animation (scroll, animations,
-    /// touch).  Without this, fast models firing 50-100+ tokens/sec saturate the
-    /// main thread, forcing Core Animation to drop from 120 Hz → 60 Hz.
-    nonisolated private static let minDispatchInterval: CFAbsoluteTime = 1.0 / 30.0
 
     /// Callback invoked on the main actor with the latest accumulated
-    /// content.  Set by the view model when socket handlers are registered.
+    /// content. Set by the view model when socket handlers are registered.
     nonisolated var onUpdate: (@MainActor @Sendable (_ content: String) -> Void)? {
         get {
             lock.lock()
@@ -5286,60 +5277,27 @@ final class ContentAccumulator: @unchecked Sendable {
         return value
     }
 
-    /// Clears the pending update flag and records dispatch time.
-    /// Extracted into a synchronous nonisolated method so NSLock is never
-    /// called from an async context (which triggers Swift 6 warnings).
-    nonisolated private func clearPendingFlag() {
-        lock.lock()
-        _pendingUpdate = false
-        _lastDispatchTime = CFAbsoluteTimeGetCurrent()
-        lock.unlock()
-    }
-
     nonisolated func append(_ text: String) {
         lock.lock()
         _content += text
-        // OPT 5: Only dispatch if no pending update AND enough time has
-        // elapsed since the last dispatch. This prevents rapid-fire updates
-        // when MainActor scheduling latency is very low (e.g., idle UI).
-        let now = CFAbsoluteTimeGetCurrent()
-        let needsDispatch = !_pendingUpdate
-            && (now - _lastDispatchTime >= Self.minDispatchInterval)
-        if needsDispatch { _pendingUpdate = true }
+        let latest = _content
         let callback = _onUpdate
         lock.unlock()
 
-        if needsDispatch {
-            Task { @MainActor [weak self] in
-                guard let self else { return }
-                // Read the LATEST content (tokens may have accumulated while
-                // this Task waited for MainActor scheduling)
-                let latest = self.content
-                callback?(latest)
-
-                // Clear the pending flag so the next append can dispatch.
-                // Uses a synchronous helper to avoid NSLock in async context.
-                self.clearPendingFlag()
-            }
+        Task { @MainActor in
+            callback?(latest)
         }
     }
 
     nonisolated func replace(_ text: String) {
         lock.lock()
         _content = text
-        let needsDispatch = !_pendingUpdate
-        if needsDispatch { _pendingUpdate = true }
+        let latest = _content
         let callback = _onUpdate
         lock.unlock()
 
-        if needsDispatch {
-            Task { @MainActor [weak self] in
-                guard let self else { return }
-                let latest = self.content
-                callback?(latest)
-
-                self.clearPendingFlag()
-            }
+        Task { @MainActor in
+            callback?(latest)
         }
     }
 }

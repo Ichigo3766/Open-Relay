@@ -178,9 +178,20 @@ struct ChatDetailView: View {
             )
             NotificationService.shared.activeConversationId =
                 viewModel.conversationId ?? viewModel.conversation?.id
-            await viewModel.load()
-            await viewModel.fetchPinnedModels()
-            // Rebuild prompts after load() — models are now fetched with fresh
+        await viewModel.load()
+        // After messages load, ensure we're pinned to the latest window and
+        // scroll to the bottom. The 60ms delay lets the ScrollView finish
+        // laying out the newly-populated content before we issue the scroll.
+        let loadedCount = viewModel.messages.count
+        if loadedCount > 0 {
+            isScrolledUp = false
+            windowEnd = nil
+            windowSize = min(maxWindowSize, loadedCount)
+            try? await Task.sleep(nanoseconds: 60_000_000) // 60ms layout settle
+            scrollPosition.scrollTo(edge: .bottom)
+        }
+        await viewModel.fetchPinnedModels()
+        // Rebuild prompts after load() — models are now fetched with fresh
             // suggestion_prompts from the server. The pre-load resolve above
             // uses cached data for instant display; this post-load resolve
             // ensures prompts reflect the latest server state.
@@ -831,7 +842,7 @@ struct ChatDetailView: View {
 
     private var placeholderText: String {
         if let model = viewModel.selectedModel {
-            return String(localized: "Message \(model.shortName)…")
+            return String(localized: "Message \(model.shortName)")
         }
         return String(localized: "Message")
     }
