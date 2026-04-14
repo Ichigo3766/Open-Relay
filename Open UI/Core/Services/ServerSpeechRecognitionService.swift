@@ -140,10 +140,12 @@ final class ServerSpeechRecognitionService {
         stopListening()
         updateState(.requesting)
 
-        // Configure audio session
+        // Configure audio session.
+        // Use .voiceChat (not .measurement) so echo cancellation stays active.
+        // .allowBluetooth enables HFP input for CarPlay / BT headset microphones.
         let session = AVAudioSession.sharedInstance()
-        try session.setCategory(.playAndRecord, mode: .measurement,
-                                options: [.defaultToSpeaker, .allowBluetoothA2DP])
+        try session.setCategory(.playAndRecord, mode: .voiceChat,
+                                options: [.defaultToSpeaker, .allowBluetooth, .allowBluetoothA2DP])
         try session.setActive(true, options: .notifyOthersOnDeactivation)
 
         // Create temp file

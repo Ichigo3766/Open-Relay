@@ -2392,7 +2392,7 @@ struct ChatDetailView: View {
                         Text(suggestion)
                             .scaledFont(size: 14)
                             .foregroundStyle(theme.brandPrimary)
-                            .lineLimit(2)
+                            .fixedSize(horizontal: false, vertical: true)
                             .multilineTextAlignment(.leading)
                         Spacer()
                     }
@@ -2665,7 +2665,7 @@ struct ChatDetailView: View {
             viewModel.isStreaming = false
             await viewModel.reloadConversation()
         } catch {
-            viewModel.errorMessage = "Action failed: \(error.localizedDescription)"
+            viewModel.errorMessage = error.localizedDescription
         }
 
         // Clear the "Generating..." status
@@ -2718,7 +2718,7 @@ for item in items {
                     viewModel.uploadAttachmentImmediately(attachmentId: attachment.id)
                 }
             } catch {
-                viewModel.errorMessage = "Failed to load photo: \(error.localizedDescription)"
+                viewModel.errorMessage = error.localizedDescription
             }
         }
     }

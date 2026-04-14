@@ -431,6 +431,9 @@ struct RootView: View {
         }
         .animation(.spring(response: 0.4, dampingFraction: 0.85), value: viewModel.phase)
         .task {
+            // Migrate single-token-per-server to multi-account structure (one-time).
+            viewModel.runLegacyMigrationIfNeeded()
+
             guard !hasAttemptedRestore else { return }
             hasAttemptedRestore = true
 
@@ -517,6 +520,15 @@ struct RootView: View {
             } else {
                 MainChatView()
             }
+        }
+        .overlay {
+            // Connection lost overlay — blocks interaction when server/internet is down
+            ConnectionOverlayView(monitor: dependencies.connectionMonitor)
+        }
+        .task {
+            // Start the connection monitor once the user is authenticated.
+            // This begins NWPathMonitor + /health polling.
+            dependencies.startServerConnectionMonitor()
         }
         .overlay(alignment: .topTrailing) {
             // Floating pill shown when voice call is minimized.

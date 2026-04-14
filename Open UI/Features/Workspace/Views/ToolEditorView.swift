@@ -380,7 +380,7 @@ struct ToolEditorView: View {
     // Access control
     @State private var isPrivate: Bool = true
     @State private var localAccessGrants: [AccessGrant] = []
-    @State private var showUserPicker = false
+    @State private var resolvedGroups: [String: GroupResponse] = [:]
     @State private var isUpdatingAccess = false
     @State private var accessUpdateError: String?
 
@@ -402,14 +402,11 @@ struct ToolEditorView: View {
     private var serverBaseURL: String { dependencies.apiClient?.baseURL ?? "" }
     private var authToken: String? { dependencies.apiClient?.network.authToken }
 
-    private var accessedUsers: [ChannelMember] {
-        let ids = Set(localAccessGrants.compactMap { $0.userId })
-        return allUsers.filter { ids.contains($0.id) }
-    }
-
     private var hasChanges: Bool {
         guard let existing = existingTool else {
-            return !name.isEmpty || !toolId.isEmpty || !content.isEmpty
+            // Don't count the default template as a user change
+            let contentChanged = !content.isEmpty && content != Self.defaultToolContent
+            return !name.isEmpty || !toolId.isEmpty || contentChanged
         }
         let grantIds = Set(localAccessGrants.compactMap { $0.userId })
         let existingIds = Set(existing.accessGrants.compactMap { $0.userId })
@@ -438,22 +435,6 @@ struct ToolEditorView: View {
             .navigationTitle(isEditing ? "Edit Tool" : "New Tool")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { toolbarContent }
-            .sheet(isPresented: $showUserPicker) {
-                WorkspaceAddAccessSheet(
-                    existingUserIds: Set(localAccessGrants.compactMap { $0.userId }),
-                    allUsers: allUsers,
-                    isLoading: isUpdatingAccess,
-                    serverBaseURL: serverBaseURL,
-                    authToken: authToken,
-                    onAdd: { selectedIds in
-                        showUserPicker = false
-                        Task { await addUsers(selectedIds) }
-                    },
-                    onCancel: { showUserPicker = false }
-                )
-                .presentationDetents([.medium, .large])
-                .presentationDragIndicator(.visible)
-            }
             .confirmationDialog(
                 "Discard Changes?",
                 isPresented: $showDiscardConfirm,
@@ -483,7 +464,10 @@ struct ToolEditorView: View {
         }
         .onAppear {
             populateFields()
-            Task { await manager?.fetchAllUsers() }
+            Task {
+                await manager?.fetchAllUsers()
+                await resolveGroupNames()
+            }
         }
     }
 
@@ -522,10 +506,11 @@ struct ToolEditorView: View {
                             .frame(width: 90, alignment: .leading)
                         TextField("e.g. weather_tool", text: $toolId)
                             .scaledFont(size: 15)
-                            .foregroundStyle(theme.textPrimary)
+                            .foregroundStyle(isEditing ? theme.textSecondary : theme.textPrimary)
                             .focused($focusedField, equals: .toolId)
                             .autocorrectionDisabled()
                             .autocapitalization(.none)
+                            .disabled(isEditing)
                             .onChange(of: toolId) { _, _ in
                                 if isAutoSettingId {
                                     isAutoSettingId = false
@@ -667,144 +652,28 @@ struct ToolEditorView: View {
 
     @ViewBuilder
     private var accessControlSection: some View {
-        VStack(spacing: 0) {
-            // Visibility Picker row
-            HStack(spacing: Spacing.sm) {
-                Image(systemName: isPrivate ? "lock.fill" : "globe")
-                    .scaledFont(size: 16)
-                    .foregroundStyle(isPrivate ? theme.textSecondary : theme.brandPrimary)
-                    .frame(width: 20)
-
-                Text("Access")
-                    .scaledFont(size: 15)
-                    .foregroundStyle(theme.textPrimary)
-
-                Spacer()
-
-                if isUpdatingAccess {
-                    ProgressView().controlSize(.mini).tint(theme.brandPrimary)
-                        .padding(.trailing, 4)
-                }
-
-                Picker("", selection: $isPrivate) {
-                    Text("Private").tag(true)
-                    Text("Public").tag(false)
-                }
-                .pickerStyle(.menu)
-                .tint(theme.brandPrimary)
-                .scaledFont(size: 15)
-                .onChange(of: isPrivate) { _, newVal in
-                    Task { await handleAccessModeChange(isPrivate: newVal) }
-                }
+        AccessControlSection(
+            localAccessGrants: $localAccessGrants,
+            isPrivate: $isPrivate,
+            allUsers: allUsers,
+            resolvedGroups: resolvedGroups,
+            isUpdating: isUpdatingAccess,
+            serverBaseURL: serverBaseURL,
+            authToken: authToken,
+            apiClient: dependencies.apiClient,
+            onAccessModeChange: { newVal in
+                await handleAccessModeChange(isPrivate: newVal)
+            },
+            onTogglePermission: { principalId, isGroup, currentlyWrite in
+                await togglePermission(principalId: principalId, isGroup: isGroup, currentlyWrite: currentlyWrite)
+            },
+            onRemoveGrant: { principalId, isGroup in
+                await removeGrant(principalId: principalId, isGroup: isGroup)
+            },
+            onAddGrants: { userIds, groupIds in
+                await addGrants(userIds: userIds, groupIds: groupIds)
             }
-            .padding(.horizontal, Spacing.md)
-            .padding(.vertical, 12)
-
-            Divider().background(theme.inputBorder.opacity(0.4))
-
-            accessListSection
-        }
-    }
-
-    @ViewBuilder
-    private var accessListSection: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            HStack {
-                Text("Access List")
-                    .scaledFont(size: 13, weight: .semibold)
-                    .foregroundStyle(theme.textSecondary)
-                Spacer()
-            }
-            .padding(.horizontal, Spacing.md)
-            .padding(.top, 10)
-            .padding(.bottom, 6)
-
-            if localAccessGrants.isEmpty {
-                Text("No access grants. Private to you.")
-                    .scaledFont(size: 13)
-                    .foregroundStyle(theme.textTertiary)
-                    .padding(.horizontal, Spacing.md)
-                    .padding(.bottom, 10)
-            } else {
-                ForEach(accessedUsers) { user in
-                    accessUserRow(user)
-                    Divider()
-                        .background(theme.inputBorder.opacity(0.3))
-                        .padding(.leading, Spacing.md + 42)
-                }
-            }
-
-            Button {
-                Haptics.play(.light)
-                showUserPicker = true
-            } label: {
-                HStack(spacing: 6) {
-                    Image(systemName: "person.badge.plus")
-                        .scaledFont(size: 14)
-                        .foregroundStyle(theme.brandPrimary)
-                    Text("Add Access")
-                        .scaledFont(size: 15)
-                        .foregroundStyle(theme.brandPrimary)
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .padding(.horizontal, Spacing.md)
-            .padding(.vertical, 12)
-        }
-    }
-
-    @ViewBuilder
-    private func accessUserRow(_ user: ChannelMember) -> some View {
-        HStack(spacing: Spacing.sm) {
-            UserAvatar(
-                size: 30,
-                imageURL: user.resolveAvatarURL(serverBaseURL: serverBaseURL),
-                name: user.displayName,
-                authToken: authToken
-            )
-            VStack(alignment: .leading, spacing: 1) {
-                Text(user.displayName)
-                    .scaledFont(size: 14, weight: .medium)
-                    .foregroundStyle(theme.textPrimary)
-                if let role = user.role {
-                    Text(role.capitalized)
-                        .scaledFont(size: 11)
-                        .foregroundStyle(theme.textTertiary)
-                }
-            }
-            Spacer()
-
-            if let grant = localAccessGrants.first(where: { $0.userId == user.id }) {
-                Button {
-                    Task { await toggleUserPermission(userId: user.id, currentlyWrite: grant.write) }
-                } label: {
-                    Text(grant.write ? "Write" : "Read")
-                        .scaledFont(size: 11, weight: .semibold)
-                        .foregroundStyle(grant.write ? theme.brandOnPrimary : theme.textSecondary)
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 4)
-                        .background(grant.write ? theme.brandPrimary : theme.surfaceContainerHighest)
-                        .clipShape(Capsule())
-                        .overlay(Capsule().stroke(grant.write ? Color.clear : theme.inputBorder.opacity(0.5), lineWidth: 1))
-                }
-                .buttonStyle(.plain)
-                .disabled(isUpdatingAccess)
-            }
-
-            Button {
-                Task { await removeUser(user.id) }
-            } label: {
-                Image(systemName: "xmark.circle.fill")
-                    .scaledFont(size: 18)
-                    .foregroundStyle(theme.textTertiary)
-            }
-            .buttonStyle(.plain)
-            .disabled(isUpdatingAccess)
-        }
-        .padding(.horizontal, Spacing.md)
-        .padding(.vertical, 8)
+        )
     }
 
     // MARK: - Toolbar
@@ -850,11 +719,16 @@ struct ToolEditorView: View {
         isUpdatingAccess = false
     }
 
-    private func addUsers(_ userIds: [String]) async {
+    private func addGrants(userIds: [String], groupIds: [String]) async {
         guard let id = existingTool?.id, let manager else {
             for userId in userIds {
                 if !localAccessGrants.contains(where: { $0.userId == userId }) {
                     localAccessGrants.append(AccessGrant(id: UUID().uuidString, userId: userId, groupId: nil, read: true, write: false))
+                }
+            }
+            for groupId in groupIds {
+                if !localAccessGrants.contains(where: { $0.groupId == groupId }) {
+                    localAccessGrants.append(AccessGrant(id: UUID().uuidString, userId: nil, groupId: groupId, read: true, write: false))
                 }
             }
             Haptics.notify(.success)
@@ -867,9 +741,15 @@ struct ToolEditorView: View {
                 newGrants.append(AccessGrant(id: UUID().uuidString, userId: userId, groupId: nil, read: true, write: false))
             }
         }
+        for groupId in groupIds {
+            if !newGrants.contains(where: { $0.groupId == groupId }) {
+                newGrants.append(AccessGrant(id: UUID().uuidString, userId: nil, groupId: groupId, read: true, write: false))
+            }
+        }
         do {
             let updated = try await manager.updateAccessGrants(toolId: id, grants: newGrants)
             localAccessGrants = updated
+            await resolveGroupNames()
             Haptics.notify(.success)
         } catch {
             accessUpdateError = error.localizedDescription
@@ -878,10 +758,16 @@ struct ToolEditorView: View {
         isUpdatingAccess = false
     }
 
-    private func toggleUserPermission(userId: String, currentlyWrite: Bool) async {
-        guard let idx = localAccessGrants.firstIndex(where: { $0.userId == userId }) else { return }
-        let existing = localAccessGrants[idx]
-        let newGrant = AccessGrant(id: existing.id, userId: existing.userId, groupId: existing.groupId, read: true, write: !currentlyWrite)
+    private func togglePermission(principalId: String, isGroup: Bool, currentlyWrite: Bool) async {
+        let idx: Array<AccessGrant>.Index?
+        if isGroup {
+            idx = localAccessGrants.firstIndex(where: { $0.groupId == principalId })
+        } else {
+            idx = localAccessGrants.firstIndex(where: { $0.userId == principalId })
+        }
+        guard let idx else { return }
+        let old = localAccessGrants[idx]
+        let newGrant = AccessGrant(id: old.id, userId: old.userId, groupId: old.groupId, read: true, write: !currentlyWrite)
         var newGrants = localAccessGrants
         newGrants[idx] = newGrant
 
@@ -902,14 +788,22 @@ struct ToolEditorView: View {
         isUpdatingAccess = false
     }
 
-    private func removeUser(_ userId: String) async {
+    private func removeGrant(principalId: String, isGroup: Bool) async {
         guard let id = existingTool?.id, let manager else {
-            localAccessGrants.removeAll { $0.userId == userId }
+            if isGroup {
+                localAccessGrants.removeAll { $0.groupId == principalId }
+            } else {
+                localAccessGrants.removeAll { $0.userId == principalId }
+            }
             Haptics.play(.light)
             return
         }
         withAnimation(.easeInOut(duration: 0.2)) {
-            localAccessGrants.removeAll { $0.userId == userId }
+            if isGroup {
+                localAccessGrants.removeAll { $0.groupId == principalId }
+            } else {
+                localAccessGrants.removeAll { $0.userId == principalId }
+            }
         }
         isUpdatingAccess = true
         do {
@@ -924,6 +818,19 @@ struct ToolEditorView: View {
             Haptics.notify(.error)
         }
         isUpdatingAccess = false
+    }
+
+    private func resolveGroupNames() async {
+        guard let api = dependencies.apiClient else { return }
+        let groupIds = Set(localAccessGrants.compactMap(\.groupId))
+        let unknownIds = groupIds.subtracting(resolvedGroups.keys)
+        guard !unknownIds.isEmpty else { return }
+        do {
+            let groups = try await api.getGroups()
+            for g in groups where unknownIds.contains(g.id) {
+                resolvedGroups[g.id] = g
+            }
+        } catch {}
     }
 
     // MARK: - Helpers
@@ -947,10 +854,124 @@ struct ToolEditorView: View {
             )
     }
 
+    /// Default Python template for new tools — gives the user a useful starting point.
+    private static let defaultToolContent = """
+    import os
+    import requests
+    from datetime import datetime
+    from pydantic import BaseModel, Field
+
+
+    class Tools:
+        def __init__(self):
+            pass
+
+        # Add your custom tools using pure Python code here, make sure to add type hints and descriptions
+
+        def get_user_name_and_email_and_id(self, __user__: dict = {}) -> str:
+            \"\"\"
+            Get the user name, Email and ID from the user object.
+            \"\"\"
+
+            # Do not include a descrption for __user__ as it should not be shown in the tool's specification
+            # The session user object will be passed as a parameter when the function is called
+
+            print(__user__)
+            result = ""
+
+            if "name" in __user__:
+                result += f"User: {__user__['name']}"
+            if "id" in __user__:
+                result += f" (ID: {__user__['id']})"
+            if "email" in __user__:
+                result += f" (Email: {__user__['email']})"
+
+            if result == "":
+                result = "User: Unknown"
+
+            return result
+
+        def get_current_time(self) -> str:
+            \"\"\"
+            Get the current time in a more human-readable format.
+            \"\"\"
+
+            now = datetime.now()
+            current_time = now.strftime("%I:%M:%S %p")  # Using 12-hour format with AM/PM
+            current_date = now.strftime(
+                "%A, %B %d, %Y"
+            )  # Full weekday, month name, day, and year
+
+            return f"Current Date and Time = {current_date}, {current_time}"
+
+        def calculator(
+            self,
+            equation: str = Field(
+                ..., description="The mathematical equation to calculate."
+            ),
+        ) -> str:
+            \"\"\"
+            Calculate the result of an equation.
+            \"\"\"
+
+            # Avoid using eval in production code
+            # https://nedbatchelder.com/blog/201206/eval_really_is_dangerous.html
+            try:
+                result = eval(equation)
+                return f"{equation} = {result}"
+            except Exception as e:
+                print(e)
+                return "Invalid equation"
+
+        def get_current_weather(
+            self,
+            city: str = Field(
+                "New York, NY", description="Get the current weather for a given city."
+            ),
+        ) -> str:
+            \"\"\"
+            Get the current weather for a given city.
+            \"\"\"
+
+            api_key = os.getenv("OPENWEATHER_API_KEY")
+            if not api_key:
+                return (
+                    "API key is not set in the environment variable 'OPENWEATHER_API_KEY'."
+                )
+
+            base_url = "http://api.openweathermap.org/data/2.5/weather"
+            params = {
+                "q": city,
+                "appid": api_key,
+                "units": "metric",  # Optional: Use 'imperial' for Fahrenheit
+            }
+
+            try:
+                response = requests.get(base_url, params=params)
+                response.raise_for_status()  # Raise HTTPError for bad responses (4xx and 5xx)
+                data = response.json()
+
+                if data.get("cod") != 200:
+                    return f"Error fetching weather data: {data.get('message')}"
+
+                weather_description = data["weather"][0]["description"]
+                temperature = data["main"]["temp"]
+                humidity = data["main"]["humidity"]
+                wind_speed = data["wind"]["speed"]
+
+                return f"Weather in {city}: {temperature}°C"
+            except requests.RequestException as e:
+                return f"Error fetching weather data: {str(e)}"
+    """
+
     private func populateFields() {
         // Prefer prefill (URL import) over existing (edit mode)
         let source = existingTool ?? prefillDetail
-        guard let tool = source else { return }
+        guard let tool = source else {
+            // New tool — populate with default Python template
+            content = Self.defaultToolContent
+            return
+        }
 
         name = tool.name
         toolId = tool.id

@@ -231,7 +231,7 @@ struct ServerConnectionView: View {
                         }
                         .opacity(logoOpacity)
 
-                        Text("Open UI")
+                        Text("Open Relay")
                             .scaledFont(size: 36, weight: .bold, design: .rounded)
                             .foregroundStyle(theme.textPrimary)
                             .opacity(appeared ? 1 : 0)

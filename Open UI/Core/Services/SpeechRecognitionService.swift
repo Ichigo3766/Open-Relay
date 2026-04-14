@@ -162,8 +162,13 @@ final class SpeechRecognitionService {
         updateState(.requesting)
 
         // Configure audio session
+        // Use .voiceChat mode (not .measurement) so voice processing / echo cancellation
+        // stays enabled — critical for CarPlay and Bluetooth HFP microphone routing.
+        // Include .allowBluetooth (HFP input) alongside .allowBluetoothA2DP (A2DP output)
+        // so the car microphone is accessible when CarPlay is connected.
         let audioSession = AVAudioSession.sharedInstance()
-        try audioSession.setCategory(.playAndRecord, mode: .measurement, options: [.defaultToSpeaker, .allowBluetoothA2DP])
+        try audioSession.setCategory(.playAndRecord, mode: .voiceChat,
+                                     options: [.defaultToSpeaker, .allowBluetooth, .allowBluetoothA2DP])
         try audioSession.setActive(true, options: .notifyOthersOnDeactivation)
 
         // Create recognition request

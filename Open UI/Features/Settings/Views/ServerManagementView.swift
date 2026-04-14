@@ -13,6 +13,9 @@ struct ServerManagementView: View {
     @State private var serverHealthy: Bool?
     @State private var isCheckingHealth: Bool = false
     @State private var refreshedConfig: BackendConfig?
+    @State private var accountToRemove: SavedAccount?
+    @State private var showRemoveAccountConfirmation = false
+    @State private var switchingAccountId: String?
 
     var body: some View {
         ScrollView {
@@ -34,6 +37,9 @@ struct ServerManagementView: View {
                         showDivider: false
                     )
                 }
+
+                // Accounts on this server
+                accountsSection
 
                 // Actions
                 SettingsSection(header: "Actions") {
@@ -70,7 +76,7 @@ struct ServerManagementView: View {
         }
         .background(theme.background)
         .navigationTitle("Server")
-        .navigationBarTitleDisplayMode(.large)
+        .navigationBarTitleDisplayMode(.inline)
         .task {
             await checkHealth()
         }
@@ -88,6 +94,27 @@ struct ServerManagementView: View {
             Button("Cancel", role: .cancel) {}
         } message: {
             Text("This will sign you out and remove the server configuration.")
+        }
+        .confirmationDialog(
+            "Remove Account",
+            isPresented: $showRemoveAccountConfirmation,
+            titleVisibility: .visible
+        ) {
+            if let account = accountToRemove {
+                Button("Remove \"\(account.displayName)\"", role: .destructive) {
+                    Task {
+                        await viewModel.removeAccount(account)
+                    }
+                    accountToRemove = nil
+                }
+            }
+            Button("Cancel", role: .cancel) {
+                accountToRemove = nil
+            }
+        } message: {
+            if let account = accountToRemove {
+                Text("This will remove the saved session for \"\(account.displayName)\". You can sign in again anytime.")
+            }
         }
     }
 
@@ -206,6 +233,187 @@ struct ServerManagementView: View {
             viewModel.backendConfig = fresh
         }
         isCheckingHealth = false
+    }
+
+    // MARK: - Accounts Section
+
+    private var accountsSection: some View {
+        let accounts = viewModel.savedAccountsOnActiveServer
+        let activeId = activeServer?.activeAccountId
+
+        return SettingsSection(header: "Accounts") {
+            if accounts.isEmpty {
+                // No saved accounts yet — show a hint
+                HStack(spacing: Spacing.md) {
+                    Image(systemName: "person.crop.circle.badge.questionmark")
+                        .scaledFont(size: 16)
+                        .foregroundStyle(theme.textTertiary)
+                    Text("No saved accounts")
+                        .scaledFont(size: 14)
+                        .foregroundStyle(theme.textSecondary)
+                    Spacer()
+                }
+                .padding(.horizontal, Spacing.md)
+                .padding(.vertical, Spacing.chatBubblePadding)
+            } else {
+                ForEach(Array(accounts.enumerated()), id: \.element.id) { index, account in
+                    let isActive = activeId == account.id
+                    let isSwitching = switchingAccountId == account.id
+                    let isLast = index == accounts.count - 1
+
+                    accountRowInSettings(
+                        account,
+                        isActive: isActive,
+                        isSwitching: isSwitching,
+                        showDivider: !isLast
+                    )
+                }
+            }
+
+            // Add another account button
+            Button {
+                Task {
+                    await viewModel.addAnotherAccountOnCurrentServer()
+                }
+            } label: {
+                HStack(spacing: Spacing.md) {
+                    Image(systemName: "person.badge.plus")
+                        .scaledFont(size: 14, weight: .medium)
+                        .foregroundStyle(theme.brandPrimary)
+                        .frame(width: IconSize.lg)
+
+                    Text("Add Another Account")
+                        .scaledFont(size: 14, weight: .medium)
+                        .foregroundStyle(theme.brandPrimary)
+
+                    Spacer()
+                }
+                .padding(.horizontal, Spacing.md)
+                .padding(.vertical, Spacing.chatBubblePadding)
+            }
+            .buttonStyle(.plain)
+        }
+    }
+
+    private func accountRowInSettings(
+        _ account: SavedAccount,
+        isActive: Bool,
+        isSwitching: Bool,
+        showDivider: Bool
+    ) -> some View {
+        VStack(spacing: 0) {
+            Button {
+                guard !isSwitching, !isActive else { return }
+                switchingAccountId = account.id
+                Task {
+                    await viewModel.switchToAccount(account)
+                    switchingAccountId = nil
+                }
+            } label: {
+                HStack(spacing: Spacing.md) {
+                    // Avatar
+                    accountAvatarView(account)
+
+                    // Name & email
+                    VStack(alignment: .leading, spacing: 2) {
+                        HStack(spacing: Spacing.xs) {
+                            Text(account.displayName)
+                                .scaledFont(size: 14, weight: .medium)
+                                .foregroundStyle(theme.textPrimary)
+                                .lineLimit(1)
+
+                            if account.role == .admin {
+                                Text("Admin")
+                                    .scaledFont(size: 9, weight: .semibold)
+                                    .foregroundStyle(theme.brandPrimary)
+                                    .padding(.horizontal, 4)
+                                    .padding(.vertical, 1)
+                                    .background(
+                                        Capsule()
+                                            .fill(theme.brandPrimary.opacity(0.12))
+                                    )
+                            }
+                        }
+
+                        Text(account.userEmail)
+                            .scaledFont(size: 12)
+                            .foregroundStyle(theme.textSecondary)
+                            .lineLimit(1)
+                    }
+
+                    Spacer(minLength: 0)
+
+                    // Status indicator
+                    if isSwitching {
+                        ProgressView()
+                            .controlSize(.small)
+                    } else if isActive {
+                        Image(systemName: "checkmark.circle.fill")
+                            .scaledFont(size: 18)
+                            .foregroundStyle(theme.success)
+                    } else {
+                        Text("Switch")
+                            .scaledFont(size: 12, weight: .medium)
+                            .foregroundStyle(theme.brandPrimary)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 4)
+                            .background(
+                                Capsule()
+                                    .fill(theme.brandPrimary.opacity(0.1))
+                            )
+                    }
+
+                    // Remove button for non-active accounts
+                    if !isActive {
+                        Button {
+                            accountToRemove = account
+                            showRemoveAccountConfirmation = true
+                        } label: {
+                            Image(systemName: "trash")
+                                .scaledFont(size: 13)
+                                .foregroundStyle(theme.error.opacity(0.7))
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .padding(.horizontal, Spacing.md)
+                .padding(.vertical, Spacing.sm)
+            }
+            .buttonStyle(.plain)
+            .disabled(isSwitching)
+
+            if showDivider {
+                Divider()
+                    .padding(.leading, Spacing.md + 36 + Spacing.md)
+            }
+        }
+    }
+
+    private func accountAvatarView(_ account: SavedAccount) -> some View {
+        let avatarURL: URL? = {
+            guard let imageURL = account.profileImageURL, !imageURL.isEmpty,
+                  let server = activeServer else { return nil }
+            let full = imageURL.hasPrefix("http") ? imageURL : "\(server.url)\(imageURL)"
+            return URL(string: full)
+        }()
+
+        // Use the live session token for the active account; for others, pull
+        // their individual token from the Keychain.
+        let token: String? = {
+            let activeId = activeServer?.activeAccountId
+            if activeId == account.id {
+                return dependencies.apiClient?.network.authToken
+            }
+            guard let serverURL = activeServer?.url else { return nil }
+            return KeychainService.shared.getToken(forServer: serverURL, userId: account.userId)
+        }()
+
+        return UserAvatar(
+            size: 36,
+            imageURL: avatarURL,
+            name: account.displayName,
+            authToken: token
+        )
     }
 
     // MARK: - Detail Row

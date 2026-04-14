@@ -1956,7 +1956,7 @@ final class APIClient: @unchecked Sendable {
 
     /// GET /api/v1/tools/ — returns list of all tools
     func getToolItems() async throws -> [WorkspaceToolItem] {
-        let (data, _) = try await network.requestRaw(path: "/api/v1/tools/list")
+        let (data, _) = try await network.requestRaw(path: "/api/v1/tools/list", timeout: 300)
         guard let array = try JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
             return []
         }
@@ -1965,7 +1965,7 @@ final class APIClient: @unchecked Sendable {
 
     /// GET /api/v1/tools/id/{id} — returns full tool detail including content
     func getToolDetail(id: String) async throws -> ToolDetail {
-        let json = try await network.requestJSON(path: "/api/v1/tools/id/\(id)")
+        let json = try await network.requestJSON(path: "/api/v1/tools/id/\(id)", timeout: 300)
         guard let detail = ToolDetail(json: json) else {
             throw APIError.responseDecoding(
                 underlying: NSError(domain: "APIError", code: -1,
@@ -1981,7 +1981,8 @@ final class APIClient: @unchecked Sendable {
         let json = try await network.requestJSON(
             path: "/api/v1/tools/create",
             method: .post,
-            body: detail.toCreatePayload()
+            body: detail.toCreatePayload(),
+            timeout: 300
         )
         guard let created = ToolDetail(json: json) else {
             throw APIError.responseDecoding(
@@ -1998,7 +1999,8 @@ final class APIClient: @unchecked Sendable {
         let json = try await network.requestJSON(
             path: "/api/v1/tools/id/\(detail.id)/update",
             method: .post,
-            body: detail.toUpdatePayload()
+            body: detail.toUpdatePayload(),
+            timeout: 300
         )
         guard let updated = ToolDetail(json: json) else {
             throw APIError.responseDecoding(
@@ -2024,13 +2026,14 @@ final class APIClient: @unchecked Sendable {
         return try await network.requestJSON(
             path: "/api/v1/tools/id/\(id)/access/update",
             method: .post,
-            body: ["access_grants": grants]
+            body: ["access_grants": grants],
+            timeout: 300
         )
     }
 
     /// GET /api/v1/tools/export — returns full array of all tool objects
     func exportTools() async throws -> [ToolDetail] {
-        let (data, _) = try await network.requestRaw(path: "/api/v1/tools/export")
+        let (data, _) = try await network.requestRaw(path: "/api/v1/tools/export", timeout: 300)
         guard let array = try JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
             return []
         }
@@ -2040,7 +2043,7 @@ final class APIClient: @unchecked Sendable {
     /// GET /api/v1/tools/id/{id}/valves — returns current valve values as dict.
     /// Returns empty dict if no user valves have been saved yet (server returns empty body).
     func getToolValves(id: String) async throws -> [String: Any] {
-        let (data, _) = try await network.requestRaw(path: "/api/v1/tools/id/\(id)/valves")
+        let (data, _) = try await network.requestRaw(path: "/api/v1/tools/id/\(id)/valves", timeout: 300)
         guard !data.isEmpty,
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             return [:]
@@ -2051,7 +2054,7 @@ final class APIClient: @unchecked Sendable {
     /// GET /api/v1/tools/id/{id}/valves/spec — returns JSON schema for valves.
     /// Returns empty dict if the tool has no valves (server returns empty body).
     func getToolValvesSpec(id: String) async throws -> [String: Any] {
-        let (data, _) = try await network.requestRaw(path: "/api/v1/tools/id/\(id)/valves/spec")
+        let (data, _) = try await network.requestRaw(path: "/api/v1/tools/id/\(id)/valves/spec", timeout: 300)
         guard !data.isEmpty,
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             return [:]
@@ -2067,7 +2070,7 @@ final class APIClient: @unchecked Sendable {
     /// parse the raw bytes a second time with a lightweight scanner to extract the
     /// key order from the `"properties"` object.
     func getToolValvesSpecOrdered(id: String) async throws -> ([String: Any], [String]) {
-        let (data, _) = try await network.requestRaw(path: "/api/v1/tools/id/\(id)/valves/spec")
+        let (data, _) = try await network.requestRaw(path: "/api/v1/tools/id/\(id)/valves/spec", timeout: 300)
         guard !data.isEmpty else { return ([:], []) }
         let spec = (try? JSONSerialization.jsonObject(with: data) as? [String: Any]) ?? [:]
         let keyOrder = extractPropertyKeyOrder(from: data)
@@ -2162,7 +2165,8 @@ final class APIClient: @unchecked Sendable {
         let (data, _) = try await network.requestRaw(
             path: "/api/v1/tools/id/\(id)/valves/update",
             method: .post,
-            body: try JSONSerialization.data(withJSONObject: values)
+            body: try JSONSerialization.data(withJSONObject: values),
+            timeout: 300
         )
         guard !data.isEmpty,
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
@@ -2176,7 +2180,8 @@ final class APIClient: @unchecked Sendable {
         return try await network.requestJSON(
             path: "/api/v1/tools/load/url",
             method: .post,
-            body: ["url": url]
+            body: ["url": url],
+            timeout: 300
         )
     }
 
@@ -2623,9 +2628,21 @@ final class APIClient: @unchecked Sendable {
 
     // MARK: - Profile & Account
 
-    func updateProfile(name: String, profileImageUrl: String? = nil) async throws {
-        var body: [String: String] = ["name": name]
-        if let url = profileImageUrl { body["profile_image_url"] = url }
+    func updateProfile(
+        name: String,
+        profileImageUrl: String,
+        bio: String,
+        gender: String?,
+        dateOfBirth: String?
+    ) async throws {
+        // Server requires ALL fields to be present in every request.
+        let body: [String: Any] = [
+            "name": name,
+            "profile_image_url": profileImageUrl,
+            "bio": bio,
+            "gender": gender as Any? ?? NSNull(),
+            "date_of_birth": dateOfBirth as Any? ?? NSNull()
+        ]
         try await network.requestVoidJSON(
             path: "/api/v1/auths/update/profile",
             method: .post,
@@ -2686,6 +2703,48 @@ final class APIClient: @unchecked Sendable {
             return array
         }
         return []
+    }
+
+    /// Fetches the server's audio configuration as a typed `AdminAudioConfig`.
+    /// `GET /api/v1/audio/config`
+    func getAdminAudioConfig() async throws -> AdminAudioConfig {
+        let (data, _) = try await network.requestRaw(path: "/api/v1/audio/config")
+        return try JSONDecoder().decode(AdminAudioConfig.self, from: data)
+    }
+
+    /// Updates the server's audio configuration.
+    /// `POST /api/v1/audio/config/update`
+    @discardableResult
+    func updateAudioConfig(_ config: AdminAudioConfig) async throws -> AdminAudioConfig {
+        let body = try JSONEncoder().encode(config)
+        let (data, _) = try await network.requestRaw(
+            path: "/api/v1/audio/config/update",
+            method: .post,
+            body: body,
+            contentType: "application/json"
+        )
+        return try JSONDecoder().decode(AdminAudioConfig.self, from: data)
+    }
+
+    /// Fetches the server's task configuration as a typed `AdminTaskConfig`.
+    /// `GET /api/v1/tasks/config`
+    func getAdminTaskConfig() async throws -> AdminTaskConfig {
+        let (data, _) = try await network.requestRaw(path: "/api/v1/tasks/config")
+        return try JSONDecoder().decode(AdminTaskConfig.self, from: data)
+    }
+
+    /// Updates the server's task configuration.
+    /// `POST /api/v1/tasks/config/update`
+    @discardableResult
+    func updateTaskConfig(_ config: AdminTaskConfig) async throws -> AdminTaskConfig {
+        let body = try JSONEncoder().encode(config)
+        let (data, _) = try await network.requestRaw(
+            path: "/api/v1/tasks/config/update",
+            method: .post,
+            body: body,
+            contentType: "application/json"
+        )
+        return try JSONDecoder().decode(AdminTaskConfig.self, from: data)
     }
 
     // MARK: - Chat Extended Operations
@@ -4603,6 +4662,479 @@ final class APIClient: @unchecked Sendable {
 
         let jsonData = try JSONSerialization.data(withJSONObject: response)
         return try JSONDecoder().decode(AdminUser.self, from: jsonData)
+    }
+
+    // MARK: - Analytics APIs
+
+    func getAnalyticsSummary(
+        startDate: Int? = nil,
+        endDate: Int? = nil,
+        groupId: String? = nil
+    ) async throws -> AnalyticsSummary {
+        var queryItems: [URLQueryItem] = []
+        if let s = startDate { queryItems.append(URLQueryItem(name: "start_date", value: "\(s)")) }
+        if let e = endDate   { queryItems.append(URLQueryItem(name: "end_date",   value: "\(e)")) }
+        if let g = groupId   { queryItems.append(URLQueryItem(name: "group_id",   value: g)) }
+        let (data, _) = try await network.requestRaw(path: "/api/v1/analytics/summary", queryItems: queryItems)
+        return try JSONDecoder().decode(AnalyticsSummary.self, from: data)
+    }
+
+    func getAnalyticsDaily(
+        startDate: Int? = nil,
+        endDate: Int? = nil,
+        groupId: String? = nil,
+        granularity: String = "daily"
+    ) async throws -> DailyStatsResponse {
+        var queryItems: [URLQueryItem] = [
+            URLQueryItem(name: "granularity", value: granularity)
+        ]
+        if let s = startDate { queryItems.append(URLQueryItem(name: "start_date", value: "\(s)")) }
+        if let e = endDate   { queryItems.append(URLQueryItem(name: "end_date",   value: "\(e)")) }
+        if let g = groupId   { queryItems.append(URLQueryItem(name: "group_id",   value: g)) }
+        let (data, _) = try await network.requestRaw(path: "/api/v1/analytics/daily", queryItems: queryItems)
+        return try JSONDecoder().decode(DailyStatsResponse.self, from: data)
+    }
+
+    func getAnalyticsModels(
+        startDate: Int? = nil,
+        endDate: Int? = nil,
+        groupId: String? = nil
+    ) async throws -> ModelAnalyticsResponse {
+        var queryItems: [URLQueryItem] = []
+        if let s = startDate { queryItems.append(URLQueryItem(name: "start_date", value: "\(s)")) }
+        if let e = endDate   { queryItems.append(URLQueryItem(name: "end_date",   value: "\(e)")) }
+        if let g = groupId   { queryItems.append(URLQueryItem(name: "group_id",   value: g)) }
+        let (data, _) = try await network.requestRaw(path: "/api/v1/analytics/models", queryItems: queryItems)
+        return try JSONDecoder().decode(ModelAnalyticsResponse.self, from: data)
+    }
+
+    func getAnalyticsUsers(
+        startDate: Int? = nil,
+        endDate: Int? = nil,
+        groupId: String? = nil,
+        limit: Int = 50
+    ) async throws -> UserAnalyticsResponse {
+        var queryItems: [URLQueryItem] = [
+            URLQueryItem(name: "limit", value: "\(limit)")
+        ]
+        if let s = startDate { queryItems.append(URLQueryItem(name: "start_date", value: "\(s)")) }
+        if let e = endDate   { queryItems.append(URLQueryItem(name: "end_date",   value: "\(e)")) }
+        if let g = groupId   { queryItems.append(URLQueryItem(name: "group_id",   value: g)) }
+        let (data, _) = try await network.requestRaw(path: "/api/v1/analytics/users", queryItems: queryItems)
+        return try JSONDecoder().decode(UserAnalyticsResponse.self, from: data)
+    }
+
+    func getAnalyticsTokens(
+        startDate: Int? = nil,
+        endDate: Int? = nil,
+        groupId: String? = nil
+    ) async throws -> TokenUsageResponse {
+        var queryItems: [URLQueryItem] = []
+        if let s = startDate { queryItems.append(URLQueryItem(name: "start_date", value: "\(s)")) }
+        if let e = endDate   { queryItems.append(URLQueryItem(name: "end_date",   value: "\(e)")) }
+        if let g = groupId   { queryItems.append(URLQueryItem(name: "group_id",   value: g)) }
+        let (data, _) = try await network.requestRaw(path: "/api/v1/analytics/tokens", queryItems: queryItems)
+        return try JSONDecoder().decode(TokenUsageResponse.self, from: data)
+    }
+
+    func getAnalyticsGroups() async throws -> [AnalyticsGroup] {
+        let (data, _) = try await network.requestRaw(path: "/api/v1/groups/")
+        let decoder = JSONDecoder()
+        // Try direct array first
+        if let groups = try? decoder.decode([AnalyticsGroup].self, from: data) {
+            return groups
+        }
+        // Fallback: wrapped in "data" key
+        if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           let arr = json["data"] {
+            let d = try JSONSerialization.data(withJSONObject: arr)
+            return (try? decoder.decode([AnalyticsGroup].self, from: d)) ?? []
+        }
+        return []
+    }
+
+    // MARK: - Admin General Settings
+
+    /// GET `/api/v1/auths/admin/config` — fetch full auth/general config.
+    /// Uses a plain JSONDecoder (no key strategy) because AdminAuthConfig has
+    /// explicit SCREAMING_SNAKE_CASE CodingKeys that would be mangled by
+    /// the network layer's default `.convertFromSnakeCase` strategy.
+    func getAdminAuthConfig() async throws -> AdminAuthConfig {
+        let (data, _) = try await network.requestRaw(path: "/api/v1/auths/admin/config")
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .secondsSince1970
+        do {
+            return try decoder.decode(AdminAuthConfig.self, from: data)
+        } catch {
+            throw APIError.responseDecoding(underlying: error, data: data)
+        }
+    }
+
+    /// POST `/api/v1/auths/admin/config` — save full auth/general config.
+    @discardableResult
+    func updateAdminAuthConfig(_ config: AdminAuthConfig) async throws -> AdminAuthConfig {
+        let bodyData = try JSONEncoder().encode(config)
+        let json = try JSONSerialization.jsonObject(with: bodyData) as? [String: Any] ?? [:]
+        try await network.requestVoidJSON(path: "/api/v1/auths/admin/config", method: .post, body: json)
+        // Re-fetch updated config — use plain decoder (no convertFromSnakeCase) to match SCREAMING_SNAKE_CASE keys
+        return try await getAdminAuthConfig()
+    }
+
+    /// GET `/api/v1/auths/admin/config/ldap` — fetch LDAP enable toggle.
+    func getAdminLdapConfig() async throws -> AdminLdapConfig {
+        try await network.request(AdminLdapConfig.self, path: "/api/v1/auths/admin/config/ldap")
+    }
+
+    /// POST `/api/v1/auths/admin/config/ldap` — update LDAP enable toggle.
+    @discardableResult
+    func updateAdminLdapConfig(_ config: AdminLdapConfig) async throws -> AdminLdapConfig {
+        let body: [String: Any] = ["enable_ldap": config.enableLdap as Any]
+        try await network.requestVoidJSON(path: "/api/v1/auths/admin/config/ldap", method: .post, body: body)
+        return try await network.request(AdminLdapConfig.self, path: "/api/v1/auths/admin/config/ldap")
+    }
+
+    /// GET `/api/v1/auths/admin/config/ldap/server` — fetch LDAP server config.
+    func getAdminLdapServerConfig() async throws -> AdminLdapServerConfig {
+        try await network.request(AdminLdapServerConfig.self, path: "/api/v1/auths/admin/config/ldap/server")
+    }
+
+    /// POST `/api/v1/auths/admin/config/ldap/server` — save LDAP server config.
+    @discardableResult
+    func updateAdminLdapServerConfig(_ config: AdminLdapServerConfig) async throws -> AdminLdapServerConfig {
+        let bodyData = try JSONEncoder().encode(config)
+        let json = try JSONSerialization.jsonObject(with: bodyData) as? [String: Any] ?? [:]
+        try await network.requestVoidJSON(path: "/api/v1/auths/admin/config/ldap/server", method: .post, body: json)
+        return try await network.request(AdminLdapServerConfig.self, path: "/api/v1/auths/admin/config/ldap/server")
+    }
+
+    /// GET `/api/webhook` — fetch the global webhook URL (returns plain string).
+    func getWebhookURL() async throws -> String {
+        let (data, _) = try await network.requestRaw(path: "/api/webhook")
+        // Server may return a JSON object {"url": "https://..."} or a bare quoted string
+        if let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           let url = obj["url"] as? String {
+            return url
+        }
+        // Fallback: try bare quoted JSON string "https://..."
+        if let decoded = try? JSONDecoder().decode(String.self, from: data) {
+            return decoded
+        }
+        return String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    }
+
+    /// POST `/api/webhook` — set the global webhook URL.
+    func updateWebhookURL(_ url: String) async throws {
+        let body: [String: Any] = ["url": url]
+        try await network.requestVoidJSON(path: "/api/webhook", method: .post, body: body)
+    }
+
+    /// GET `/api/v1/configs/banners` — fetch all banners.
+    func getAdminBanners() async throws -> [AdminBannerItem] {
+        try await network.request([AdminBannerItem].self, path: "/api/v1/configs/banners")
+    }
+
+    /// POST `/api/v1/configs/banners` — save the full banners array.
+    @discardableResult
+    func updateAdminBanners(_ banners: [AdminBannerItem]) async throws -> [AdminBannerItem] {
+        let bodyData = try JSONEncoder().encode(AdminBannersUpdateBody(banners: banners))
+        let json = try JSONSerialization.jsonObject(with: bodyData) as? [String: Any] ?? [:]
+        try await network.requestVoidJSON(path: "/api/v1/configs/banners", method: .post, body: json)
+        return try await network.request([AdminBannerItem].self, path: "/api/v1/configs/banners")
+    }
+
+    /// GET `/api/v1/groups/` — fetch groups for Default Group picker.
+    func getAdminGroups() async throws -> [AdminGroupItem] {
+        let (data, _) = try await network.requestRaw(path: "/api/v1/groups/")
+        let decoder = JSONDecoder()
+        if let groups = try? decoder.decode([AdminGroupItem].self, from: data) {
+            return groups
+        }
+        return []
+    }
+
+    // MARK: - Code Execution Config
+
+    /// GET `/api/v1/configs/code_execution`
+    func getCodeExecutionConfig() async throws -> CodeExecutionConfig {
+        let (data, _) = try await network.requestRaw(path: "/api/v1/configs/code_execution")
+        let decoder = JSONDecoder()
+        return try decoder.decode(CodeExecutionConfig.self, from: data)
+    }
+
+    /// POST `/api/v1/configs/code_execution`
+    @discardableResult
+    func updateCodeExecutionConfig(_ config: CodeExecutionConfig) async throws -> CodeExecutionConfig {
+        let encoder = JSONEncoder()
+        let bodyData = try encoder.encode(config)
+        let (data, _) = try await network.requestRaw(
+            path: "/api/v1/configs/code_execution",
+            method: .post,
+            body: bodyData,
+            contentType: "application/json"
+        )
+        let decoder = JSONDecoder()
+        return try decoder.decode(CodeExecutionConfig.self, from: data)
+    }
+
+    // MARK: - Image Config
+
+    /// GET `/api/v1/images/config`
+    func getImageConfig() async throws -> ImageConfig {
+        let (data, _) = try await network.requestRaw(path: "/api/v1/images/config")
+        let decoder = JSONDecoder()
+        return try decoder.decode(ImageConfig.self, from: data)
+    }
+
+    /// POST `/api/v1/images/config/update`
+    @discardableResult
+    func updateImageConfig(_ config: ImageConfig) async throws -> ImageConfig {
+        let encoder = JSONEncoder()
+        let bodyData = try encoder.encode(config)
+        let (data, _) = try await network.requestRaw(
+            path: "/api/v1/images/config/update",
+            method: .post,
+            body: bodyData,
+            contentType: "application/json"
+        )
+        let decoder = JSONDecoder()
+        return try decoder.decode(ImageConfig.self, from: data)
+    }
+
+    /// GET `/api/v1/images/models`
+    func getImageModels() async throws -> [ImageModelItem] {
+        let (data, _) = try await network.requestRaw(path: "/api/v1/images/models")
+        let decoder = JSONDecoder()
+        return try decoder.decode([ImageModelItem].self, from: data)
+    }
+
+    /// GET `/api/v1/images/config/url/verify` — returns true if ComfyUI/A1111 URL is reachable.
+    func verifyImageConfigURL() async throws -> Bool {
+        let (data, _) = try await network.requestRaw(path: "/api/v1/images/config/url/verify")
+        // Response is a plain JSON boolean
+        if let result = try? JSONDecoder().decode(Bool.self, from: data) {
+            return result
+        }
+        // Fallback: check for string "true"
+        if let str = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) {
+            return str == "true"
+        }
+        return false
+    }
+
+    // MARK: - Retrieval / Documents Config
+
+    /// GET `/api/v1/retrieval/config`
+    func getRetrievalConfig() async throws -> RetrievalConfig {
+        let (data, _) = try await network.requestRaw(path: "/api/v1/retrieval/config")
+        let decoder = JSONDecoder()
+        return try decoder.decode(RetrievalConfig.self, from: data)
+    }
+
+    /// POST `/api/v1/retrieval/config/update` — fire-and-forget; we don't parse the response.
+    func updateRetrievalConfig(_ config: RetrievalConfig) async throws {
+        let encoder = JSONEncoder()
+        let bodyData = try encoder.encode(config)
+        _ = try await network.requestRaw(
+            path: "/api/v1/retrieval/config/update",
+            method: .post,
+            body: bodyData,
+            contentType: "application/json"
+        )
+    }
+
+    /// GET `/api/v1/retrieval/embedding`
+    func getEmbeddingConfig() async throws -> EmbeddingConfig {
+        let (data, _) = try await network.requestRaw(path: "/api/v1/retrieval/embedding")
+        let decoder = JSONDecoder()
+        return try decoder.decode(EmbeddingConfig.self, from: data)
+    }
+
+    /// POST `/api/v1/retrieval/embedding`
+    @discardableResult
+    func updateEmbeddingConfig(_ config: EmbeddingConfig) async throws -> EmbeddingConfig {
+        let encoder = JSONEncoder()
+        let bodyData = try encoder.encode(config)
+        let (data, _) = try await network.requestRaw(
+            path: "/api/v1/retrieval/embedding",
+            method: .post,
+            body: bodyData,
+            contentType: "application/json"
+        )
+        let decoder = JSONDecoder()
+        return try decoder.decode(EmbeddingConfig.self, from: data)
+    }
+
+    // MARK: - Connections Config
+
+    /// GET `/api/v1/configs/connections`
+    func getConnectionsConfig() async throws -> ConnectionsConfig {
+        let (data, _) = try await network.requestRaw(path: "/api/v1/configs/connections")
+        let decoder = JSONDecoder()
+        return try decoder.decode(ConnectionsConfig.self, from: data)
+    }
+
+    /// POST `/api/v1/configs/connections`
+    @discardableResult
+    func updateConnectionsConfig(_ config: ConnectionsConfig) async throws -> ConnectionsConfig {
+        let body: [String: Any] = [
+            "ENABLE_DIRECT_CONNECTIONS": config.enableDirectConnections,
+            "ENABLE_BASE_MODELS_CACHE": config.enableBaseModelsCache
+        ]
+        let bodyData = try JSONSerialization.data(withJSONObject: body)
+        let (data, _) = try await network.requestRaw(
+            path: "/api/v1/configs/connections",
+            method: .post,
+            body: bodyData,
+            contentType: "application/json"
+        )
+        let decoder = JSONDecoder()
+        return try decoder.decode(ConnectionsConfig.self, from: data)
+    }
+
+    // MARK: - OpenAI Config
+
+    /// GET `/openai/config`
+    func getOpenAIConfig() async throws -> OpenAIConfig {
+        let (data, _) = try await network.requestRaw(path: "/openai/config")
+        let decoder = JSONDecoder()
+        return try decoder.decode(OpenAIConfig.self, from: data)
+    }
+
+    /// POST `/openai/config/update` — sends the full config body.
+    @discardableResult
+    func updateOpenAIConfig(_ config: OpenAIConfig) async throws -> OpenAIConfig {
+        // Build the SCREAMING_SNAKE_CASE body manually to match what the server expects.
+        var configsDict: [String: Any] = [:]
+        for (key, conn) in config.openAIAPIConfigs {
+            configsDict[key] = [
+                "enable": conn.enable,
+                "tags": conn.tags.map { ["name": $0.name] },
+                "prefix_id": conn.prefixId,
+                "model_ids": conn.modelIds,
+                "connection_type": conn.connectionType,
+                "auth_type": conn.authType,
+                "headers": conn.headers,
+                "provider_type": conn.providerType,
+                "api_version": conn.apiVersion,
+                "api_type": conn.apiType
+            ]
+        }
+        let body: [String: Any] = [
+            "ENABLE_OPENAI_API": config.enableOpenAIAPI,
+            "OPENAI_API_BASE_URLS": config.openAIAPIBaseURLs,
+            "OPENAI_API_KEYS": config.openAIAPIKeys,
+            "OPENAI_API_CONFIGS": configsDict
+        ]
+        let bodyData = try JSONSerialization.data(withJSONObject: body)
+        let (data, _) = try await network.requestRaw(
+            path: "/openai/config/update",
+            method: .post,
+            body: bodyData,
+            contentType: "application/json"
+        )
+        let decoder = JSONDecoder()
+        return try decoder.decode(OpenAIConfig.self, from: data)
+    }
+
+    // MARK: - Ollama Config
+
+    /// GET `/ollama/config`
+    func getOllamaConfig() async throws -> OllamaConfig {
+        let (data, _) = try await network.requestRaw(path: "/ollama/config")
+        let decoder = JSONDecoder()
+        return try decoder.decode(OllamaConfig.self, from: data)
+    }
+
+    /// POST `/ollama/config/update`
+    @discardableResult
+    func updateOllamaConfig(_ config: OllamaConfig) async throws -> OllamaConfig {
+        var configsDict: [String: Any] = [:]
+        for (key, conn) in config.ollamaAPIConfigs {
+            configsDict[key] = [
+                "enable": conn.enable,
+                "tags": conn.tags.map { ["name": $0.name] },
+                "prefix_id": conn.prefixId,
+                "model_ids": conn.modelIds,
+                "connection_type": conn.connectionType,
+                "auth_type": conn.authType,
+                "headers": conn.headers
+            ]
+        }
+        let body: [String: Any] = [
+            "ENABLE_OLLAMA_API": config.enableOllamaAPI,
+            "OLLAMA_BASE_URLS": config.ollamaBaseURLs,
+            "OLLAMA_API_CONFIGS": configsDict
+        ]
+        let bodyData = try JSONSerialization.data(withJSONObject: body)
+        let (data, _) = try await network.requestRaw(
+            path: "/ollama/config/update",
+            method: .post,
+            body: bodyData,
+            contentType: "application/json"
+        )
+        let decoder = JSONDecoder()
+        return try decoder.decode(OllamaConfig.self, from: data)
+    }
+
+    // MARK: - Tool Servers Config
+
+    /// GET `/api/v1/configs/tool_servers`
+    func getToolServersConfig() async throws -> ToolServersConfigForm {
+        let (data, _) = try await network.requestRaw(path: "/api/v1/configs/tool_servers")
+        return try JSONDecoder().decode(ToolServersConfigForm.self, from: data)
+    }
+
+    /// POST `/api/v1/configs/tool_servers`
+    @discardableResult
+    func updateToolServersConfig(_ config: ToolServersConfigForm) async throws -> ToolServersConfigForm {
+        let bodyData = try JSONEncoder().encode(config)
+        let (data, _) = try await network.requestRaw(
+            path: "/api/v1/configs/tool_servers",
+            method: .post,
+            body: bodyData,
+            contentType: "application/json"
+        )
+        return try JSONDecoder().decode(ToolServersConfigForm.self, from: data)
+    }
+
+    /// POST `/api/v1/configs/tool_servers/verify`
+    func verifyToolServerConnection(_ connection: ToolServerConnection) async throws {
+        let bodyData = try JSONEncoder().encode(connection)
+        _ = try await network.requestRaw(
+            path: "/api/v1/configs/tool_servers/verify",
+            method: .post,
+            body: bodyData,
+            contentType: "application/json"
+        )
+    }
+
+    // MARK: - Terminal Servers Config
+
+    /// GET `/api/v1/configs/terminal_servers`
+    func getTerminalServersConfig() async throws -> TerminalServersConfigForm {
+        let (data, _) = try await network.requestRaw(path: "/api/v1/configs/terminal_servers")
+        return try JSONDecoder().decode(TerminalServersConfigForm.self, from: data)
+    }
+
+    /// POST `/api/v1/configs/terminal_servers`
+    @discardableResult
+    func updateTerminalServersConfig(_ config: TerminalServersConfigForm) async throws -> TerminalServersConfigForm {
+        let bodyData = try JSONEncoder().encode(config)
+        let (data, _) = try await network.requestRaw(
+            path: "/api/v1/configs/terminal_servers",
+            method: .post,
+            body: bodyData,
+            contentType: "application/json"
+        )
+        return try JSONDecoder().decode(TerminalServersConfigForm.self, from: data)
+    }
+
+    // MARK: - Groups (for Access Control)
+
+    /// GET `/api/v1/groups/`
+    func getGroups() async throws -> [GroupResponse] {
+        let (data, _) = try await network.requestRaw(path: "/api/v1/groups/")
+        return try JSONDecoder().decode([GroupResponse].self, from: data)
     }
 }
 

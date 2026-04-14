@@ -1,6 +1,7 @@
 import SwiftUI
 import PhotosUI
 import UniformTypeIdentifiers
+import PDFKit
 
 // MARK: - Chat Attachment
 
@@ -1120,11 +1121,28 @@ private struct QuickPill: Identifiable {
 /// Universal preview sheet for any attachment type.
 /// - **Image**: shows a zoomable full-size preview from the thumbnail or data.
 /// - **Audio**: shows the transcribed text (same as old TranscriptPreviewSheet).
-/// - **File**: shows file info (name, status, size when available).
+/// - **File**: shows extracted content tab + original file preview tab (PDF or text).
 struct AttachmentPreviewSheet: View {
     let attachment: ChatAttachment
     @Environment(\.dismiss) private var dismiss
     @Environment(\.theme) private var theme
+    @Environment(AppDependencyContainer.self) private var dependencies
+
+    // MARK: - File content state
+    @State private var selectedTab: FilePreviewTab = .content
+    @State private var extractedContent: String? = nil
+    @State private var extractedLineCount: Int = 0
+    @State private var fileSize: Int64 = 0
+    @State private var isLoadingContent: Bool = false
+    @State private var loadError: String? = nil
+    /// Raw bytes downloaded from the server for the Preview tab.
+    @State private var downloadedFileData: Data? = nil
+    @State private var isLoadingPreview: Bool = false
+
+    enum FilePreviewTab: String, CaseIterable {
+        case content = "Content"
+        case preview = "Preview"
+    }
 
     var body: some View {
         NavigationStack {
@@ -1135,7 +1153,7 @@ struct AttachmentPreviewSheet: View {
                 case .audio:
                     audioPreview
                 case .file:
-                    filePreview
+                    filePreviewWithTabs
                 }
             }
             .background(theme.background)
@@ -1146,10 +1164,71 @@ struct AttachmentPreviewSheet: View {
                     Button("Done") { dismiss() }
                         .foregroundStyle(theme.brandPrimary)
                 }
+                // Copy button for content tab
+                if attachment.type == .file, selectedTab == .content,
+                   let content = extractedContent, !content.isEmpty {
+                    ToolbarItem(placement: .navigationBarLeading) {
+                        Button {
+                            UIPasteboard.general.string = content
+                            Haptics.play(.light)
+                        } label: {
+                            Label("Copy", systemImage: "doc.on.doc")
+                        }
+                        .foregroundStyle(theme.brandPrimary)
+                    }
+                }
             }
         }
         .presentationDetents([.medium, .large])
         .presentationDragIndicator(.visible)
+        .task {
+            if attachment.type == .file, let fileId = attachment.uploadedFileId {
+                await loadFileInfo(fileId: fileId)
+            }
+        }
+    }
+
+    // MARK: - Load File Info
+
+    private func loadFileInfo(fileId: String) async {
+        guard let apiClient = dependencies.apiClient else { return }
+        isLoadingContent = true
+        loadError = nil
+        do {
+            let info = try await apiClient.getFileInfo(id: fileId)
+            // Parse data.content (extracted text)
+            if let data = info["data"] as? [String: Any],
+               let content = data["content"] as? String {
+                extractedContent = content
+                extractedLineCount = content.components(separatedBy: "\n").count
+            }
+            // Parse meta.size
+            if let meta = info["meta"] as? [String: Any],
+               let size = meta["size"] as? Int {
+                fileSize = Int64(size)
+            } else if let localData = attachment.data {
+                fileSize = Int64(localData.count)
+            }
+        } catch {
+            loadError = error.localizedDescription
+            // Fall back to local data size
+            if let localData = attachment.data {
+                fileSize = Int64(localData.count)
+            }
+        }
+        isLoadingContent = false
+
+        // Download raw file bytes for the Preview tab (unless we already have local data).
+        if attachment.data == nil {
+            isLoadingPreview = true
+            do {
+                let (data, _) = try await apiClient.getFileContent(id: fileId)
+                downloadedFileData = data
+            } catch {
+                // Preview will gracefully show "unavailable"
+            }
+            isLoadingPreview = false
+        }
     }
 
     // MARK: - Image Preview
@@ -1222,43 +1301,156 @@ struct AttachmentPreviewSheet: View {
         }
     }
 
-    // MARK: - File Preview
+    // MARK: - File Preview (tabbed)
 
     @ViewBuilder
-    private var filePreview: some View {
-        VStack(spacing: Spacing.lg) {
-            Spacer()
+    private var filePreviewWithTabs: some View {
+        VStack(spacing: 0) {
+            // Header: file metadata
+            fileMetaHeader
 
-            // File icon
-            Image(systemName: fileIcon)
-                .scaledFont(size: 48)
-                .foregroundStyle(theme.brandPrimary)
+            Divider()
 
-            // File name
-            Text(attachment.name)
-                .scaledFont(size: 17, weight: .semibold)
-                .foregroundStyle(theme.textPrimary)
-                .multilineTextAlignment(.center)
-                .padding(.horizontal, 32)
-
-            // Status badge
-            HStack(spacing: 6) {
-                statusIcon
-                Text(statusLabel)
-                    .scaledFont(size: 14)
-                    .foregroundStyle(theme.textSecondary)
+            // Tab selector
+            Picker("Tab", selection: $selectedTab) {
+                ForEach(FilePreviewTab.allCases, id: \.self) { tab in
+                    Text(tab.rawValue).tag(tab)
+                }
             }
+            .pickerStyle(.segmented)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 10)
 
-            // File size if data is available
-            if let data = attachment.data {
-                Text(ByteCountFormatter.string(fromByteCount: Int64(data.count), countStyle: .file))
-                    .scaledFont(size: 13)
-                    .foregroundStyle(theme.textTertiary)
+            Divider()
+
+            // Tab content
+            if selectedTab == .content {
+                contentTab
+            } else {
+                previewTab
+            }
+        }
+    }
+
+    // MARK: - File Meta Header
+
+    private var fileMetaHeader: some View {
+        HStack(spacing: 12) {
+            Image(systemName: fileIcon)
+                .scaledFont(size: 28)
+                .foregroundStyle(theme.brandPrimary)
+                .frame(width: 40)
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text(attachment.name)
+                    .scaledFont(size: 14, weight: .semibold)
+                    .foregroundStyle(theme.textPrimary)
+                    .lineLimit(1)
+
+                HStack(spacing: 6) {
+                    if fileSize > 0 {
+                        Text(ByteCountFormatter.string(fromByteCount: fileSize, countStyle: .file))
+                            .scaledFont(size: 12)
+                            .foregroundStyle(theme.textTertiary)
+                    }
+                    if extractedLineCount > 0 {
+                        Text("•")
+                            .scaledFont(size: 12)
+                            .foregroundStyle(theme.textTertiary)
+                        Text("\(extractedLineCount) Extracted Lines")
+                            .scaledFont(size: 12)
+                            .foregroundStyle(theme.textTertiary)
+                    }
+                    if isLoadingContent {
+                        ProgressView().controlSize(.mini)
+                    }
+                }
+
+                if extractedContent != nil {
+                    Text("Formatting may be inconsistent from source.")
+                        .scaledFont(size: 11)
+                        .foregroundStyle(theme.textTertiary)
+                        .italic()
+                }
             }
 
             Spacer()
         }
-        .frame(maxWidth: .infinity)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 12)
+    }
+
+    // MARK: - Content Tab
+
+    @ViewBuilder
+    private var contentTab: some View {
+        if isLoadingContent {
+            VStack {
+                Spacer()
+                ProgressView("Loading content…")
+                    .foregroundStyle(theme.textSecondary)
+                Spacer()
+            }
+        } else if let content = extractedContent, !content.isEmpty {
+            ScrollView {
+                Text(content)
+                    .scaledFont(size: 14)
+                    .foregroundStyle(theme.textPrimary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(16)
+                    .textSelection(.enabled)
+            }
+        } else if let error = loadError {
+            ContentUnavailableView(
+                "Could Not Load Content",
+                systemImage: "exclamationmark.triangle",
+                description: Text(error)
+            )
+            .padding(.top, 40)
+        } else {
+            ContentUnavailableView(
+                "No Content",
+                systemImage: "doc.text",
+                description: Text("No extracted content is available for this file.")
+            )
+            .padding(.top, 40)
+        }
+    }
+
+    // MARK: - Preview Tab
+
+    @ViewBuilder
+    private var previewTab: some View {
+        let ext = (attachment.name as NSString).pathExtension.lowercased()
+        // Prefer locally-held data, fall back to server-downloaded bytes.
+        let effectiveData = attachment.data ?? downloadedFileData
+        if isLoadingPreview {
+            VStack {
+                Spacer()
+                ProgressView("Loading preview…")
+                    .foregroundStyle(theme.textSecondary)
+                Spacer()
+            }
+        } else if ext == "pdf", let data = effectiveData, let pdfDoc = PDFDocument(data: data) {
+            PDFKitView(document: pdfDoc)
+        } else if let data = effectiveData, let text = String(data: data, encoding: .utf8) {
+            ScrollView {
+                Text(text)
+                    .scaledFont(size: 13)
+                    .foregroundStyle(theme.textPrimary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(16)
+                    .textSelection(.enabled)
+                    .font(.system(.body, design: .monospaced))
+            }
+        } else {
+            ContentUnavailableView(
+                "Preview Unavailable",
+                systemImage: "eye.slash",
+                description: Text("A preview is not available for this file type.")
+            )
+            .padding(.top, 40)
+        }
     }
 
     /// SF Symbol name based on file extension.
@@ -1276,29 +1468,26 @@ struct AttachmentPreviewSheet: View {
         default: return "doc"
         }
     }
+}
 
-    private var statusLabel: String {
-        switch attachment.uploadStatus {
-        case .pending: return "Pending"
-        case .uploading: return "Uploading…"
-        case .processing: return "Processing…"
-        case .completed: return "Ready"
-        case .error: return attachment.uploadError ?? "Upload failed"
-        }
+// MARK: - PDFKit View
+
+/// UIViewRepresentable wrapper for PDFKit's PDFView.
+private struct PDFKitView: UIViewRepresentable {
+    let document: PDFDocument
+
+    func makeUIView(context: Context) -> PDFView {
+        let pdfView = PDFView()
+        pdfView.document = document
+        pdfView.autoScales = true
+        pdfView.displayMode = .singlePageContinuous
+        pdfView.displayDirection = .vertical
+        pdfView.backgroundColor = .systemBackground
+        return pdfView
     }
 
-    @ViewBuilder
-    private var statusIcon: some View {
-        switch attachment.uploadStatus {
-        case .pending:
-            Image(systemName: "clock").foregroundStyle(theme.textTertiary)
-        case .uploading, .processing:
-            ProgressView().controlSize(.small)
-        case .completed:
-            Image(systemName: "checkmark.circle.fill").foregroundStyle(theme.success)
-        case .error:
-            Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(theme.error)
-        }
+    func updateUIView(_ uiView: PDFView, context: Context) {
+        uiView.document = document
     }
 }
 

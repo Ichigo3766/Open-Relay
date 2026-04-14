@@ -121,10 +121,16 @@ final class ModelManager {
     func updateAccessGrants(modelId: String, modelName: String, grants: [AccessGrant], isPublic: Bool = false) async throws -> [AccessGrant] {
         var payload: [[String: Any]] = []
         for grant in grants {
-            guard let userId = grant.userId else { continue }
-            payload.append(["principal_type": "user", "principal_id": userId, "permission": "read"])
-            if grant.write {
-                payload.append(["principal_type": "user", "principal_id": userId, "permission": "write"])
+            if let userId = grant.userId {
+                payload.append(["principal_type": "user", "principal_id": userId, "permission": "read"])
+                if grant.write {
+                    payload.append(["principal_type": "user", "principal_id": userId, "permission": "write"])
+                }
+            } else if let groupId = grant.groupId {
+                payload.append(["principal_type": "group", "principal_id": groupId, "permission": "read"])
+                if grant.write {
+                    payload.append(["principal_type": "group", "principal_id": groupId, "permission": "write"])
+                }
             }
         }
         if isPublic {

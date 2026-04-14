@@ -138,10 +138,12 @@ extension CallKitManager: CXProviderDelegate {
     }
 
     nonisolated func provider(_ provider: CXProvider, perform action: CXStartCallAction) {
-        // Configure audio session for voice call
+        // Configure audio session for voice call.
+        // .allowBluetooth is required for CarPlay / BT HFP microphone input.
         let audioSession = AVAudioSession.sharedInstance()
         do {
-            try audioSession.setCategory(.playAndRecord, mode: .voiceChat, options: [.defaultToSpeaker, .allowBluetoothA2DP])
+            try audioSession.setCategory(.playAndRecord, mode: .voiceChat,
+                                         options: [.defaultToSpeaker, .allowBluetooth, .allowBluetoothA2DP])
             try audioSession.setActive(true)
         } catch {
             // Log but don't fail the call

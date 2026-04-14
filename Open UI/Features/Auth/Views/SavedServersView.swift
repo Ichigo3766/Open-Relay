@@ -1,7 +1,7 @@
 import SwiftUI
 
 /// Full-page server switcher — shows all saved server profiles with their
-/// last-used account info, connection status, and switch/edit/delete actions.
+/// saved accounts, connection status, and switch/edit/delete actions.
 ///
 /// Presented as:
 /// - The root phase after sign-out when multiple servers are saved.
@@ -21,6 +21,7 @@ struct SavedServersView: View {
     @State private var showDeleteConfirmation = false
     @State private var isSwitching = false
     @State private var switchingServerId: String?
+    @State private var switchingAccountId: String?
     /// Sheet state for "Add New Server" — presented modally so the user can cancel.
     @State private var showAddServerSheet = false
 
@@ -96,15 +97,20 @@ struct SavedServersView: View {
     private var serverListView: some View {
         VStack(spacing: Spacing.md) {
             ForEach(viewModel.savedServers) { server in
+                let isActive = dependencies.serverConfigStore.activeServer?.id == server.id
                 ServerRowView(
                     server: server,
-                    isActive: dependencies.serverConfigStore.activeServer?.id == server.id,
-                    isSwitching: switchingServerId == server.id && isSwitching,
-                    onSwitch: {
+                    isActive: isActive,
+                    isSwitchingServer: switchingServerId == server.id && isSwitching,
+                    switchingAccountId: $switchingAccountId,
+                    onSwitchServer: {
                         Task { await handleSwitch(to: server) }
                     },
-                    onSignInDifferentUser: {
-                        Task { await handleSignInDifferentUser(for: server) }
+                    onSwitchToAccount: { account in
+                        Task { await handleSwitchToAccount(account, on: server) }
+                    },
+                    onAddAccount: {
+                        Task { await handleAddAccount(on: server) }
                     },
                     onDelete: {
                         serverToDelete = server
@@ -167,24 +173,42 @@ struct SavedServersView: View {
         switchingServerId = nil
     }
 
-    // MARK: - Sign In As Different User
+    // MARK: - Switch To Specific Account on a Server
 
-    /// Switches to the server and immediately signs out, landing the user on
-    /// the auth method selection screen so they can log in as a different account.
-    private func handleSignInDifferentUser(for server: ServerConfig) async {
-        onDismiss?()
-        // If this is already the active server, just sign out
-        if dependencies.serverConfigStore.activeServer?.id == server.id {
-            await viewModel.signOut()
+    private func handleSwitchToAccount(_ account: SavedAccount, on server: ServerConfig) async {
+        guard switchingAccountId == nil else { return }
+        switchingAccountId = account.id
+
+        let isActiveServer = dependencies.serverConfigStore.activeServer?.id == server.id
+
+        if isActiveServer {
+            // Already on this server — just switch account
+            await viewModel.switchToAccount(account)
         } else {
-            // Switch to the server first, then sign out
+            // Switch server first, then switch to the specific account
+            onDismiss?()
             await viewModel.switchToServer(server)
-            // After switch we may be authenticated (cached session); sign out to reach login screen
-            if viewModel.phase == .authenticated {
-                await viewModel.signOut()
+            // Now switch to the specific account if it's not the one that was auto-selected
+            if dependencies.serverConfigStore.activeServer?.activeAccountId != account.id {
+                await viewModel.switchToAccount(account)
             }
-            // If switch landed on authMethodSelection (no token), we're already there
         }
+
+        switchingAccountId = nil
+    }
+
+    // MARK: - Add Account on a Server
+
+    private func handleAddAccount(on server: ServerConfig) async {
+        let isActiveServer = dependencies.serverConfigStore.activeServer?.id == server.id
+
+        if !isActiveServer {
+            // Switch to the server first
+            onDismiss?()
+            await viewModel.switchToServer(server)
+        }
+        // Now add another account
+        await viewModel.addAnotherAccountOnCurrentServer()
     }
 }
 
@@ -193,9 +217,11 @@ struct SavedServersView: View {
 private struct ServerRowView: View {
     let server: ServerConfig
     let isActive: Bool
-    let isSwitching: Bool
-    let onSwitch: () -> Void
-    let onSignInDifferentUser: () -> Void
+    let isSwitchingServer: Bool
+    @Binding var switchingAccountId: String?
+    let onSwitchServer: () -> Void
+    let onSwitchToAccount: (SavedAccount) -> Void
+    let onAddAccount: () -> Void
     let onDelete: () -> Void
 
     @Environment(\.theme) private var theme
@@ -216,114 +242,24 @@ private struct ServerRowView: View {
         return "Not signed in"
     }
 
-    private var actionTitle: String {
-        if isActive { return "Active" }
-        if hasToken { return "Switch" }
-        return "Connect"
-    }
-
     var body: some View {
         VStack(spacing: 0) {
-            // Entire top section is a button — tapping it switches to / enters the server
-            Button(action: onSwitch) {
-                HStack(spacing: Spacing.md) {
-                    // Status indicator
-                    Circle()
-                        .fill(statusColor)
-                        .frame(width: 10, height: 10)
-                        .padding(.top, 2)
-                        .accessibilityLabel(statusLabel)
+            // Server header row
+            serverHeaderRow
 
-                    // Server info
-                    VStack(alignment: .leading, spacing: Spacing.xxs) {
-                        Text(server.name)
-                            .scaledFont(size: 15, weight: .semibold)
-                            .foregroundStyle(theme.textPrimary)
-                            .lineLimit(1)
-
-                        Text(server.url)
-                            .scaledFont(size: 12)
-                            .foregroundStyle(theme.textTertiary)
-                            .lineLimit(1)
-                            .truncationMode(.middle)
-
-                        if let userName = server.lastUserName, !userName.isEmpty {
-                            HStack(spacing: Spacing.xxs) {
-                                Image(systemName: "person.circle")
-                                    .scaledFont(size: 11)
-                                Text(userName)
-                                    .scaledFont(size: 12)
-                            }
-                            .foregroundStyle(theme.textSecondary)
-                        } else {
-                            Text(statusLabel)
-                                .scaledFont(size: 12)
-                                .foregroundStyle(statusColor)
-                        }
-                    }
-
-                    Spacer(minLength: 0)
-
-                    // Right side: active badge or switch pill, plus delete
-                    HStack(spacing: Spacing.sm) {
-                        if isSwitching {
-                            ProgressView()
-                                .controlSize(.small)
-                                .tint(theme.buttonPrimaryText)
-                                .frame(width: 60)
-                                .padding(.horizontal, Spacing.md)
-                                .padding(.vertical, Spacing.sm)
-                        } else {
-                            Text(actionTitle)
-                                .scaledFont(size: 13, weight: .medium)
-                                .frame(minWidth: 60)
-                                .foregroundStyle(isActive ? theme.success : theme.buttonPrimaryText)
-                                .padding(.horizontal, Spacing.md)
-                                .padding(.vertical, Spacing.sm)
-                                .background(
-                                    Capsule()
-                                        .fill(isActive
-                                              ? theme.success.opacity(0.15)
-                                              : theme.buttonPrimary)
-                                )
-                        }
-
-                        // Delete button — stops tap propagation to the row button
-                        Button(role: .destructive, action: onDelete) {
-                            Image(systemName: "trash")
-                                .scaledFont(size: 14)
-                                .foregroundStyle(theme.textTertiary)
-                                .padding(Spacing.sm)
-                        }
-                        .accessibilityLabel("Remove \(server.name)")
-                    }
-                }
-                .padding(Spacing.md)
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .disabled(isSwitching)
-            .accessibilityLabel("\(actionTitle) \(server.name)")
-
-            // "Sign in as different user" — shown when there's a saved account on this server
-            if hasToken || isActive {
+            // Saved accounts section
+            if !server.savedAccounts.isEmpty {
                 Divider()
                     .padding(.horizontal, Spacing.md)
 
-                Button(action: onSignInDifferentUser) {
-                    HStack(spacing: Spacing.xs) {
-                        Image(systemName: "person.badge.arrow.left")
-                            .scaledFont(size: 12)
-                        Text("Sign in as different user")
-                            .scaledFont(size: 12, weight: .medium)
-                    }
-                    .foregroundStyle(theme.textTertiary)
-                    .frame(maxWidth: .infinity, alignment: .trailing)
-                    .padding(.horizontal, Spacing.md)
-                    .padding(.vertical, Spacing.sm)
-                }
-                .accessibilityLabel("Sign in to \(server.name) as a different user")
+                accountsList
             }
+
+            // Add account / Connect button
+            Divider()
+                .padding(.horizontal, Spacing.md)
+
+            bottomAction
         }
         .background(
             RoundedRectangle(cornerRadius: CornerRadius.lg, style: .continuous)
@@ -337,6 +273,198 @@ private struct ServerRowView: View {
                 )
         )
         .clipShape(RoundedRectangle(cornerRadius: CornerRadius.lg, style: .continuous))
+    }
+
+    // MARK: - Server Header
+
+    private var serverHeaderRow: some View {
+        HStack(spacing: Spacing.md) {
+            // Status indicator
+            Circle()
+                .fill(statusColor)
+                .frame(width: 10, height: 10)
+                .accessibilityLabel(statusLabel)
+
+            // Server info
+            VStack(alignment: .leading, spacing: Spacing.xxs) {
+                Text(server.name)
+                    .scaledFont(size: 15, weight: .semibold)
+                    .foregroundStyle(theme.textPrimary)
+                    .lineLimit(1)
+
+                Text(server.url)
+                    .scaledFont(size: 12)
+                    .foregroundStyle(theme.textTertiary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+
+            Spacer(minLength: 0)
+
+            // Status pill
+            Text(statusLabel)
+                .scaledFont(size: 11, weight: .medium)
+                .foregroundStyle(isActive ? theme.success : theme.textTertiary)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 3)
+                .background(
+                    Capsule()
+                        .fill(isActive ? theme.success.opacity(0.12) : theme.surfaceContainer)
+                )
+
+            // Delete button
+            Button(role: .destructive, action: onDelete) {
+                Image(systemName: "trash")
+                    .scaledFont(size: 14)
+                    .foregroundStyle(theme.textTertiary)
+                    .padding(Spacing.sm)
+            }
+            .accessibilityLabel("Remove \(server.name)")
+        }
+        .padding(.horizontal, Spacing.md)
+        .padding(.vertical, Spacing.sm)
+    }
+
+    // MARK: - Accounts List
+
+    private var accountsList: some View {
+        VStack(spacing: 0) {
+            ForEach(Array(server.savedAccounts.enumerated()), id: \.element.id) { index, account in
+                let isActiveAccount = isActive && server.activeAccountId == account.id
+                let isSwitching = switchingAccountId == account.id
+
+                accountRow(account, isActiveAccount: isActiveAccount, isSwitching: isSwitching)
+
+                if index < server.savedAccounts.count - 1 {
+                    Divider()
+                        .padding(.leading, Spacing.md + 32 + Spacing.sm)
+                }
+            }
+        }
+    }
+
+    private func accountRow(_ account: SavedAccount, isActiveAccount: Bool, isSwitching: Bool) -> some View {
+        Button {
+            guard !isSwitching, !isActiveAccount else { return }
+            onSwitchToAccount(account)
+        } label: {
+            HStack(spacing: Spacing.sm) {
+                // Avatar
+                accountAvatarView(account)
+
+                // Name & email
+                VStack(alignment: .leading, spacing: 1) {
+                    HStack(spacing: Spacing.xs) {
+                        Text(account.displayName)
+                            .scaledFont(size: 13, weight: .medium)
+                            .foregroundStyle(theme.textPrimary)
+                            .lineLimit(1)
+
+                        if account.role == .admin {
+                            Text("Admin")
+                                .scaledFont(size: 9, weight: .semibold)
+                                .foregroundStyle(theme.brandPrimary)
+                                .padding(.horizontal, 4)
+                                .padding(.vertical, 1)
+                                .background(
+                                    Capsule()
+                                        .fill(theme.brandPrimary.opacity(0.12))
+                                )
+                        }
+                    }
+
+                    Text(account.userEmail)
+                        .scaledFont(size: 11)
+                        .foregroundStyle(theme.textSecondary)
+                        .lineLimit(1)
+                }
+
+                Spacer(minLength: 0)
+
+                // Status
+                if isSwitching {
+                    ProgressView()
+                        .controlSize(.small)
+                } else if isActiveAccount {
+                    Image(systemName: "checkmark.circle.fill")
+                        .scaledFont(size: 16)
+                        .foregroundStyle(theme.success)
+                } else {
+                    Text("Switch")
+                        .scaledFont(size: 11, weight: .medium)
+                        .foregroundStyle(theme.brandPrimary)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 3)
+                        .background(
+                            Capsule()
+                                .fill(theme.brandPrimary.opacity(0.1))
+                        )
+                }
+            }
+            .padding(.horizontal, Spacing.md)
+            .padding(.vertical, Spacing.sm)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(isSwitching || isActiveAccount)
+    }
+
+    private func accountAvatarView(_ account: SavedAccount) -> some View {
+        let avatarURL: URL? = {
+            guard let imageURL = account.profileImageURL, !imageURL.isEmpty else { return nil }
+            let full = imageURL.hasPrefix("http") ? imageURL : "\(server.url)\(imageURL)"
+            return URL(string: full)
+        }()
+
+        // Use per-account token from Keychain
+        let token = KeychainService.shared.getToken(forServer: server.url, userId: account.userId)
+
+        return UserAvatar(
+            size: 32,
+            imageURL: avatarURL,
+            name: account.displayName,
+            authToken: token
+        )
+    }
+
+    // MARK: - Bottom Action
+
+    private var bottomAction: some View {
+        Group {
+            if server.savedAccounts.isEmpty {
+                // No accounts — show "Connect" button
+                Button(action: onSwitchServer) {
+                    HStack(spacing: Spacing.xs) {
+                        if isSwitchingServer {
+                            ProgressView()
+                                .controlSize(.small)
+                        } else {
+                            Image(systemName: "arrow.right.circle")
+                                .scaledFont(size: 13)
+                        }
+                        Text("Connect")
+                            .scaledFont(size: 13, weight: .medium)
+                    }
+                    .foregroundStyle(theme.brandPrimary)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, Spacing.sm)
+                }
+                .disabled(isSwitchingServer)
+            } else {
+                // Has accounts — show "Add Another Account"
+                Button(action: onAddAccount) {
+                    HStack(spacing: Spacing.xs) {
+                        Image(systemName: "person.badge.plus")
+                            .scaledFont(size: 12)
+                        Text("Add Another Account")
+                            .scaledFont(size: 12, weight: .medium)
+                    }
+                    .foregroundStyle(theme.brandPrimary)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, Spacing.sm)
+                }
+            }
+        }
     }
 }
 
@@ -370,6 +498,7 @@ struct CompactSavedServersSection: View {
     private func compactServerRow(_ server: ServerConfig) -> some View {
         let isActive = dependencies.serverConfigStore.activeServer?.id == server.id
         let isSwitching = switchingServerId == server.id
+        let accounts = server.savedAccounts
 
         Button {
             guard !isSwitching else { return }
@@ -389,7 +518,14 @@ struct CompactSavedServersSection: View {
                         .scaledFont(size: 14, weight: .medium)
                         .foregroundStyle(theme.textPrimary)
                         .lineLimit(1)
-                    if let userName = server.lastUserName, !userName.isEmpty {
+
+                    if !accounts.isEmpty {
+                        // Show account names
+                        Text(accounts.map(\.displayName).joined(separator: ", "))
+                            .scaledFont(size: 12)
+                            .foregroundStyle(theme.textSecondary)
+                            .lineLimit(1)
+                    } else if let userName = server.lastUserName, !userName.isEmpty {
                         Text(userName)
                             .scaledFont(size: 12)
                             .foregroundStyle(theme.textSecondary)
@@ -404,6 +540,22 @@ struct CompactSavedServersSection: View {
                 }
 
                 Spacer()
+
+                // Show stacked avatars for saved accounts
+                if !accounts.isEmpty {
+                    HStack(spacing: -6) {
+                        ForEach(accounts.prefix(3)) { account in
+                            compactAccountAvatar(account, serverURL: server.url)
+                        }
+                        if accounts.count > 3 {
+                            Text("+\(accounts.count - 3)")
+                                .scaledFont(size: 10, weight: .medium)
+                                .foregroundStyle(theme.textTertiary)
+                                .frame(width: 22, height: 22)
+                                .background(Circle().fill(theme.surfaceContainer))
+                        }
+                    }
+                }
 
                 if isSwitching {
                     ProgressView()
@@ -428,5 +580,25 @@ struct CompactSavedServersSection: View {
         // Only disable when actively switching — always allow tapping, even the
         // "active" server (user may be signed out and want to go to login screen).
         .disabled(isSwitching)
+    }
+
+    private func compactAccountAvatar(_ account: SavedAccount, serverURL: String) -> some View {
+        let avatarURL: URL? = {
+            guard let imageURL = account.profileImageURL, !imageURL.isEmpty else { return nil }
+            let full = imageURL.hasPrefix("http") ? imageURL : "\(serverURL)\(imageURL)"
+            return URL(string: full)
+        }()
+        let token = KeychainService.shared.getToken(forServer: serverURL, userId: account.userId)
+
+        return UserAvatar(
+            size: 22,
+            imageURL: avatarURL,
+            name: account.displayName,
+            authToken: token
+        )
+        .overlay(
+            Circle()
+                .stroke(theme.surfaceContainer, lineWidth: 1.5)
+        )
     }
 }

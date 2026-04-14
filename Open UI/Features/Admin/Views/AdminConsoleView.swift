@@ -4,12 +4,32 @@ import SwiftUI
 
 enum AdminConsoleTab: String, CaseIterable {
     case users = "Users"
+    case analytics = "Analytics"
     case functions = "Functions"
+    case general = "General"
+    case connections = "Connections"
+    case integrations = "Integrations"
+    case documents = "Documents"
+    case webSearch = "Web Search"
+    case codeExecution = "Code Execution"
+    case interface = "Interface"
+    case audio = "Audio"
+    case images = "Images"
 
     var icon: String {
         switch self {
         case .users: return "person.2"
+        case .analytics: return "chart.bar.xaxis"
         case .functions: return "function"
+        case .general: return "gear"
+        case .connections: return "link"
+        case .integrations: return "wrench.and.screwdriver"
+        case .documents: return "doc.text"
+        case .webSearch: return "globe"
+        case .codeExecution: return "terminal"
+        case .interface: return "slider.horizontal.3"
+        case .audio: return "waveform"
+        case .images: return "photo"
         }
     }
 }
@@ -39,22 +59,42 @@ struct AdminConsoleView: View {
                 switch selectedTab {
                 case .users:
                     AdminUsersTab()
+                case .analytics:
+                    AdminAnalyticsView()
                 case .functions:
                     AdminFunctionsView()
+                case .general:
+                    AdminGeneralSettingsView()
+                case .connections:
+                    AdminConnectionsView()
+                case .integrations:
+                    AdminIntegrationsView()
+                case .documents:
+                    AdminDocumentsView()
+                case .webSearch:
+                    AdminWebSearchView()
+                case .codeExecution:
+                    AdminCodeExecutionView()
+                case .interface:
+                    AdminInterfaceView()
+                case .audio:
+                    AdminAudioView()
+                case .images:
+                    AdminImagesView()
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .background(theme.background)
         .navigationTitle("Admin Console")
-        .navigationBarTitleDisplayMode(.large)
+        .navigationBarTitleDisplayMode(.inline)
     }
 
     // MARK: - Tab Bar
 
     private var tabBar: some View {
         ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 8) {
+            HStack(spacing: 6) {
                 ForEach(AdminConsoleTab.allCases, id: \.self) { tab in
                     Button {
                         withAnimation(.easeInOut(duration: 0.18)) {
@@ -62,17 +102,18 @@ struct AdminConsoleView: View {
                         }
                         Haptics.play(.light)
                     } label: {
-                        HStack(spacing: 6) {
+                        HStack(spacing: 5) {
                             Image(systemName: tab.icon)
-                                .scaledFont(size: 13, weight: .medium)
+                                .scaledFont(size: 12, weight: .medium)
                             Text(tab.rawValue)
-                                .scaledFont(size: 14, weight: selectedTab == tab ? .semibold : .regular)
+                                .scaledFont(size: 13, weight: selectedTab == tab ? .semibold : .regular)
                                 .lineLimit(1)
                                 .fixedSize()
                         }
                         .foregroundStyle(selectedTab == tab ? theme.brandPrimary : theme.textTertiary)
-                        .padding(.vertical, 8)
-                        .padding(.horizontal, 14)
+                        .padding(.vertical, 7)
+                        .padding(.horizontal, 12)
+                        .frame(minWidth: 80)
                         .background(
                             RoundedRectangle(cornerRadius: CornerRadius.md, style: .continuous)
                                 .fill(selectedTab == tab
@@ -90,7 +131,7 @@ struct AdminConsoleView: View {
                     .buttonStyle(.plain)
                 }
             }
-            .padding(.horizontal, Spacing.md)
+            .padding(.horizontal, Spacing.sm)
             .padding(.vertical, Spacing.xs)
         }
     }

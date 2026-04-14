@@ -9,6 +9,9 @@ struct User: Codable, Identifiable, Hashable, Sendable {
     var profileImageURL: String?
     var role: UserRole
     var isActive: Bool
+    var bio: String?
+    var gender: String?
+    var dateOfBirth: String?
 
     enum UserRole: String, Codable, Sendable {
         case user
@@ -24,6 +27,9 @@ struct User: Codable, Identifiable, Hashable, Sendable {
         case profileImageURL = "profile_image_url"
         case role
         case isActive = "is_active"
+        case bio
+        case gender
+        case dateOfBirth = "date_of_birth"
     }
 
     init(
@@ -33,7 +39,10 @@ struct User: Codable, Identifiable, Hashable, Sendable {
         name: String? = nil,
         profileImageURL: String? = nil,
         role: UserRole = .user,
-        isActive: Bool = true
+        isActive: Bool = true,
+        bio: String? = nil,
+        gender: String? = nil,
+        dateOfBirth: String? = nil
     ) {
         self.id = id
         self.username = username
@@ -42,6 +51,9 @@ struct User: Codable, Identifiable, Hashable, Sendable {
         self.profileImageURL = profileImageURL
         self.role = role
         self.isActive = isActive
+        self.bio = bio
+        self.gender = gender
+        self.dateOfBirth = dateOfBirth
     }
 
     init(from decoder: Decoder) throws {
@@ -55,6 +67,9 @@ struct User: Codable, Identifiable, Hashable, Sendable {
         profileImageURL = try container.decodeIfPresent(String.self, forKey: .profileImageURL)
         role = try container.decodeIfPresent(UserRole.self, forKey: .role) ?? .user
         isActive = try container.decodeIfPresent(Bool.self, forKey: .isActive) ?? true
+        bio = try container.decodeIfPresent(String.self, forKey: .bio)
+        gender = try container.decodeIfPresent(String.self, forKey: .gender)
+        dateOfBirth = try container.decodeIfPresent(String.self, forKey: .dateOfBirth)
     }
 
     /// Display name, preferring `name` over `username`.

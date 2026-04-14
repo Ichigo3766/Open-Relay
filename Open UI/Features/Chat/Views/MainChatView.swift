@@ -648,6 +648,15 @@ struct MainChatView: View {
                 }
                 .themed(with: dependencies.appearanceManager, accessibility: dependencies.accessibilityManager)
             }
+            // Account picker sheet (multi-account per server)
+            .sheet(isPresented: Bindable(dependencies.authViewModel).showAccountPicker) {
+                AccountPickerSheet(
+                    viewModel: dependencies.authViewModel,
+                    onDismiss: { dependencies.authViewModel.showAccountPicker = false }
+                )
+                .environment(dependencies)
+                .themed(with: dependencies.appearanceManager, accessibility: dependencies.accessibilityManager)
+            }
     }
 
     // MARK: - Rename Conversation Sheet (extracted for readability)
@@ -736,7 +745,7 @@ struct MainChatView: View {
                 Button("Delete All", role: .destructive) {
                     Task {
                         await listViewModel.deleteAllConversations()
-                        activeConversationId = nil
+                        startNewChat()
                     }
                 }
                 Button("Cancel", role: .cancel) {}
@@ -750,11 +759,11 @@ struct MainChatView: View {
                 titleVisibility: .visible
             ) {
                 Button("Delete \(listViewModel.selectedCount) Chat\(listViewModel.selectedCount == 1 ? "" : "s")", role: .destructive) {
-                    if let activeId = activeConversationId,
-                       listViewModel.selectedConversationIds.contains(activeId) {
-                        activeConversationId = nil
+                    let shouldResetToNewChat = activeConversationId.map { listViewModel.selectedConversationIds.contains($0) } ?? false
+                    Task {
+                        await listViewModel.deleteSelectedConversations()
+                        if shouldResetToNewChat { startNewChat() }
                     }
-                    Task { await listViewModel.deleteSelectedConversations() }
                 }
                 Button("Cancel", role: .cancel) {}
             } message: {
@@ -776,7 +785,7 @@ struct MainChatView: View {
                         Task {
                             await listViewModel.deleteConversation(id: deletedId)
                             if activeConversationId == deletedId {
-                                activeConversationId = nil
+                                startNewChat()
                             }
                         }
                     }
@@ -798,11 +807,12 @@ struct MainChatView: View {
             ) {
                 Button("Delete Channel", role: .destructive) {
                     if let channelId = deletingChannelId {
+                        let wasActive = activeChannelId == channelId
                         deletingChannelId = nil
-                        if activeChannelId == channelId { activeChannelId = nil }
                         Task {
                             try? await dependencies.apiClient?.deleteChannel(id: channelId)
                             await channelListVM.refreshChannels()
+                            if wasActive { startNewChat() }
                         }
                     }
                 }
@@ -1743,7 +1753,7 @@ struct MainChatView: View {
                                     folderVM.folders[fIdx].chats.removeAll { $0.id == chatId }
                                 }
                                 if activeConversationId == chatId {
-                                    activeConversationId = nil
+                                    startNewChat()
                                 }
                             }
                         },
@@ -2094,32 +2104,38 @@ struct MainChatView: View {
                 .frame(height: 0.5)
 
             HStack(spacing: Spacing.sm) {
-                // User avatar + full name — taps to Settings/Profile
-                Button {
-                    closeDrawer()
-                    showSettings = true
-                } label: {
-                    HStack(spacing: 10) {
+                // User avatar + full name — tap → Settings, long-press → Account Picker
+                HStack(spacing: 10) {
+                    ZStack(alignment: .bottomTrailing) {
                         UserAvatar(
                             size: 32,
                             imageURL: {
                                 guard let userId = dependencies.authViewModel.currentUser?.id,
                                       let baseURL = dependencies.apiClient?.baseURL,
                                       !userId.isEmpty, !baseURL.isEmpty else { return nil }
-                                return URL(string: "\(baseURL)/api/v1/users/\(userId)/profile/image")
+                                let v = dependencies.authViewModel.profileImageVersion
+                                return URL(string: "\(baseURL)/api/v1/users/\(userId)/profile/image?v=\(v)")
                             }(),
                             name: dependencies.authViewModel.currentUser?.displayName ?? "User",
                             authToken: dependencies.apiClient?.network.authToken
                         )
 
-                        Text(dependencies.authViewModel.currentUser?.displayName ?? "User")
-                            .scaledFont(size: 14, weight: .medium)
-                            .foregroundStyle(theme.textPrimary)
-                            .lineLimit(1)
                     }
-                    .contentShape(Rectangle())
+
+                    Text(dependencies.authViewModel.currentUser?.displayName ?? "User")
+                        .scaledFont(size: 14, weight: .medium)
+                        .foregroundStyle(theme.textPrimary)
+                        .lineLimit(1)
                 }
-                .buttonStyle(.plain)
+                .contentShape(Rectangle())
+                .onLongPressGesture(minimumDuration: 0.5) {
+                    Haptics.play(.medium)
+                    dependencies.authViewModel.showAccountPicker = true
+                }
+                .simultaneousGesture(TapGesture().onEnded {
+                    closeDrawer()
+                    showSettings = true
+                })
 
                 Spacer()
 

@@ -51,6 +51,9 @@ final class AuthViewModel {
     var isLoggingIn: Bool = false
     var errorMessage: String?
     var currentUser: User?
+    /// Bumped after a profile image upload so every `UserAvatar` URL changes
+    /// and `CachedAsyncImage` re-fetches the new image.
+    var profileImageVersion: Int = 0
     var phase: AuthPhase = .serverConnection
     var allowSelfSignedCerts: Bool = false
     var hasShownOnboarding: Bool = false
@@ -176,12 +179,16 @@ final class AuthViewModel {
     // MARK: - Private
 
     private let serverConfigStore: ServerConfigStore
+    /// Set to `true` to present the account picker sheet.
+    var showAccountPicker: Bool = false
+
     /// Weak reference to the app's dependency container.
     /// Set after init by `AppDependencyContainer` since `self` is not
     /// yet available during the container's own initializer.
     weak var dependencies: AppDependencyContainer?
     private let logger = Logger(subsystem: "com.openui", category: "Auth")
     private var tokenRefreshTask: Task<Void, Never>?
+    private var hasRunLegacyMigration = false
 
     private static let onboardingKey = "openui.has_shown_onboarding"
     private static let cachedUserKey = "openui.cached_user"
@@ -433,6 +440,7 @@ final class AuthViewModel {
             dependencies?.activeChatStore.clear()
             connectSocketWithToken()
             cacheCurrentUser()
+            saveCurrentUserAsAccount(authType: .credentials)
             backendConfig = try? await client.getBackendConfig()
             phase = .authenticated
             startTokenRefreshTimer()
@@ -501,6 +509,7 @@ final class AuthViewModel {
             dependencies?.activeChatStore.clear()
             connectSocketWithToken()
             cacheCurrentUser()
+            saveCurrentUserAsAccount(authType: .credentials)
             backendConfig = try? await client.getBackendConfig()
             phase = .authenticated
             startTokenRefreshTimer()
@@ -555,6 +564,7 @@ final class AuthViewModel {
             dependencies?.activeChatStore.clear()
             connectSocketWithToken()
             cacheCurrentUser()
+            saveCurrentUserAsAccount(authType: .ldap)
             backendConfig = try? await client.getBackendConfig()
             phase = .authenticated
             startTokenRefreshTimer()
@@ -592,6 +602,7 @@ final class AuthViewModel {
             dependencies?.activeChatStore.clear()
             connectSocketWithToken()
             cacheCurrentUser()
+            saveCurrentUserAsAccount(authType: .sso)
             backendConfig = try? await client.getBackendConfig()
             phase = .authenticated
             startTokenRefreshTimer()
@@ -599,7 +610,7 @@ final class AuthViewModel {
         } catch {
             client.updateAuthToken(nil)
             let apiError = APIError.from(error)
-            errorMessage = "SSO authentication failed: \(apiError.errorDescription ?? "Unknown error")"
+            errorMessage = apiError.errorDescription ?? "Sign-in failed. Please try again."
             logger.error("SSO login failed: \(error.localizedDescription)")
         }
 
@@ -636,6 +647,7 @@ final class AuthViewModel {
                 backendConfig = try? await client.getBackendConfig()
                 connectSocketWithToken()
                 cacheCurrentUser()
+                saveCurrentUserAsAccount()
                 phase = .authenticated
                 startTokenRefreshTimer()
                 logger.info("Session restored for \(self.currentUser?.displayName ?? "unknown") (attempt \(attempt))")
@@ -873,7 +885,7 @@ final class AuthViewModel {
             }
         } catch {
             let apiError = APIError.from(error)
-            errorMessage = "Could not check approval status. \(String(describing: apiError.errorDescription))"
+            errorMessage = apiError.errorDescription ?? "Could not check your approval status. Please try again."
             logger.error("Approval status check failed: \(error.localizedDescription)")
         }
     }
@@ -1372,6 +1384,184 @@ final class AuthViewModel {
     }
 
     // MARK: - Background Session Validation (for optimistic auth)
+
+    // MARK: - Multi-Account Management
+
+    /// Runs the one-time legacy migration to move single-token data into
+    /// the multi-account structure. Called from the app's `.task` on first launch.
+    func runLegacyMigrationIfNeeded() {
+        guard !hasRunLegacyMigration else { return }
+        hasRunLegacyMigration = true
+        serverConfigStore.migrateLegacyAccounts()
+        logger.info("✅ Legacy account migration check complete")
+    }
+
+    /// Saves the current user as a `SavedAccount` on the active server and
+    /// stores the token under the account-scoped Keychain key.
+    /// Called after every successful login/session restore.
+    func saveCurrentUserAsAccount(authType: AuthType? = nil) {
+        guard let user = currentUser,
+              let server = serverConfigStore.activeServer,
+              let client = dependencies?.apiClient,
+              let token = client.network.authToken else { return }
+
+        let account = SavedAccount(
+            serverURL: server.url,
+            userId: user.id,
+            userName: user.displayName,
+            userEmail: user.email,
+            profileImageURL: user.profileImageURL,
+            role: user.role,
+            authType: authType
+        )
+
+        // Save token under account-scoped key
+        KeychainService.shared.saveToken(token, forServer: server.url, userId: user.id)
+
+        // Also save account-scoped cached user
+        if let data = try? JSONEncoder().encode(user) {
+            let dataString = data.base64EncodedString()
+            KeychainService.shared.saveToken(dataString, forServer: "cached_user_\(server.url)::\(user.id)")
+        }
+
+        // Upsert in the server config
+        serverConfigStore.upsertAccountOnActiveServer(account)
+
+        // Also keep legacy token in sync for backwards compatibility
+        KeychainService.shared.saveToken(token, forServer: server.url)
+
+        logger.info("💾 Saved account '\(user.displayName)' (id=\(user.id)) on server '\(server.url)'")
+    }
+
+    /// Switches to a different saved account on the current server.
+    /// This is fast — no server reconnect needed, just swap token + user.
+    func switchToAccount(_ account: SavedAccount) async {
+        guard let server = serverConfigStore.activeServer else { return }
+        logger.info("🔄 Switching to account '\(account.displayName)' on server '\(server.url)'")
+
+        // Get the account-scoped token
+        guard let token = KeychainService.shared.getToken(forServer: server.url, userId: account.userId) else {
+            logger.warning("No token found for account '\(account.displayName)', need to re-authenticate")
+            errorMessage = "Session expired for \(account.displayName). Please sign in again."
+            // Remove the stale account
+            serverConfigStore.removeAccountFromActiveServer(accountId: account.id)
+            return
+        }
+
+        // Tear down current session (lightweight — no server disconnect)
+        stopTokenRefreshTimer()
+        dependencies?.socketService?.disconnect()
+        dependencies?.activeChatStore.clear()
+        Task { await ImageCacheService.shared.evictProfileImages() }
+
+        // Swap the token on the API client
+        dependencies?.apiClient?.updateAuthToken(token)
+
+        // Also update the legacy server-level token so optimistic auth works
+        KeychainService.shared.saveToken(token, forServer: server.url)
+
+        // Update active account
+        serverConfigStore.setActiveAccount(id: account.id)
+
+        // Try to load cached user for instant switch
+        let cachedUserKey = "cached_user_\(server.url)::\(account.userId)"
+        if let dataString = KeychainService.shared.getToken(forServer: cachedUserKey),
+           let data = Data(base64Encoded: dataString),
+           let cachedUser = try? JSONDecoder().decode(User.self, from: data) {
+            currentUser = cachedUser
+            // Also update the legacy cached user
+            cacheCurrentUser()
+            phase = .authenticated
+            connectSocketWithToken()
+            startTokenRefreshTimer()
+
+            // Validate in background
+            await validateSessionInBackground()
+        } else {
+            // No cached user — validate synchronously
+            phase = .restoringSession
+            await restoreSession()
+        }
+
+        // Update server metadata
+        serverConfigStore.updateActiveServerMetadata(
+            userName: account.userName,
+            userEmail: account.userEmail,
+            profileImageURL: account.profileImageURL,
+            authType: account.authType,
+            hasActiveSession: true
+        )
+
+        logger.info("🔄 Account switch complete — user='\(self.currentUser?.displayName ?? "unknown")'")
+    }
+
+    /// Removes a saved account from the current server.
+    /// If it's the active account, signs out.
+    func removeAccount(_ account: SavedAccount) async {
+        guard let server = serverConfigStore.activeServer else { return }
+        let isActive = server.activeAccountId == account.id
+
+        serverConfigStore.removeAccountFromActiveServer(accountId: account.id)
+        logger.info("🗑️ Removed account '\(account.displayName)' from server '\(server.url)'")
+
+        if isActive {
+            // If there are other accounts, switch to the most recent one
+            if let nextAccount = serverConfigStore.activeServer?.savedAccounts.first {
+                await switchToAccount(nextAccount)
+            } else {
+                // No more accounts — sign out
+                await signOut()
+            }
+        }
+    }
+
+    /// Initiates adding another account on the current server.
+    /// Signs out the current user but keeps the server connected,
+    /// landing on the auth method selection screen.
+    func addAnotherAccountOnCurrentServer() async {
+        stopTokenRefreshTimer()
+
+        // Don't call the server's logout endpoint — we want to keep
+        // the other account's token valid
+        dependencies?.socketService?.disconnect()
+        dependencies?.activeChatStore.clear()
+        clearSSOCookies()
+        Task { await ImageCacheService.shared.evictProfileImages() }
+
+        // Clear the active account pointer but keep saved accounts
+        serverConfigStore.clearActiveAccountOnActiveServer()
+
+        currentUser = nil
+        email = ""
+        password = ""
+        ldapUsername = ""
+        ldapPassword = ""
+        signUpName = ""
+        signUpEmail = ""
+        signUpPassword = ""
+        signUpConfirmPassword = ""
+        errorMessage = nil
+
+        // Clear the API client's token so it doesn't auto-auth
+        dependencies?.apiClient?.updateAuthToken(nil)
+
+        // Go to login screen
+        backendConfig = nil
+        await ensureBackendConfig()
+        phase = .authMethodSelection
+
+        logger.info("➕ Ready to add another account on current server")
+    }
+
+    /// The saved accounts on the active server.
+    var savedAccountsOnActiveServer: [SavedAccount] {
+        serverConfigStore.activeServer?.savedAccounts ?? []
+    }
+
+    /// Whether the active server has multiple saved accounts.
+    var hasMultipleAccounts: Bool {
+        savedAccountsOnActiveServer.count > 1
+    }
 
     /// Validates the current session in the background after an optimistic launch.
     /// If the token is genuinely invalid (401/403), kicks back to login.

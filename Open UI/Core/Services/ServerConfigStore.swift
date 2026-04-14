@@ -103,6 +103,159 @@ final class ServerConfigStore {
         saveServers()
     }
 
+    // MARK: - Multi-Account Management
+
+    /// Adds or updates a saved account on the active server and sets it as active.
+    /// Called after a successful login/session restore.
+    func upsertAccountOnActiveServer(_ account: SavedAccount) {
+        guard let index = servers.firstIndex(where: \.isActive) else { return }
+        if let accIdx = servers[index].savedAccounts.firstIndex(where: { $0.userId == account.userId }) {
+            // Update existing account metadata
+            servers[index].savedAccounts[accIdx].userName = account.userName
+            servers[index].savedAccounts[accIdx].userEmail = account.userEmail
+            servers[index].savedAccounts[accIdx].profileImageURL = account.profileImageURL
+            servers[index].savedAccounts[accIdx].role = account.role
+            servers[index].savedAccounts[accIdx].authType = account.authType
+            servers[index].savedAccounts[accIdx].lastUsed = .now
+        } else {
+            var newAccount = account
+            newAccount.lastUsed = .now
+            servers[index].savedAccounts.append(newAccount)
+        }
+        servers[index].activeAccountId = account.id
+        // Sort by most recently used
+        servers[index].savedAccounts.sort { $0.lastUsed > $1.lastUsed }
+        saveServers()
+    }
+
+    /// Sets the active account on the active server (used during account switching).
+    func setActiveAccount(id: String) {
+        guard let index = servers.firstIndex(where: \.isActive) else { return }
+        servers[index].activeAccountId = id
+        // Update lastUsed timestamp
+        if let accIdx = servers[index].savedAccounts.firstIndex(where: { $0.id == id }) {
+            servers[index].savedAccounts[accIdx].lastUsed = .now
+            // Re-sort by most recently used
+            servers[index].savedAccounts.sort { $0.lastUsed > $1.lastUsed }
+        }
+        saveServers()
+    }
+
+    /// Removes a saved account from the active server and its Keychain token.
+    func removeAccountFromActiveServer(accountId: String) {
+        guard let index = servers.firstIndex(where: \.isActive) else { return }
+        if let account = servers[index].savedAccounts.first(where: { $0.id == accountId }) {
+            // Delete the account-scoped token from Keychain
+            KeychainService.shared.deleteToken(forServer: servers[index].url, userId: account.userId)
+            // Delete the account-scoped cached user from Keychain
+            KeychainService.shared.deleteToken(forServer: "cached_user_\(servers[index].url)::\(account.userId)")
+        }
+        servers[index].savedAccounts.removeAll { $0.id == accountId }
+        // If we removed the active account, clear the active pointer
+        if servers[index].activeAccountId == accountId {
+            servers[index].activeAccountId = nil
+        }
+        saveServers()
+    }
+
+    /// Clears the active account pointer on the active server (used during sign-out
+    /// when the user wants to stay on the server but not select any account).
+    func clearActiveAccountOnActiveServer() {
+        guard let index = servers.firstIndex(where: \.isActive) else { return }
+        servers[index].activeAccountId = nil
+        saveServers()
+    }
+
+    /// Returns the active account on the active server, if any.
+    var activeAccount: SavedAccount? {
+        guard let server = activeServer,
+              let accountId = server.activeAccountId else { return nil }
+        return server.savedAccounts.first { $0.id == accountId }
+    }
+
+    /// Performs one-time migration of legacy single-token data into the
+    /// multi-account structure. Called once at init.
+    /// 
+    /// For each server that has a legacy `token:{url}` in Keychain but no
+    /// `savedAccounts`, creates a SavedAccount from the server's metadata
+    /// and copies the token to the new account-scoped key.
+    func migrateLegacyAccounts() {
+        var didMigrate = false
+        for index in servers.indices {
+            let server = servers[index]
+            // Skip servers that already have accounts
+            guard server.savedAccounts.isEmpty else { continue }
+            // Check for legacy token
+            guard KeychainService.shared.hasToken(forServer: server.url) else { continue }
+            // We need user metadata to create a SavedAccount.
+            // Try loading the cached user to get the userId.
+            let cachedUserKey = "cached_user_\(server.url)"
+            var userId: String?
+            var userName: String = ""
+            var userEmail: String = ""
+            var profileImageURL: String?
+            var role: User.UserRole = .user
+
+            if let dataString = KeychainService.shared.getToken(forServer: cachedUserKey),
+               let data = Data(base64Encoded: dataString),
+               let user = try? JSONDecoder().decode(User.self, from: data) {
+                userId = user.id
+                userName = user.displayName
+                userEmail = user.email
+                profileImageURL = user.profileImageURL
+                role = user.role
+            }
+
+            // If we couldn't load the cached user, use server metadata
+            if userId == nil {
+                // Generate a stable pseudo-ID from email or name
+                if let email = server.lastUserEmail, !email.isEmpty {
+                    userId = "legacy_\(email)"
+                    userEmail = email
+                    userName = server.lastUserName ?? ""
+                    profileImageURL = server.lastUserProfileImageURL
+                } else if let name = server.lastUserName, !name.isEmpty {
+                    userId = "legacy_\(name)"
+                    userName = name
+                } else {
+                    // No user info at all — skip this server
+                    continue
+                }
+            }
+
+            guard let finalUserId = userId else { continue }
+
+            let account = SavedAccount(
+                serverURL: server.url,
+                userId: finalUserId,
+                userName: userName,
+                userEmail: userEmail,
+                profileImageURL: profileImageURL,
+                role: role,
+                authType: server.lastAuthType,
+                lastUsed: server.lastConnected ?? .now
+            )
+
+            // Copy legacy token to account-scoped key
+            if let token = KeychainService.shared.getToken(forServer: server.url) {
+                KeychainService.shared.saveToken(token, forServer: server.url, userId: finalUserId)
+            }
+
+            // Copy legacy cached user to account-scoped key
+            if let cachedData = KeychainService.shared.getToken(forServer: cachedUserKey) {
+                KeychainService.shared.saveToken(cachedData, forServer: "\(cachedUserKey)::\(finalUserId)")
+            }
+
+            servers[index].savedAccounts = [account]
+            servers[index].activeAccountId = account.id
+            didMigrate = true
+        }
+
+        if didMigrate {
+            saveServers()
+        }
+    }
+
     // MARK: - Persistence
 
     private func saveServers() {

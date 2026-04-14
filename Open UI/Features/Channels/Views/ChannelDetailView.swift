@@ -196,14 +196,14 @@ struct ChannelDetailView: View {
                             do {
                                 try await dependencies.apiClient?.addChannelMembers(id: channel.id, userIds: userIds)
                             } catch {
-                                showError("Failed to add members: \(error.localizedDescription)")
+                                showError(error.localizedDescription)
                             }
                         },
                         onLeave: {
                             do {
                                 try await dependencies.apiClient?.updateMemberActiveStatus(channelId: channel.id, isActive: false)
                             } catch {
-                                showError("Failed to leave: \(error.localizedDescription)")
+                                showError(error.localizedDescription)
                             }
                         }
                     )
@@ -219,7 +219,7 @@ struct ChannelDetailView: View {
                                         isPrivate: isPrivate
                                     )
                                 } catch {
-                                    showError("Failed to update channel: \(error.localizedDescription)")
+                                    showError(error.localizedDescription)
                                 }
                             }
                         },
@@ -228,7 +228,7 @@ struct ChannelDetailView: View {
                                 do {
                                     try await dependencies.apiClient?.deleteChannel(id: channel.id)
                                 } catch {
-                                    showError("Failed to delete channel: \(error.localizedDescription)")
+                                    showError(error.localizedDescription)
                                 }
                             }
                         },
@@ -242,21 +242,21 @@ struct ChannelDetailView: View {
                                     accessGrants: grantsPayload
                                 )
                             } catch {
-                                showError("Failed to update access: \(error.localizedDescription)")
+                                showError(error.localizedDescription)
                             }
                         },
                         onAddGroupMembers: { channelId, userIds in
                             do {
                                 try await dependencies.apiClient?.addChannelMembers(id: channelId, userIds: userIds)
                             } catch {
-                                showError("Failed to add members: \(error.localizedDescription)")
+                                showError(error.localizedDescription)
                             }
                         },
                         onRemoveGroupMembers: { channelId, userIds in
                             do {
                                 try await dependencies.apiClient?.removeChannelMembers(id: channelId, userIds: userIds)
                             } catch {
-                                showError("Failed to remove members: \(error.localizedDescription)")
+                                showError(error.localizedDescription)
                             }
                         },
                         apiClient: dependencies.apiClient,
