@@ -267,7 +267,7 @@ struct SettingsView: View {
                     }
                     .background(Color(uiColor: .systemGroupedBackground).ignoresSafeArea())
                     .navigationTitle("Manage Servers")
-                    .navigationBarTitleDisplayMode(.large)
+                    .navigationBarTitleDisplayMode(.inline)
                 case .privacySecurity:
                     PrivacySecurityView()
                 case .about:
@@ -1024,7 +1024,7 @@ struct TTSSettingsView: View {
             }
 
             // Preview
-            Section("Preview") {
+            Section {
                 Button {
                     previewVoice()
                 } label: {
@@ -1056,6 +1056,8 @@ struct TTSSettingsView: View {
                         }
                     }
                 }
+            } footer: {
+                Text("Tap preview to hear how the selected voice sounds.")
             }
 
             // Model Storage Management

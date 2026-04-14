@@ -157,13 +157,19 @@ final class PromptManager {
     /// Returns the updated list of access grants from the server response (wildcard excluded from local state).
     @discardableResult
     func updateAccessGrants(promptId: String, grants: [AccessGrant], isPublic: Bool = false) async throws -> [AccessGrant] {
-        // Web UI format: write access = TWO entries (one "read" + one "write") per user.
+        // Web UI format: write access = TWO entries (one "read" + one "write") per principal.
         var payload: [[String: Any]] = []
         for grant in grants {
-            guard let userId = grant.userId else { continue }
-            payload.append(["principal_type": "user", "principal_id": userId, "permission": "read"])
-            if grant.write {
-                payload.append(["principal_type": "user", "principal_id": userId, "permission": "write"])
+            if let userId = grant.userId {
+                payload.append(["principal_type": "user", "principal_id": userId, "permission": "read"])
+                if grant.write {
+                    payload.append(["principal_type": "user", "principal_id": userId, "permission": "write"])
+                }
+            } else if let groupId = grant.groupId {
+                payload.append(["principal_type": "group", "principal_id": groupId, "permission": "read"])
+                if grant.write {
+                    payload.append(["principal_type": "group", "principal_id": groupId, "permission": "write"])
+                }
             }
         }
         // Public mode: append the wildcard grant so everyone can read

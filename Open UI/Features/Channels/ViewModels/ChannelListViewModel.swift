@@ -97,7 +97,7 @@ final class ChannelListViewModel {
         } catch {
             logger.error("Failed to load channels: \(error.localizedDescription)")
             if !hasLoaded {
-                errorMessage = "Failed to load channels: \(error.localizedDescription)"
+                errorMessage = error.localizedDescription
             }
         }
         
@@ -261,7 +261,7 @@ final class ChannelListViewModel {
             return channel
         } catch {
             logger.error("Failed to create channel: \(error.localizedDescription)")
-            errorMessage = "Failed to create channel: \(error.localizedDescription)"
+            errorMessage = error.localizedDescription
             return nil
         }
     }

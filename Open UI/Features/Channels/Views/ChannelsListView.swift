@@ -465,6 +465,7 @@ struct CreateChannelSheet: View {
     @State private var togglingMemberIds: Set<String> = []
     @State private var removingMemberIds: Set<String> = []
     @State private var isAddingMembers = false
+    @State private var resolvedGroups: [String: GroupResponse] = [:]
     
     /// Search text for DM inline user list.
     @State private var dmUserSearch = ""
@@ -496,8 +497,17 @@ struct CreateChannelSheet: View {
         return allUsers.filter { grantUserIds.contains($0.id) }
     }
     
+    /// Group grants (groupId is non-nil).
+    private var groupGrants: [AccessGrant] {
+        localAccessGrants.filter { $0.groupId != nil }
+    }
+    
     private var existingGrantUserIds: Set<String> {
         Set(localAccessGrants.compactMap(\.userId))
+    }
+    
+    private var existingGrantGroupIds: Set<String> {
+        Set(localAccessGrants.compactMap(\.groupId))
     }
     
     /// Existing member IDs for Group channel (edit mode).
@@ -520,12 +530,20 @@ struct CreateChannelSheet: View {
     /// Web UI sends only: {principal_type, principal_id, permission}
     /// Server auto-fills id, resource_type, resource_id, created_at.
     private func buildGrantsPayload() -> [[String: Any]] {
-        return localAccessGrants.map { grant in
-            [
-                "principal_type": grant.groupId != nil ? "group" : "user",
-                "principal_id": grant.groupId ?? grant.userId ?? "",
-                "permission": grant.write ? "write" : "read"
-            ] as [String: Any]
+        return localAccessGrants.flatMap { grant -> [[String: Any]] in
+            let principalType = grant.groupId != nil ? "group" : "user"
+            let principalId = grant.groupId ?? grant.userId ?? ""
+            
+            if grant.write {
+                return [
+                    ["principal_type": principalType, "principal_id": principalId, "permission": "read"],
+                    ["principal_type": principalType, "principal_id": principalId, "permission": "write"]
+                ]
+            } else {
+                return [
+                    ["principal_type": principalType, "principal_id": principalId, "permission": "read"]
+                ]
+            }
         }
     }
     
@@ -705,6 +723,8 @@ struct CreateChannelSheet: View {
                     // Fall back to allUsers from parent
                 }
                 isLoadingUsers = false
+                // Resolve group names for any existing group grants on initial load
+                await resolveGroupNames()
             }
             .sheet(isPresented: $showAddMemberPicker) {
                 if channelType == .group {
@@ -725,16 +745,17 @@ struct CreateChannelSheet: View {
                     .presentationDetents([.medium, .large])
                     .presentationDragIndicator(.visible)
                 } else if let channel = editingChannel {
-                    // Standard mode: add access grants with permissions
-                    AddAccessSheet(
-                        channelId: channel.id,
-                        existingMemberIds: existingGrantUserIds,
+                    // Standard mode: add access grants with users AND groups
+                    UnifiedAddAccessSheet(
+                        existingUserIds: existingGrantUserIds,
+                        existingGroupIds: existingGrantGroupIds,
                         allUsers: effectiveUsers,
                         isLoading: isAddingMembers,
                         serverBaseURL: apiClient?.baseURL ?? "",
                         authToken: apiClient?.network.authToken,
-                        onAdd: { channelId, selectedIds in
-                            handleAddAccessGrants(channelId: channelId, userIds: selectedIds)
+                        apiClient: apiClient,
+                        onAdd: { userIds, groupIds in
+                            handleAddAccessGrants(channelId: channel.id, userIds: userIds, groupIds: groupIds)
                         },
                         onCancel: { showAddMemberPicker = false }
                     )
@@ -812,13 +833,21 @@ struct CreateChannelSheet: View {
     @ViewBuilder
     private func accessListSection(channel: Channel) -> some View {
         Section("Access Control") {
-            if grantMembers.isEmpty {
+            if grantMembers.isEmpty && groupGrants.isEmpty {
                 Text("No access grants configured.")
                     .scaledFont(size: 13)
                     .foregroundStyle(theme.textTertiary)
             } else {
+                // User grants
                 ForEach(grantMembers) { member in
                     accessRow(member: member, channel: channel)
+                }
+                
+                // Group grants
+                ForEach(groupGrants, id: \.id) { grant in
+                    let gid = grant.groupId ?? ""
+                    let group = resolvedGroups[gid]
+                    groupAccessRow(groupId: gid, groupName: group?.name ?? "Group", memberCount: group?.member_count, grant: grant, channel: channel)
                 }
             }
             
@@ -829,6 +858,66 @@ struct CreateChannelSheet: View {
                     .scaledFont(size: 14, weight: .medium)
             }
         }
+    }
+    
+    @ViewBuilder
+    private func groupAccessRow(groupId: String, groupName: String, memberCount: Int?, grant: AccessGrant, channel: Channel) -> some View {
+        let perm = grant.write ? "write" : "read"
+        let isToggling = togglingMemberIds.contains(groupId)
+        let isRemoving = removingMemberIds.contains(groupId)
+        
+        HStack(spacing: Spacing.sm) {
+            ZStack {
+                Circle()
+                    .fill(Color.orange.opacity(0.12))
+                    .frame(width: 30, height: 30)
+                Image(systemName: "person.3.fill")
+                    .scaledFont(size: 12, weight: .semibold)
+                    .foregroundStyle(.orange)
+            }
+            
+            VStack(alignment: .leading, spacing: 1) {
+                Text(groupName)
+                    .scaledFont(size: 14, weight: .medium)
+                    .foregroundStyle(theme.textPrimary)
+                if let count = memberCount {
+                    Text("\(count) members")
+                        .scaledFont(size: 11)
+                        .foregroundStyle(theme.textTertiary)
+                }
+            }
+            
+            Spacer()
+            
+            Button {
+                handleToggleGroupPermission(channelId: channel.id, groupId: groupId, currentPerm: perm)
+            } label: {
+                if isToggling {
+                    ProgressView().controlSize(.mini).frame(width: 50, height: 20)
+                } else {
+                    Text(perm.uppercased())
+                        .scaledFont(size: 10, weight: .bold)
+                        .foregroundStyle(perm == "write" ? .green : .orange)
+                        .padding(.horizontal, 6).padding(.vertical, 2)
+                        .background((perm == "write" ? Color.green : Color.orange).opacity(0.15))
+                        .clipShape(Capsule())
+                }
+            }
+            .buttonStyle(.plain).disabled(isToggling)
+            
+            Button {
+                handleRemoveGroupGrant(channelId: channel.id, groupId: groupId)
+            } label: {
+                if isRemoving {
+                    ProgressView().controlSize(.mini).frame(width: 20, height: 20)
+                } else {
+                    Image(systemName: "xmark").scaledFont(size: 11, weight: .semibold).foregroundStyle(theme.textTertiary)
+                }
+            }
+            .buttonStyle(.plain).disabled(isRemoving)
+        }
+        .opacity(isRemoving ? 0.5 : 1.0)
+        .animation(.easeInOut(duration: 0.15), value: perm)
     }
     
     @ViewBuilder
@@ -1074,18 +1163,17 @@ struct CreateChannelSheet: View {
         Haptics.play(.light)
         togglingMemberIds.insert(userId)
         
+        // Remove all existing grants for this user
+        withAnimation(.easeInOut(duration: 0.15)) {
+            localAccessGrants.removeAll { $0.userId == userId }
+        }
+        
         if currentPerm == "write" {
-            // Downgrade to read: remove write grants for this user
-            withAnimation(.easeInOut(duration: 0.15)) {
-                localAccessGrants.removeAll { $0.userId == userId && $0.write }
-            }
-            // Ensure at least a read grant exists
-            if !localAccessGrants.contains(where: { $0.userId == userId }) {
-                localAccessGrants.append(AccessGrant(id: UUID().uuidString, userId: userId, groupId: nil, read: true, write: false))
-            }
+            // Downgrade to read-only
+            localAccessGrants.append(AccessGrant(id: UUID().uuidString, userId: userId, groupId: nil, read: true, write: false))
         } else {
-            // Upgrade to write: add a write grant (keep existing read grant)
-            localAccessGrants.append(AccessGrant(id: UUID().uuidString, userId: userId, groupId: nil, read: false, write: true))
+            // Upgrade to write
+            localAccessGrants.append(AccessGrant(id: UUID().uuidString, userId: userId, groupId: nil, read: true, write: true))
         }
         
         Task {
@@ -1107,17 +1195,76 @@ struct CreateChannelSheet: View {
         }
     }
     
-    /// Adds new users with read-only access (single "read" grant per user).
-    private func handleAddAccessGrants(channelId: String, userIds: [String]) {
+    /// Adds new users and groups with read-only access.
+    private func handleAddAccessGrants(channelId: String, userIds: [String], groupIds: [String] = []) {
         isAddingMembers = true
-        let newGrants = userIds.map { userId in
-            AccessGrant(id: UUID().uuidString, userId: userId, groupId: nil, read: true, write: false)
+        var newGrants: [AccessGrant] = []
+        for userId in userIds {
+            newGrants.append(AccessGrant(id: UUID().uuidString, userId: userId, groupId: nil, read: true, write: false))
+        }
+        for groupId in groupIds {
+            newGrants.append(AccessGrant(id: UUID().uuidString, userId: nil, groupId: groupId, read: true, write: false))
         }
         withAnimation(.easeInOut(duration: 0.2)) { localAccessGrants.append(contentsOf: newGrants) }
         showAddMemberPicker = false
         Task {
             await onUpdateAccessGrants?(channelId, buildGrantsPayload())
+            // Resolve group names for newly added groups
+            if !groupIds.isEmpty { await resolveGroupNames() }
             isAddingMembers = false
+        }
+    }
+    
+    /// Toggles a group between read and write permission.
+    private func handleToggleGroupPermission(channelId: String, groupId: String, currentPerm: String) {
+        Haptics.play(.light)
+        togglingMemberIds.insert(groupId)
+        
+        // Remove all existing grants for this group
+        withAnimation(.easeInOut(duration: 0.15)) {
+            localAccessGrants.removeAll { $0.groupId == groupId }
+        }
+        
+        if currentPerm == "write" {
+            // Downgrade to read-only
+            localAccessGrants.append(AccessGrant(id: UUID().uuidString, userId: nil, groupId: groupId, read: true, write: false))
+        } else {
+            // Upgrade to write
+            localAccessGrants.append(AccessGrant(id: UUID().uuidString, userId: nil, groupId: groupId, read: true, write: true))
+        }
+        
+        Task {
+            await onUpdateAccessGrants?(channelId, buildGrantsPayload())
+            togglingMemberIds.remove(groupId)
+        }
+    }
+    
+    /// Removes all grants for a group.
+    private func handleRemoveGroupGrant(channelId: String, groupId: String) {
+        removingMemberIds.insert(groupId)
+        Haptics.play(.light)
+        withAnimation(.easeInOut(duration: 0.2)) {
+            localAccessGrants.removeAll { $0.groupId == groupId }
+        }
+        Task {
+            await onUpdateAccessGrants?(channelId, buildGrantsPayload())
+            removingMemberIds.remove(groupId)
+        }
+    }
+    
+    /// Fetches group names for any group grants that haven't been resolved yet.
+    private func resolveGroupNames() async {
+        guard let api = apiClient else { return }
+        let groupIds = Set(localAccessGrants.compactMap(\.groupId))
+        let unknownIds = groupIds.subtracting(resolvedGroups.keys)
+        guard !unknownIds.isEmpty else { return }
+        do {
+            let groups = try await api.getGroups()
+            for g in groups where unknownIds.contains(g.id) {
+                resolvedGroups[g.id] = g
+            }
+        } catch {
+            // Silently fail — groups will show as "Group"
         }
     }
     

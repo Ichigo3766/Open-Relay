@@ -144,7 +144,8 @@ struct Channel: Identifiable, Hashable, Sendable {
         
         var accessGrants: [AccessGrant] = []
         if let grantsArray = json["access_grants"] as? [[String: Any]] {
-            accessGrants = grantsArray.compactMap { AccessGrant.fromJSON($0) }
+            let raw = grantsArray.compactMap { AccessGrant.fromJSON($0) }
+            accessGrants = AccessGrant.mergedByPrincipal(raw)
         }
         
         // R-013: Use shared TimestampParser
@@ -200,13 +201,29 @@ struct AccessGrant: Identifiable, Hashable, Sendable {
         let groupId: String?
         
         if principalType == "group" {
-            userId = json["user_id"] as? String
+            // Explicit group grant — only populate groupId, never userId
+            userId = nil
             groupId = principalId ?? (json["group_id"] as? String)
-        } else {
-            // Default to "user" principal type
+        } else if principalType == "user" {
+            // Explicit user grant — only populate userId, never groupId
             userId = principalId ?? (json["user_id"] as? String)
-            groupId = json["group_id"] as? String
+            groupId = nil
+        } else {
+            // Legacy format (no principal_type) — use separate keys but don't cross-contaminate.
+            // If both keys are present, prefer user_id (more common case).
+            let legacyUserId = json["user_id"] as? String
+            let legacyGroupId = json["group_id"] as? String
+            if legacyUserId != nil {
+                userId = legacyUserId
+                groupId = nil
+            } else {
+                userId = nil
+                groupId = legacyGroupId
+            }
         }
+        
+        // Drop phantom grants that have neither a user nor a group
+        guard userId != nil || groupId != nil else { return nil }
         
         // Parse permission string ("read" / "write") or legacy booleans
         let permission = json["permission"] as? String
@@ -223,22 +240,39 @@ struct AccessGrant: Identifiable, Hashable, Sendable {
         return AccessGrant(id: id, userId: userId, groupId: groupId, read: read, write: write)
     }
 
-    /// Merges a flat list of access grant entries into one `AccessGrant` per user.
+    /// Merges a flat list of access grant entries into one `AccessGrant` per principal (user or group).
     /// The server uses two entries (one "read" + one "write") to represent write access.
-    /// This collapses them: a user gets `write = true` if ANY entry has permission "write".
-    static func mergedByUser(_ grants: [AccessGrant]) -> [AccessGrant] {
+    /// This collapses them: a principal gets `write = true` if ANY entry has permission "write".
+    static func mergedByPrincipal(_ grants: [AccessGrant]) -> [AccessGrant] {
         var byUser: [String: AccessGrant] = [:]
+        var byGroup: [String: AccessGrant] = [:]
         for grant in grants {
-            guard let uid = grant.userId else { continue }
-            if let existing = byUser[uid] {
-                if grant.write && !existing.write {
-                    byUser[uid] = AccessGrant(id: existing.id, userId: uid, groupId: existing.groupId, read: true, write: true)
+            if let gid = grant.groupId, grant.userId == nil {
+                // Group grant
+                if let existing = byGroup[gid] {
+                    if grant.write && !existing.write {
+                        byGroup[gid] = AccessGrant(id: existing.id, userId: nil, groupId: gid, read: true, write: true)
+                    }
+                } else {
+                    byGroup[gid] = grant
                 }
-            } else {
-                byUser[uid] = grant
+            } else if let uid = grant.userId {
+                // User grant — never carry groupId forward
+                if let existing = byUser[uid] {
+                    if grant.write && !existing.write {
+                        byUser[uid] = AccessGrant(id: existing.id, userId: uid, groupId: nil, read: true, write: true)
+                    }
+                } else {
+                    byUser[uid] = grant
+                }
             }
         }
-        return Array(byUser.values)
+        return Array(byUser.values) + Array(byGroup.values)
+    }
+
+    /// Legacy alias — calls `mergedByPrincipal` for backward compatibility.
+    static func mergedByUser(_ grants: [AccessGrant]) -> [AccessGrant] {
+        mergedByPrincipal(grants)
     }
 }
 

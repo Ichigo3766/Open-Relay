@@ -85,6 +85,75 @@ final class KeychainService: Sendable {
         getToken(forServer: serverURL) != nil
     }
 
+    // MARK: - Account-Scoped Token Storage (Multi-Account)
+
+    /// Saves a JWT token for a specific user account on a server.
+    /// Key format: `token:{normalizedServerURL}::{userId}`
+    @discardableResult
+    func saveToken(_ token: String, forServer serverURL: String, userId: String) -> Bool {
+        guard let tokenData = token.data(using: .utf8) else { return false }
+        let account = accountKey(for: serverURL, userId: userId)
+
+        let deleteQuery: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: serviceName,
+            kSecAttrAccount as String: account
+        ]
+        SecItemDelete(deleteQuery as CFDictionary)
+
+        let addQuery: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: serviceName,
+            kSecAttrAccount as String: account,
+            kSecValueData as String: tokenData,
+            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlock
+        ]
+
+        let status = SecItemAdd(addQuery as CFDictionary, nil)
+        return status == errSecSuccess
+    }
+
+    /// Retrieves the JWT token for a specific user account on a server.
+    func getToken(forServer serverURL: String, userId: String) -> String? {
+        let account = accountKey(for: serverURL, userId: userId)
+
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: serviceName,
+            kSecAttrAccount as String: account,
+            kSecReturnData as String: true,
+            kSecMatchLimit as String: kSecMatchLimitOne
+        ]
+
+        var result: AnyObject?
+        let status = SecItemCopyMatching(query as CFDictionary, &result)
+
+        guard status == errSecSuccess, let data = result as? Data else {
+            return nil
+        }
+        return String(data: data, encoding: .utf8)
+    }
+
+    /// Removes the JWT token for a specific user account on a server.
+    @discardableResult
+    func deleteToken(forServer serverURL: String, userId: String) -> Bool {
+        let account = accountKey(for: serverURL, userId: userId)
+
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: serviceName,
+            kSecAttrAccount as String: account
+        ]
+
+        let status = SecItemDelete(query as CFDictionary)
+        return status == errSecSuccess || status == errSecItemNotFound
+    }
+
+    /// Checks whether a token exists for a specific user account on a server.
+    func hasToken(forServer serverURL: String, userId: String) -> Bool {
+        getToken(forServer: serverURL, userId: userId) != nil
+    }
+
     /// Removes all tokens managed by this service.
     @discardableResult
     func deleteAllTokens() -> Bool {
@@ -101,11 +170,21 @@ final class KeychainService: Sendable {
 
     /// Derives a stable Keychain account key from a server URL.
     private func accountKey(for serverURL: String) -> String {
-        // Normalize the URL to avoid duplicates from trailing slashes
-        let normalized = serverURL
+        let normalized = normalizeURL(serverURL)
+        return "token:\(normalized)"
+    }
+
+    /// Derives a stable Keychain account key scoped to a specific user account.
+    private func accountKey(for serverURL: String, userId: String) -> String {
+        let normalized = normalizeURL(serverURL)
+        return "token:\(normalized)::\(userId)"
+    }
+
+    /// Normalizes a URL for use as a Keychain key component.
+    private func normalizeURL(_ serverURL: String) -> String {
+        serverURL
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .lowercased()
             .replacingOccurrences(of: "/$", with: "", options: .regularExpression)
-        return "token:\(normalized)"
     }
 }

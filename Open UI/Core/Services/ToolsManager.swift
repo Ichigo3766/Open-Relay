@@ -71,7 +71,7 @@ final class ToolsManager {
     @discardableResult
     func cloneTool(id: String) async throws -> ToolDetail {
         let source = try await getDetail(id: id)
-        let cloneId = source.id + "-clone"
+        let cloneId = source.id + "_clone"
         let cloneDetail = ToolDetail(
             id: cloneId,
             name: source.name + " (Clone)",
@@ -98,10 +98,16 @@ final class ToolsManager {
     func updateAccessGrants(toolId: String, grants: [AccessGrant], isPublic: Bool = false) async throws -> [AccessGrant] {
         var payload: [[String: Any]] = []
         for grant in grants {
-            guard let userId = grant.userId else { continue }
-            payload.append(["principal_type": "user", "principal_id": userId, "permission": "read"])
-            if grant.write {
-                payload.append(["principal_type": "user", "principal_id": userId, "permission": "write"])
+            if let userId = grant.userId {
+                payload.append(["principal_type": "user", "principal_id": userId, "permission": "read"])
+                if grant.write {
+                    payload.append(["principal_type": "user", "principal_id": userId, "permission": "write"])
+                }
+            } else if let groupId = grant.groupId {
+                payload.append(["principal_type": "group", "principal_id": groupId, "permission": "read"])
+                if grant.write {
+                    payload.append(["principal_type": "group", "principal_id": groupId, "permission": "write"])
+                }
             }
         }
         if isPublic {

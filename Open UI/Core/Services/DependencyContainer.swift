@@ -220,8 +220,15 @@ final class AppDependencyContainer: ServiceContainer {
     /// Cached on login/server connect and used to respect admin settings.
     private(set) var taskConfig: TaskConfig = .default
 
-    /// Whether the server is currently reachable (updated by connection monitor).
-    var isServerReachable: Bool = true
+    /// Centralized server connection monitor. Continuously polls `/health`,
+    /// watches NWPathMonitor, and exposes an observable `connectionState`
+    /// used by ``ConnectionOverlayView``.
+    let connectionMonitor = ServerConnectionMonitor()
+
+    /// Whether the server is currently reachable (delegated to connection monitor).
+    var isServerReachable: Bool {
+        connectionMonitor.connectionState == .connected
+    }
 
     /// Whether the socket is connected (mirrors `socketService.connectionState`).
     var socketConnectionState: SocketConnectionState = .disconnected
@@ -480,21 +487,31 @@ final class AppDependencyContainer: ServiceContainer {
         }
     }
 
-    /// Runs a lightweight health check when the app enters the foreground.
-    /// If the server is reachable but the socket is dead, reconnects it.
+    /// Runs a health check when the app enters the foreground.
+    /// Delegates to the ``ServerConnectionMonitor`` which handles health checks,
+    /// state transitions, and socket reconnection automatically.
     private func performForegroundHealthCheck() async {
-        guard let client = apiClient else { return }
+        guard apiClient != nil else { return }
         guard authViewModel.isAuthenticated else { return }
 
-        let healthy = await client.checkHealth()
-        isServerReachable = healthy
+        // Delegate to the connection monitor — it handles /health check,
+        // state machine transitions, and socket reconnection.
+        connectionMonitor.triggerImmediateCheck()
+    }
 
-        if healthy {
-            // Server is up — make sure socket is connected
-            if let socket = socketService, !socket.isConnected {
-                let _ = await socket.ensureConnected(timeout: 5.0)
-            }
+    /// Starts the ``ServerConnectionMonitor`` for the current API client.
+    /// Called after `configureServicesForActiveServer()` and when authentication succeeds.
+    func startServerConnectionMonitor() {
+        guard let client = apiClient else {
+            connectionMonitor.stop()
+            return
         }
+        connectionMonitor.start(apiClient: client, socketService: socketService)
+    }
+
+    /// Stops the ``ServerConnectionMonitor``. Called on logout or server switch.
+    func stopServerConnectionMonitor() {
+        connectionMonitor.stop()
     }
 
     // MARK: - Task Configuration

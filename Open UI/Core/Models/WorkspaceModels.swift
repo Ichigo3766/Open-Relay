@@ -117,14 +117,13 @@ struct PromptDetail: Identifiable, Sendable {
     }
 
     func toUpdatePayload(commitMessage: String = "") -> [String: Any] {
-        // Note: access_grants are managed via the dedicated /access/update endpoint.
-        // Including them here would create a new version history entry.
         var body: [String: Any] = [
             "command": command,
             "name": name,
             "content": content,
             "tags": tags,
-            "is_active": isActive
+            "is_active": isActive,
+            "access_grants": buildGrantsPayload()
         ]
         var metaPayload = meta
         if !commitMessage.isEmpty { metaPayload["commit_message"] = commitMessage }
@@ -137,20 +136,16 @@ struct PromptDetail: Identifiable, Sendable {
     func buildGrantsPayload() -> [[String: Any]] {
         var result: [[String: Any]] = []
         for grant in accessGrants {
-            guard let userId = grant.userId else { continue }
-            // Always include a "read" entry
-            result.append([
-                "principal_type": "user",
-                "principal_id": userId,
-                "permission": "read"
-            ])
-            // For write access, also include a "write" entry
-            if grant.write {
-                result.append([
-                    "principal_type": "user",
-                    "principal_id": userId,
-                    "permission": "write"
-                ])
+            if let userId = grant.userId {
+                result.append(["principal_type": "user", "principal_id": userId, "permission": "read"])
+                if grant.write {
+                    result.append(["principal_type": "user", "principal_id": userId, "permission": "write"])
+                }
+            } else if let groupId = grant.groupId {
+                result.append(["principal_type": "group", "principal_id": groupId, "permission": "read"])
+                if grant.write {
+                    result.append(["principal_type": "group", "principal_id": groupId, "permission": "write"])
+                }
             }
         }
         return result
@@ -294,20 +289,16 @@ struct KnowledgeDetail: Identifiable, Sendable {
     func buildGrantsPayload() -> [[String: Any]] {
         var result: [[String: Any]] = []
         for grant in accessGrants {
-            guard let userId = grant.userId else { continue }
-            // Always include a "read" entry
-            result.append([
-                "principal_type": "user",
-                "principal_id": userId,
-                "permission": "read"
-            ])
-            // For write access, also include a "write" entry
-            if grant.write {
-                result.append([
-                    "principal_type": "user",
-                    "principal_id": userId,
-                    "permission": "write"
-                ])
+            if let userId = grant.userId {
+                result.append(["principal_type": "user", "principal_id": userId, "permission": "read"])
+                if grant.write {
+                    result.append(["principal_type": "user", "principal_id": userId, "permission": "write"])
+                }
+            } else if let groupId = grant.groupId {
+                result.append(["principal_type": "group", "principal_id": groupId, "permission": "read"])
+                if grant.write {
+                    result.append(["principal_type": "group", "principal_id": groupId, "permission": "write"])
+                }
             }
         }
         return result
@@ -414,7 +405,8 @@ struct SkillDetail: Identifiable, Sendable {
             "name": name,
             "description": description,
             "content": content,
-            "is_active": isActive
+            "is_active": isActive,
+            "access_grants": buildGrantsPayload()
         ]
     }
 
@@ -422,18 +414,16 @@ struct SkillDetail: Identifiable, Sendable {
     func buildGrantsPayload() -> [[String: Any]] {
         var result: [[String: Any]] = []
         for grant in accessGrants {
-            guard let userId = grant.userId else { continue }
-            result.append([
-                "principal_type": "user",
-                "principal_id": userId,
-                "permission": "read"
-            ])
-            if grant.write {
-                result.append([
-                    "principal_type": "user",
-                    "principal_id": userId,
-                    "permission": "write"
-                ])
+            if let userId = grant.userId {
+                result.append(["principal_type": "user", "principal_id": userId, "permission": "read"])
+                if grant.write {
+                    result.append(["principal_type": "user", "principal_id": userId, "permission": "write"])
+                }
+            } else if let groupId = grant.groupId {
+                result.append(["principal_type": "group", "principal_id": groupId, "permission": "read"])
+                if grant.write {
+                    result.append(["principal_type": "group", "principal_id": groupId, "permission": "write"])
+                }
             }
         }
         return result
@@ -576,17 +566,24 @@ struct ToolDetail: Identifiable, Sendable {
             "meta": [
                 "description": description,
                 "manifest": manifest.toJSON()
-            ]
+            ],
+            "access_grants": buildGrantsPayload()
         ]
     }
 
     func buildGrantsPayload() -> [[String: Any]] {
         var result: [[String: Any]] = []
         for grant in accessGrants {
-            guard let userId = grant.userId else { continue }
-            result.append(["principal_type": "user", "principal_id": userId, "permission": "read"])
-            if grant.write {
-                result.append(["principal_type": "user", "principal_id": userId, "permission": "write"])
+            if let userId = grant.userId {
+                result.append(["principal_type": "user", "principal_id": userId, "permission": "read"])
+                if grant.write {
+                    result.append(["principal_type": "user", "principal_id": userId, "permission": "write"])
+                }
+            } else if let groupId = grant.groupId {
+                result.append(["principal_type": "group", "principal_id": groupId, "permission": "read"])
+                if grant.write {
+                    result.append(["principal_type": "group", "principal_id": groupId, "permission": "write"])
+                }
             }
         }
         return result
@@ -1468,7 +1465,8 @@ struct ModelDetail: Identifiable, Sendable {
             "id": id, "name": name,
             "meta": buildMetaPayload(),
             "params": buildParamsPayload(),
-            "is_active": isActive
+            "is_active": isActive,
+            "access_grants": buildGrantsPayload()
         ]
         if let base = baseModelId, !base.isEmpty { body["base_model_id"] = base }
         return body
@@ -1479,10 +1477,16 @@ struct ModelDetail: Identifiable, Sendable {
     func buildGrantsPayload() -> [[String: Any]] {
         var result: [[String: Any]] = []
         for grant in accessGrants {
-            guard let uid = grant.userId else { continue }
-            result.append(["principal_type": "user", "principal_id": uid, "permission": "read"])
-            if grant.write {
-                result.append(["principal_type": "user", "principal_id": uid, "permission": "write"])
+            if let userId = grant.userId {
+                result.append(["principal_type": "user", "principal_id": userId, "permission": "read"])
+                if grant.write {
+                    result.append(["principal_type": "user", "principal_id": userId, "permission": "write"])
+                }
+            } else if let groupId = grant.groupId {
+                result.append(["principal_type": "group", "principal_id": groupId, "permission": "read"])
+                if grant.write {
+                    result.append(["principal_type": "group", "principal_id": groupId, "permission": "write"])
+                }
             }
         }
         return result

@@ -51,7 +51,7 @@ struct SkillEditorView: View {
     /// isPrivate: true = Private (restricted to access list), false = Public (everyone)
     @State private var isPrivate: Bool = true
     @State private var localAccessGrants: [AccessGrant] = []
-    @State private var showUserPicker = false
+    @State private var resolvedGroups: [String: GroupResponse] = [:]
     @State private var isUpdatingAccess = false
     @State private var accessUpdateError: String?
 
@@ -73,12 +73,6 @@ struct SkillEditorView: View {
     private var isEditing: Bool { existingSkill != nil }
     private var serverBaseURL: String { dependencies.apiClient?.baseURL ?? "" }
     private var authToken: String? { dependencies.apiClient?.network.authToken }
-
-    /// Users who currently have access, resolved from allUsers for display names.
-    private var accessedUsers: [ChannelMember] {
-        let ids = Set(localAccessGrants.compactMap { $0.userId })
-        return allUsers.filter { ids.contains($0.id) }
-    }
 
     private var hasChanges: Bool {
         guard let existing = existingSkill else {
@@ -111,22 +105,6 @@ struct SkillEditorView: View {
             .navigationTitle(isEditing ? "Edit Skill" : "New Skill")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { toolbarContent }
-            .sheet(isPresented: $showUserPicker) {
-                WorkspaceAddAccessSheet(
-                    existingUserIds: Set(localAccessGrants.compactMap { $0.userId }),
-                    allUsers: allUsers,
-                    isLoading: isUpdatingAccess,
-                    serverBaseURL: serverBaseURL,
-                    authToken: authToken,
-                    onAdd: { selectedIds in
-                        showUserPicker = false
-                        Task { await addUsers(selectedIds) }
-                    },
-                    onCancel: { showUserPicker = false }
-                )
-                .presentationDetents([.medium, .large])
-                .presentationDragIndicator(.visible)
-            }
             .confirmationDialog(
                 "Discard Changes?",
                 isPresented: $showDiscardConfirm,
@@ -156,7 +134,10 @@ struct SkillEditorView: View {
         }
         .onAppear {
             populateIfEditing()
-            Task { await manager?.fetchAllUsers() }
+            Task {
+                await manager?.fetchAllUsers()
+                await resolveGroupNames()
+            }
         }
     }
 
@@ -195,10 +176,11 @@ struct SkillEditorView: View {
                             .frame(width: 80, alignment: .leading)
                         TextField("e.g. code-review-expert", text: $slug)
                             .scaledFont(size: 15)
-                            .foregroundStyle(theme.textPrimary)
+                            .foregroundStyle(isEditing ? theme.textSecondary : theme.textPrimary)
                             .focused($focusedField, equals: .slug)
                             .autocorrectionDisabled()
                             .autocapitalization(.none)
+                            .disabled(isEditing)
                             .onChange(of: slug) { _, _ in
                                 if isAutoSettingSlug {
                                     isAutoSettingSlug = false
@@ -323,153 +305,28 @@ struct SkillEditorView: View {
 
     @ViewBuilder
     private var accessControlSection: some View {
-        VStack(spacing: 0) {
-            // Visibility Picker row
-            HStack(spacing: Spacing.sm) {
-                Image(systemName: isPrivate ? "lock.fill" : "globe")
-                    .scaledFont(size: 16)
-                    .foregroundStyle(isPrivate ? theme.textSecondary : theme.brandPrimary)
-                    .frame(width: 20)
-
-                Text("Access")
-                    .scaledFont(size: 15)
-                    .foregroundStyle(theme.textPrimary)
-
-                Spacer()
-
-                if isUpdatingAccess {
-                    ProgressView().controlSize(.mini).tint(theme.brandPrimary)
-                        .padding(.trailing, 4)
-                }
-
-                Picker("", selection: $isPrivate) {
-                    Text("Private").tag(true)
-                    Text("Public").tag(false)
-                }
-                .pickerStyle(.menu)
-                .tint(theme.brandPrimary)
-                .scaledFont(size: 15)
-                .onChange(of: isPrivate) { _, newVal in
-                    Task { await handleAccessModeChange(isPrivate: newVal) }
-                }
+        AccessControlSection(
+            localAccessGrants: $localAccessGrants,
+            isPrivate: $isPrivate,
+            allUsers: allUsers,
+            resolvedGroups: resolvedGroups,
+            isUpdating: isUpdatingAccess,
+            serverBaseURL: serverBaseURL,
+            authToken: authToken,
+            apiClient: dependencies.apiClient,
+            onAccessModeChange: { newVal in
+                await handleAccessModeChange(isPrivate: newVal)
+            },
+            onTogglePermission: { principalId, isGroup, currentlyWrite in
+                await togglePermission(principalId: principalId, isGroup: isGroup, currentlyWrite: currentlyWrite)
+            },
+            onRemoveGrant: { principalId, isGroup in
+                await removeGrant(principalId: principalId, isGroup: isGroup)
+            },
+            onAddGrants: { userIds, groupIds in
+                await addGrants(userIds: userIds, groupIds: groupIds)
             }
-            .padding(.horizontal, Spacing.md)
-            .padding(.vertical, 12)
-
-            Divider().background(theme.inputBorder.opacity(0.4))
-
-            // Access List
-            accessListSection
-        }
-    }
-
-    @ViewBuilder
-    private var accessListSection: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            // Header
-            HStack {
-                Text("Access List")
-                    .scaledFont(size: 13, weight: .semibold)
-                    .foregroundStyle(theme.textSecondary)
-                Spacer()
-            }
-            .padding(.horizontal, Spacing.md)
-            .padding(.top, 10)
-            .padding(.bottom, 6)
-
-            if localAccessGrants.isEmpty {
-                Text("No access grants. Private to you.")
-                    .scaledFont(size: 13)
-                    .foregroundStyle(theme.textTertiary)
-                    .padding(.horizontal, Spacing.md)
-                    .padding(.bottom, 10)
-            } else {
-                ForEach(accessedUsers) { user in
-                    accessUserRow(user)
-
-                    Divider()
-                        .background(theme.inputBorder.opacity(0.3))
-                        .padding(.leading, Spacing.md + 42)
-                }
-            }
-
-            // Add Access button
-            Button {
-                Haptics.play(.light)
-                showUserPicker = true
-            } label: {
-                HStack(spacing: 6) {
-                    Image(systemName: "person.badge.plus")
-                        .scaledFont(size: 14)
-                        .foregroundStyle(theme.brandPrimary)
-                    Text("Add Access")
-                        .scaledFont(size: 15)
-                        .foregroundStyle(theme.brandPrimary)
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .padding(.horizontal, Spacing.md)
-            .padding(.vertical, 12)
-        }
-    }
-
-    @ViewBuilder
-    private func accessUserRow(_ user: ChannelMember) -> some View {
-        HStack(spacing: Spacing.sm) {
-            UserAvatar(
-                size: 30,
-                imageURL: user.resolveAvatarURL(serverBaseURL: serverBaseURL),
-                name: user.displayName,
-                authToken: authToken
-            )
-            VStack(alignment: .leading, spacing: 1) {
-                Text(user.displayName)
-                    .scaledFont(size: 14, weight: .medium)
-                    .foregroundStyle(theme.textPrimary)
-                if let role = user.role {
-                    Text(role.capitalized)
-                        .scaledFont(size: 11)
-                        .foregroundStyle(theme.textTertiary)
-                }
-            }
-            Spacer()
-
-            // READ / WRITE permission toggle button
-            if let grant = localAccessGrants.first(where: { $0.userId == user.id }) {
-                Button {
-                    Task { await toggleUserPermission(userId: user.id, currentlyWrite: grant.write) }
-                } label: {
-                    Text(grant.write ? "Write" : "Read")
-                        .scaledFont(size: 11, weight: .semibold)
-                        .foregroundStyle(grant.write ? theme.brandOnPrimary : theme.textSecondary)
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 4)
-                        .background(grant.write ? theme.brandPrimary : theme.surfaceContainerHighest)
-                        .clipShape(Capsule())
-                        .overlay(
-                            Capsule()
-                                .stroke(grant.write ? Color.clear : theme.inputBorder.opacity(0.5), lineWidth: 1)
-                        )
-                }
-                .buttonStyle(.plain)
-                .disabled(isUpdatingAccess)
-            }
-
-            // Remove button
-            Button {
-                Task { await removeUser(user.id) }
-            } label: {
-                Image(systemName: "xmark.circle.fill")
-                    .scaledFont(size: 18)
-                    .foregroundStyle(theme.textTertiary)
-            }
-            .buttonStyle(.plain)
-            .disabled(isUpdatingAccess)
-        }
-        .padding(.horizontal, Spacing.md)
-        .padding(.vertical, 8)
+        )
     }
 
     // MARK: - Toolbar
@@ -500,18 +357,14 @@ struct SkillEditorView: View {
 
     // MARK: - Access Control Actions
 
-    /// Called when user switches between Private / Public.
-    /// Immediately calls the API to persist the change (edit mode only).
     private func handleAccessModeChange(isPrivate: Bool) async {
         guard let id = existingSkill?.id, let manager else { return }
-        let grantsToSend = localAccessGrants
         isUpdatingAccess = true
         do {
-            let updated = try await manager.updateAccessGrants(skillId: id, grants: grantsToSend, isPublic: !isPrivate)
+            let updated = try await manager.updateAccessGrants(skillId: id, grants: localAccessGrants, isPublic: !isPrivate)
             localAccessGrants = updated
             Haptics.notify(.success)
         } catch {
-            // Revert on failure
             self.isPrivate = !isPrivate
             accessUpdateError = error.localizedDescription
             Haptics.notify(.error)
@@ -519,40 +372,37 @@ struct SkillEditorView: View {
         isUpdatingAccess = false
     }
 
-    private func addUsers(_ userIds: [String]) async {
+    private func addGrants(userIds: [String], groupIds: [String]) async {
         guard let id = existingSkill?.id, let manager else {
-            // In create mode, just add locally with read permission
             for userId in userIds {
                 if !localAccessGrants.contains(where: { $0.userId == userId }) {
-                    localAccessGrants.append(AccessGrant(
-                        id: UUID().uuidString,
-                        userId: userId,
-                        groupId: nil,
-                        read: true,
-                        write: false
-                    ))
+                    localAccessGrants.append(AccessGrant(id: UUID().uuidString, userId: userId, groupId: nil, read: true, write: false))
+                }
+            }
+            for groupId in groupIds {
+                if !localAccessGrants.contains(where: { $0.groupId == groupId }) {
+                    localAccessGrants.append(AccessGrant(id: UUID().uuidString, userId: nil, groupId: groupId, read: true, write: false))
                 }
             }
             Haptics.notify(.success)
             return
         }
-
         isUpdatingAccess = true
         var newGrants = localAccessGrants
         for userId in userIds {
             if !newGrants.contains(where: { $0.userId == userId }) {
-                newGrants.append(AccessGrant(
-                    id: UUID().uuidString,
-                    userId: userId,
-                    groupId: nil,
-                    read: true,
-                    write: false
-                ))
+                newGrants.append(AccessGrant(id: UUID().uuidString, userId: userId, groupId: nil, read: true, write: false))
+            }
+        }
+        for groupId in groupIds {
+            if !newGrants.contains(where: { $0.groupId == groupId }) {
+                newGrants.append(AccessGrant(id: UUID().uuidString, userId: nil, groupId: groupId, read: true, write: false))
             }
         }
         do {
             let updated = try await manager.updateAccessGrants(skillId: id, grants: newGrants)
             localAccessGrants = updated
+            await resolveGroupNames()
             Haptics.notify(.success)
         } catch {
             accessUpdateError = error.localizedDescription
@@ -561,17 +411,16 @@ struct SkillEditorView: View {
         isUpdatingAccess = false
     }
 
-    /// Toggles a user's permission between READ and WRITE.
-    private func toggleUserPermission(userId: String, currentlyWrite: Bool) async {
-        guard let idx = localAccessGrants.firstIndex(where: { $0.userId == userId }) else { return }
-        let existing = localAccessGrants[idx]
-        let newGrant = AccessGrant(
-            id: existing.id,
-            userId: existing.userId,
-            groupId: existing.groupId,
-            read: true,
-            write: !currentlyWrite
-        )
+    private func togglePermission(principalId: String, isGroup: Bool, currentlyWrite: Bool) async {
+        let idx: Array<AccessGrant>.Index?
+        if isGroup {
+            idx = localAccessGrants.firstIndex(where: { $0.groupId == principalId })
+        } else {
+            idx = localAccessGrants.firstIndex(where: { $0.userId == principalId })
+        }
+        guard let idx else { return }
+        let old = localAccessGrants[idx]
+        let newGrant = AccessGrant(id: old.id, userId: old.userId, groupId: old.groupId, read: true, write: !currentlyWrite)
         var newGrants = localAccessGrants
         newGrants[idx] = newGrant
 
@@ -580,7 +429,6 @@ struct SkillEditorView: View {
             Haptics.play(.light)
             return
         }
-
         isUpdatingAccess = true
         do {
             let updated = try await manager.updateAccessGrants(skillId: id, grants: newGrants)
@@ -593,15 +441,22 @@ struct SkillEditorView: View {
         isUpdatingAccess = false
     }
 
-    private func removeUser(_ userId: String) async {
+    private func removeGrant(principalId: String, isGroup: Bool) async {
         guard let id = existingSkill?.id, let manager else {
-            localAccessGrants.removeAll { $0.userId == userId }
+            if isGroup {
+                localAccessGrants.removeAll { $0.groupId == principalId }
+            } else {
+                localAccessGrants.removeAll { $0.userId == principalId }
+            }
             Haptics.play(.light)
             return
         }
-
         withAnimation(.easeInOut(duration: 0.2)) {
-            localAccessGrants.removeAll { $0.userId == userId }
+            if isGroup {
+                localAccessGrants.removeAll { $0.groupId == principalId }
+            } else {
+                localAccessGrants.removeAll { $0.userId == principalId }
+            }
         }
         isUpdatingAccess = true
         do {
@@ -609,7 +464,6 @@ struct SkillEditorView: View {
             localAccessGrants = updated
             Haptics.play(.light)
         } catch {
-            // Restore on failure
             if let detail = try? await manager.getDetail(id: id) {
                 localAccessGrants = detail.accessGrants.filter { $0.userId != "*" }
             }
@@ -617,6 +471,19 @@ struct SkillEditorView: View {
             Haptics.notify(.error)
         }
         isUpdatingAccess = false
+    }
+
+    private func resolveGroupNames() async {
+        guard let api = dependencies.apiClient else { return }
+        let groupIds = Set(localAccessGrants.compactMap(\.groupId))
+        let unknownIds = groupIds.subtracting(resolvedGroups.keys)
+        guard !unknownIds.isEmpty else { return }
+        do {
+            let groups = try await api.getGroups()
+            for g in groups where unknownIds.contains(g.id) {
+                resolvedGroups[g.id] = g
+            }
+        } catch {}
     }
 
     // MARK: - Helpers

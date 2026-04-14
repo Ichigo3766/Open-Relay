@@ -1,5 +1,32 @@
 # Changelog
 
+## v3.0 — April 14, 2026
+
+### What's New
+- Added multi-account support per server — login to multiple accounts on the same server and switch between them instantly with a long-press on your avatar in sidebar or from the setting -> manage servers.
+- Added robust automatic server reconnection and a user facing error message when unable to reach the server.
+- Added Python code execution — tap the Run button on any Python code block to execute it on-device using Pyodide (WebAssembly). Supports numpy, pandas, matplotlib, sympy, and more. 
+- Admin's Paradise:
+    - Added Analytics dashboard, General, Connections, Integrations, Code Execution, Documents, Web Search, Interface, Audio, and Images Tabs to admin console with full control. 
+
+### Improvements
+- New tools now start with a helpful Python template
+- Redesigned the Account page in Settings - Added ability to modify account details. 
+- Added group-based access control — you can now grant access to entire groups (not just individual users) across Prompts, Knowledge, Models, Tools, Skills, and Channels.
+- Tapping a processed file attachment now shows the extracted text content and a native PDF preview in a tabbed sheet, matching the web UI experience.
+- Streaming responses now grow smoothly per-character without visible height-update chunking.
+- Extended tool API request timeout to 5 minutes to prevent timeouts when loading or saving complex tools.
+- Added a tip below the TTS voice preview button explaining that it lets you hear how the selected voice sounds.
+
+### Bug Fixes
+- Fixed follow-up suggestions being cut off after two lines — they now expand to show the full text.
+- Fixed Voice Call not transcribing speech when connected to CarPlay — the microphone now works correctly through the car's hands-free system.
+- Fixed deleting a chat, channel, or folder chat leaving the screen stuck on stale content — the app now automatically navigates to the new chat screen after any deletion.
+- Fixed cloning tools failing due to wrong character in name.
+- Fixed saving workspace items (tools, skills, prompts, models) showing a false "session expired" error.
+
+## Previous Builds
+
 ## v2.6.2 — April 9, 2026
 
 ### Improvements

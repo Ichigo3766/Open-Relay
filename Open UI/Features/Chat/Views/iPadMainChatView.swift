@@ -141,7 +141,8 @@ struct iPadMainChatView: View {
             activeConversationId: $activeConversationId,
             activeChannelId: $activeChannelId,
             channelListVM: channelListVM,
-            dependencies: dependencies
+            dependencies: dependencies,
+            onStartNewChat: { startNewChat() }
         )
         .applyLifecycle(
             listViewModel: listViewModel,
@@ -1011,7 +1012,7 @@ struct iPadSidebarContent: View {
                                 for fIdx in folderVM.folders.indices {
                                     folderVM.folders[fIdx].chats.removeAll { $0.id == chatId }
                                 }
-                                if activeConversationId == chatId { activeConversationId = nil }
+                                if activeConversationId == chatId { onNewChat() }
                             }
                         },
                         onTogglePin: { conversation in
@@ -1405,28 +1406,36 @@ struct iPadSidebarContent: View {
                 .frame(height: 0.5)
 
             HStack(spacing: Spacing.sm) {
-                // Real user avatar + full name — taps to Settings/Profile
-                Button { showSettings = true } label: {
-                    HStack(spacing: 8) {
+                // Real user avatar + full name — tap → Settings, long-press → Account Picker
+                HStack(spacing: 8) {
+                    ZStack(alignment: .bottomTrailing) {
                         UserAvatar(
                             size: 30,
                             imageURL: {
                                 guard let userId = dependencies.authViewModel.currentUser?.id,
                                       let baseURL = dependencies.apiClient?.baseURL,
                                       !userId.isEmpty, !baseURL.isEmpty else { return nil }
-                                return URL(string: "\(baseURL)/api/v1/users/\(userId)/profile/image")
+                                let v = dependencies.authViewModel.profileImageVersion
+                                return URL(string: "\(baseURL)/api/v1/users/\(userId)/profile/image?v=\(v)")
                             }(),
                             name: dependencies.authViewModel.currentUser?.displayName ?? "User",
                             authToken: dependencies.apiClient?.network.authToken
                         )
-                        Text(dependencies.authViewModel.currentUser?.displayName ?? "User")
-                            .scaledFont(size: 13, weight: .medium)
-                            .foregroundStyle(theme.textPrimary)
-                            .lineLimit(1)
+
                     }
-                    .contentShape(Rectangle())
+                    Text(dependencies.authViewModel.currentUser?.displayName ?? "User")
+                        .scaledFont(size: 13, weight: .medium)
+                        .foregroundStyle(theme.textPrimary)
+                        .lineLimit(1)
                 }
-                .buttonStyle(.plain)
+                .contentShape(Rectangle())
+                .onLongPressGesture(minimumDuration: 0.5) {
+                    Haptics.play(.medium)
+                    dependencies.authViewModel.showAccountPicker = true
+                }
+                .simultaneousGesture(TapGesture().onEnded {
+                    showSettings = true
+                })
 
                 Spacer()
 
@@ -1754,6 +1763,15 @@ private extension View {
                     .environment(dependencies)
                     .themed(with: dependencies.appearanceManager, accessibility: dependencies.accessibilityManager)
             }
+            // Account picker sheet (multi-account per server)
+            .sheet(isPresented: Bindable(dependencies.authViewModel).showAccountPicker) {
+                AccountPickerSheet(
+                    viewModel: dependencies.authViewModel,
+                    onDismiss: { dependencies.authViewModel.showAccountPicker = false }
+                )
+                .environment(dependencies)
+                .themed(with: dependencies.appearanceManager, accessibility: dependencies.accessibilityManager)
+            }
     }
 
     func applyAlerts(
@@ -1766,7 +1784,8 @@ private extension View {
         activeConversationId: Binding<String?>,
         activeChannelId: Binding<String?>,
         channelListVM: ChannelListViewModel,
-        dependencies: AppDependencyContainer
+        dependencies: AppDependencyContainer,
+        onStartNewChat: @escaping () -> Void
     ) -> some View {
         self
             .confirmationDialog("Archive All Chats",
@@ -1788,7 +1807,7 @@ private extension View {
                 Button("Delete All", role: .destructive) {
                     Task {
                         await listViewModel.deleteAllConversations()
-                        activeConversationId.wrappedValue = nil
+                        onStartNewChat()
                     }
                 }
                 Button("Cancel", role: .cancel) {}
@@ -1799,11 +1818,11 @@ private extension View {
                 isPresented: showDeleteSelectedConfirmation,
                 titleVisibility: .visible) {
                 Button("Delete \(listViewModel.selectedCount) Chat\(listViewModel.selectedCount == 1 ? "" : "s")", role: .destructive) {
-                    if let activeId = activeConversationId.wrappedValue,
-                       listViewModel.selectedConversationIds.contains(activeId) {
-                        activeConversationId.wrappedValue = nil
+                    let shouldResetToNewChat = activeConversationId.wrappedValue.map { listViewModel.selectedConversationIds.contains($0) } ?? false
+                    Task {
+                        await listViewModel.deleteSelectedConversations()
+                        if shouldResetToNewChat { onStartNewChat() }
                     }
-                    Task { await listViewModel.deleteSelectedConversations() }
                 }
                 Button("Cancel", role: .cancel) {}
             } message: {
@@ -1825,7 +1844,7 @@ private extension View {
                         Task {
                             await listViewModel.deleteConversation(id: deletedId)
                             if activeConversationId.wrappedValue == deletedId {
-                                activeConversationId.wrappedValue = nil
+                                onStartNewChat()
                             }
                         }
                     }
@@ -1847,11 +1866,12 @@ private extension View {
             ) {
                 Button("Delete Channel", role: .destructive) {
                     if let channelId = deletingChannelId.wrappedValue {
+                        let wasActive = activeChannelId.wrappedValue == channelId
                         deletingChannelId.wrappedValue = nil
-                        if activeChannelId.wrappedValue == channelId { activeChannelId.wrappedValue = nil }
                         Task {
                             try? await dependencies.apiClient?.deleteChannel(id: channelId)
                             await channelListVM.refreshChannels()
+                            if wasActive { onStartNewChat() }
                         }
                     }
                 }

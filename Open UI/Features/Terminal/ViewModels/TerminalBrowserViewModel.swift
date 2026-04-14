@@ -104,7 +104,7 @@ final class TerminalBrowserViewModel {
             items = try await apiClient.terminalListFiles(serverId: serverId, path: currentPath)
         } catch {
             logger.error("Failed to list files at \(self.currentPath): \(error.localizedDescription)")
-            errorMessage = "Failed to load directory: \(error.localizedDescription)"
+            errorMessage = error.localizedDescription
             items = []
         }
         isLoading = false
@@ -149,7 +149,7 @@ final class TerminalBrowserViewModel {
             try await apiClient.terminalMkdir(serverId: serverId, path: folderPath)
             await loadDirectory()
         } catch {
-            errorMessage = "Failed to create folder: \(error.localizedDescription)"
+            errorMessage = error.localizedDescription
         }
     }
 
@@ -161,7 +161,7 @@ final class TerminalBrowserViewModel {
             // Remove from local list immediately for snappy feel
             items.removeAll { $0.path == item.path }
         } catch {
-            errorMessage = "Failed to delete: \(error.localizedDescription)"
+            errorMessage = error.localizedDescription
             await loadDirectory() // Refresh to get accurate state
         }
     }
@@ -178,7 +178,7 @@ final class TerminalBrowserViewModel {
             try data.write(to: fileURL)
             return fileURL
         } catch {
-            errorMessage = "Failed to download: \(error.localizedDescription)"
+            errorMessage = error.localizedDescription
             return nil
         }
     }
@@ -195,7 +195,7 @@ final class TerminalBrowserViewModel {
             )
             await loadDirectory()
         } catch {
-            errorMessage = "Upload failed: \(error.localizedDescription)"
+            errorMessage = error.localizedDescription
         }
     }
 

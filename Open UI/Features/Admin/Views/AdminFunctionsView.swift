@@ -509,7 +509,7 @@ struct AdminFunctionsView: View {
             let detail = try await manager.getDetail(id: fn.id)
             editorMode = .edit(detail)
         } catch {
-            errorMessage = "Failed to load function: \(error.localizedDescription)"
+            errorMessage = error.localizedDescription
         }
     }
 
@@ -520,7 +520,7 @@ struct AdminFunctionsView: View {
             Haptics.play(.light)
             NotificationCenter.default.post(name: .functionsConfigChanged, object: nil)
         } catch {
-            errorMessage = "Toggle global failed: \(error.localizedDescription)"
+            errorMessage = error.localizedDescription
             Haptics.notify(.error)
         }
     }
@@ -535,7 +535,7 @@ struct AdminFunctionsView: View {
             exportData = arrayData
             showExportShare = true
         } catch {
-            errorMessage = "Export failed: \(error.localizedDescription)"
+            errorMessage = error.localizedDescription
             Haptics.notify(.error)
         }
     }
@@ -546,7 +546,7 @@ struct AdminFunctionsView: View {
             try await manager.cloneFunction(id: fn.id)
             Haptics.notify(.success)
         } catch {
-            errorMessage = "Clone failed: \(error.localizedDescription)"
+            errorMessage = error.localizedDescription
             Haptics.notify(.error)
         }
     }
@@ -557,7 +557,7 @@ struct AdminFunctionsView: View {
             try await manager.deleteFunction(id: fn.id)
             Haptics.notify(.success)
         } catch {
-            errorMessage = "Delete failed: \(error.localizedDescription)"
+            errorMessage = error.localizedDescription
             Haptics.notify(.error)
         }
         deleteTarget = nil
@@ -569,7 +569,7 @@ struct AdminFunctionsView: View {
             exportData = try await manager.exportAll()
             showExportShare = true
         } catch {
-            errorMessage = "Export failed: \(error.localizedDescription)"
+            errorMessage = error.localizedDescription
         }
     }
 
@@ -603,12 +603,12 @@ struct AdminFunctionsView: View {
                     errorMessage = "No valid functions found in file."
                 }
             } catch {
-                errorMessage = "Import failed: \(error.localizedDescription)"
+                errorMessage = error.localizedDescription
                 Haptics.notify(.error)
             }
 
         case .failure(let error):
-            errorMessage = "File selection failed: \(error.localizedDescription)"
+            errorMessage = error.localizedDescription
         }
     }
 }

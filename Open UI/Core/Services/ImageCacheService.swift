@@ -249,6 +249,11 @@ actor ImageCacheService {
 
             do {
                 var request = URLRequest(url: url)
+                // Bypass URLSession's built-in HTTP cache — we manage our own
+                // disk + memory cache via ImageCacheService. URLSession's HTTP
+                // cache can serve stale/failed responses for profile images
+                // whose URL never changes after an avatar upload.
+                request.cachePolicy = .reloadIgnoringLocalCacheData
                 if let authToken, !authToken.isEmpty {
                     request.setValue("Bearer \(authToken)", forHTTPHeaderField: "Authorization")
                 }

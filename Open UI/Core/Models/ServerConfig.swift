@@ -72,12 +72,22 @@ struct ServerConfig: Codable, Identifiable, Hashable, Sendable {
     /// Used to show the "Connected" vs "Saved" vs "Expired" badge in the server list.
     var hasActiveSession: Bool
 
+    // MARK: - Multi-account support
+
+    /// All saved accounts on this server, ordered by `lastUsed` (most recent first).
+    var savedAccounts: [SavedAccount]
+
+    /// The `SavedAccount.id` of the currently active account on this server.
+    /// `nil` means no account is selected (user must sign in).
+    var activeAccountId: String?
+
     // Exclude apiKey from Codable to prevent plaintext storage in UserDefaults.
     enum CodingKeys: String, CodingKey {
         case id, name, url, customHeaders, lastConnected, isActive, allowSelfSignedCertificates
         case cfClearanceValue, cfClearanceExpiry, cfUserAgent, isCloudflareBotProtected
         case proxyAuthCookies, isAuthProxyProtected, proxyAuthPortalURL
         case lastUserName, lastUserEmail, lastUserProfileImageURL, lastAuthType, hasActiveSession
+        case savedAccounts, activeAccountId
     }
 
     /// Custom decoder so existing saved configs (without the new metadata fields)
@@ -104,6 +114,8 @@ struct ServerConfig: Codable, Identifiable, Hashable, Sendable {
         lastUserProfileImageURL = try? c.decode(String.self, forKey: .lastUserProfileImageURL)
         lastAuthType = try? c.decode(AuthType.self, forKey: .lastAuthType)
         hasActiveSession = (try? c.decode(Bool.self, forKey: .hasActiveSession)) ?? false
+        savedAccounts = (try? c.decode([SavedAccount].self, forKey: .savedAccounts)) ?? []
+        activeAccountId = try? c.decode(String.self, forKey: .activeAccountId)
         apiKey = nil // always nil from storage; loaded from Keychain at runtime
     }
 
@@ -127,7 +139,9 @@ struct ServerConfig: Codable, Identifiable, Hashable, Sendable {
         lastUserEmail: String? = nil,
         lastUserProfileImageURL: String? = nil,
         lastAuthType: AuthType? = nil,
-        hasActiveSession: Bool = false
+        hasActiveSession: Bool = false,
+        savedAccounts: [SavedAccount] = [],
+        activeAccountId: String? = nil
     ) {
         self.id = id
         self.name = name
@@ -149,6 +163,8 @@ struct ServerConfig: Codable, Identifiable, Hashable, Sendable {
         self.lastUserProfileImageURL = lastUserProfileImageURL
         self.lastAuthType = lastAuthType
         self.hasActiveSession = hasActiveSession
+        self.savedAccounts = savedAccounts
+        self.activeAccountId = activeAccountId
     }
 
     /// Whether the persisted `cf_clearance` cookie is still valid (not expired).

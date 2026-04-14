@@ -333,29 +333,21 @@ final class KnowledgeManager {
     func updateAccessGrants(knowledgeId: String, grants: [AccessGrant], isPublic: Bool = false) async throws -> [AccessGrant] {
         var payload: [[String: Any]] = []
         for grant in grants {
-            guard let userId = grant.userId else { continue }
-            // Always include a "read" entry
-            payload.append([
-                "principal_type": "user",
-                "principal_id": userId,
-                "permission": "read"
-            ])
-            // For write access, also include a "write" entry
-            if grant.write {
-                payload.append([
-                    "principal_type": "user",
-                    "principal_id": userId,
-                    "permission": "write"
-                ])
+            if let userId = grant.userId {
+                payload.append(["principal_type": "user", "principal_id": userId, "permission": "read"])
+                if grant.write {
+                    payload.append(["principal_type": "user", "principal_id": userId, "permission": "write"])
+                }
+            } else if let groupId = grant.groupId {
+                payload.append(["principal_type": "group", "principal_id": groupId, "permission": "read"])
+                if grant.write {
+                    payload.append(["principal_type": "group", "principal_id": groupId, "permission": "write"])
+                }
             }
         }
         // Public mode: add wildcard grant so all users can read
         if isPublic {
-            payload.append([
-                "principal_type": "user",
-                "principal_id": "*",
-                "permission": "read"
-            ])
+            payload.append(["principal_type": "user", "principal_id": "*", "permission": "read"])
         }
         let json = try await apiClient.updateKnowledgeAccessGrants(id: knowledgeId, grants: payload)
         if let grantsArray = json["access_grants"] as? [[String: Any]] {

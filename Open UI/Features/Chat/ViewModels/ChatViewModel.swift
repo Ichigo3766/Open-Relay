@@ -614,7 +614,7 @@ final class ChatViewModel {
                 }
                 // Only surface the error if the task wasn't explicitly cancelled
                 if !Task.isCancelled {
-                    self.errorMessage = "Transcription failed: \(error.localizedDescription)"
+                    self.errorMessage = error.localizedDescription
                     self.logger.error("Transcription failed for \(fileName): \(error.localizedDescription)")
                 }
             }
@@ -762,7 +762,7 @@ final class ChatViewModel {
             }
         } catch {
             logger.error("Failed to load conversation: \(error.localizedDescription)")
-            errorMessage = "Failed to load conversation: \(error.localizedDescription)"
+            errorMessage = error.localizedDescription
         }
         isLoadingConversation = false
     }
@@ -2188,7 +2188,7 @@ final class ChatViewModel {
             NotificationCenter.default.post(name: .conversationListNeedsRefresh, object: nil)
         } catch {
             logger.error("Failed to save temporary chat: \(error.localizedDescription)")
-            errorMessage = "Failed to save chat: \(error.localizedDescription)"
+            errorMessage = error.localizedDescription
         }
     }
 

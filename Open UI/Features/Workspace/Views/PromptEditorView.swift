@@ -26,9 +26,9 @@ struct PromptEditorView: View {
     @State private var commitMessage: String = ""
 
     // MARK: Access picker state
-    @State private var showUserPicker: Bool = false
     @State private var isUpdatingAccess: Bool = false
     @State private var accessUpdateError: String?
+    @State private var resolvedGroups: [String: GroupResponse] = [:]
 
     // MARK: Auto-fill state
     @State private var commandManuallyEdited = false
@@ -62,12 +62,6 @@ struct PromptEditorView: View {
     private var filteredTagSuggestions: [String] {
         guard !newTag.isEmpty else { return allTags.filter { !tags.contains($0) } }
         return allTags.filter { $0.lowercased().contains(newTag.lowercased()) && !tags.contains($0) }
-    }
-
-    /// Users who currently have access, resolved from allUsers for display names.
-    private var accessedUsers: [ChannelMember] {
-        let ids = Set(localAccessGrants.compactMap { $0.userId })
-        return allUsers.filter { ids.contains($0.id) }
     }
 
     private var serverBaseURL: String { dependencies.apiClient?.baseURL ?? "" }
@@ -118,22 +112,6 @@ struct PromptEditorView: View {
                     manager: manager
                 )
             }
-            .sheet(isPresented: $showUserPicker) {
-                WorkspaceAddAccessSheet(
-                    existingUserIds: Set(localAccessGrants.compactMap { $0.userId }),
-                    allUsers: allUsers,
-                    isLoading: isUpdatingAccess,
-                    serverBaseURL: serverBaseURL,
-                    authToken: authToken,
-                    onAdd: { selectedIds in
-                        showUserPicker = false
-                        Task { await addUsers(selectedIds) }
-                    },
-                    onCancel: { showUserPicker = false }
-                )
-                .presentationDetents([.medium, .large])
-                .presentationDragIndicator(.visible)
-            }
             .confirmationDialog(
                 "Discard Changes?",
                 isPresented: $showDiscardConfirm,
@@ -163,7 +141,10 @@ struct PromptEditorView: View {
         }
         .onAppear {
             populateFromExisting()
-            Task { await manager?.fetchAllUsers() }
+            Task {
+                await manager?.fetchAllUsers()
+                await resolveGroupNames()
+            }
         }
     }
 
@@ -206,10 +187,11 @@ struct PromptEditorView: View {
                                 .foregroundStyle(theme.brandPrimary)
                             TextField("summarize", text: $command)
                                 .scaledFont(size: 15)
-                                .foregroundStyle(theme.textPrimary)
+                                .foregroundStyle(isEditMode ? theme.textSecondary : theme.textPrimary)
                                 .focused($focusedField, equals: .command)
                                 .autocorrectionDisabled()
                                 .autocapitalization(.none)
+                                .disabled(isEditMode)
                                 .onChange(of: command) { _, new in
                                     if new.hasPrefix("/") { command = String(new.dropFirst()) }
                                     command = command.replacingOccurrences(of: " ", with: "")
@@ -392,157 +374,32 @@ struct PromptEditorView: View {
         }
     }
 
-    // MARK: - Access Control Section
+    // MARK: - Access Control Section (shared component)
 
     @ViewBuilder
     private var accessControlSection: some View {
-        VStack(spacing: 0) {
-            // Visibility Picker row
-            HStack(spacing: Spacing.sm) {
-                Image(systemName: isPrivate ? "lock.fill" : "globe")
-                    .scaledFont(size: 16)
-                    .foregroundStyle(isPrivate ? theme.textSecondary : theme.brandPrimary)
-                    .frame(width: 20)
-
-                Text("Access")
-                    .scaledFont(size: 15)
-                    .foregroundStyle(theme.textPrimary)
-
-                Spacer()
-
-                if isUpdatingAccess {
-                    ProgressView().controlSize(.mini).tint(theme.brandPrimary)
-                        .padding(.trailing, 4)
-                }
-
-                Picker("", selection: $isPrivate) {
-                    Text("Private").tag(true)
-                    Text("Public").tag(false)
-                }
-                .pickerStyle(.menu)
-                .tint(theme.brandPrimary)
-                .scaledFont(size: 15)
-                .onChange(of: isPrivate) { _, newVal in
-                    Task { await handleAccessModeChange(isPrivate: newVal) }
-                }
+        AccessControlSection(
+            localAccessGrants: $localAccessGrants,
+            isPrivate: $isPrivate,
+            allUsers: allUsers,
+            resolvedGroups: resolvedGroups,
+            isUpdating: isUpdatingAccess,
+            serverBaseURL: serverBaseURL,
+            authToken: authToken,
+            apiClient: dependencies.apiClient,
+            onAccessModeChange: { newVal in
+                await handleAccessModeChange(isPrivate: newVal)
+            },
+            onTogglePermission: { principalId, isGroup, currentlyWrite in
+                await togglePermission(principalId: principalId, isGroup: isGroup, currentlyWrite: currentlyWrite)
+            },
+            onRemoveGrant: { principalId, isGroup in
+                await removeGrant(principalId: principalId, isGroup: isGroup)
+            },
+            onAddGrants: { userIds, groupIds in
+                await addGrants(userIds: userIds, groupIds: groupIds)
             }
-            .padding(.horizontal, Spacing.md)
-            .padding(.vertical, 12)
-
-            Divider().background(theme.inputBorder.opacity(0.4))
-            accessListSection
-        }
-    }
-
-    @ViewBuilder
-    private var accessListSection: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            // Header
-            HStack {
-                Text("Access List")
-                    .scaledFont(size: 13, weight: .semibold)
-                    .foregroundStyle(theme.textSecondary)
-                Spacer()
-            }
-            .padding(.horizontal, Spacing.md)
-            .padding(.top, 10)
-            .padding(.bottom, 6)
-
-            if localAccessGrants.isEmpty {
-                Text("No access grants. Private to you.")
-                    .scaledFont(size: 13)
-                    .foregroundStyle(theme.textTertiary)
-                    .padding(.horizontal, Spacing.md)
-                    .padding(.bottom, 10)
-            } else {
-                ForEach(accessedUsers) { user in
-                    accessUserRow(user)
-
-                    Divider()
-                        .background(theme.inputBorder.opacity(0.3))
-                        .padding(.leading, Spacing.md + 42)
-                }
-            }
-
-            // Add Access button
-            Button {
-                Haptics.play(.light)
-                showUserPicker = true
-            } label: {
-                HStack(spacing: 6) {
-                    Image(systemName: "person.badge.plus")
-                        .scaledFont(size: 14)
-                        .foregroundStyle(theme.brandPrimary)
-                    Text("Add Access")
-                        .scaledFont(size: 15)
-                        .foregroundStyle(theme.brandPrimary)
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .padding(.horizontal, Spacing.md)
-            .padding(.vertical, 12)
-        }
-    }
-
-    @ViewBuilder
-    private func accessUserRow(_ user: ChannelMember) -> some View {
-        HStack(spacing: Spacing.sm) {
-            UserAvatar(
-                size: 30,
-                imageURL: user.resolveAvatarURL(serverBaseURL: serverBaseURL),
-                name: user.displayName,
-                authToken: authToken
-            )
-            VStack(alignment: .leading, spacing: 1) {
-                Text(user.displayName)
-                    .scaledFont(size: 14, weight: .medium)
-                    .foregroundStyle(theme.textPrimary)
-                if let role = user.role {
-                    Text(role.capitalized)
-                        .scaledFont(size: 11)
-                        .foregroundStyle(theme.textTertiary)
-                }
-            }
-            Spacer()
-
-            // READ / WRITE permission toggle button
-            if let grant = localAccessGrants.first(where: { $0.userId == user.id }) {
-                Button {
-                    Task { await toggleUserPermission(userId: user.id, currentlyWrite: grant.write) }
-                } label: {
-                    Text(grant.write ? "Write" : "Read")
-                        .scaledFont(size: 11, weight: .semibold)
-                        // WRITE: accent-colored pill (brandOnPrimary text on brandPrimary bg)
-                        // READ:  subtle surface pill (textSecondary text on surfaceContainerHighest bg)
-                        .foregroundStyle(grant.write ? theme.brandOnPrimary : theme.textSecondary)
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 4)
-                        .background(grant.write ? theme.brandPrimary : theme.surfaceContainerHighest)
-                        .clipShape(Capsule())
-                        .overlay(
-                            Capsule()
-                                .stroke(grant.write ? Color.clear : theme.inputBorder.opacity(0.5), lineWidth: 1)
-                        )
-                }
-                .buttonStyle(.plain)
-                .disabled(isUpdatingAccess)
-            }
-
-            // Remove button
-            Button {
-                Task { await removeUser(user.id) }
-            } label: {
-                Image(systemName: "xmark.circle.fill")
-                    .scaledFont(size: 18)
-                    .foregroundStyle(theme.textTertiary)
-            }
-            .buttonStyle(.plain)
-            .disabled(isUpdatingAccess)
-        }
-        .padding(.horizontal, Spacing.md)
-        .padding(.vertical, 8)
+        )
     }
 
     private var commitSection: some View {
@@ -616,18 +473,14 @@ struct PromptEditorView: View {
 
     // MARK: - Access Control Actions
 
-    /// Called when user switches between Private / Public.
-    /// Immediately calls the API to persist the change (edit mode only).
     private func handleAccessModeChange(isPrivate: Bool) async {
         guard let id = existing?.id, let manager else { return }
-        let grantsToSend = localAccessGrants
         isUpdatingAccess = true
         do {
-            let updated = try await manager.updateAccessGrants(promptId: id, grants: grantsToSend, isPublic: !isPrivate)
+            let updated = try await manager.updateAccessGrants(promptId: id, grants: localAccessGrants, isPublic: !isPrivate)
             localAccessGrants = updated
             Haptics.notify(.success)
         } catch {
-            // Revert on failure
             self.isPrivate = !isPrivate
             accessUpdateError = error.localizedDescription
             Haptics.notify(.error)
@@ -635,40 +488,37 @@ struct PromptEditorView: View {
         isUpdatingAccess = false
     }
 
-    private func addUsers(_ userIds: [String]) async {
+    private func addGrants(userIds: [String], groupIds: [String]) async {
         guard let id = existing?.id, let manager else {
-            // In create mode, just add locally with read permission
             for userId in userIds {
                 if !localAccessGrants.contains(where: { $0.userId == userId }) {
-                    localAccessGrants.append(AccessGrant(
-                        id: UUID().uuidString,
-                        userId: userId,
-                        groupId: nil,
-                        read: true,
-                        write: false
-                    ))
+                    localAccessGrants.append(AccessGrant(id: UUID().uuidString, userId: userId, groupId: nil, read: true, write: false))
+                }
+            }
+            for groupId in groupIds {
+                if !localAccessGrants.contains(where: { $0.groupId == groupId }) {
+                    localAccessGrants.append(AccessGrant(id: UUID().uuidString, userId: nil, groupId: groupId, read: true, write: false))
                 }
             }
             Haptics.notify(.success)
             return
         }
-
         isUpdatingAccess = true
         var newGrants = localAccessGrants
         for userId in userIds {
             if !newGrants.contains(where: { $0.userId == userId }) {
-                newGrants.append(AccessGrant(
-                    id: UUID().uuidString,
-                    userId: userId,
-                    groupId: nil,
-                    read: true,
-                    write: false
-                ))
+                newGrants.append(AccessGrant(id: UUID().uuidString, userId: userId, groupId: nil, read: true, write: false))
+            }
+        }
+        for groupId in groupIds {
+            if !newGrants.contains(where: { $0.groupId == groupId }) {
+                newGrants.append(AccessGrant(id: UUID().uuidString, userId: nil, groupId: groupId, read: true, write: false))
             }
         }
         do {
             let updated = try await manager.updateAccessGrants(promptId: id, grants: newGrants)
             localAccessGrants = updated
+            await resolveGroupNames()
             Haptics.notify(.success)
         } catch {
             accessUpdateError = error.localizedDescription
@@ -677,26 +527,23 @@ struct PromptEditorView: View {
         isUpdatingAccess = false
     }
 
-    /// Toggles a user's permission between READ and WRITE.
-    private func toggleUserPermission(userId: String, currentlyWrite: Bool) async {
-        guard let idx = localAccessGrants.firstIndex(where: { $0.userId == userId }) else { return }
-        let existing = localAccessGrants[idx]
-        let newGrant = AccessGrant(
-            id: existing.id,
-            userId: existing.userId,
-            groupId: existing.groupId,
-            read: true,
-            write: !currentlyWrite
-        )
+    private func togglePermission(principalId: String, isGroup: Bool, currentlyWrite: Bool) async {
+        let idx: Array<AccessGrant>.Index?
+        if isGroup {
+            idx = localAccessGrants.firstIndex(where: { $0.groupId == principalId })
+        } else {
+            idx = localAccessGrants.firstIndex(where: { $0.userId == principalId })
+        }
+        guard let idx else { return }
+        let old = localAccessGrants[idx]
+        let newGrant = AccessGrant(id: old.id, userId: old.userId, groupId: old.groupId, read: true, write: !currentlyWrite)
         var newGrants = localAccessGrants
         newGrants[idx] = newGrant
-
         guard let id = self.existing?.id, let manager else {
             localAccessGrants = newGrants
             Haptics.play(.light)
             return
         }
-
         isUpdatingAccess = true
         do {
             let updated = try await manager.updateAccessGrants(promptId: id, grants: newGrants)
@@ -709,15 +556,22 @@ struct PromptEditorView: View {
         isUpdatingAccess = false
     }
 
-    private func removeUser(_ userId: String) async {
+    private func removeGrant(principalId: String, isGroup: Bool) async {
         guard let id = existing?.id, let manager else {
-            localAccessGrants.removeAll { $0.userId == userId }
+            if isGroup {
+                localAccessGrants.removeAll { $0.groupId == principalId }
+            } else {
+                localAccessGrants.removeAll { $0.userId == principalId }
+            }
             Haptics.play(.light)
             return
         }
-
         withAnimation(.easeInOut(duration: 0.2)) {
-            localAccessGrants.removeAll { $0.userId == userId }
+            if isGroup {
+                localAccessGrants.removeAll { $0.groupId == principalId }
+            } else {
+                localAccessGrants.removeAll { $0.userId == principalId }
+            }
         }
         isUpdatingAccess = true
         do {
@@ -725,7 +579,6 @@ struct PromptEditorView: View {
             localAccessGrants = updated
             Haptics.play(.light)
         } catch {
-            // Restore on failure
             if let detail = try? await manager.getPromptDetail(id: id) {
                 localAccessGrants = detail.accessGrants
             }
@@ -733,6 +586,19 @@ struct PromptEditorView: View {
             Haptics.notify(.error)
         }
         isUpdatingAccess = false
+    }
+
+    private func resolveGroupNames() async {
+        guard let api = dependencies.apiClient else { return }
+        let groupIds = Set(localAccessGrants.compactMap(\.groupId))
+        let unknownIds = groupIds.subtracting(resolvedGroups.keys)
+        guard !unknownIds.isEmpty else { return }
+        do {
+            let groups = try await api.getGroups()
+            for g in groups where unknownIds.contains(g.id) {
+                resolvedGroups[g.id] = g
+            }
+        } catch {}
     }
 
     // MARK: - Helpers
@@ -1093,145 +959,6 @@ private struct PromptHistoryView: View {
     }
 }
 
-// MARK: - Workspace Add Access Sheet
-// Generic user picker reused by both PromptEditorView and KnowledgeEditorView.
-
-struct WorkspaceAddAccessSheet: View {
-    @Environment(\.theme) private var theme
-
-    let existingUserIds: Set<String>
-    let allUsers: [ChannelMember]
-    let isLoading: Bool
-    var serverBaseURL: String = ""
-    var authToken: String?
-    let onAdd: ([String]) -> Void
-    let onCancel: () -> Void
-
-    @State private var searchText = ""
-    @State private var selectedUserIds: Set<String> = []
-
-    private var availableUsers: [ChannelMember] {
-        let filtered = allUsers.filter { !existingUserIds.contains($0.id) }
-        if searchText.isEmpty { return filtered }
-        let q = searchText.lowercased()
-        return filtered.filter {
-            ($0.name ?? "").lowercased().contains(q) ||
-            $0.email.lowercased().contains(q)
-        }
-    }
-
-    var body: some View {
-        NavigationStack {
-            VStack(spacing: 0) {
-                // Search bar
-                HStack(spacing: 8) {
-                    Image(systemName: "magnifyingglass")
-                        .foregroundStyle(theme.textTertiary)
-                    TextField("Search users…", text: $searchText)
-                        .scaledFont(size: 15)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-                }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 10)
-                .background(theme.surfaceContainer.opacity(0.5))
-                .clipShape(RoundedRectangle(cornerRadius: 10))
-                .padding(.horizontal, Spacing.screenPadding)
-                .padding(.top, 8)
-
-                if availableUsers.isEmpty {
-                    ContentUnavailableView {
-                        Label("No Users", systemImage: "person.slash")
-                    } description: {
-                        Text(searchText.isEmpty
-                            ? "All available users already have access."
-                            : "No users match your search.")
-                    }
-                } else {
-                    Text("Users")
-                        .scaledFont(size: 12, weight: .semibold)
-                        .foregroundStyle(theme.textTertiary)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.horizontal, Spacing.screenPadding)
-                        .padding(.top, 12)
-                        .padding(.bottom, 4)
-
-                    List(availableUsers) { user in
-                        Button {
-                            if selectedUserIds.contains(user.id) {
-                                selectedUserIds.remove(user.id)
-                            } else {
-                                selectedUserIds.insert(user.id)
-                            }
-                        } label: {
-                            HStack(spacing: Spacing.sm) {
-                                UserAvatar(
-                                    size: 32,
-                                    imageURL: user.resolveAvatarURL(serverBaseURL: serverBaseURL),
-                                    name: user.displayName,
-                                    authToken: authToken
-                                )
-                                VStack(alignment: .leading, spacing: 1) {
-                                    Text(user.displayName)
-                                        .scaledFont(size: 15, weight: .medium)
-                                        .foregroundStyle(theme.textPrimary)
-                                    Text(user.role?.capitalized ?? "User")
-                                        .scaledFont(size: 12)
-                                        .foregroundStyle(theme.textTertiary)
-                                }
-                                Spacer()
-                                Image(systemName: selectedUserIds.contains(user.id)
-                                      ? "checkmark.square.fill" : "square")
-                                    .scaledFont(size: 20)
-                                    .foregroundStyle(selectedUserIds.contains(user.id)
-                                                     ? theme.brandPrimary : theme.textTertiary)
-                            }
-                        }
-                        .buttonStyle(.plain)
-                    }
-                    .listStyle(.plain)
-                }
-
-                // Add button
-                Button {
-                    onAdd(Array(selectedUserIds))
-                } label: {
-                    HStack(spacing: 8) {
-                        if isLoading {
-                            ProgressView().controlSize(.small).tint(.white)
-                        }
-                        Text(isLoading ? "Adding…" : "Add \(selectedUserIds.isEmpty ? "" : "(\(selectedUserIds.count))")")
-                            .scaledFont(size: 16, weight: .semibold)
-                            .foregroundStyle(.white)
-                    }
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 12)
-                    .background(selectedUserIds.isEmpty || isLoading
-                                ? theme.textTertiary.opacity(0.3)
-                                : theme.brandPrimary)
-                    .clipShape(RoundedRectangle(cornerRadius: 12))
-                }
-                .disabled(selectedUserIds.isEmpty || isLoading)
-                .padding(.horizontal, Spacing.screenPadding)
-                .padding(.vertical, 12)
-            }
-            .background(theme.background)
-            .navigationTitle("Add Access")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button {
-                        onCancel()
-                    } label: {
-                        Image(systemName: "xmark")
-                            .scaledFont(size: 14, weight: .semibold)
-                    }
-                    .disabled(isLoading)
-                }
-            }
-        }
-    }
-}
 
 // MARK: - Flow Layout (wrapping HStack for tags)
 

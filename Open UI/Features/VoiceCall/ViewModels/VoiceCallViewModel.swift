@@ -244,6 +244,12 @@ final class VoiceCallViewModel {
     func applySpeakerOverride() {
         do {
             let session = AVAudioSession.sharedInstance()
+            // Don't override routing when audio is going through CarPlay or BT HFP —
+            // overrideOutputAudioPort(.speaker) would pull audio away from the car.
+            let isCarPlayOrHFP = session.currentRoute.outputs.contains { output in
+                output.portType == .carAudio || output.portType == .bluetoothHFP
+            }
+            guard !isCarPlayOrHFP else { return }
             try session.overrideOutputAudioPort(isSpeakerOn ? .speaker : .none)
         } catch {
             logger.warning("Speaker override failed: \(error.localizedDescription)")
@@ -444,13 +450,16 @@ final class VoiceCallViewModel {
             return
         }
 
-        // Reconfigure audio session for recording (TTS may have left it in .playback)
+        // Reconfigure audio session for recording (TTS may have left it in .playback).
+        // .allowBluetooth enables HFP input (car mic / BT headset mic).
+        // .allowBluetoothA2DP enables A2DP output.
+        // Without .allowBluetooth the CarPlay / BT mic is not routed and STT hears silence.
         do {
             let session = AVAudioSession.sharedInstance()
             try session.setCategory(.playAndRecord, mode: .voiceChat,
-                                    options: [.defaultToSpeaker, .allowBluetoothA2DP])
+                                    options: [.defaultToSpeaker, .allowBluetooth, .allowBluetoothA2DP])
             try session.setActive(true)
-            try session.overrideOutputAudioPort(isSpeakerOn ? .speaker : .none)
+            applySpeakerOverride()
         } catch {
             logger.warning("Audio session reconfig for listening: \(error.localizedDescription)")
         }
@@ -543,14 +552,15 @@ final class VoiceCallViewModel {
         // AVAudioRecorder also needs a moment.
         try? await Task.sleep(for: .milliseconds(400))
 
-        // Pre-configure the audio session to .playback before TTS starts.
+        // Pre-configure the audio session before TTS starts.
+        // Keep .allowBluetooth so CarPlay / BT HFP stays routed for the full cycle.
         for attempt in 1...3 {
             do {
                 let session = AVAudioSession.sharedInstance()
                 try session.setCategory(.playAndRecord, mode: .voiceChat,
-                                        options: [.defaultToSpeaker, .allowBluetoothA2DP])
+                                        options: [.defaultToSpeaker, .allowBluetooth, .allowBluetoothA2DP])
                 try session.setActive(true)
-                try session.overrideOutputAudioPort(isSpeakerOn ? .speaker : .none)
+                applySpeakerOverride()
                 break
             } catch {
                 logger.warning("Audio session attempt \(attempt)/3: \(error.localizedDescription)")

@@ -62,7 +62,7 @@ struct AppearanceSettingsView: View {
         }
         .background(theme.background)
         .navigationTitle("Appearance")
-        .navigationBarTitleDisplayMode(.large)
+        .navigationBarTitleDisplayMode(.inline)
     }
 
     // MARK: - Live Preview Card

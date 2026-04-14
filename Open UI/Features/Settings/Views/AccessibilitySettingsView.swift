@@ -98,7 +98,7 @@ struct AccessibilitySettingsView: View {
         }
         .background(theme.background)
         .navigationTitle("Accessibility")
-        .navigationBarTitleDisplayMode(.large)
+        .navigationBarTitleDisplayMode(.inline)
     }
 
     // MARK: - Live Preview Card
