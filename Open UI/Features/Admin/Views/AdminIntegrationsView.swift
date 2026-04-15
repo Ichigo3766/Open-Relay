@@ -1310,7 +1310,7 @@ struct IntegrationAddAccessSheet: View {
                                                 Text(user.name ?? "Unknown")
                                                     .scaledFont(size: 15, weight: .medium)
                                                     .foregroundStyle(theme.textPrimary)
-                                                Text(user.email ?? "")
+                                                Text(user.email)
                                                     .scaledFont(size: 12)
                                                     .foregroundStyle(theme.textTertiary)
                                             }

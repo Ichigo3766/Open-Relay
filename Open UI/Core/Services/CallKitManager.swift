@@ -143,7 +143,7 @@ extension CallKitManager: CXProviderDelegate {
         let audioSession = AVAudioSession.sharedInstance()
         do {
             try audioSession.setCategory(.playAndRecord, mode: .voiceChat,
-                                         options: [.defaultToSpeaker, .allowBluetooth, .allowBluetoothA2DP])
+                                         options: [.defaultToSpeaker, .allowBluetoothHFP, .allowBluetoothA2DP])
             try audioSession.setActive(true)
         } catch {
             // Log but don't fail the call
