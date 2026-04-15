@@ -61,17 +61,8 @@ enum TTSTextPreprocessor {
 
         if nonLatin {
             // For non-Latin scripts: minimal cleanup only.
-            // Kokoro's language-specific G2P (lexicon or neural byT5) handles phonemization.
-            // We must NOT apply English markdown/abbreviation transforms that would mangle
-            // Devanagari, CJK, or other non-Latin characters.
-
-            // Remove URLs
             result = removeURLs(result)
-
-            // Remove emoji
             result = removeEmoji(result)
-
-            // Light whitespace cleanup (no paragraph-to-period conversion)
             result = result.replacingOccurrences(of: "\n", with: " ")
             result = result.replacingOccurrences(
                 of: "\\s{2,}", with: " ", options: .regularExpression
@@ -79,27 +70,29 @@ enum TTSTextPreprocessor {
             return result.trimmingCharacters(in: .whitespacesAndNewlines)
         }
 
-        // 6. Strip markdown formatting — headers become sentence boundaries,
-        //    tables are dropped, abbreviations are expanded for natural pauses
+        // 6. Strip markdown formatting
         result = stripMarkdown(result)
 
-        // 7. Replace compound-word hyphens with spaces so Kokoro reads them naturally.
-        //    "Account-Level" → "Account Level", "Auto-created" → "Auto created"
-        //    Only matches hyphens directly between word characters (no spaces around them),
-        //    so em dashes (— or " - ") and markdown horizontal rules are unaffected.
+        // 7. Replace compound-word hyphens with spaces
         result = result.replacingOccurrences(
             of: "(\\w)-(\\w)",
             with: "$1 $2",
             options: .regularExpression
         )
 
-        // 8. Remove URLs
+        // 8. Normalize math operators, symbols, currency, and common acronyms
+        result = normalizeMathAndSymbols(result)
+
+        // 9. Expand standalone numbers to words so Kokoro's G2P pronounces them correctly
+        result = expandNumbersToWords(result)
+
+        // 10. Remove URLs
         result = removeURLs(result)
 
-        // 9. Remove emoji (they sound terrible when read aloud)
+        // 11. Remove emoji
         result = removeEmoji(result)
 
-        // 10. Clean up whitespace
+        // 12. Clean up whitespace
         result = cleanWhitespace(result)
 
         return result
@@ -111,13 +104,10 @@ enum TTSTextPreprocessor {
     private static let maxChunkChars = 200
 
     /// Splits text into natural speakable chunks for TTS synthesis.
-    /// Sentences preserve their original content; a trailing period is added
-    /// only if the sentence doesn't already end with terminal punctuation.
     static func splitIntoSentences(_ text: String) -> [String] {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return [] }
 
-        // Use NLTokenizer for proper sentence splitting
         var sentences: [String] = []
         let tokenizer = NLTokenizer(unit: .sentence)
         tokenizer.string = trimmed
@@ -135,7 +125,6 @@ enum TTSTextPreprocessor {
             sentences = [trimmed]
         }
 
-        // Split any sentences that are too long for the model
         var result: [String] = []
         for sentence in sentences {
             if sentence.count > maxChunkChars {
@@ -145,20 +134,11 @@ enum TTSTextPreprocessor {
             }
         }
 
-        // Merge very short fragments
         return mergeShortFragments(result, minLength: 20)
     }
 
     // MARK: - Streaming TTS Extraction (Character-Offset Based)
 
-    /// Extracts new complete sentences from streaming text that haven't been spoken yet.
-    /// Uses character-offset tracking instead of sentence counting for robustness —
-    /// as text accumulates, sentence boundaries can shift, so counting sentences is unreliable.
-    ///
-    /// - Parameters:
-    ///   - text: The accumulated raw response text so far
-    ///   - alreadySpokenLength: Number of characters of *cleaned* text already enqueued
-    /// - Returns: Tuple of (new chunks to speak, updated spoken length)
     static func extractNewSpeakableChunks(
         from text: String,
         alreadySpokenLength: Int
@@ -166,16 +146,12 @@ enum TTSTextPreprocessor {
         let cleaned = prepareForSpeech(text)
         guard !cleaned.isEmpty else { return ([], alreadySpokenLength) }
 
-        // Find the last terminal punctuation in the cleaned text.
-        // Everything up to (and including) it is "safe" to speak.
-        // The remainder after it is still being streamed and might be incomplete.
         let safeEndIndex = findLastSentenceEnd(in: cleaned)
 
         guard safeEndIndex > alreadySpokenLength else {
             return ([], alreadySpokenLength)
         }
 
-        // Extract the new safe text (from where we left off to the safe boundary)
         let startIdx = cleaned.index(cleaned.startIndex, offsetBy: alreadySpokenLength)
         let endIdx = cleaned.index(cleaned.startIndex, offsetBy: safeEndIndex)
         let newText = String(cleaned[startIdx..<endIdx])
@@ -189,8 +165,6 @@ enum TTSTextPreprocessor {
         return (chunks, safeEndIndex)
     }
 
-    /// Extracts ALL remaining text as chunks when streaming is complete.
-    /// Called when `done:true` is received — everything remaining is safe to speak.
     static func extractFinalChunks(
         from text: String,
         alreadySpokenLength: Int
@@ -212,12 +186,7 @@ enum TTSTextPreprocessor {
         return (chunks, cleaned.count)
     }
 
-    /// Finds the character offset of the end of the last complete sentence or clause.
-    /// A sentence ends at `.`, `!`, `?`, or `:` followed by a space or end of string.
-    /// Also treats `,` followed by space as a minor clause boundary (lower priority)
-    /// so streaming TTS can start sooner when the first sentence hasn't finished yet.
     private static func findLastSentenceEnd(in text: String) -> Int {
-        // Primary terminators — always safe to split here
         let strongTerminators: Set<Character> = [".", "!", "?", ":"]
         var lastStrongEnd = 0
         var lastCommaEnd = 0
@@ -227,7 +196,6 @@ enum TTSTextPreprocessor {
             let isComma = char == ","
 
             if isStrong || isComma {
-                // Check it's followed by a space, newline, or is the last char
                 let nextIndex = text.index(text.startIndex, offsetBy: i + 1, limitedBy: text.endIndex)
                 if nextIndex == nil || nextIndex == text.endIndex {
                     if isStrong { lastStrongEnd = i + 1 }
@@ -242,15 +210,11 @@ enum TTSTextPreprocessor {
             }
         }
 
-        // Prefer strong terminator; fall back to comma boundary only if
-        // no strong terminator found yet (helps start streaming sooner)
         return lastStrongEnd > 0 ? lastStrongEnd : lastCommaEnd
     }
 
     // MARK: - Legacy Compatibility (sentence-count based)
-    // Kept for non-streaming callers that use the old API.
 
-    /// Legacy: extract by sentence count. Prefer the character-offset versions above.
     static func extractNewSpeakableChunks(
         from text: String,
         alreadySpokenCount: Int
@@ -258,11 +222,10 @@ enum TTSTextPreprocessor {
         let cleaned = prepareForSpeech(text)
         let allSentences = splitIntoSentences(cleaned)
         let safeEnd = findLastSentenceEnd(in: cleaned)
-        // Only return sentences whose text falls within the safe boundary
         var safeSentences: [String] = []
         var charCount = 0
         for s in allSentences {
-            charCount += s.count + 1 // +1 for space between
+            charCount += s.count + 1
             if charCount <= safeEnd + 1 {
                 safeSentences.append(s)
             }
@@ -271,7 +234,6 @@ enum TTSTextPreprocessor {
         return Array(safeSentences[alreadySpokenCount...])
     }
 
-    /// Legacy: extract final by sentence count.
     static func extractFinalChunks(
         from text: String,
         alreadySpokenCount: Int
@@ -290,10 +252,6 @@ enum TTSTextPreprocessor {
         var result = text
 
         // --- Headers → standalone sentences ---
-        // Use regexReplace so (?m) enables multiline ^ anchor matching.
-        // Append a period so the header becomes a proper sentence boundary that
-        // NLTokenizer will split on — prevents it from running into the next paragraph.
-        // Only add period if the header doesn't already end with punctuation.
         result = regexReplace(result, pattern: "(?m)^#{1,6}\\s+(.+?)([.!?])?\\s*$") { match in
             let content = match.groups[0]
             let existingPunct = match.groups[1]
@@ -301,12 +259,9 @@ enum TTSTextPreprocessor {
         }
 
         // --- Remove markdown tables ---
-        // Table rows: lines starting and ending with | e.g. "| col1 | col2 |"
-        // Table separator lines: e.g. "|---|---|" or "| :--- | ---: |"
         result = regexReplace(result, pattern: "(?m)^\\|.*\\|\\s*$", with: "")
 
         // --- Remove task list checkboxes ---
-        // "- [ ] Item" or "- [x] Item" → "Item." (only add period if not already ending with punctuation)
         result = regexReplace(result, pattern: "(?m)^[\\-*+]\\s+\\[[ xX]\\]\\s+(.+)") { match in
             let content = match.groups[0]
             let last = content.last
@@ -314,8 +269,6 @@ enum TTSTextPreprocessor {
         }
 
         // --- Standalone bold lines acting as section headings → sentence boundary ---
-        // e.g. "**Prologue: The Shattered Pact**" or "**Title: ...**  " (with trailing spaces)
-        // Must come BEFORE generic bold removal so we catch full-line bold patterns first.
         result = regexReplace(result, pattern: "(?m)^\\*\\*(.+?)([.!?])?\\*\\*\\s*$") { match in
             let content = match.groups[0]
             let existingPunct = match.groups[1]
@@ -327,19 +280,32 @@ enum TTSTextPreprocessor {
             return existingPunct.isEmpty ? "\(content)." : "\(content)\(existingPunct)"
         }
 
-        // --- Bold (**text** or __text__) — inline bold within paragraphs ---
+        // --- Bold+Italic (***text*** or ___text___) — must come BEFORE bold/italic alone ---
         result = result.replacingOccurrences(
-            of: "\\*\\*([^*]+)\\*\\*",
+            of: "\\*{3}(.+?)\\*{3}",
             with: "$1",
             options: .regularExpression
         )
         result = result.replacingOccurrences(
-            of: "__([^_]+)__",
+            of: "_{3}(.+?)_{3}",
             with: "$1",
             options: .regularExpression
         )
 
-        // --- Italic (*text* or _text_) — careful not to match ** or __ ---
+        // --- Bold (**text** or __text__) — inline bold within paragraphs ---
+        // Use .+? (lazy) so "**26**" always matches even adjacent to other * chars.
+        result = result.replacingOccurrences(
+            of: "\\*\\*(.+?)\\*\\*",
+            with: "$1",
+            options: .regularExpression
+        )
+        result = result.replacingOccurrences(
+            of: "__(.+?)__",
+            with: "$1",
+            options: .regularExpression
+        )
+
+        // --- Italic (*text* or _text_) ---
         result = result.replacingOccurrences(
             of: "(?<!\\*)\\*([^*]+)\\*(?!\\*)",
             with: "$1",
@@ -348,6 +314,13 @@ enum TTSTextPreprocessor {
         result = result.replacingOccurrences(
             of: "(?<!_)_([^_]+)_(?!_)",
             with: "$1",
+            options: .regularExpression
+        )
+
+        // --- Safety net: strip any remaining stray asterisks ---
+        result = result.replacingOccurrences(
+            of: "\\*+",
+            with: "",
             options: .regularExpression
         )
 
@@ -376,7 +349,6 @@ enum TTSTextPreprocessor {
         result = regexReplace(result, pattern: "(?m)^>\\s*", with: "")
 
         // --- Bullet points → standalone sentences ---
-        // Only add period if the content doesn't already end with punctuation.
         result = regexReplace(result, pattern: "(?m)^[\\-*+]\\s+(.+)") { match in
             let content = match.groups[0]
             let last = content.last
@@ -384,7 +356,6 @@ enum TTSTextPreprocessor {
         }
 
         // --- Numbered lists → standalone sentences ---
-        // Only add period if the content doesn't already end with punctuation.
         result = regexReplace(result, pattern: "(?m)^\\d+\\.\\s+(.+)") { match in
             let content = match.groups[0]
             let last = content.last
@@ -402,8 +373,6 @@ enum TTSTextPreprocessor {
         )
 
         // --- Common abbreviation expansion for more natural pauses ---
-        // Replace BEFORE NLTokenizer sees the text so tokenizer doesn't
-        // accidentally split "e.g." into two sentences.
         result = expandAbbreviations(result)
 
         return result
@@ -411,7 +380,6 @@ enum TTSTextPreprocessor {
 
     // MARK: - Code & Tool Removal
 
-    /// Removes fenced code blocks (```...```).
     static func removeCodeBlocks(_ text: String) -> String {
         text.replacingOccurrences(
             of: "```[\\s\\S]*?```",
@@ -420,8 +388,6 @@ enum TTSTextPreprocessor {
         )
     }
 
-    /// Strips backtick delimiters from inline code, preserving the content.
-    /// e.g. `policyScope` → policyScope  (word is still spoken, backticks are not)
     static func removeInlineCode(_ text: String) -> String {
         text.replacingOccurrences(
             of: "`([^`]+)`",
@@ -430,14 +396,9 @@ enum TTSTextPreprocessor {
         )
     }
 
-    /// Removes LaTeX/math expressions that would sound unnatural when read aloud.
-    /// Handles both display math ($$...$$) and inline math ($...$).
     static func removeMathExpressions(_ text: String) -> String {
         var result = text
-        // Display math blocks $$...$$
         result = regexReplace(result, pattern: "(?s)\\$\\$.*?\\$\\$", with: "")
-        // Inline math $...$ — requires non-space first char to avoid matching
-        // currency like "$5.00" (which starts with a digit, not a letter/symbol)
         result = result.replacingOccurrences(
             of: "\\$(?=[^\\s\\d])(?:[^$\n]+?)\\$",
             with: "",
@@ -446,52 +407,34 @@ enum TTSTextPreprocessor {
         return result
     }
 
-    /// Removes tool call patterns and function call syntax.
     static func removeToolCalls(_ text: String) -> String {
         var result = text
-
-        // Remove JSON tool call blocks (use (?s) for dot-matches-newlines)
         result = regexReplace(result, pattern: "(?s)\\{\\s*\"tool_calls?\"\\s*:\\s*\\[.*?\\]\\s*\\}", with: "")
-
-        // Remove <tool_call>...</tool_call> XML-style blocks
         result = regexReplace(result, pattern: "(?s)<tool_call>.*?</tool_call>", with: "")
-
-        // Remove function_call patterns: name(args)
-        // Be careful not to remove normal parenthetical expressions
         result = result.replacingOccurrences(
             of: "\\b\\w+_\\w+\\([^)]*\\)",
             with: "",
             options: .regularExpression
         )
-
-        // Remove "Calling tool: ..." or "Using tool: ..." prefixes
         result = result.replacingOccurrences(
             of: "(?:Calling|Using|Executing)\\s+(?:tool|function)\\s*:?\\s*\\w+",
             with: "",
             options: [.regularExpression, .caseInsensitive]
         )
-
         return result
     }
 
-    /// Removes HTML tags (including <details> blocks from tool calls).
     static func removeHTMLTags(_ text: String) -> String {
         var result = text
-
-        // Remove <details>...</details> blocks entirely (use (?s) for dot-matches-newlines)
         result = regexReplace(result, pattern: "(?s)<details[^>]*>.*?</details>", with: "")
-
-        // Remove remaining HTML tags
         result = result.replacingOccurrences(
             of: "<[^>]+>",
             with: "",
             options: .regularExpression
         )
-
         return result
     }
 
-    /// Removes URLs from text.
     static func removeURLs(_ text: String) -> String {
         text.replacingOccurrences(
             of: "https?://\\S+",
@@ -500,11 +443,6 @@ enum TTSTextPreprocessor {
         )
     }
 
-    /// Removes emoji characters from text for cleaner TTS output.
-    ///
-    /// Uses Swift's `Character`-level emoji detection which correctly handles
-    /// all emoji forms including supplemental symbols (0x1F900-0x1F9FF),
-    /// flag sequences, skin tone modifiers, and ZWJ sequences.
     static func removeEmoji(_ text: String) -> String {
         String(text.filter { character in
             !character.unicodeScalars.contains(where: { scalar in
@@ -513,21 +451,123 @@ enum TTSTextPreprocessor {
         })
     }
 
+    // MARK: - Math & Symbol Normalization
+
+    private static func normalizeMathAndSymbols(_ text: String) -> String {
+        var result = text
+
+        result = result.replacingOccurrences(of: "°C", with: " degrees Celsius")
+        result = result.replacingOccurrences(of: "°F", with: " degrees Fahrenheit")
+        result = result.replacingOccurrences(of: "°",  with: " degrees")
+
+        result = result.replacingOccurrences(of: "×", with: " times ")
+        result = result.replacingOccurrences(of: "÷", with: " divided by ")
+
+        result = regexReplace(result, pattern: "(\\d)\\s*\\*\\s*(\\d)", with: "$1 times $2")
+        result = regexReplace(result, pattern: "(\\w)\\s*=\\s*(\\d)", with: "$1 equals $2")
+        result = regexReplace(result, pattern: "(\\d)\\s*\\+\\s*(\\d)", with: "$1 plus $2")
+        result = regexReplace(result, pattern: "(\\d)\\s*[\\-\\u2212]\\s*(\\d)", with: "$1 minus $2")
+        result = regexReplace(result, pattern: "(\\d)\\s*/\\s*(\\d)", with: "$1 divided by $2")
+        result = regexReplace(result, pattern: "(\\d)\\^(\\d+)", with: "$1 to the power of $2")
+        result = regexReplace(result, pattern: "(\\d)%", with: "$1 percent")
+
+        result = result.replacingOccurrences(of: "≈", with: " approximately equals ")
+        result = result.replacingOccurrences(of: "≠", with: " does not equal ")
+        result = result.replacingOccurrences(of: "≤", with: " is less than or equal to ")
+        result = result.replacingOccurrences(of: "≥", with: " is greater than or equal to ")
+        result = result.replacingOccurrences(of: "±", with: " plus or minus ")
+
+        result = regexReplace(result, pattern: "(\\d)\\s*<\\s*(\\d)", with: "$1 is less than $2")
+        result = regexReplace(result, pattern: "(\\d)\\s*>\\s*(\\d)", with: "$1 is greater than $2")
+
+        result = result.replacingOccurrences(of: "√", with: " square root of ")
+        result = result.replacingOccurrences(of: "π", with: " pi ")
+        result = result.replacingOccurrences(of: "∞", with: " infinity ")
+        result = result.replacingOccurrences(of: "∑", with: " sum of ")
+        result = result.replacingOccurrences(of: "∏", with: " product of ")
+        result = result.replacingOccurrences(of: "∫", with: " integral of ")
+        result = result.replacingOccurrences(of: "∂", with: " partial derivative of ")
+        result = result.replacingOccurrences(of: "Δ", with: " delta ")
+        result = result.replacingOccurrences(of: "α", with: " alpha ")
+        result = result.replacingOccurrences(of: "β", with: " beta ")
+        result = result.replacingOccurrences(of: "γ", with: " gamma ")
+        result = result.replacingOccurrences(of: "λ", with: " lambda ")
+        result = result.replacingOccurrences(of: "μ", with: " mu ")
+        result = result.replacingOccurrences(of: "σ", with: " sigma ")
+        result = result.replacingOccurrences(of: "θ", with: " theta ")
+        result = result.replacingOccurrences(of: "ω", with: " omega ")
+
+        result = regexReplace(result, pattern: "\\$(\\d)", with: "$1 dollars")
+        result = regexReplace(result, pattern: "€(\\d)", with: "$1 euros")
+        result = regexReplace(result, pattern: "£(\\d)", with: "$1 pounds")
+        result = regexReplace(result, pattern: "¥(\\d)", with: "$1 yen")
+        result = regexReplace(result, pattern: "₹(\\d)", with: "$1 rupees")
+
+        result = regexReplace(result, pattern: "(\\w)\\s*&\\s*(\\w)", with: "$1 and $2")
+        result = regexReplace(result, pattern: "(\\w)\\s*@\\s*(\\w)", with: "$1 at $2")
+        result = result.replacingOccurrences(of: "→", with: " to ")
+        result = result.replacingOccurrences(of: "←", with: " from ")
+        result = result.replacingOccurrences(of: "↑", with: " up ")
+        result = result.replacingOccurrences(of: "↓", with: " down ")
+        result = regexReplace(result, pattern: "~(\\d)", with: "approximately $1")
+        result = result.replacingOccurrences(of: "…", with: ", ")
+        result = regexReplace(result, pattern: "#(\\d)", with: "number $1")
+
+        return result
+    }
+
+    // MARK: - Number Expansion
+
+    /// Expands standalone Arabic numerals to their English word equivalents so that
+    /// Kokoro's G2P reliably pronounces them (e.g. "26" → "twenty-six").
+    /// Integers and simple decimals are expanded; tokens that are part of alphanumeric
+    /// identifiers (e.g. "h264", "mp3", "v2") are intentionally skipped.
+    private static func expandNumbersToWords(_ text: String) -> String {
+        let formatter = NumberFormatter()
+        formatter.numberStyle = .spellOut
+        formatter.locale = Locale(identifier: "en_US")
+
+        guard let regex = try? NSRegularExpression(
+            // Match a number that is NOT immediately preceded or followed by a letter/underscore.
+            pattern: "(?<![A-Za-z_])(\\d{1,15}(?:\\.\\d+)?)(?![A-Za-z_%])"
+        ) else { return text }
+
+        let nsText = text as NSString
+        var result = text
+        let matches = regex.matches(in: text, range: NSRange(text.startIndex..., in: text))
+
+        for match in matches.reversed() {
+            guard let range = Range(match.range(at: 1), in: result) else { continue }
+            let token = String(result[range])
+
+            if token.contains(".") {
+                // Decimal: spell out integer and fractional parts separately.
+                let parts = token.split(separator: ".", maxSplits: 1)
+                if parts.count == 2,
+                   let intPart = Int(parts[0]),
+                   let fracPart = Int(parts[1]),
+                   let intWords = formatter.string(from: NSNumber(value: intPart)),
+                   let fracWords = formatter.string(from: NSNumber(value: fracPart)) {
+                    result.replaceSubrange(range, with: "\(intWords) point \(fracWords)")
+                }
+            } else if let number = Int64(token),
+                      let words = formatter.string(from: NSNumber(value: number)) {
+                result.replaceSubrange(range, with: words)
+            }
+        }
+        return result
+    }
+
     // MARK: - Abbreviation Expansion
 
-    /// Expands common abbreviations into spoken equivalents so NLTokenizer
-    /// doesn't split them into false sentence boundaries and TTS sounds natural.
     private static func expandAbbreviations(_ text: String) -> String {
-        // Ordered by length (longest first) to avoid partial substitution
         let replacements: [(pattern: String, replacement: String)] = [
-            // Latin abbreviations
             ("\\be\\.g\\.",      "for example"),
             ("\\bi\\.e\\.",      "that is"),
             ("\\bviz\\.",        "namely"),
             ("\\bcf\\.",         "compare"),
             ("\\bib\\.",         "in the same place"),
             ("\\bop\\. cit\\.",  "in the work cited"),
-            // Common English abbreviations with periods
             ("\\betc\\.",        "and so on"),
             ("\\bvs\\.",         "versus"),
             ("\\bapprox\\.",     "approximately"),
@@ -543,7 +583,6 @@ enum TTSTextPreprocessor {
             ("\\bAug\\.",        "August"),
             ("\\bSep\\.",        "September"),
             ("\\bOct\\.",        "October"),
-            // Honorifics — replace period so tokenizer doesn't split at "Dr."
             ("\\bDr\\.",   "Doctor"),
             ("\\bMr\\.",   "Mister"),
             ("\\bMs\\.",   "Ms"),
@@ -565,47 +604,27 @@ enum TTSTextPreprocessor {
 
     // MARK: - Whitespace Cleaning
 
-    /// Cleans up excessive whitespace while preserving sentence boundaries.
-    /// Single newlines become spaces (they are soft wraps within a paragraph).
-    /// Double newlines (paragraph breaks) become sentence boundaries.
     static func cleanWhitespace(_ text: String) -> String {
         var result = text
 
-        // Double newlines = paragraph break → sentence boundary
-        // Insert a period only if the line doesn't already end with terminal punctuation.
-        // The character class excludes '.', '!', '?', ':' so "Key features:\n\n" stays as-is
-        // and doesn't produce the garbage "Key features:." sequence that breaks MarvisTTS.
         result = regexReplace(result, pattern: "([^.!?:\\n])\\n{2,}", with: "$1. ")
-
-        // Lines ending with punctuation + double newline → just add space
         result = result.replacingOccurrences(
             of: "\n{2,}",
             with: " ",
             options: .regularExpression
         )
-
-        // Single newlines → space (soft wrap within paragraph, NOT a sentence break)
         result = result.replacingOccurrences(of: "\n", with: " ")
-
-        // Collapse multiple spaces
         result = result.replacingOccurrences(
             of: "\\s{2,}",
             with: " ",
             options: .regularExpression
         )
-
-        // Remove double periods
         result = result.replacingOccurrences(
             of: "\\.{2,}",
             with: ".",
             options: .regularExpression
         )
-
-        // Safety net: colon-period sequences (e.g. "Key features:.") are never
-        // valid English and cause MarvisTTS to produce garbage audio — remove the period.
         result = result.replacingOccurrences(of: ":.", with: ":")
-
-        // Clean up period-space-period patterns
         result = result.replacingOccurrences(
             of: "\\.\\s*\\.",
             with: ".",
@@ -617,9 +636,6 @@ enum TTSTextPreprocessor {
 
     // MARK: - Private Helpers
 
-    /// Splits a long sentence at major clause boundaries (semicolon only).
-    /// Dashes (—, –, -) are intentionally NOT split points — splitting on them
-    /// creates unnatural pauses mid-phrase. Commas are also not split points.
     private static func splitLongSentence(_ sentence: String) -> [String] {
         let delimiters: [Character] = [";"]
         var chunks: [String] = []
@@ -648,8 +664,6 @@ enum TTSTextPreprocessor {
         return chunks.isEmpty ? [sentence] : chunks
     }
 
-    /// Merges very short fragments with their neighbors to avoid excessive
-    /// per-sentence generation overhead for tiny pieces.
     private static func mergeShortFragments(_ sentences: [String], minLength: Int) -> [String] {
         guard sentences.count > 1 else { return sentences }
 
@@ -668,7 +682,6 @@ enum TTSTextPreprocessor {
         }
 
         if !buffer.isEmpty {
-            // Append to previous if final fragment is very short
             if !merged.isEmpty && buffer.count < minLength {
                 merged[merged.count - 1] += " " + buffer
             } else {
@@ -679,14 +692,12 @@ enum TTSTextPreprocessor {
         return merged
     }
 
-    /// Helper that uses NSRegularExpression for patterns needing multiline/dotAll flags.
     static func regexReplace(_ text: String, pattern: String, with replacement: String) -> String {
         guard let regex = try? NSRegularExpression(pattern: pattern) else { return text }
         let range = NSRange(text.startIndex..., in: text)
         return regex.stringByReplacingMatches(in: text, range: range, withTemplate: replacement)
     }
 
-    /// Regex replace with a closure for dynamic replacements (e.g. conditional punctuation).
     private static func regexReplace(
         _ text: String,
         pattern: String,
@@ -697,7 +708,6 @@ enum TTSTextPreprocessor {
         let nsText = text as NSString
         let matches = regex.matches(in: text, range: NSRange(text.startIndex..., in: text))
 
-        // Process in reverse order to preserve string indices
         for match in matches.reversed() {
             let replacement = transform(RegexMatch(result: match, source: nsText))
             let swiftRange = Range(match.range, in: result)!
@@ -709,12 +719,10 @@ enum TTSTextPreprocessor {
 
 // MARK: - RegexMatch Helper
 
-/// Wraps an NSTextCheckingResult to provide convenient group capture access.
 private struct RegexMatch {
     let result: NSTextCheckingResult
     let source: NSString
 
-    /// Returns the string for capture group at `index` (1-based), or "" if unmatched.
     var groups: [String] {
         (1..<result.numberOfRanges).map { i in
             let range = result.range(at: i)
@@ -728,17 +736,10 @@ private struct RegexMatch {
 // MARK: - Character Emoji Detection
 
 private extension Character {
-    /// Whether this character is an emoji (single or multi-scalar).
-    /// Covers emoticons, symbols, flags, skin-toned emoji, ZWJ sequences.
     var isEmoji: Bool {
-        // Single-scalar fast path
         if let scalar = unicodeScalars.first {
-            // Variation selector U+FE0F forces emoji presentation
             if unicodeScalars.contains(where: { $0.value == 0xFE0F }) { return true }
-            // Check emoji properties
             if scalar.properties.isEmoji {
-                // Numbers 0-9, *, # have isEmoji=true but aren't emoji unless
-                // followed by U+FE0F (caught above) or U+20E3 (keycap)
                 if (0x0030...0x0039).contains(scalar.value) || scalar.value == 0x002A || scalar.value == 0x0023 {
                     return unicodeScalars.count > 1
                 }

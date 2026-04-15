@@ -1,5 +1,12 @@
 # Changelog
 
+## v3.0.1 — April 15, 2026
+
+### Bug Fixes
+- Fixed TTS mispronouncing numbers
+
+## Previous Builds
+
 ## v3.0 — April 14, 2026
 
 ### What's New
@@ -11,6 +18,7 @@
 
 ### Improvements
 - New tools now start with a helpful Python template
+- Images in AI responses now render inline — markdown image links display as actual images, tap to open the linked page.
 - Redesigned the Account page in Settings - Added ability to modify account details. 
 - Added group-based access control — you can now grant access to entire groups (not just individual users) across Prompts, Knowledge, Models, Tools, Skills, and Channels.
 - Tapping a processed file attachment now shows the extracted text content and a native PDF preview in a tabbed sheet, matching the web UI experience.
