@@ -34,6 +34,8 @@
 			</array>
 		</dict>
 	</array>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>Open Relay uses your location to provide location-aware responses when you enable the Share Location feature in Privacy &amp; Security settings.</string>
 	<key>NSAppTransportSecurity</key>
 	<dict>
 		<key>NSAllowsArbitraryLoads</key>

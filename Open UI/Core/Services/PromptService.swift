@@ -1,5 +1,6 @@
 import Foundation
 import UIKit
+import CoreLocation
 
 // MARK: - Prompt Service
 
@@ -194,9 +195,22 @@ enum PromptService {
             result = result.replacingOccurrences(of: "{{CLIPBOARD}}", with: clipboardContent)
         }
 
+        // {{USER_LOCATION}} — resolved from device GPS when user has enabled location sharing.
+        // Falls back to leaving the placeholder as-is (matching Open WebUI behavior)
+        // so prompts still work when location permission is not granted.
+        if result.contains("{{USER_LOCATION}}") {
+            // Use the cached location string (sync). The actual send pipeline uses
+            // `await currentLocationString()` for the freshest fix; here we just
+            // need a reasonable value for the prompt preview in the input field.
+            if let locationString = LocationManager.shared.locationString {
+                result = result.replacingOccurrences(of: "{{USER_LOCATION}}", with: locationString)
+            }
+            // If no location available, leave {{USER_LOCATION}} as-is
+        }
+
         // NOTE: The following variables are left as-is if not available,
         // matching Open WebUI's documented behavior:
-        // {{USER_BIO}}, {{USER_GENDER}}, {{USER_BIRTH_DATE}}, {{USER_AGE}}, {{USER_LOCATION}}
+        // {{USER_BIO}}, {{USER_GENDER}}, {{USER_BIRTH_DATE}}, {{USER_AGE}}
         // These require user profile data we don't have on the client side.
 
         return result

@@ -1,5 +1,26 @@
 # Changelog
 
+## v3.2 — April 18, 2026
+
+### What's New
+- Added GPS location sharing — enable "Share Location" in Privacy & Security settings to send your real location to the AI model when using `{{USER_LOCATION}}` in system prompt for tools like maps, weather, etc.
+
+### Improvements
+- Redesigned tool call display to provide full details, including rich result items shown inline under each status step.
+- Tool call status indicator also improved.
+
+### Bug Fixes
+- Fixed tool call status history (web search steps, location resolving, etc.) disappearing when switching chats — status updates now persist correctly when reopening a conversation.
+
+## Previous Builds
+
+## v3.1.1 — April 17, 2026
+
+### Bug Fixes
+- Removed further throttling for streaming token by token.
+
+## Previous Builds
+
 ## v3.1 — April 17, 2026
 
 ### What's New
