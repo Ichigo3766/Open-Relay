@@ -331,6 +331,22 @@ actor ImageCacheService {
         }
     }
 
+    /// Prefetches the current user's avatar URL in the background so it is warm in memory
+    /// before any `UserAvatar` view appears. Call this once after authentication completes.
+    ///
+    /// - Parameters:
+    ///   - url: The user's avatar URL (including the `?v=N` version parameter).
+    ///   - authToken: Bearer token to attach to the request.
+    func prefetchUserAvatar(url: URL, authToken: String?) {
+        Task(priority: .userInitiated) {
+            // Always evict first so we pick up server-side changes made on web
+            // or other devices (e.g. avatar updated while app was backgrounded).
+            await self.evict(for: url)
+            self.logger.debug("Prefetching user avatar: \(url.lastPathComponent)")
+            _ = await self.loadImage(from: url, authToken: authToken)
+        }
+    }
+
     /// Prefetches authenticated images for the given URLs in parallel, up to `maxConcurrency`
     /// simultaneous downloads. Designed for model avatar endpoints that require a Bearer token.
     ///

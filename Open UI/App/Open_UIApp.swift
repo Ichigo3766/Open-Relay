@@ -160,10 +160,6 @@ struct Open_UIApp: App {
                     }
                 }
                 .task {
-                    // Evict cached profile/user avatars so the latest server-side
-                    // avatar is always fetched fresh on each app launch.
-                    await ImageCacheService.shared.evictProfileImages()
-
                     // STORAGE FIX: Run cleanup on app launch to handle accumulated
                     // data from previous sessions (orphaned files, stale caches, etc.)
                     StorageManager.shared.performRoutineCleanup()
@@ -578,6 +574,21 @@ struct RootView: View {
                     userName: viewModel.currentUser?.displayName,
                     serverURL: dependencies.serverConfigStore.activeServer?.url
                 )
+
+                // Prefetch the current user's avatar once so every UserAvatar
+                // view renders instantly without a shimmer flash.
+                // Only fires if a user + baseURL are known at this point;
+                // if restoreSession hasn't completed yet, the avatar is prefetched
+                // once currentUser becomes available via the .task block below.
+                if let userId = viewModel.currentUser?.id,
+                   let baseURL = dependencies.apiClient?.baseURL,
+                   !userId.isEmpty, !baseURL.isEmpty,
+                   let avatarURL = URL(string: "\(baseURL)/api/v1/users/\(userId)/profile/image?v=\(viewModel.profileImageVersion)") {
+                    ImageCacheService.shared.prefetchUserAvatar(
+                        url: avatarURL,
+                        authToken: dependencies.apiClient?.network.authToken
+                    )
+                }
             }
     }
 }

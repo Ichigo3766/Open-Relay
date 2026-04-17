@@ -382,7 +382,7 @@ struct SettingsView: View {
     private func profileImageURL(for user: User) -> URL? {
         guard let baseURL = dependencies.apiClient?.baseURL,
               !user.id.isEmpty, !baseURL.isEmpty else { return nil }
-        return URL(string: "\(baseURL)/api/v1/users/\(user.id)/profile/image")
+        return URL(string: "\(baseURL)/api/v1/users/\(user.id)/profile/image?v=\(viewModel.profileImageVersion)")
     }
 }
 
