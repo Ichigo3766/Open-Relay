@@ -46,6 +46,12 @@ struct ProfileView: View {
     @State private var originalBirthDate: Date? = nil
     @State private var originalWebhookURL = ""
 
+    // MARK: - Original avatar as base64 (captured at load to survive bio/name edits)
+    /// When the user opens ProfileView we snapshot the current avatar as a base64 data URI.
+    /// The `.keep` case in `saveProfile()` uses this so editing bio/name never sends an
+    /// empty `profile_image_url` to the server, which would otherwise clear the avatar.
+    @State private var originalAvatarBase64: String = ""
+
     private let genderOptions = ["Prefer not to say", "Male", "Female", "Custom"]
 
     enum ProfileImageAction {
@@ -540,7 +546,18 @@ struct ProfileView: View {
                 originalBirthDate = editBirthDate
             }
 
-            // 4. Load webhook URL from user settings
+            // 4. Snapshot avatar as base64 so `.keep` in saveProfile() can preserve it
+            // without relying on profileImageURL in the server response (which is empty
+            // for server-hosted avatars and would clear the photo on bio/name edits).
+            if let url = profileImageURL {
+                if let cachedImage = await ImageCacheService.shared.loadImage(from: url, authToken: api.network.authToken),
+                   let jpegData = cachedImage.jpegData(compressionQuality: 0.9) {
+                    let b64 = "data:image/jpeg;base64," + jpegData.base64EncodedString()
+                    await MainActor.run { originalAvatarBase64 = b64 }
+                }
+            }
+
+            // 5. Load webhook URL from user settings
             do {
                 let settings = try await api.getUserSettings()
                 if let ui = settings["ui"] as? [String: Any],
@@ -598,13 +615,11 @@ struct ProfileView: View {
             let profileImageUrlString: String
             switch currentAction {
             case .keep:
-                // Read the server value from viewModel before any mutation
-                let serverValue = viewModel.currentUser?.profileImageURL ?? ""
-                if serverValue.hasPrefix("data:") {
-                    profileImageUrlString = avatarURL?.absoluteString ?? ""
-                } else {
-                    profileImageUrlString = serverValue
-                }
+                // Use the base64 snapshot captured when the view loaded.
+                // This is the only reliable way to preserve a server-hosted avatar —
+                // viewModel.currentUser?.profileImageURL is empty for server-hosted images,
+                // so reading it would send "" and clear the avatar.
+                profileImageUrlString = originalAvatarBase64
             case .remove, .initials:
                 profileImageUrlString = ""
             case .newImage(let data):

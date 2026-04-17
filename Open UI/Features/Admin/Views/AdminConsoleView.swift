@@ -1,37 +1,75 @@
 import SwiftUI
 
-// MARK: - Admin Console Tab
+// MARK: - Users Sub-Tab
 
-enum AdminConsoleTab: String, CaseIterable {
-    case users = "Users"
-    case analytics = "Analytics"
-    case functions = "Functions"
-    case general = "General"
-    case connections = "Connections"
-    case integrations = "Integrations"
-    case documents = "Documents"
-    case webSearch = "Web Search"
-    case codeExecution = "Code Execution"
-    case interface = "Interface"
-    case audio = "Audio"
-    case images = "Images"
+enum UsersSubTab: String, CaseIterable {
+    case overview = "Overview"
+    case groups   = "Groups"
 
     var icon: String {
         switch self {
-        case .users: return "person.2"
-        case .analytics: return "chart.bar.xaxis"
-        case .functions: return "function"
-        case .general: return "gear"
-        case .connections: return "link"
-        case .integrations: return "wrench.and.screwdriver"
-        case .documents: return "doc.text"
-        case .webSearch: return "globe"
-        case .codeExecution: return "terminal"
-        case .interface: return "slider.horizontal.3"
-        case .audio: return "waveform"
-        case .images: return "photo"
+        case .overview: return "person.2"
+        case .groups:   return "person.2.badge.gearshape"
         }
     }
+}
+
+// MARK: - Admin Console Tab
+
+enum AdminConsoleTab: String, CaseIterable {
+    case users       = "Users"
+    case analytics   = "Analytics"
+    case functions   = "Functions"
+    case settings    = "Settings"
+
+    var icon: String {
+        switch self {
+        case .users:     return "person.2"
+        case .analytics: return "chart.bar.xaxis"
+        case .functions: return "function"
+        case .settings:  return "gear"
+        }
+    }
+}
+
+// MARK: - Settings Sub-Section
+
+enum SettingsSubSection: String, CaseIterable {
+    case general      = "General"
+    case connections  = "Connections"
+    case integrations = "Integrations"
+    case documents    = "Documents"
+    case webSearch    = "Web Search"
+    case codeExecution = "Code Execution"
+    case interface_   = "Interface"
+    case audio        = "Audio"
+    case images       = "Images"
+
+    var icon: String {
+        switch self {
+        case .general:       return "gear"
+        case .connections:   return "link"
+        case .integrations:  return "wrench.and.screwdriver"
+        case .documents:     return "doc.text"
+        case .webSearch:     return "globe"
+        case .codeExecution: return "terminal"
+        case .interface_:    return "slider.horizontal.3"
+        case .audio:         return "waveform"
+        case .images:        return "photo"
+        }
+    }
+
+    var displayName: String {
+        switch self {
+        case .interface_: return "Interface"
+        case .codeExecution: return "Code Execution"
+        case .webSearch: return "Web Search"
+        default: return rawValue
+        }
+    }
+
+    /// Used to match search text
+    var searchableText: String { displayName.lowercased() }
 }
 
 // MARK: - AdminConsoleView
@@ -63,24 +101,8 @@ struct AdminConsoleView: View {
                     AdminAnalyticsView()
                 case .functions:
                     AdminFunctionsView()
-                case .general:
-                    AdminGeneralSettingsView()
-                case .connections:
-                    AdminConnectionsView()
-                case .integrations:
-                    AdminIntegrationsView()
-                case .documents:
-                    AdminDocumentsView()
-                case .webSearch:
-                    AdminWebSearchView()
-                case .codeExecution:
-                    AdminCodeExecutionView()
-                case .interface:
-                    AdminInterfaceView()
-                case .audio:
-                    AdminAudioView()
-                case .images:
-                    AdminImagesView()
+                case .settings:
+                    AdminSettingsTab()
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -139,8 +161,75 @@ struct AdminConsoleView: View {
 
 // MARK: - Admin Users Tab
 
-/// The original admin users list, extracted into its own view.
+/// The Users section: has an Overview sub-tab (user list) and a Groups sub-tab.
 struct AdminUsersTab: View {
+    @Environment(\.theme) private var theme
+    @State private var selectedSubTab: UsersSubTab = .overview
+
+    var body: some View {
+        VStack(spacing: 0) {
+            // Sub-tab bar
+            usersSubTabBar
+                .padding(.top, Spacing.xs)
+                .padding(.bottom, Spacing.xs)
+
+            Divider()
+                .background(theme.inputBorder.opacity(0.2))
+
+            switch selectedSubTab {
+            case .overview:
+                AdminUsersListView()
+            case .groups:
+                AdminGroupsView()
+            }
+        }
+    }
+
+    private var usersSubTabBar: some View {
+        HStack(spacing: 6) {
+            ForEach(UsersSubTab.allCases, id: \.self) { sub in
+                Button {
+                    withAnimation(.easeInOut(duration: 0.18)) {
+                        selectedSubTab = sub
+                    }
+                    Haptics.play(.light)
+                } label: {
+                    HStack(spacing: 5) {
+                        Image(systemName: sub.icon)
+                            .scaledFont(size: 12, weight: .medium)
+                        Text(sub.rawValue)
+                            .scaledFont(size: 13, weight: selectedSubTab == sub ? .semibold : .regular)
+                            .lineLimit(1)
+                    }
+                    .foregroundStyle(selectedSubTab == sub ? theme.brandPrimary : theme.textTertiary)
+                    .padding(.vertical, 6)
+                    .padding(.horizontal, 12)
+                    .background(
+                        RoundedRectangle(cornerRadius: CornerRadius.md, style: .continuous)
+                            .fill(selectedSubTab == sub
+                                  ? theme.brandPrimary.opacity(0.12)
+                                  : Color.clear)
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: CornerRadius.md, style: .continuous)
+                            .strokeBorder(
+                                selectedSubTab == sub ? theme.brandPrimary.opacity(0.3) : Color.clear,
+                                lineWidth: 1
+                            )
+                    )
+                }
+                .buttonStyle(.plain)
+            }
+            Spacer()
+        }
+        .padding(.horizontal, Spacing.screenPadding)
+    }
+}
+
+// MARK: - Admin Users List View
+
+/// The original admin users list (formerly AdminUsersTab body).
+struct AdminUsersListView: View {
     @Environment(\.theme) private var theme
     @Environment(AppDependencyContainer.self) private var dependencies
     @Environment(AppRouter.self) private var router
@@ -476,6 +565,7 @@ struct AdminUserRow: View {
     let user: AdminUser
     let isSelf: Bool
     let serverURL: String
+    var profileImageVersion: Int = 0
     let onEdit: () -> Void
     let onViewChats: () -> Void
     let onDelete: (() -> Void)?
@@ -489,7 +579,8 @@ struct AdminUserRow: View {
                 UserAvatar(
                     size: 40,
                     imageURL: avatarURL,
-                    name: user.displayName
+                    name: user.displayName,
+                    dataURIString: dataURIString
                 )
 
                 if user.isCurrentlyActive {
@@ -559,11 +650,20 @@ struct AdminUserRow: View {
         .contentShape(Rectangle())
     }
 
+    /// Returns the data URI string when `profile_image_url` is base64-encoded inline.
+    /// Used by `UserAvatar` to render without a network request.
+    private var dataURIString: String? {
+        guard let urlString = user.profileImageURL,
+              urlString.hasPrefix("data:") else { return nil }
+        return urlString
+    }
+
+    /// Returns a network URL only when `profile_image_url` is NOT a data URI.
     private var avatarURL: URL? {
         guard let urlString = user.profileImageURL, !urlString.isEmpty else { return nil }
-        if urlString.hasPrefix("http") {
-            return URL(string: urlString)
-        }
+        // Data URIs are handled via dataURIString — don't construct a network URL for them
+        if urlString.hasPrefix("data:") { return nil }
+        if urlString.hasPrefix("http") { return URL(string: urlString) }
         if urlString == "/user.png" { return nil }
         return URL(string: "\(serverURL)/api/v1/users/\(user.id)/profile/image")
     }

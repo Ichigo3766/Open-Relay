@@ -1327,11 +1327,9 @@ struct ReasoningView: View {
     init(reasoning: ReasoningData) {
         self.reasoning = reasoning
         // Expanded while thinking is in progress, collapsed once done.
-        // ReasoningData.id is now a stable hash of the content prefix, so SwiftUI
-        // reuses this view across streaming ticks and `@State` persists — meaning
-        // user taps to expand/collapse are preserved mid-stream.
-        // The auto-collapse on completion is triggered by the `isDone` flag
-        // changing, which causes the init to be called once with isDone=true.
+        // ReasoningData.id is a stable hash so SwiftUI reuses this view across
+        // streaming ticks — @State persists, so user taps are preserved mid-stream.
+        // Auto-collapse when isDone flips is handled by .onChange below.
         let autoExpand = UserDefaults.standard.object(forKey: "expandThinkingWhileStreaming") as? Bool ?? true
         self._isExpanded = State(initialValue: !reasoning.isDone && autoExpand)
     }
@@ -1380,6 +1378,14 @@ struct ReasoningView: View {
             }
         }
         .padding(.horizontal, Spacing.xs)
+        .onChange(of: reasoning.isDone) { _, done in
+            guard done else { return }
+            let autoExpand = UserDefaults.standard.object(forKey: "expandThinkingWhileStreaming") as? Bool ?? true
+            guard autoExpand else { return }
+            withAnimation(.easeInOut(duration: 0.25)) {
+                isExpanded = false
+            }
+        }
         .background(
             RoundedRectangle(cornerRadius: CornerRadius.sm, style: .continuous)
                 .fill(theme.surfaceContainer.opacity(0.3))

@@ -1,5 +1,21 @@
 # Changelog
 
+## v3.1 — April 17, 2026
+
+### What's New
+- Added Groups management to Admin Console — create, edit, and delete user groups, manage group members, configure permissions per group, and set default permissions for all users. Swipe left on a group to delete with confirmation.
+
+### Improvements
+- Reorganised Admin Console into cleaner top-level tabs (Users, Analytics, Functions, Settings), with Settings containing a searchable section picker for General, Connections, Integrations, Documents, Web Search, Code Execution, Interface, Audio, and Images.
+
+### Bug Fixes
+- Fixed code blocks flickering/flashing colors during streaming
+- Fixed HTML code blocks not rendering as live previews after the AI finishes responding.
+- Fixed thinking/reasoning block staying expanded after thinking completes — it now collapses automatically once the model finishes reasoning.
+- Fixed profile avatar related issues.
+
+## Previous Builds
+
 ## v3.0.1 — April 15, 2026
 
 ### Bug Fixes

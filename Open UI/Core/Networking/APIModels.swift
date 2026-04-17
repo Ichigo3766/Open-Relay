@@ -2162,6 +2162,399 @@ struct EmbeddingConfig: Codable, Sendable {
     }
 }
 
+// MARK: - Group Models (Admin)
+
+/// The sharing permission for a group ("no_one", "members", "anyone").
+enum GroupSharePermission: String, Codable, CaseIterable, Sendable {
+    case noOne = "no_one"
+    case members = "members"
+    case anyone = "anyone"
+
+    var displayName: String {
+        switch self {
+        case .noOne: return "No one"
+        case .members: return "Members"
+        case .anyone: return "Anyone"
+        }
+    }
+}
+
+/// Workspace-level permissions within a group.
+struct GroupWorkspacePermissions: Codable, Sendable {
+    var models: Bool
+    var knowledge: Bool
+    var prompts: Bool
+    var tools: Bool
+    var skills: Bool
+    var modelsImport: Bool
+    var modelsExport: Bool
+    var promptsImport: Bool
+    var promptsExport: Bool
+    var toolsImport: Bool
+    var toolsExport: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case models, knowledge, prompts, tools, skills
+        case modelsImport = "models_import"
+        case modelsExport = "models_export"
+        case promptsImport = "prompts_import"
+        case promptsExport = "prompts_export"
+        case toolsImport = "tools_import"
+        case toolsExport = "tools_export"
+    }
+
+    init(models: Bool = true, knowledge: Bool = true, prompts: Bool = false, tools: Bool = false,
+         skills: Bool = false, modelsImport: Bool = false, modelsExport: Bool = false,
+         promptsImport: Bool = false, promptsExport: Bool = false,
+         toolsImport: Bool = false, toolsExport: Bool = false) {
+        self.models = models; self.knowledge = knowledge; self.prompts = prompts
+        self.tools = tools; self.skills = skills; self.modelsImport = modelsImport
+        self.modelsExport = modelsExport; self.promptsImport = promptsImport
+        self.promptsExport = promptsExport; self.toolsImport = toolsImport
+        self.toolsExport = toolsExport
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        models = (try? c.decode(Bool.self, forKey: .models)) ?? true
+        knowledge = (try? c.decode(Bool.self, forKey: .knowledge)) ?? true
+        prompts = (try? c.decode(Bool.self, forKey: .prompts)) ?? false
+        tools = (try? c.decode(Bool.self, forKey: .tools)) ?? false
+        skills = (try? c.decode(Bool.self, forKey: .skills)) ?? false
+        modelsImport = (try? c.decode(Bool.self, forKey: .modelsImport)) ?? false
+        modelsExport = (try? c.decode(Bool.self, forKey: .modelsExport)) ?? false
+        promptsImport = (try? c.decode(Bool.self, forKey: .promptsImport)) ?? false
+        promptsExport = (try? c.decode(Bool.self, forKey: .promptsExport)) ?? false
+        toolsImport = (try? c.decode(Bool.self, forKey: .toolsImport)) ?? false
+        toolsExport = (try? c.decode(Bool.self, forKey: .toolsExport)) ?? false
+    }
+}
+
+/// Sharing-level permissions within a group.
+struct GroupSharingPermissions: Codable, Sendable {
+    var models: Bool
+    var publicModels: Bool
+    var knowledge: Bool
+    var publicKnowledge: Bool
+    var prompts: Bool
+    var publicPrompts: Bool
+    var tools: Bool
+    var publicTools: Bool
+    var skills: Bool
+    var publicSkills: Bool
+    var notes: Bool
+    var publicNotes: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case models, knowledge, prompts, tools, skills, notes
+        case publicModels = "public_models"
+        case publicKnowledge = "public_knowledge"
+        case publicPrompts = "public_prompts"
+        case publicTools = "public_tools"
+        case publicSkills = "public_skills"
+        case publicNotes = "public_notes"
+    }
+
+    init(models: Bool = false, publicModels: Bool = false, knowledge: Bool = false,
+         publicKnowledge: Bool = false, prompts: Bool = false, publicPrompts: Bool = false,
+         tools: Bool = false, publicTools: Bool = false, skills: Bool = false,
+         publicSkills: Bool = false, notes: Bool = false, publicNotes: Bool = false) {
+        self.models = models; self.publicModels = publicModels; self.knowledge = knowledge
+        self.publicKnowledge = publicKnowledge; self.prompts = prompts; self.publicPrompts = publicPrompts
+        self.tools = tools; self.publicTools = publicTools; self.skills = skills
+        self.publicSkills = publicSkills; self.notes = notes; self.publicNotes = publicNotes
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        models = (try? c.decode(Bool.self, forKey: .models)) ?? false
+        publicModels = (try? c.decode(Bool.self, forKey: .publicModels)) ?? false
+        knowledge = (try? c.decode(Bool.self, forKey: .knowledge)) ?? false
+        publicKnowledge = (try? c.decode(Bool.self, forKey: .publicKnowledge)) ?? false
+        prompts = (try? c.decode(Bool.self, forKey: .prompts)) ?? false
+        publicPrompts = (try? c.decode(Bool.self, forKey: .publicPrompts)) ?? false
+        tools = (try? c.decode(Bool.self, forKey: .tools)) ?? false
+        publicTools = (try? c.decode(Bool.self, forKey: .publicTools)) ?? false
+        skills = (try? c.decode(Bool.self, forKey: .skills)) ?? false
+        publicSkills = (try? c.decode(Bool.self, forKey: .publicSkills)) ?? false
+        notes = (try? c.decode(Bool.self, forKey: .notes)) ?? false
+        publicNotes = (try? c.decode(Bool.self, forKey: .publicNotes)) ?? false
+    }
+}
+
+/// Access-grant permissions.
+struct GroupAccessGrantPermissions: Codable, Sendable {
+    var allowUsers: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case allowUsers = "allow_users"
+    }
+
+    init(allowUsers: Bool = true) { self.allowUsers = allowUsers }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        allowUsers = (try? c.decode(Bool.self, forKey: .allowUsers)) ?? true
+    }
+}
+
+/// Chat-level permissions within a group.
+struct GroupChatPermissions: Codable, Sendable {
+    var controls: Bool
+    var valves: Bool
+    var systemPrompt: Bool
+    var params: Bool
+    var fileUpload: Bool
+    var webUpload: Bool
+    var delete: Bool
+    var deleteMessage: Bool
+    var continueResponse: Bool
+    var regenerateResponse: Bool
+    var rateResponse: Bool
+    var edit: Bool
+    var share: Bool
+    var export: Bool
+    var stt: Bool
+    var tts: Bool
+    var call: Bool
+    var multipleModels: Bool
+    var temporary: Bool
+    var temporaryEnforced: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case controls, valves, params, edit, share, export, stt, tts, call, temporary
+        case systemPrompt = "system_prompt"
+        case fileUpload = "file_upload"
+        case webUpload = "web_upload"
+        case delete
+        case deleteMessage = "delete_message"
+        case continueResponse = "continue_response"
+        case regenerateResponse = "regenerate_response"
+        case rateResponse = "rate_response"
+        case multipleModels = "multiple_models"
+        case temporaryEnforced = "temporary_enforced"
+    }
+
+    init(controls: Bool = true, valves: Bool = true, systemPrompt: Bool = true, params: Bool = true,
+         fileUpload: Bool = true, webUpload: Bool = true, delete: Bool = true,
+         deleteMessage: Bool = true, continueResponse: Bool = true, regenerateResponse: Bool = true,
+         rateResponse: Bool = true, edit: Bool = true, share: Bool = true, export: Bool = true,
+         stt: Bool = true, tts: Bool = true, call: Bool = true, multipleModels: Bool = true,
+         temporary: Bool = true, temporaryEnforced: Bool = false) {
+        self.controls = controls; self.valves = valves; self.systemPrompt = systemPrompt
+        self.params = params; self.fileUpload = fileUpload; self.webUpload = webUpload
+        self.delete = delete; self.deleteMessage = deleteMessage
+        self.continueResponse = continueResponse; self.regenerateResponse = regenerateResponse
+        self.rateResponse = rateResponse; self.edit = edit; self.share = share; self.export = export
+        self.stt = stt; self.tts = tts; self.call = call; self.multipleModels = multipleModels
+        self.temporary = temporary; self.temporaryEnforced = temporaryEnforced
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        controls = (try? c.decode(Bool.self, forKey: .controls)) ?? true
+        valves = (try? c.decode(Bool.self, forKey: .valves)) ?? true
+        systemPrompt = (try? c.decode(Bool.self, forKey: .systemPrompt)) ?? true
+        params = (try? c.decode(Bool.self, forKey: .params)) ?? true
+        fileUpload = (try? c.decode(Bool.self, forKey: .fileUpload)) ?? true
+        webUpload = (try? c.decode(Bool.self, forKey: .webUpload)) ?? true
+        delete = (try? c.decode(Bool.self, forKey: .delete)) ?? true
+        deleteMessage = (try? c.decode(Bool.self, forKey: .deleteMessage)) ?? true
+        continueResponse = (try? c.decode(Bool.self, forKey: .continueResponse)) ?? true
+        regenerateResponse = (try? c.decode(Bool.self, forKey: .regenerateResponse)) ?? true
+        rateResponse = (try? c.decode(Bool.self, forKey: .rateResponse)) ?? true
+        edit = (try? c.decode(Bool.self, forKey: .edit)) ?? true
+        share = (try? c.decode(Bool.self, forKey: .share)) ?? true
+        export = (try? c.decode(Bool.self, forKey: .export)) ?? true
+        stt = (try? c.decode(Bool.self, forKey: .stt)) ?? true
+        tts = (try? c.decode(Bool.self, forKey: .tts)) ?? true
+        call = (try? c.decode(Bool.self, forKey: .call)) ?? true
+        multipleModels = (try? c.decode(Bool.self, forKey: .multipleModels)) ?? true
+        temporary = (try? c.decode(Bool.self, forKey: .temporary)) ?? true
+        temporaryEnforced = (try? c.decode(Bool.self, forKey: .temporaryEnforced)) ?? false
+    }
+}
+
+/// Feature permissions within a group.
+struct GroupFeaturePermissions: Codable, Sendable {
+    var apiKeys: Bool
+    var notes: Bool
+    var channels: Bool
+    var folders: Bool
+    var directToolServers: Bool
+    var webSearch: Bool
+    var imageGeneration: Bool
+    var codeInterpreter: Bool
+    var memories: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case notes, channels, folders, memories
+        case apiKeys = "api_keys"
+        case directToolServers = "direct_tool_servers"
+        case webSearch = "web_search"
+        case imageGeneration = "image_generation"
+        case codeInterpreter = "code_interpreter"
+    }
+
+    init(apiKeys: Bool = false, notes: Bool = true, channels: Bool = true, folders: Bool = true,
+         directToolServers: Bool = false, webSearch: Bool = true, imageGeneration: Bool = true,
+         codeInterpreter: Bool = false, memories: Bool = true) {
+        self.apiKeys = apiKeys; self.notes = notes; self.channels = channels
+        self.folders = folders; self.directToolServers = directToolServers
+        self.webSearch = webSearch; self.imageGeneration = imageGeneration
+        self.codeInterpreter = codeInterpreter; self.memories = memories
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        apiKeys = (try? c.decode(Bool.self, forKey: .apiKeys)) ?? false
+        notes = (try? c.decode(Bool.self, forKey: .notes)) ?? true
+        channels = (try? c.decode(Bool.self, forKey: .channels)) ?? true
+        folders = (try? c.decode(Bool.self, forKey: .folders)) ?? true
+        directToolServers = (try? c.decode(Bool.self, forKey: .directToolServers)) ?? false
+        webSearch = (try? c.decode(Bool.self, forKey: .webSearch)) ?? true
+        imageGeneration = (try? c.decode(Bool.self, forKey: .imageGeneration)) ?? true
+        codeInterpreter = (try? c.decode(Bool.self, forKey: .codeInterpreter)) ?? false
+        memories = (try? c.decode(Bool.self, forKey: .memories)) ?? true
+    }
+}
+
+/// Settings permissions within a group.
+struct GroupSettingsPermissions: Codable, Sendable {
+    var interface: Bool
+
+    init(interface: Bool = true) { self.interface = interface }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        interface = (try? c.decode(Bool.self, forKey: .interface)) ?? true
+    }
+
+    enum CodingKeys: String, CodingKey { case interface }
+}
+
+/// Top-level permissions object used in group create/update/default permissions.
+struct GroupPermissions: Codable, Sendable {
+    var workspace: GroupWorkspacePermissions
+    var sharing: GroupSharingPermissions
+    var accessGrants: GroupAccessGrantPermissions
+    var chat: GroupChatPermissions
+    var features: GroupFeaturePermissions
+    var settings: GroupSettingsPermissions
+
+    enum CodingKeys: String, CodingKey {
+        case workspace, sharing, chat, features, settings
+        case accessGrants = "access_grants"
+    }
+
+    init(workspace: GroupWorkspacePermissions = GroupWorkspacePermissions(),
+         sharing: GroupSharingPermissions = GroupSharingPermissions(),
+         accessGrants: GroupAccessGrantPermissions = GroupAccessGrantPermissions(),
+         chat: GroupChatPermissions = GroupChatPermissions(),
+         features: GroupFeaturePermissions = GroupFeaturePermissions(),
+         settings: GroupSettingsPermissions = GroupSettingsPermissions()) {
+        self.workspace = workspace; self.sharing = sharing; self.accessGrants = accessGrants
+        self.chat = chat; self.features = features; self.settings = settings
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        workspace = (try? c.decode(GroupWorkspacePermissions.self, forKey: .workspace)) ?? GroupWorkspacePermissions()
+        sharing = (try? c.decode(GroupSharingPermissions.self, forKey: .sharing)) ?? GroupSharingPermissions()
+        accessGrants = (try? c.decode(GroupAccessGrantPermissions.self, forKey: .accessGrants)) ?? GroupAccessGrantPermissions()
+        chat = (try? c.decode(GroupChatPermissions.self, forKey: .chat)) ?? GroupChatPermissions()
+        features = (try? c.decode(GroupFeaturePermissions.self, forKey: .features)) ?? GroupFeaturePermissions()
+        settings = (try? c.decode(GroupSettingsPermissions.self, forKey: .settings)) ?? GroupSettingsPermissions()
+    }
+}
+
+/// The `data` field of a group, contains config like share permission.
+struct GroupData: Codable, Sendable {
+    var config: GroupDataConfig?
+
+    init(config: GroupDataConfig? = nil) { self.config = config }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        config = try? c.decodeIfPresent(GroupDataConfig.self, forKey: .config)
+    }
+
+    enum CodingKeys: String, CodingKey { case config }
+}
+
+struct GroupDataConfig: Codable, Sendable {
+    var share: String?
+
+    init(share: String? = "members") { self.share = share }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        share = try? c.decodeIfPresent(String.self, forKey: .share)
+    }
+
+    enum CodingKeys: String, CodingKey { case share }
+}
+
+/// Full group detail returned by `GET /api/v1/groups/` and related endpoints.
+struct GroupDetail: Codable, Identifiable, Sendable {
+    let id: String
+    let userId: String
+    var name: String
+    var description: String
+    var data: GroupData?
+    var permissions: GroupPermissions?
+    let createdAt: Int
+    let updatedAt: Int
+    var memberCount: Int?
+
+    enum CodingKeys: String, CodingKey {
+        case id, name, description, data, permissions
+        case userId = "user_id"
+        case createdAt = "created_at"
+        case updatedAt = "updated_at"
+        case memberCount = "member_count"
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = (try? c.decode(String.self, forKey: .id)) ?? ""
+        userId = (try? c.decode(String.self, forKey: .userId)) ?? ""
+        name = (try? c.decode(String.self, forKey: .name)) ?? ""
+        description = (try? c.decode(String.self, forKey: .description)) ?? ""
+        data = try? c.decodeIfPresent(GroupData.self, forKey: .data)
+        permissions = try? c.decodeIfPresent(GroupPermissions.self, forKey: .permissions)
+        if let ts = try? c.decode(Int.self, forKey: .createdAt) { createdAt = ts }
+        else if let ts = try? c.decode(Double.self, forKey: .createdAt) { createdAt = Int(ts) }
+        else { createdAt = 0 }
+        if let ts = try? c.decode(Int.self, forKey: .updatedAt) { updatedAt = ts }
+        else if let ts = try? c.decode(Double.self, forKey: .updatedAt) { updatedAt = Int(ts) }
+        else { updatedAt = 0 }
+        memberCount = try? c.decodeIfPresent(Int.self, forKey: .memberCount)
+    }
+}
+
+/// Form for creating or updating a group.
+struct GroupForm: Codable, Sendable {
+    var name: String
+    var description: String
+    var permissions: GroupPermissions?
+    var data: GroupData?
+
+    init(name: String, description: String, permissions: GroupPermissions? = nil, data: GroupData? = nil) {
+        self.name = name; self.description = description
+        self.permissions = permissions; self.data = data
+    }
+}
+
+/// Form to add/remove users from a group.
+struct UserIdsForm: Codable, Sendable {
+    let userIds: [String]
+
+    enum CodingKeys: String, CodingKey {
+        case userIds = "user_ids"
+    }
+}
+
 /// Returns the MIME type for a given file extension.
 func mimeType(for fileName: String) -> String {
     let ext = (fileName as NSString).pathExtension.lowercased()

@@ -2643,11 +2643,31 @@ final class APIClient: @unchecked Sendable {
             "gender": gender as Any? ?? NSNull(),
             "date_of_birth": dateOfBirth as Any? ?? NSNull()
         ]
+
+        // Debug: log the exact payload so we can trace profile_image_url round-trips.
+        let profileImageSummary: String
+        if profileImageUrl.hasPrefix("data:") {
+            profileImageSummary = "\(profileImageUrl.prefix(40))… (\(profileImageUrl.count) chars)"
+        } else if profileImageUrl.isEmpty {
+            profileImageSummary = "(empty — will clear avatar)"
+        } else {
+            profileImageSummary = profileImageUrl
+        }
+        logger.debug("""
+            [updateProfile] Sending payload to /api/v1/auths/update/profile
+              name             = \(name)
+              profile_image_url= \(profileImageSummary)
+              bio              = \(bio.prefix(80))
+              gender           = \(gender ?? "nil")
+              date_of_birth    = \(dateOfBirth ?? "nil")
+            """)
+
         try await network.requestVoidJSON(
             path: "/api/v1/auths/update/profile",
             method: .post,
             body: body
         )
+        logger.debug("[updateProfile] Server accepted profile update ✓")
     }
 
     func changePassword(currentPassword: String, newPassword: String) async throws {
@@ -4850,6 +4870,107 @@ final class APIClient: @unchecked Sendable {
             return groups
         }
         return []
+    }
+
+    // MARK: - Group Management (Admin)
+
+    /// GET `/api/v1/groups/` — fetch all groups with full detail.
+    func getGroupDetails() async throws -> [GroupDetail] {
+        let (data, _) = try await network.requestRaw(path: "/api/v1/groups/")
+        let decoder = JSONDecoder()
+        if let groups = try? decoder.decode([GroupDetail].self, from: data) { return groups }
+        return []
+    }
+
+    /// POST `/api/v1/groups/create` — create a new group.
+    @discardableResult
+    func createGroup(_ form: GroupForm) async throws -> GroupDetail {
+        let body = try JSONEncoder().encode(form)
+        let (data, _) = try await network.requestRaw(
+            path: "/api/v1/groups/create",
+            method: .post,
+            body: body,
+            contentType: "application/json"
+        )
+        return try JSONDecoder().decode(GroupDetail.self, from: data)
+    }
+
+    /// POST `/api/v1/groups/id/{id}/update` — update a group's name/description/permissions/data.
+    @discardableResult
+    func updateGroup(id: String, form: GroupForm) async throws -> GroupDetail {
+        let body = try JSONEncoder().encode(form)
+        let (data, _) = try await network.requestRaw(
+            path: "/api/v1/groups/id/\(id)/update",
+            method: .post,
+            body: body,
+            contentType: "application/json"
+        )
+        return try JSONDecoder().decode(GroupDetail.self, from: data)
+    }
+
+    /// DELETE `/api/v1/groups/id/{id}/delete` — delete a group.
+    func deleteGroup(id: String) async throws {
+        try await network.requestVoidJSON(path: "/api/v1/groups/id/\(id)/delete", method: .delete, body: [:])
+    }
+
+    /// POST `/api/v1/groups/id/{id}/users` — get users in a group (returns full AdminUser list).
+    func getUsersInGroup(groupId: String) async throws -> [AdminUser] {
+        let (data, _) = try await network.requestRaw(
+            path: "/api/v1/groups/id/\(groupId)/users",
+            method: .post,
+            body: Data("{}".utf8),
+            contentType: "application/json"
+        )
+        let decoder = JSONDecoder()
+        if let users = try? decoder.decode([AdminUser].self, from: data) { return users }
+        return []
+    }
+
+    /// POST `/api/v1/groups/id/{id}/users/add` — add users to a group.
+    @discardableResult
+    func addUsersToGroup(groupId: String, userIds: [String]) async throws -> GroupDetail {
+        let form = UserIdsForm(userIds: userIds)
+        let body = try JSONEncoder().encode(form)
+        let (data, _) = try await network.requestRaw(
+            path: "/api/v1/groups/id/\(groupId)/users/add",
+            method: .post,
+            body: body,
+            contentType: "application/json"
+        )
+        return try JSONDecoder().decode(GroupDetail.self, from: data)
+    }
+
+    /// POST `/api/v1/groups/id/{id}/users/remove` — remove users from a group.
+    @discardableResult
+    func removeUsersFromGroup(groupId: String, userIds: [String]) async throws -> GroupDetail {
+        let form = UserIdsForm(userIds: userIds)
+        let body = try JSONEncoder().encode(form)
+        let (data, _) = try await network.requestRaw(
+            path: "/api/v1/groups/id/\(groupId)/users/remove",
+            method: .post,
+            body: body,
+            contentType: "application/json"
+        )
+        return try JSONDecoder().decode(GroupDetail.self, from: data)
+    }
+
+    /// GET `/api/v1/users/default/permissions` — get default user permissions.
+    func getDefaultPermissions() async throws -> GroupPermissions {
+        let (data, _) = try await network.requestRaw(path: "/api/v1/users/default/permissions")
+        return try JSONDecoder().decode(GroupPermissions.self, from: data)
+    }
+
+    /// POST `/api/v1/users/default/permissions` — update default user permissions.
+    @discardableResult
+    func updateDefaultPermissions(_ permissions: GroupPermissions) async throws -> GroupPermissions {
+        let body = try JSONEncoder().encode(permissions)
+        let (data, _) = try await network.requestRaw(
+            path: "/api/v1/users/default/permissions",
+            method: .post,
+            body: body,
+            contentType: "application/json"
+        )
+        return try JSONDecoder().decode(GroupPermissions.self, from: data)
     }
 
     // MARK: - Code Execution Config

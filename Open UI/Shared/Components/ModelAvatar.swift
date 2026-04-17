@@ -77,17 +77,40 @@ struct ModelAvatar: View {
 /// Displays a user avatar with an image or initials fallback.
 ///
 /// Uses ``ImageCacheService`` for efficient image loading and caching.
+/// Supports `data:` URI strings (base64-encoded images) via `dataURIString`.
 struct UserAvatar: View {
     let size: CGFloat
     var imageURL: URL?
     var name: String?
     /// Optional Bearer token for authenticated user avatar endpoints.
     var authToken: String?
+    /// Optional base64 data URI string (e.g. "data:image/jpeg;base64,...").
+    /// When set, this takes priority over `imageURL` — no network request needed.
+    var dataURIString: String?
 
     @Environment(\.theme) private var theme
 
+    /// Decodes the `dataURIString` into a UIImage synchronously.
+    /// Returns nil if string is not a valid data URI or decoding fails.
+    private var dataURIImage: UIImage? {
+        guard let dataURI = dataURIString,
+              dataURI.hasPrefix("data:"),
+              let commaIndex = dataURI.firstIndex(of: ",") else { return nil }
+        let base64 = String(dataURI[dataURI.index(after: commaIndex)...])
+        guard let data = Data(base64Encoded: base64, options: .ignoreUnknownCharacters) else { return nil }
+        return UIImage(data: data)
+    }
+
     var body: some View {
-        if let imageURL {
+        if let uiImage = dataURIImage {
+            // Fast path: data URI decoded inline — no network, no shimmer
+            Image(uiImage: uiImage)
+                .resizable()
+                .aspectRatio(contentMode: .fill)
+                .frame(width: size, height: size)
+                .clipShape(Circle())
+                .accessibilityLabel(Text(name ?? String(localized: "User")))
+        } else if let imageURL {
             CachedAsyncImage(
                 url: imageURL,
                 authToken: authToken,
