@@ -225,6 +225,9 @@ struct ChatDetailView: View {
                 count: promptCardCount
             )
         }
+        .onAppear {
+            viewModel.syncOnEntry()
+        }
         .onDisappear {
             keyboard.stop()
             // Stop TTS playback and clear state when navigating away from chat

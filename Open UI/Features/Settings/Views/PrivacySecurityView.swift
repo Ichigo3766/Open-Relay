@@ -1,3 +1,4 @@
+import CoreLocation
 import SwiftUI
 
 /// Privacy and security settings view.
@@ -9,11 +10,20 @@ struct PrivacySecurityView: View {
     @State private var exportURL: URL?
     @State private var showExportSheet = false
     @State private var exportError: String?
+    @State private var showLocationDeniedAlert = false
 
+    // Observe the shared LocationManager so the UI refreshes when auth status changes
+    private var locationManager: LocationManager { LocationManager.shared }
 
     var body: some View {
         ScrollView {
             VStack(spacing: Spacing.sectionGap) {
+
+                // Location
+                SettingsSection(header: "Location") {
+                    locationRow
+                }
+
                 // Data Management
                 SettingsSection(header: "Data Management") {
                     SettingsCell(
@@ -70,7 +80,96 @@ struct PrivacySecurityView: View {
         } message: {
             Text(exportError ?? "Unknown error")
         }
+        .alert("Location Access Denied", isPresented: $showLocationDeniedAlert) {
+            Button("Open Settings") {
+                if let url = URL(string: UIApplication.openSettingsURLString) {
+                    UIApplication.shared.open(url)
+                }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Open Relay needs location access to use {{USER_LOCATION}} in prompts. Please enable it in Settings > Privacy & Security > Location Services.")
+        }
     }
+
+    // MARK: - Location Row
+
+    @ViewBuilder
+    private var locationRow: some View {
+        HStack(spacing: 12) {
+            // Icon
+            ZStack {
+                RoundedRectangle(cornerRadius: 8)
+                    .fill(Color.blue.opacity(0.15))
+                    .frame(width: 32, height: 32)
+                Image(systemName: "location.fill")
+                    .scaledFont(size: 14, weight: .medium)
+                    .foregroundStyle(Color.blue)
+            }
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Share Location")
+                    .scaledFont(size: 15)
+                    .foregroundStyle(theme.textPrimary)
+                Text(locationSubtitle)
+                    .scaledFont(size: 12)
+                    .foregroundStyle(theme.textSecondary)
+                    .lineLimit(2)
+            }
+
+            Spacer()
+
+            Toggle("", isOn: Binding(
+                get: { locationManager.isLocationEnabled },
+                set: { newValue in
+                    handleLocationToggle(newValue)
+                }
+            ))
+            .labelsHidden()
+            .tint(Color.blue)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+    }
+
+    private var locationSubtitle: String {
+        let status = locationManager.authorizationStatus
+        if !locationManager.isLocationEnabled {
+            return "Enable to use {{USER_LOCATION}} in prompts"
+        }
+        switch status {
+        case .notDetermined:
+            return "Tap to request location permission"
+        case .denied, .restricted:
+            return "Location access denied — tap to open Settings"
+        case .authorizedWhenInUse, .authorizedAlways:
+            if locationManager.cachedLocation != nil {
+                // Prefer human-readable place name; fall back to coords while geocoding
+                let place = locationManager.cachedPlaceName ?? locationManager.locationString ?? ""
+                return "Active · \(place)"
+            }
+            return "Waiting for GPS fix…"
+        @unknown default:
+            return "Enable to use {{USER_LOCATION}} in prompts"
+        }
+    }
+
+    private func handleLocationToggle(_ newValue: Bool) {
+        if newValue {
+            let status = locationManager.authorizationStatus
+            if status == .denied || status == .restricted {
+                // Can't ask again — send user to Settings
+                showLocationDeniedAlert = true
+                return
+            }
+            locationManager.isLocationEnabled = true
+            locationManager.requestPermissionAndStart()
+        } else {
+            locationManager.isLocationEnabled = false
+        }
+    }
+
+    // MARK: - Helpers
 
     private func infoRow(
         icon: String,

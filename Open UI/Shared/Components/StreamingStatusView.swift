@@ -7,7 +7,14 @@ struct StreamingStatusView: View {
     var isStreaming: Bool = true
 
     @Environment(\.theme) private var theme
-    @State private var isExpanded = true
+    @State private var isExpanded: Bool
+
+    init(statusHistory: [ChatStatusUpdate], isStreaming: Bool = true) {
+        self.statusHistory = statusHistory
+        self.isStreaming = isStreaming
+        // Start collapsed when loading an existing (non-streaming) chat
+        _isExpanded = State(initialValue: isStreaming)
+    }
 
     /// Visible (non-hidden) status items.
     private var visibleStatuses: [ChatStatusUpdate] {
@@ -47,6 +54,26 @@ struct StreamingStatusView: View {
             .padding(.vertical, Spacing.xs)
             .animation(MicroAnimation.snappy, value: isExpanded)
             .animation(MicroAnimation.gentle, value: visibleStatuses.count)
+            .onAppear {
+                // Collapse immediately if already done when first rendered
+                if allDone && !isStreaming {
+                    isExpanded = false
+                }
+            }
+            .onChange(of: allDone) { done in
+                if done && !isStreaming {
+                    withAnimation(MicroAnimation.snappy) {
+                        isExpanded = false
+                    }
+                }
+            }
+            .onChange(of: isStreaming) { streaming in
+                if !streaming && allDone {
+                    withAnimation(MicroAnimation.snappy) {
+                        isExpanded = false
+                    }
+                }
+            }
         )
     }
 
@@ -111,34 +138,92 @@ struct StreamingStatusView: View {
     }
 
     private func statusRow(_ status: ChatStatusUpdate) -> some View {
-        HStack(spacing: Spacing.sm) {
-            statusIndicator(for: status)
-                .scaleEffect(0.8)
+        VStack(alignment: .leading, spacing: Spacing.xs) {
+            HStack(spacing: Spacing.sm) {
+                statusIndicator(for: status)
+                    .scaleEffect(0.8)
 
-            VStack(alignment: .leading, spacing: 0) {
-                let title = resolveStatusDescription(for: status)
-                if status.done == true {
-                    Text(title)
-                        .scaledFont(size: 12, weight: .medium)
-                        .foregroundStyle(theme.textTertiary)
-                        .lineLimit(1)
-                        .strikethrough(true)
-                } else {
-                    ShimmerText(text: title, theme: theme)
-                }
-
-                // Show URLs if present
-                if !status.urls.isEmpty {
-                    ForEach(status.urls, id: \.self) { url in
-                        Text(url)
+                VStack(alignment: .leading, spacing: 0) {
+                    let title = resolveStatusDescription(for: status)
+                    if status.done == true {
+                        Text(title)
                             .scaledFont(size: 12, weight: .medium)
-                            .foregroundStyle(theme.brandPrimary)
+                            .foregroundStyle(theme.textTertiary)
                             .lineLimit(1)
-                            .truncationMode(.middle)
+                            .strikethrough(true)
+                    } else {
+                        ShimmerText(text: title, theme: theme)
+                    }
+
+                    // Show URLs if present
+                    if !status.urls.isEmpty {
+                        ForEach(status.urls, id: \.self) { url in
+                            Text(url)
+                                .scaledFont(size: 12, weight: .medium)
+                                .foregroundStyle(theme.brandPrimary)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                        }
+                    }
+                }
+            }
+
+            // Show rich items if present (e.g. location results with title + link)
+            if !status.items.isEmpty {
+                itemsSection(status.items)
+            }
+        }
+    }
+
+    // MARK: - Items Section
+
+    @ViewBuilder
+    private func itemsSection(_ items: [ChatStatusItem]) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            ForEach(Array(items.enumerated()), id: \.offset) { _, item in
+                if let title = item.title {
+                    if let urlString = item.link, let url = URL(string: urlString) {
+                        Link(destination: url) {
+                            itemRow(title: title, hasLink: true)
+                        }
+                        .buttonStyle(.plain)
+                    } else {
+                        itemRow(title: title, hasLink: false)
                     }
                 }
             }
         }
+        .padding(.leading, Spacing.sm)
+    }
+
+    private func itemRow(title: String, hasLink: Bool) -> some View {
+        HStack(spacing: 6) {
+            Image(systemName: "mappin.circle.fill")
+                .scaledFont(size: 11, weight: .medium)
+                .foregroundStyle(theme.brandPrimary.opacity(0.8))
+
+            Text(title)
+                .scaledFont(size: 12, weight: .regular)
+                .foregroundStyle(theme.textSecondary)
+                .lineLimit(2)
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+            if hasLink {
+                Image(systemName: "arrow.up.right")
+                    .scaledFont(size: 10, weight: .semibold)
+                    .foregroundStyle(theme.brandPrimary.opacity(0.7))
+            }
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 5)
+        .background(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(theme.surfaceContainer.opacity(theme.isDark ? 0.4 : 0.6))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .strokeBorder(theme.cardBorder.opacity(0.3), lineWidth: 0.5)
+        )
     }
 
     // MARK: - Queries Section
@@ -180,8 +265,13 @@ struct StreamingStatusView: View {
                 .scaledFont(size: 14)
                 .foregroundStyle(theme.success)
                 .transition(.scale.combined(with: .opacity))
-        } else {
+        } else if isStreaming {
             PulsingDot(color: theme.brandPrimary)
+        } else {
+            // Streaming ended but status not marked done — show static dot
+            Circle()
+                .fill(theme.textTertiary)
+                .frame(width: 6, height: 6)
         }
     }
 

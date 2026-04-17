@@ -3466,6 +3466,34 @@ final class APIClient: @unchecked Sendable {
 
         let followUps = msg["followUps"] as? [String] ?? msg["follow_ups"] as? [String] ?? []
 
+        // Parse statusHistory for this sibling/version
+        var statusHistory: [ChatStatusUpdate] = []
+        if let rawHistory = msg["statusHistory"] as? [[String: Any]] {
+            for item in rawHistory {
+                var statusItems: [ChatStatusItem] = []
+                if let rawItems = item["items"] as? [[String: Any]] {
+                    for rawItem in rawItems {
+                        statusItems.append(ChatStatusItem(
+                            title: rawItem["title"] as? String,
+                            link: rawItem["link"] as? String
+                        ))
+                    }
+                }
+                statusHistory.append(ChatStatusUpdate(
+                    action: item["action"] as? String,
+                    status: item["status"] as? String,
+                    description: item["description"] as? String,
+                    done: item["done"] as? Bool,
+                    hidden: item["hidden"] as? Bool,
+                    urls: item["urls"] as? [String] ?? [],
+                    items: statusItems,
+                    count: item["count"] as? Int,
+                    query: item["query"] as? String,
+                    queries: item["queries"] as? [String] ?? []
+                ))
+            }
+        }
+
         return ChatMessageVersion(
             id: id,
             content: content,
@@ -3474,7 +3502,8 @@ final class APIClient: @unchecked Sendable {
             error: error,
             files: files,
             sources: sources,
-            followUps: followUps
+            followUps: followUps,
+            statusHistory: statusHistory
         )
     }
 
@@ -3585,6 +3614,36 @@ final class APIClient: @unchecked Sendable {
             usage = rawUsage
         }
 
+        // Parse statusHistory — tool execution / web search status updates stored by the
+        // server on each message. Mirrors how the web UI persists and re-displays them.
+        var statusHistory: [ChatStatusUpdate] = []
+        if let rawHistory = msg["statusHistory"] as? [[String: Any]] {
+            for item in rawHistory {
+                // Parse the rich items array (e.g. resolved locations with title + link)
+                var statusItems: [ChatStatusItem] = []
+                if let rawItems = item["items"] as? [[String: Any]] {
+                    for rawItem in rawItems {
+                        statusItems.append(ChatStatusItem(
+                            title: rawItem["title"] as? String,
+                            link: rawItem["link"] as? String
+                        ))
+                    }
+                }
+                statusHistory.append(ChatStatusUpdate(
+                    action: item["action"] as? String,
+                    status: item["status"] as? String,
+                    description: item["description"] as? String,
+                    done: item["done"] as? Bool,
+                    hidden: item["hidden"] as? Bool,
+                    urls: item["urls"] as? [String] ?? [],
+                    items: statusItems,
+                    count: item["count"] as? Int,
+                    query: item["query"] as? String,
+                    queries: item["queries"] as? [String] ?? []
+                ))
+            }
+        }
+
         return ChatMessage(
             id: id,
             role: role,
@@ -3594,6 +3653,7 @@ final class APIClient: @unchecked Sendable {
             attachmentIds: attachmentIds,
             files: files,
             sources: sources,
+            statusHistory: statusHistory,
             followUps: followUps,
             error: error,
             usage: usage,

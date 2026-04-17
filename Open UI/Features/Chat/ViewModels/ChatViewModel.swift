@@ -213,6 +213,10 @@ final class ChatViewModel {
     /// Minimum interval (seconds) between server syncs to avoid redundant fetches.
     private let syncDebounceInterval: TimeInterval = 3.0
 
+    /// Timestamp of the last time the chat view appeared (navigation entry).
+    /// Used by syncOnEntry() to debounce SwiftUI's double-appear during transitions.
+    private var lastEntryTime: Date = .distantPast
+
     /// Timestamp when the app entered the background. Used to skip
     /// sync when the background duration was trivially short.
     @ObservationIgnored nonisolated(unsafe) private var backgroundEnteredAt: Date?
@@ -1036,6 +1040,30 @@ final class ChatViewModel {
         if serverConversation.tags != conversation?.tags {
             conversation?.tags = serverConversation.tags
         }
+    }
+
+    // MARK: - Entry Sync (navigation re-entry)
+
+    /// Syncs with the server every time the user navigates INTO this chat.
+    ///
+    /// Unlike `syncWithServer()` (which has a 3-second debounce designed to
+    /// guard against rapid foreground/background transitions), this method uses
+    /// a much shorter 1.5-second guard — just enough to absorb SwiftUI's
+    /// double-appear during push/pop navigation transitions.
+    ///
+    /// Called from `ChatDetailView.onAppear` so that even when the view model
+    /// is cached (`hasLoaded == true`) and no foreground transition occurs,
+    /// we still pick up any messages changed externally (e.g. a response
+    /// regenerated from the web while this chat was in the background pane).
+    func syncOnEntry() {
+        guard hasLoaded else { return } // load() handles the first appearance
+        guard !isStreaming else { return } // never interrupt an active stream
+        let now = Date()
+        guard now.timeIntervalSince(lastEntryTime) >= 1.5 else { return }
+        lastEntryTime = now
+        // Reset lastSyncTime so syncWithServer() is not blocked by its own debounce
+        lastSyncTime = .distantPast
+        Task { await syncWithServer() }
     }
 
     // MARK: - Foreground Sync
@@ -2527,6 +2555,31 @@ final class ChatViewModel {
                 // The server forwards this to the LLM provider, which returns usage
                 // in the final SSE chunk. We capture it via sendChatCompleted().
                 request.streamOptions = ["include_usage": true]
+
+                // Inject device GPS location into template variables AND the system prompt.
+                // When the user has enabled "Share Location" and granted permission,
+                // {{USER_LOCATION}} in system prompts is resolved to the phone's
+                // real location (place name + coords) — overriding the server's geo-IP fallback.
+                // Awaiting ensures we get a fresh fix even when driving; max 3s wait.
+                //
+                // We substitute in TWO places:
+                //   1. request.variables — so the server resolves it in its own system prompt
+                //   2. requestParams["system"] — because when we override the system prompt
+                //      client-side, the server uses our raw string directly without re-substituting
+                //      variables, so we must do it ourselves here.
+                if let locationString = await LocationManager.shared.currentLocationString() {
+                    var vars = request.variables ?? [:]
+                    vars["USER_LOCATION"] = locationString
+                    request.variables = vars
+
+                    // Also substitute directly into the overridden system prompt string
+                    if let rawSP = requestParams["system"] as? String,
+                       rawSP.contains("{{USER_LOCATION}}") {
+                        requestParams["system"] = rawSP.replacingOccurrences(
+                            of: "{{USER_LOCATION}}", with: locationString)
+                        request.params = requestParams
+                    }
+                }
 
                 // Use only selectedToolIds — model-assigned and globally-enabled
                 // tools are already synced into selectedToolIds by

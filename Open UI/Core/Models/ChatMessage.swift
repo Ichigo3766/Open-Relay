@@ -68,14 +68,23 @@ struct ChatSourceReference: Codable, Identifiable, Hashable, Sendable {
     }
 }
 
+/// A rich result item inside a status update (e.g. a resolved location with a map link).
+struct ChatStatusItem: Codable, Sendable {
+    var title: String?
+    var link: String?
+}
+
 /// A status update during message streaming (e.g., tool calls, web searches).
 struct ChatStatusUpdate: Codable, Sendable {
     var action: String?
+    var status: String?
     var description: String?
     var done: Bool?
     var hidden: Bool?
     var urls: [String]
     var occurredAt: Date?
+    /// Rich result items (e.g. resolved locations with titles and map links).
+    var items: [ChatStatusItem]
     /// The number of results (e.g. "Retrieved 17 sources").
     var count: Int?
     /// A single search/retrieval query string.
@@ -85,21 +94,25 @@ struct ChatStatusUpdate: Codable, Sendable {
 
     init(
         action: String? = nil,
+        status: String? = nil,
         description: String? = nil,
         done: Bool? = nil,
         hidden: Bool? = nil,
         urls: [String] = [],
         occurredAt: Date? = nil,
+        items: [ChatStatusItem] = [],
         count: Int? = nil,
         query: String? = nil,
         queries: [String] = []
     ) {
         self.action = action
+        self.status = status
         self.description = description
         self.done = done
         self.hidden = hidden
         self.urls = urls
         self.occurredAt = occurredAt
+        self.items = items
         self.count = count
         self.query = query
         self.queries = queries
@@ -337,7 +350,7 @@ private struct AnyEncodable: Encodable {
 /// response when the user navigates between edit versions.
 struct ChatMessageVersion: Codable, Equatable, Hashable, Sendable {
     enum CodingKeys: String, CodingKey {
-        case id, content, timestamp, model, error, files, sources, followUps, usage
+        case id, content, timestamp, model, error, files, sources, followUps, usage, statusHistory
         case pairedAssistantId, pairedAssistantContent, pairedAssistantModel
         case pairedAssistantFiles, pairedAssistantSources, pairedAssistantVersions
         case downstreamMessages
@@ -354,6 +367,8 @@ struct ChatMessageVersion: Codable, Equatable, Hashable, Sendable {
     var files: [ChatMessageFile]
     var sources: [ChatSourceReference]
     var followUps: [String]
+    /// Tool execution status updates for this specific version.
+    var statusHistory: [ChatStatusUpdate]
     /// Token usage for this specific version, captured when the response completes.
     var usage: [String: Any]?
     /// For user message versions only: the ID of the assistant message
@@ -387,6 +402,7 @@ struct ChatMessageVersion: Codable, Equatable, Hashable, Sendable {
         files: [ChatMessageFile] = [],
         sources: [ChatSourceReference] = [],
         followUps: [String] = [],
+        statusHistory: [ChatStatusUpdate] = [],
         usage: [String: Any]? = nil,
         pairedAssistantId: String? = nil,
         pairedAssistantContent: String? = nil,
@@ -404,6 +420,7 @@ struct ChatMessageVersion: Codable, Equatable, Hashable, Sendable {
         self.files = files
         self.sources = sources
         self.followUps = followUps
+        self.statusHistory = statusHistory
         self.usage = usage
         self.pairedAssistantId = pairedAssistantId
         self.pairedAssistantContent = pairedAssistantContent
@@ -427,6 +444,7 @@ struct ChatMessageVersion: Codable, Equatable, Hashable, Sendable {
         self.files = (try? container.decode([ChatMessageFile].self, forKey: .files)) ?? []
         self.sources = (try? container.decode([ChatSourceReference].self, forKey: .sources)) ?? []
         self.followUps = (try? container.decode([String].self, forKey: .followUps)) ?? []
+        self.statusHistory = (try? container.decode([ChatStatusUpdate].self, forKey: .statusHistory)) ?? []
         if let usageData = try? container.decodeIfPresent(AnyCodableMap.self, forKey: .usage) {
             self.usage = usageData.value
         } else {
@@ -451,6 +469,7 @@ struct ChatMessageVersion: Codable, Equatable, Hashable, Sendable {
         try c.encode(files, forKey: .files)
         try c.encode(sources, forKey: .sources)
         try c.encode(followUps, forKey: .followUps)
+        try c.encode(statusHistory, forKey: .statusHistory)
         if let usage {
             try c.encode(AnyCodableMap(usage), forKey: .usage)
         }

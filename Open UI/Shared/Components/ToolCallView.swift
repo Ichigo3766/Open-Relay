@@ -1159,17 +1159,334 @@ private struct RichUIWebView: UIViewRepresentable {
     }
 }
 
+// MARK: - JSON Syntax Highlighting
+
+/// Applies syntax highlighting colors to a JSON string, returning an AttributedString.
+private enum JSONSyntaxHighlighter {
+
+    struct Colors {
+        let key: Color
+        let string: Color
+        let number: Color
+        let keyword: Color   // true / false / null
+        let punctuation: Color
+    }
+
+    static func highlight(_ json: String, isDark: Bool) -> AttributedString {
+        let colors = isDark ? darkColors : lightColors
+        var result = AttributedString(json)
+
+        // Apply base monospaced font and punctuation color to everything first
+        result.font = .system(size: 12, design: .monospaced)
+        result.foregroundColor = colors.punctuation
+
+        let nsJSON = json as NSString
+        let fullRange = NSRange(location: 0, length: nsJSON.length)
+
+        // Keys: "key":
+        applyPattern(#""([^"\\]*(?:\\.[^"\\]*)*)"\s*:"#, to: &result, in: nsJSON, range: fullRange,
+                     color: colors.key, groupIndex: 1)
+
+        // String values: : "value"
+        applyPattern(#":\s*"([^"\\]*(?:\\.[^"\\]*)*)""#, to: &result, in: nsJSON, range: fullRange,
+                     color: colors.string, groupIndex: 1, includeQuotes: true)
+
+        // Numbers
+        applyPattern(#":\s*(-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)"#, to: &result, in: nsJSON, range: fullRange,
+                     color: colors.number, groupIndex: 1)
+
+        // Keywords: true, false, null
+        applyPattern(#"\b(true|false|null)\b"#, to: &result, in: nsJSON, range: fullRange,
+                     color: colors.keyword, groupIndex: 1)
+
+        return result
+    }
+
+    private static let lightColors = Colors(
+        key: Color(red: 0.55, green: 0.0, blue: 0.55),       // purple
+        string: Color(red: 0.13, green: 0.54, blue: 0.13),   // green
+        number: Color(red: 0.10, green: 0.37, blue: 0.72),   // blue
+        keyword: Color(red: 0.72, green: 0.27, blue: 0.07),  // orange
+        punctuation: Color(red: 0.22, green: 0.22, blue: 0.22)
+    )
+
+    private static let darkColors = Colors(
+        key: Color(red: 0.87, green: 0.60, blue: 0.87),      // lavender
+        string: Color(red: 0.56, green: 0.90, blue: 0.56),   // light green
+        number: Color(red: 0.56, green: 0.74, blue: 1.0),    // light blue
+        keyword: Color(red: 1.0, green: 0.70, blue: 0.40),   // warm orange
+        punctuation: Color(red: 0.82, green: 0.82, blue: 0.82)
+    )
+
+    private static func applyPattern(
+        _ pattern: String,
+        to result: inout AttributedString,
+        in nsString: NSString,
+        range: NSRange,
+        color: Color,
+        groupIndex: Int,
+        includeQuotes: Bool = false
+    ) {
+        guard let regex = try? NSRegularExpression(pattern: pattern, options: [.dotMatchesLineSeparators]) else { return }
+        let matches = regex.matches(in: nsString as String, range: range)
+
+        // Process in reverse so string indices remain valid as we modify
+        for match in matches.reversed() where match.numberOfRanges > groupIndex {
+            let matchRange = match.range(at: groupIndex)
+            // For string values, include surrounding quotes by expanding range
+            let targetRange: NSRange = {
+                if includeQuotes {
+                    return NSRange(location: matchRange.location - 1, length: matchRange.length + 2)
+                }
+                return matchRange
+            }()
+            guard targetRange.location != NSNotFound,
+                  let swiftRange = Range(targetRange, in: nsString as String) else { continue }
+            let attrRange = result.range(of: nsString.substring(with: targetRange), options: .literal)
+            if let attrRange {
+                result[attrRange].foregroundColor = color
+            }
+        }
+    }
+}
+
+// MARK: - Tool Call Result Block View
+
+/// Renders the OUTPUT section — styled like a code block with syntax highlighting,
+/// line numbers, a header bar with language label + copy button, and a scroll view
+/// so the full result is always accessible (no truncation).
+private struct ToolCallResultBlockView: View {
+    let content: String
+    let language: String
+
+    @State private var isCollapsed: Bool = false
+    @State private var showCopied: Bool = false
+    @Environment(\.theme) private var theme
+    @Environment(\.colorScheme) private var colorScheme
+
+    private var formattedContent: String {
+        guard let data = content.data(using: .utf8),
+              let json = try? JSONSerialization.jsonObject(with: data),
+              let prettyData = try? JSONSerialization.data(withJSONObject: json, options: [.prettyPrinted]),
+              let pretty = String(data: prettyData, encoding: .utf8)
+        else {
+            return content
+        }
+        return pretty
+    }
+
+    private var lines: [String] {
+        formattedContent.components(separatedBy: "\n")
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            // Header bar
+            HStack(spacing: 10) {
+                Text(language)
+                    .scaledFont(size: 11, weight: .medium)
+                    .foregroundStyle(theme.textTertiary)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 3)
+                    .background(theme.surfaceContainer.opacity(0.6))
+                    .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
+
+                Spacer()
+
+                // Collapse/Expand button
+                Button {
+                    withAnimation(.easeInOut(duration: 0.2)) {
+                        isCollapsed.toggle()
+                    }
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: isCollapsed ? "chevron.down.square" : "chevron.up.square")
+                            .scaledFont(size: 11)
+                        Text(isCollapsed ? "Expand" : "Collapse")
+                            .scaledFont(size: 11, weight: .medium)
+                    }
+                    .foregroundStyle(theme.textTertiary)
+                }
+                .buttonStyle(.plain)
+
+                // Copy button
+                Button {
+                    UIPasteboard.general.string = formattedContent
+                    withAnimation(.easeInOut(duration: 0.2)) { showCopied = true }
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                        withAnimation(.easeInOut(duration: 0.2)) { showCopied = false }
+                    }
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: showCopied ? "checkmark" : "doc.on.doc")
+                            .scaledFont(size: 11)
+                        Text(showCopied ? "Copied!" : "Copy")
+                            .scaledFont(size: 11, weight: .medium)
+                    }
+                    .foregroundStyle(showCopied ? theme.success : theme.textTertiary)
+                }
+                .buttonStyle(.plain)
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .background(theme.surfaceContainer.opacity(theme.isDark ? 0.8 : 0.6))
+
+            Divider()
+                .overlay(theme.cardBorder.opacity(0.3))
+
+            // Code content (collapsed = hidden)
+            if !isCollapsed {
+                // Vertical scroll wraps the content. Horizontal scroll is handled
+                // by the inner ScrollView so gestures lock to one axis at a time,
+                // preventing the 360° free-panning that occurs when both axes share
+                // a single ScrollView.
+                ScrollView(.vertical, showsIndicators: true) {
+                    ScrollView(.horizontal, showsIndicators: true) {
+                        HStack(alignment: .top, spacing: 0) {
+                            // Line numbers — sticky-ish on the left
+                            VStack(alignment: .trailing, spacing: 0) {
+                                ForEach(Array(lines.enumerated()), id: \.offset) { idx, _ in
+                                    Text("\(idx + 1)")
+                                        .scaledFont(size: 11.5, design: .monospaced)
+                                        .foregroundStyle(theme.textTertiary.opacity(0.5))
+                                        .frame(minWidth: 28, alignment: .trailing)
+                                        .padding(.vertical, 1)
+                                }
+                            }
+                            .padding(.leading, 8)
+                            .padding(.trailing, 10)
+                            .padding(.vertical, 10)
+                            .background(theme.surfaceContainer.opacity(theme.isDark ? 0.4 : 0.3))
+
+                            // Syntax-highlighted code
+                            let highlighted = JSONSyntaxHighlighter.highlight(
+                                formattedContent,
+                                isDark: colorScheme == .dark
+                            )
+                            Text(highlighted)
+                                .scaledFont(size: 11.5, design: .monospaced)
+                                .lineSpacing(2)
+                                .textSelection(.enabled)
+                                .fixedSize(horizontal: true, vertical: false)
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 10)
+                        }
+                    }
+                }
+                .frame(maxHeight: 320)
+                .transition(.opacity.combined(with: .move(edge: .top)))
+            }
+        }
+        .clipShape(RoundedRectangle(cornerRadius: CornerRadius.sm, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: CornerRadius.sm, style: .continuous)
+                .strokeBorder(theme.cardBorder.opacity(0.4), lineWidth: 0.5)
+        )
+    }
+}
+
+// MARK: - Tool Call Arguments View
+
+/// Renders the INPUT section as clean key-value rows (web UI style).
+private struct ToolCallArgumentsView: View {
+    let arguments: String
+    @Environment(\.theme) private var theme
+
+    /// Parsed key-value pairs. Falls back to raw display if not a JSON object.
+    private var kvPairs: [(key: String, value: String)]? {
+        guard let data = arguments.data(using: .utf8),
+              let dict = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { return nil }
+
+        return dict.sorted(by: { $0.key < $1.key }).map { (key: $0.key, value: formatValue($0.value)) }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            if let pairs = kvPairs {
+                ForEach(Array(pairs.enumerated()), id: \.offset) { _, pair in
+                    HStack(alignment: .top, spacing: 12) {
+                        Text(pair.key)
+                            .scaledFont(size: 12, design: .monospaced)
+                            .foregroundStyle(theme.textTertiary)
+                            .frame(minWidth: 70, alignment: .leading)
+                            .lineLimit(1)
+
+                        Text(pair.value)
+                            .scaledFont(size: 12, weight: .medium)
+                            .foregroundStyle(theme.textPrimary)
+                            .multilineTextAlignment(.leading)
+                            .fixedSize(horizontal: false, vertical: true)
+
+                        Spacer(minLength: 0)
+                    }
+                    .padding(.vertical, 4)
+                    .padding(.horizontal, 12)
+
+                    if pair.key != pairs.last?.key {
+                        Divider()
+                            .padding(.leading, 12)
+                            .overlay(theme.cardBorder.opacity(0.2))
+                    }
+                }
+            } else {
+                // Fallback: raw text
+                Text(arguments)
+                    .scaledFont(size: 12, design: .monospaced)
+                    .foregroundStyle(theme.textSecondary)
+                    .padding(12)
+                    .textSelection(.enabled)
+            }
+        }
+        .background(theme.surfaceContainer.opacity(theme.isDark ? 0.35 : 0.25))
+        .clipShape(RoundedRectangle(cornerRadius: CornerRadius.sm, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: CornerRadius.sm, style: .continuous)
+                .strokeBorder(theme.cardBorder.opacity(0.35), lineWidth: 0.5)
+        )
+    }
+
+    private func formatValue(_ value: Any) -> String {
+        switch value {
+        case let str as String: return str
+        case let num as NSNumber:
+            // Bool check (NSNumber wraps booleans in Swift)
+            if CFGetTypeID(num) == CFBooleanGetTypeID() {
+                return num.boolValue ? "true" : "false"
+            }
+            return num.stringValue
+        case is NSNull: return "null"
+        case let arr as [Any]:
+            if let data = try? JSONSerialization.data(withJSONObject: arr, options: [.prettyPrinted]),
+               let str = String(data: data, encoding: .utf8) {
+                return str
+            }
+            return "\(arr)"
+        case let dict as [String: Any]:
+            if let data = try? JSONSerialization.data(withJSONObject: dict, options: [.prettyPrinted]),
+               let str = String(data: data, encoding: .utf8) {
+                return str
+            }
+            return "\(dict)"
+        default:
+            return "\(value)"
+        }
+    }
+}
+
 // MARK: - Tool Call View
 
-/// Displays a single tool call as a collapsible disclosure group.
-/// When the tool returns Rich UI embeds, they are shown inline below
-/// the header — always visible, matching the Open WebUI web behaviour.
-/// The raw Arguments/Result are available in an expandable section for
-/// developers who want to inspect the underlying data.
+/// Displays a single tool call styled like the Open WebUI web interface:
+/// - Header: checkmark/spinner + tool name + chevron
+/// - When expanded: INPUT (key-value pairs) + OUTPUT (syntax-highlighted scrollable JSON)
+/// - Rich UI HTML embeds always shown inline when present
 struct ToolCallView: View {
     let toolCall: ToolCallData
     var authToken: String? = nil
     var serverBaseURL: String? = nil
+
+    /// Collapsed by default; expanded by user tap.
+    /// Uses a stable ID so state persists across streaming re-renders.
     @State private var isExpanded: Bool = false
     @Environment(\.theme) private var theme
 
@@ -1178,43 +1495,49 @@ struct ToolCallView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            // Header button
+            // ── Header ──────────────────────────────────────────────────
             Button {
-                withAnimation(.easeInOut(duration: 0.2)) {
+                withAnimation(.easeInOut(duration: 0.22)) {
                     isExpanded.toggle()
                 }
             } label: {
-                HStack(spacing: Spacing.sm) {
-                    Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
-                        .scaledFont(size: 10, weight: .semibold)
-                        .foregroundStyle(theme.textTertiary)
-                        .frame(width: 14)
-
+                HStack(spacing: 8) {
+                    // Status indicator
                     if toolCall.isDone {
                         Image(systemName: "checkmark.circle.fill")
-                            .scaledFont(size: 13)
-                            .foregroundStyle(.green)
+                            .scaledFont(size: 14)
+                            .foregroundStyle(theme.success)
                     } else {
                         ProgressView()
                             .controlSize(.mini)
+                            .tint(theme.brandPrimary)
                     }
 
-                    Text("Used \(toolCall.displayName)")
-                        .scaledFont(size: 12, weight: .medium)
-                        .fontWeight(.medium)
-                        .foregroundStyle(theme.textSecondary)
+                    // "View Result from tool_name" — matches Open WebUI web UI pattern
+                    (Text("View Result from ")
+                        .foregroundStyle(theme.textTertiary)
+                     + Text(toolCall.name)
+                        .foregroundStyle(theme.textPrimary)
+                        .fontWeight(.semibold))
+                        .scaledFont(size: 13, weight: .medium)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
 
                     Spacer()
+
+                    // Chevron on the right
+                    Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
+                        .scaledFont(size: 10, weight: .semibold)
+                        .foregroundStyle(theme.textTertiary)
                 }
-                .padding(.vertical, Spacing.sm)
+                .padding(.vertical, 10)
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
 
-            // Rich UI embeds — shown inline, always visible when the tool is done.
-            // When embeds are present the raw Arguments/Result are hidden: the embed
-            // IS the result, rendered visually. This matches the web UI behaviour.
+            // ── Body ─────────────────────────────────────────────────────
             if hasEmbeds && toolCall.isDone {
+                // Rich UI embeds — always visible, this IS the visual result
                 VStack(alignment: .leading, spacing: Spacing.sm) {
                     ForEach(Array(toolCall.embeds.enumerated()), id: \.offset) { _, embedHTML in
                         RichUIEmbedView(
@@ -1227,62 +1550,48 @@ struct ToolCallView: View {
                 }
                 .padding(.top, Spacing.xs)
                 .padding(.bottom, Spacing.sm)
-            } else if isExpanded {
-                // Raw Arguments / Result — only shown when there is no embed
-                VStack(alignment: .leading, spacing: Spacing.sm) {
-                    if let args = toolCall.arguments, !args.isEmpty {
-                        VStack(alignment: .leading, spacing: Spacing.xxs) {
-                            Text("Arguments")
-                                .scaledFont(size: 12, weight: .medium)
-                                .fontWeight(.semibold)
-                                .foregroundStyle(theme.textTertiary)
 
-                            Text(formatJSON(args))
-                                .scaledFont(size: 12, design: .monospaced)
-                                .foregroundStyle(theme.textSecondary)
-                                .lineLimit(10)
-                                .padding(Spacing.sm)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .background(theme.surfaceContainer.opacity(0.5))
-                                .clipShape(RoundedRectangle(cornerRadius: CornerRadius.sm, style: .continuous))
+            } else if isExpanded {
+                VStack(alignment: .leading, spacing: Spacing.sm) {
+
+                    // INPUT section
+                    if let args = toolCall.arguments, !args.isEmpty {
+                        VStack(alignment: .leading, spacing: 5) {
+                            Text("INPUT")
+                                .scaledFont(size: 10, weight: .semibold)
+                                .foregroundStyle(theme.textTertiary)
+                                .tracking(0.8)
+
+                            ToolCallArgumentsView(arguments: args)
                         }
                     }
 
+                    // OUTPUT section
                     if let result = toolCall.result, !result.isEmpty {
-                        VStack(alignment: .leading, spacing: Spacing.xxs) {
-                            Text("Result")
-                                .scaledFont(size: 12, weight: .medium)
-                                .fontWeight(.semibold)
+                        VStack(alignment: .leading, spacing: 5) {
+                            Text("OUTPUT")
+                                .scaledFont(size: 10, weight: .semibold)
                                 .foregroundStyle(theme.textTertiary)
+                                .tracking(0.8)
 
-                            Text(formatJSON(result))
-                                .scaledFont(size: 12, design: .monospaced)
-                                .foregroundStyle(theme.textSecondary)
-                                .lineLimit(20)
-                                .padding(Spacing.sm)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .background(theme.surfaceContainer.opacity(0.5))
-                                .clipShape(RoundedRectangle(cornerRadius: CornerRadius.sm, style: .continuous))
+                            ToolCallResultBlockView(content: result, language: "json")
                         }
+                    }
+
+                    // If done but no result yet shown
+                    if toolCall.isDone,
+                       (toolCall.arguments == nil || toolCall.arguments!.isEmpty),
+                       (toolCall.result == nil || toolCall.result!.isEmpty) {
+                        Text("No input or output available")
+                            .scaledFont(size: 12)
+                            .foregroundStyle(theme.textTertiary)
                     }
                 }
-                .padding(.leading, 24)
+                .padding(.top, 2)
                 .padding(.bottom, Spacing.sm)
                 .transition(.opacity.combined(with: .move(edge: .top)))
             }
         }
-    }
-
-    /// Tries to pretty-print JSON strings, falls back to raw display.
-    private func formatJSON(_ text: String) -> String {
-        guard let data = text.data(using: .utf8),
-              let json = try? JSONSerialization.jsonObject(with: data),
-              let prettyData = try? JSONSerialization.data(withJSONObject: json, options: [.prettyPrinted, .sortedKeys]),
-              let pretty = String(data: prettyData, encoding: .utf8)
-        else {
-            return text
-        }
-        return pretty
     }
 }
 
@@ -1303,12 +1612,25 @@ struct ToolCallsContainer: View {
                         authToken: authToken,
                         serverBaseURL: serverBaseURL
                     )
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 2)
+
                     if toolCall.id != toolCalls.last?.id {
                         Divider()
-                            .padding(.leading, 24)
+                            .overlay(Color.primary.opacity(0.07))
+                            .padding(.horizontal, 12)
                     }
                 }
             }
+            .background(
+                RoundedRectangle(cornerRadius: CornerRadius.md, style: .continuous)
+                    .fill(Color.primary.opacity(0.03))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: CornerRadius.md, style: .continuous)
+                    .strokeBorder(Color.primary.opacity(0.08), lineWidth: 0.5)
+            )
+            .clipShape(RoundedRectangle(cornerRadius: CornerRadius.md, style: .continuous))
         }
     }
 }
