@@ -2488,132 +2488,13 @@ final class ChatViewModel {
                 }
                 if !allFileRefs.isEmpty { request.files = allFileRefs }
 
-                // Refresh model metadata to pick up live admin changes
-                // (e.g., enabling/disabling web search, image gen, tools)
-                await self.refreshSelectedModelMetadata()
-
-                // Populate model_item with the full raw model JSON so OpenWebUI
-                // can route the request to the correct pipe/function model.
-                // Without model_item, pipe models fail because the server
-                // cannot resolve which pipe function to invoke.
-                request.modelItem = self.selectedModel?.rawModelItem
-
-                // Flag pipe/function models so toJSON() omits session_id/chat_id/id.
-                // Those three fields together trigger the Redis async-task queue (~60s
-                // delay). Pipe models stream directly from the HTTP response body.
-                if self.selectedModel?.isPipeModel == true {
-                    request.isPipeModel = true
-                }
-
-                // Populate filter_ids from model's server-configured filter list.
-                let modelFilterIds = self.selectedModel?.filterIds ?? []
-                if !modelFilterIds.isEmpty { request.filterIds = modelFilterIds }
-
-                // Always send the full features object with explicit true/false for
-                // each feature. Omitting features (or only sending true ones) causes
-                // the server to fall back to the model's defaultFeatureIds, ignoring
-                // toggles the user explicitly turned OFF.
-                request.features = self.buildChatFeatures()
-
-                // Await any pending model config fetch from selectModel() to ensure
-                // functionCallingMode is populated before reading it. Without this,
-                // the user can select a model and immediately send — reading stale
-                // config from the list endpoint which doesn't include params.
-                await self.modelConfigTask?.value
-
-                // Build request params: start from chat-level overrides, then layer
-                // model-level function_calling on top.
-                var requestParams: [String: Any] = [:]
-
-                // Apply chat-level advanced param overrides (temperature, top_p, etc.)
-                if let chatP = self.conversation?.chatParams {
-                    requestParams = chatP.mergedOver(base: requestParams)
-                }
-
-                // System prompt: goes in both messages[0] (already done above) AND
-                // params["system"] so the server / filter pipeline also sees it.
-                let effectiveSP: String? = {
-                    if let cp = self.conversation?.chatParams?.systemPrompt,
-                       !cp.trimmingCharacters(in: .whitespaces).isEmpty { return cp }
-                    return self.conversation?.systemPrompt
-                }()
-                if let sp = effectiveSP, !sp.trimmingCharacters(in: .whitespaces).isEmpty {
-                    requestParams["system"] = sp
-                }
-
-                // Only include function_calling param when explicitly set to "native".
-                // When nil/empty (default mode), omit the param entirely — the server
-                // uses its own default (non-native) handling when the param is absent.
-                if let fc = self.selectedModel?.functionCallingMode, fc == "native" {
-                    requestParams["function_calling"] = "native"
-                }
-
-                if !requestParams.isEmpty { request.params = requestParams }
-
-                // Request usage statistics in the streaming response.
-                // Matches the web UI payload: "stream_options": {"include_usage": true}
-                // The server forwards this to the LLM provider, which returns usage
-                // in the final SSE chunk. We capture it via sendChatCompleted().
-                request.streamOptions = ["include_usage": true]
-
-                // Inject device GPS location into template variables AND the system prompt.
-                // When the user has enabled "Share Location" and granted permission,
-                // {{USER_LOCATION}} in system prompts is resolved to the phone's
-                // real location (place name + coords) — overriding the server's geo-IP fallback.
-                // Awaiting ensures we get a fresh fix even when driving; max 3s wait.
-                //
-                // We substitute in TWO places:
-                //   1. request.variables — so the server resolves it in its own system prompt
-                //   2. requestParams["system"] — because when we override the system prompt
-                //      client-side, the server uses our raw string directly without re-substituting
-                //      variables, so we must do it ourselves here.
-                if let locationString = await LocationManager.shared.currentLocationString() {
-                    var vars = request.variables ?? [:]
-                    vars["USER_LOCATION"] = locationString
-                    request.variables = vars
-
-                    // Also substitute directly into the overridden system prompt string
-                    if let rawSP = requestParams["system"] as? String,
-                       rawSP.contains("{{USER_LOCATION}}") {
-                        requestParams["system"] = rawSP.replacingOccurrences(
-                            of: "{{USER_LOCATION}}", with: locationString)
-                        request.params = requestParams
-                    }
-                }
-
-                // Use only selectedToolIds — model-assigned and globally-enabled
-                // tools are already synced into selectedToolIds by
-                // syncToolSelectionWithDefaults(). This ensures that if the user
-                // disabled a tool via the tools sheet, it stays disabled.
-                let allToolIds = Array(self.selectedToolIds)
-                if !allToolIds.isEmpty { request.toolIds = allToolIds }
+                // Populate all common request fields (model metadata, features, params,
+                // system variables, tool IDs, terminal, background tasks, etc.)
+                await self.populateCommonRequestFields(&request)
 
                 // Include skill IDs selected via the `$` picker.
                 // Sent as `skill_ids` in the top-level request body (separate from tool_ids).
                 if !currentSkillIds.isEmpty { request.skillIds = currentSkillIds }
-
-                // Include terminal_id if terminal is enabled for this session
-                if self.terminalEnabled, let terminalServer = self.selectedTerminalServer {
-                    request.terminalId = terminalServer.id
-                }
-
-                // Build background tasks — respect BOTH server config AND user settings.
-                // A task is only requested if the server admin has it enabled globally
-                // AND the user hasn't disabled it locally.
-                let serverConfig = self.activeChatStore?.serverTaskConfig ?? .default
-                let titleGenEnabled = (UserDefaults.standard.object(forKey: "titleGenerationEnabled") as? Bool ?? true)
-                    && serverConfig.enableTitleGeneration
-                let suggestionsEnabled = (UserDefaults.standard.object(forKey: "suggestionsEnabled") as? Bool ?? true)
-                    && serverConfig.enableFollowUpGeneration
-                let tagsEnabled = serverConfig.enableTagsGeneration
-                let isFirst = (self.conversation?.messages.filter { !$0.isStreaming }.count ?? 0) <= 2
-
-                var bgTasks: [String: Any] = [:]
-                if suggestionsEnabled { bgTasks["follow_up_generation"] = true }
-                if isFirst && titleGenEnabled { bgTasks["title_generation"] = true }
-                if isFirst && tagsEnabled { bgTasks["tags_generation"] = true }
-                if self.webSearchEnabled { bgTasks["web_search"] = true }
-                if !bgTasks.isEmpty { request.backgroundTasks = bgTasks }
 
                 if capturedUseSSEFallback {
                     // ── HTTP + POLLING FALLBACK ──
@@ -2982,69 +2863,9 @@ final class ChatViewModel {
                     chatId: effectiveChatId, sessionId: socketSessionId,
                     messageId: assistantMessageId, parentId: parentId)
 
-                // Refresh model metadata to pick up live admin changes
-                await self.refreshSelectedModelMetadata()
-
-                // Populate model_item with the full raw model JSON so OpenWebUI
-                // can route the request to the correct pipe/function model.
-                request.modelItem = self.selectedModel?.rawModelItem
-
-                // Populate filter_ids from model's server-configured filter list.
-                let regenFilterIds = self.selectedModel?.filterIds ?? []
-                if !regenFilterIds.isEmpty { request.filterIds = regenFilterIds }
-
-                // Always send the full features object with explicit true/false.
-                let regenFeatures = self.buildChatFeatures()
-                request.features = regenFeatures
-
-                // Await any pending model config fetch from selectModel() to ensure
-                // functionCallingMode is populated before reading it.
-                await self.modelConfigTask?.value
-
-                // Build request params: start from chat-level overrides, then layer
-                // model-level function_calling on top.
-                var regenRequestParams: [String: Any] = [:]
-                if let chatP = self.conversation?.chatParams {
-                    regenRequestParams = chatP.mergedOver(base: regenRequestParams)
-                }
-                let regenEffectiveSP: String? = {
-                    if let cp = self.conversation?.chatParams?.systemPrompt,
-                       !cp.trimmingCharacters(in: .whitespaces).isEmpty { return cp }
-                    return self.conversation?.systemPrompt
-                }()
-                if let sp = regenEffectiveSP, !sp.trimmingCharacters(in: .whitespaces).isEmpty {
-                    regenRequestParams["system"] = sp
-                }
-                // Only include function_calling param when explicitly set to "native".
-                // When nil/empty (default mode), omit the param entirely — the server
-                // uses its own default (non-native) handling when the param is absent.
-                if let fc = self.selectedModel?.functionCallingMode, fc == "native" {
-                    regenRequestParams["function_calling"] = "native"
-                }
-                if !regenRequestParams.isEmpty { request.params = regenRequestParams }
-
-                // Request usage statistics in the streaming response (matches web UI).
-                request.streamOptions = ["include_usage": true]
-
-                // Use only selectedToolIds — respects user's in-session disabling
-                let allToolIds = Array(self.selectedToolIds)
-                if !allToolIds.isEmpty { request.toolIds = allToolIds }
-
-                // Include terminal_id if terminal is enabled for this session
-                if self.terminalEnabled, let terminalServer = self.selectedTerminalServer {
-                    request.terminalId = terminalServer.id
-                }
-
-                let suggestionsEnabled = UserDefaults.standard.object(forKey: "suggestionsEnabled") as? Bool ?? true
-                var bgTasks: [String: Any] = [:]
-                if suggestionsEnabled { bgTasks["follow_up_generation"] = true }
-                if regenFeatures.webSearch { bgTasks["web_search"] = true }
-                request.backgroundTasks = bgTasks
-
-                // Flag pipe/function models so toJSON() omits session_id/chat_id/id.
-                if self.selectedModel?.isPipeModel == true {
-                    request.isPipeModel = true
-                }
+                // Populate all common request fields (model metadata, features, params,
+                // system variables, tool IDs, terminal, background tasks, etc.)
+                await self.populateCommonRequestFields(&request)
 
                 if request.isPipeModel {
                     // ── PIPE MODEL SSE PATH (regeneration) ──
@@ -3464,43 +3285,9 @@ final class ChatViewModel {
                     chatId: effectiveChatId, sessionId: socketSessionId,
                     messageId: assistantMessageId, parentId: parentId)
 
-                await self.refreshSelectedModelMetadata()
-                request.modelItem = self.selectedModel?.rawModelItem
-
-                let filterIds = self.selectedModel?.filterIds ?? []
-                if !filterIds.isEmpty { request.filterIds = filterIds }
-
-                request.features = self.buildChatFeatures()
-                await self.modelConfigTask?.value
-
-                // Build request params with chat-level overrides + function_calling
-                var editRegenParams: [String: Any] = [:]
-                if let chatP = self.conversation?.chatParams {
-                    editRegenParams = chatP.mergedOver(base: editRegenParams)
-                }
-                let editRegenSP: String? = {
-                    if let cp = self.conversation?.chatParams?.systemPrompt,
-                       !cp.trimmingCharacters(in: .whitespaces).isEmpty { return cp }
-                    return self.conversation?.systemPrompt
-                }()
-                if let sp = editRegenSP, !sp.trimmingCharacters(in: .whitespaces).isEmpty {
-                    editRegenParams["system"] = sp
-                }
-                if let fc = self.selectedModel?.functionCallingMode, fc == "native" {
-                    editRegenParams["function_calling"] = "native"
-                }
-                if !editRegenParams.isEmpty { request.params = editRegenParams }
-                request.streamOptions = ["include_usage": true]
-
-                let toolIds = Array(self.selectedToolIds)
-                if !toolIds.isEmpty { request.toolIds = toolIds }
-
-                if self.selectedModel?.isPipeModel == true { request.isPipeModel = true }
-
-                var bgTasks: [String: Any] = [:]
-                let suggestionsEnabled = UserDefaults.standard.object(forKey: "suggestionsEnabled") as? Bool ?? true
-                if suggestionsEnabled { bgTasks["follow_up_generation"] = true }
-                request.backgroundTasks = bgTasks
+                // Populate all common request fields (model metadata, features, params,
+                // system variables, tool IDs, terminal, background tasks, etc.)
+                await self.populateCommonRequestFields(&request)
 
                 if request.isPipeModel {
                     let acc = ContentAccumulator()
@@ -4745,6 +4532,111 @@ final class ChatViewModel {
                 logger.debug("Failed to save pinned models: \(error.localizedDescription)")
             }
         }
+    }
+
+    /// Populates all common request fields that are shared across sendMessage,
+    /// regenerateResponse, and regenerateIntoExistingMessage.
+    ///
+    /// This is the single source of truth for:
+    /// - model metadata (modelItem, filterIds, isPipeModel)
+    /// - features, params (system prompt + function_calling)
+    /// - stream_options, variables (system vars + substitution into system prompt)
+    /// - toolIds, skillIds, terminalId, backgroundTasks
+    ///
+    /// Call this after constructing the basic ChatCompletionRequest and before sending.
+    private func populateCommonRequestFields(_ request: inout ChatCompletionRequest) async {
+        // Refresh model metadata to pick up live admin changes
+        await refreshSelectedModelMetadata()
+        request.modelItem = selectedModel?.rawModelItem
+
+        // Flag pipe/function models so toJSON() omits session_id/chat_id/id
+        if selectedModel?.isPipeModel == true {
+            request.isPipeModel = true
+        }
+
+        // Filter IDs from model's server-configured filter list
+        let filterIds = selectedModel?.filterIds ?? []
+        if !filterIds.isEmpty { request.filterIds = filterIds }
+
+        // Always send the full features object with explicit true/false values
+        request.features = buildChatFeatures()
+
+        // Await any pending model config fetch (ensures functionCallingMode is populated)
+        await modelConfigTask?.value
+
+        // Build request params: chat-level overrides + system prompt + function_calling
+        var params: [String: Any] = [:]
+        if let chatP = conversation?.chatParams {
+            params = chatP.mergedOver(base: params)
+        }
+        let effectiveSP: String? = {
+            if let cp = conversation?.chatParams?.systemPrompt,
+               !cp.trimmingCharacters(in: .whitespaces).isEmpty { return cp }
+            return conversation?.systemPrompt
+        }()
+        if let sp = effectiveSP, !sp.trimmingCharacters(in: .whitespaces).isEmpty {
+            params["system"] = sp
+        }
+        if let fc = selectedModel?.functionCallingMode, fc == "native" {
+            params["function_calling"] = "native"
+        }
+        if !params.isEmpty { request.params = params }
+
+        // Always include usage stats in streaming response
+        request.streamOptions = ["include_usage": true]
+
+        // Build and merge system variables ({{USER_LOCATION}}, {{USER_NAME}}, etc.)
+        // Keys use {{VARIABLE_NAME}} format — the server does literal find-and-replace
+        // on the model's system prompt. Also nested in metadata.variables (where the
+        // server's apply_system_prompt_to_body() actually reads them).
+        let sysVars = PromptService.buildSystemVariablesDict(
+            userName: activeChatStore?.cachedUserName,
+            userEmail: activeChatStore?.cachedUserEmail
+        )
+        var mergedVars = request.variables ?? [:]
+        for (k, v) in sysVars { mergedVars[k] = v }
+        request.variables = mergedVars
+
+        // Also substitute directly into the overridden system prompt string.
+        // The server uses params.system as-is without re-substituting variables,
+        // so we must resolve them here for client-side system prompt overrides.
+        if let rawSP = params["system"] as? String {
+            var resolved = rawSP
+            for (placeholder, value) in sysVars {
+                if let strValue = value as? String {
+                    resolved = resolved.replacingOccurrences(of: placeholder, with: strValue)
+                }
+            }
+            if resolved != rawSP {
+                params["system"] = resolved
+                request.params = params
+            }
+        }
+
+        // Tool IDs (user selection respects manual toggles via userDisabledToolIds)
+        let allToolIds = Array(selectedToolIds)
+        if !allToolIds.isEmpty { request.toolIds = allToolIds }
+
+        // Terminal ID if enabled
+        if terminalEnabled, let terminalServer = selectedTerminalServer {
+            request.terminalId = terminalServer.id
+        }
+
+        // Background tasks — respect both server config and user settings
+        let serverConfig = activeChatStore?.serverTaskConfig ?? .default
+        let titleGenEnabled = (UserDefaults.standard.object(forKey: "titleGenerationEnabled") as? Bool ?? true)
+            && serverConfig.enableTitleGeneration
+        let suggestionsEnabled = (UserDefaults.standard.object(forKey: "suggestionsEnabled") as? Bool ?? true)
+            && serverConfig.enableFollowUpGeneration
+        let tagsEnabled = serverConfig.enableTagsGeneration
+        let isFirst = (conversation?.messages.filter { !$0.isStreaming }.count ?? 0) <= 2
+
+        var bgTasks: [String: Any] = [:]
+        if suggestionsEnabled { bgTasks["follow_up_generation"] = true }
+        if isFirst && titleGenEnabled { bgTasks["title_generation"] = true }
+        if isFirst && tagsEnabled { bgTasks["tags_generation"] = true }
+        if webSearchEnabled { bgTasks["web_search"] = true }
+        if !bgTasks.isEmpty { request.backgroundTasks = bgTasks }
     }
 
     /// Builds chat features by merging user toggles with the model's admin-configured

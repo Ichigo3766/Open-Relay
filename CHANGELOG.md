@@ -1,5 +1,15 @@
 # Changelog
 
+## v3.2.1 — April 20, 2026
+
+### What's New
+- Added system variables - System variables (`{{USER_LOCATION}}`, `{{USER_NAME}}`, `{{CURRENT_DATETIME}}`, etc.) will now automatically be replaced with their value at runtime matching the webui behavior.
+
+### Bug Fixes
+- Fixed GPS location not using the device's actual GPS — location is now always fresh and includes a full reverse-geocoded address. Also fixed the chat hanging intermittently when location sharing is enabled.
+
+## Previous Builds
+
 ## v3.2 — April 18, 2026
 
 ### What's New
@@ -11,12 +21,6 @@
 
 ### Bug Fixes
 - Fixed tool call status history (web search steps, location resolving, etc.) disappearing when switching chats — status updates now persist correctly when reopening a conversation.
-
-## Previous Builds
-
-## v3.1.1 — April 17, 2026
-
-### Bug Fixes
 - Removed further throttling for streaming token by token.
 
 ## Previous Builds
