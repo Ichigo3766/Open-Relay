@@ -60,6 +60,14 @@ final class ActiveChatStore {
     /// then reused by all subsequent VMs. Cleared on logout/server switch.
     var cachedPinnedModelIds: [String]? = nil
 
+    /// Session-level cache for the signed-in user's display name.
+    /// Used to populate `{{USER_NAME}}` in prompt system variables.
+    var cachedUserName: String? = nil
+
+    /// Session-level cache for the signed-in user's email address.
+    /// Used to populate `{{USER_EMAIL}}` in prompt system variables.
+    var cachedUserEmail: String? = nil
+
     /// Returns an existing view model or creates a new one for the given
     /// conversation ID.  Pass `nil` for a brand-new conversation.
     ///
@@ -135,6 +143,8 @@ final class ActiveChatStore {
         cachedSelectedModelId = nil
         cachedMemorySetting = nil
         cachedPinnedModelIds = nil
+        cachedUserName = nil
+        cachedUserEmail = nil
     }
 }
 

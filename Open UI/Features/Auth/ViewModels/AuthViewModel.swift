@@ -1215,6 +1215,10 @@ final class AuthViewModel {
                 authType: nil,
                 hasActiveSession: true
             )
+            // Cache user identity in ActiveChatStore so ChatViewModels can populate
+            // {{USER_NAME}} and {{USER_EMAIL}} prompt variables without a singleton.
+            dependencies?.activeChatStore.cachedUserName = user.displayName.isEmpty ? nil : user.displayName
+            dependencies?.activeChatStore.cachedUserEmail = user.email.isEmpty ? nil : user.email
             logger.debug("Cached user '\(user.displayName)' for server '\(serverKey)'")
         } catch {
             logger.warning("Failed to cache user: \(error.localizedDescription)")

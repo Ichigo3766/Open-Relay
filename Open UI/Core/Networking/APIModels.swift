@@ -332,7 +332,12 @@ struct ChatCompletionRequest: Sendable {
         data["tool_servers"] = toolServers ?? [[String: Any]]()
 
         // variables: always send (empty {} when nil/empty)
-        data["variables"] = variables ?? [String: Any]()
+        // Also nest inside `metadata.variables` — this is where the server's
+        // apply_system_prompt_to_body() reads them (metadata.get('variables', {})).
+        // The top-level `variables` key is kept for pipe model compatibility.
+        let resolvedVars = variables ?? [String: Any]()
+        data["variables"] = resolvedVars
+        data["metadata"] = ["variables": resolvedVars]
 
         // model_item: send when available (critical for pipe routing)
         if let modelItem { data["model_item"] = modelItem }

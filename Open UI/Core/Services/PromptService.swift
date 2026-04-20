@@ -144,6 +144,56 @@ enum PromptService {
 
     // MARK: - System Variable Resolution
 
+    /// Builds the full `variables` dictionary that must be sent in every chat completion
+    /// request, matching exactly what the Open WebUI web client sends.
+    ///
+    /// The server uses this dict to perform find-and-replace on the model's system prompt
+    /// before forwarding to the LLM. Keys MUST use the `{{VARIABLE_NAME}}` format with
+    /// double braces — the server matches keys literally against template placeholders.
+    ///
+    /// - Parameters:
+    ///   - userName: Display name of the logged-in user (from `SavedAccount.userName`).
+    ///   - userEmail: Email of the logged-in user (from `SavedAccount.userEmail`).
+    /// - Returns: A `[String: Any]` dict ready to assign to `ChatCompletionRequest.variables`.
+    static func buildSystemVariablesDict(userName: String?, userEmail: String?) -> [String: Any] {
+        var vars: [String: Any] = [:]
+        let now = Date()
+        let fmt = DateFormatter()
+
+        fmt.dateFormat = "yyyy-MM-dd HH:mm:ss"
+        vars["{{CURRENT_DATETIME}}"] = fmt.string(from: now)
+
+        fmt.dateFormat = "yyyy-MM-dd"
+        vars["{{CURRENT_DATE}}"] = fmt.string(from: now)
+
+        fmt.dateFormat = "HH:mm:ss"
+        vars["{{CURRENT_TIME}}"] = fmt.string(from: now)
+
+        fmt.dateFormat = "EEEE"
+        vars["{{CURRENT_WEEKDAY}}"] = fmt.string(from: now)
+
+        vars["{{CURRENT_TIMEZONE}}"] = TimeZone.current.identifier
+
+        let langCode = Locale.current.language.languageCode?.identifier ?? "en"
+        let regionCode = Locale.current.region?.identifier ?? ""
+        vars["{{USER_LANGUAGE}}"] = regionCode.isEmpty ? langCode : "\(langCode)-\(regionCode)"
+
+        if let name = userName, !name.isEmpty {
+            vars["{{USER_NAME}}"] = name
+        }
+        if let email = userEmail, !email.isEmpty {
+            vars["{{USER_EMAIL}}"] = email
+        }
+
+        // GPS location from phone when location sharing is enabled and permission granted.
+        // This overrides the server's geo-IP fallback with precise device coordinates.
+        if let locationString = LocationManager.shared.currentLocationString {
+            vars["{{USER_LOCATION}}"] = locationString
+        }
+
+        return vars
+    }
+
     /// Replaces all system variables in a prompt template with their current values.
     ///
     /// Called AFTER custom variables are substituted. System variables that can't

@@ -11,12 +11,13 @@ import UIKit
 ///
 /// Tracking strategy:
 /// - Uses `startUpdatingLocation` (continuous) while the app is foregrounded so the
-///   fix is always fresh, especially when driving.
+///   fix is always fresh.
 /// - Stops when the app backgrounds to save battery.
-/// - `currentLocationString()` is async: if the cached fix is stale it awaits a new
-///   one with a 3-second timeout, then falls back to the last known value.
-/// - Reverse geocoding is coord-bucketed — only re-geocodes when you've moved
-///   more than ~500 m since the last geocode call.
+/// - On foreground resume, calls `requestLocation()` first for a fast single fix,
+///   then switches to continuous updates.
+/// - `currentLocationString` is a synchronous computed property — it returns
+///   whatever is cached if fresh enough (≤120 s), or nil otherwise.
+///   No async waiting, no blocking message sends.
 @MainActor @Observable
 final class LocationManager: NSObject {
 
@@ -75,11 +76,25 @@ final class LocationManager: NSObject {
         return coords
     }
 
-    /// Returns `true` if location is enabled AND authorised AND a fix is available.
+    /// Returns the location string if a sufficiently fresh fix is available (≤120 s old),
+    /// otherwise returns `nil`. This is synchronous — it never blocks the caller.
+    ///
+    /// Call this just before sending a message. If location services are running and the
+    /// device has recently delivered a fix, this will return the current location.
+    /// If the cache is stale or unavailable, returns `nil` so the AI request still proceeds.
+    var currentLocationString: String? {
+        guard isLocationEnabled else { return nil }
+        guard authorizationStatus == .authorizedWhenInUse
+                || authorizationStatus == .authorizedAlways else { return nil }
+        guard let fix = cachedLocation else { return nil }
+        // Only use the fix if it's within the staleness window.
+        guard -fix.timestamp.timeIntervalSinceNow <= staleThreshold else { return nil }
+        return locationString
+    }
+
+    /// Returns `true` if location is enabled AND authorised AND a fresh fix is available.
     var isLocationAvailable: Bool {
-        isLocationEnabled
-            && (authorizationStatus == .authorizedWhenInUse || authorizationStatus == .authorizedAlways)
-            && cachedLocation != nil
+        currentLocationString != nil
     }
 
     // MARK: - Private
@@ -87,17 +102,16 @@ final class LocationManager: NSObject {
     private let locationManager = CLLocationManager()
     private let logger = Logger(subsystem: "com.openui", category: "LocationManager")
 
-    /// How old (seconds) a fix can be before we consider it stale.
-    private let staleThreshold: TimeInterval = 10
+    /// How old (seconds) a cached fix can be before we consider it stale.
+    /// 120 s is conservative — iOS delivers updates much more frequently during driving,
+    /// and the app requests a single fix immediately on foreground resume.
+    private let staleThreshold: TimeInterval = 120
 
     /// Minimum distance (degrees lat/lon ≈ 500 m) before re-geocoding.
     private let geocodeBucketSize: CLLocationDegrees = 0.005
 
     /// The coordinate we last ran reverse geocoding for.
     private var lastGeocodedCoordinate: CLLocationCoordinate2D?
-
-    /// Pending continuations waiting for a location fix (used by async API).
-    private var pendingContinuations: [CheckedContinuation<CLLocation?, Never>] = []
 
     // MARK: - Init
 
@@ -152,36 +166,6 @@ final class LocationManager: NSObject {
         }
     }
 
-    /// Returns the best available location string, awaiting a fresh fix if the cache is stale.
-    ///
-    /// - Returns: `"City, State, Country (Latitude: XX, Longitude: YY)"` or `nil` if unavailable.
-    ///   Waits up to 3 seconds for a fresh fix; falls back to the cached value if GPS is slow.
-    func currentLocationString() async -> String? {
-        guard isLocationEnabled else { return nil }
-        guard authorizationStatus == .authorizedWhenInUse
-               || authorizationStatus == .authorizedAlways else { return nil }
-
-        // If we have a fresh fix, return immediately.
-        if let fix = cachedLocation,
-           -fix.timestamp.timeIntervalSinceNow < staleThreshold {
-            return locationString
-        }
-
-        // Fix is stale or missing — request one and wait up to 3 seconds.
-        locationManager.requestLocation()
-
-        let freshFix: CLLocation? = await withCheckedContinuation { continuation in
-            pendingContinuations.append(continuation)
-        }
-
-        // If we got a fresh fix, use it; otherwise fall back to whatever we have.
-        if freshFix != nil {
-            return locationString
-        }
-        // Timeout fallback — return last cached value (coords + possibly stale place name)
-        return locationString
-    }
-
     // MARK: - Private Helpers
 
     private func startIfAuthorized() {
@@ -209,8 +193,15 @@ final class LocationManager: NSObject {
 
     @objc private func appWillEnterForeground() {
         guard isLocationEnabled else { return }
-        startIfAuthorized()
-        logger.info("Location updates resumed (foreground)")
+        guard authorizationStatus == .authorizedWhenInUse
+                || authorizationStatus == .authorizedAlways else { return }
+
+        // Request a single immediate fix first — this fires `didUpdateLocations`
+        // quickly and refreshes the cache before the user sends a message.
+        // Then switch to continuous updates for ongoing freshness.
+        locationManager.requestLocation()
+        locationManager.startUpdatingLocation()
+        logger.info("Location updates resumed (foreground) — immediate fix requested")
     }
 
     /// Reverse-geocodes `location` only when we've moved significantly since the last call.
@@ -260,25 +251,12 @@ extension LocationManager: CLLocationManagerDelegate {
             self.cachedLocation = latest
             self.logger.info("Location updated: \(latest.coordinate.latitude), \(latest.coordinate.longitude)")
             self.reverseGeocodeIfNeeded(latest)
-
-            // Resume any callers waiting on async currentLocationString()
-            let waiting = self.pendingContinuations
-            self.pendingContinuations = []
-            for cont in waiting {
-                cont.resume(returning: latest)
-            }
         }
     }
 
     nonisolated func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {
         Task { @MainActor in
             self.logger.warning("Location error: \(error.localizedDescription)")
-            // Resume waiters with nil so they use the cached fallback
-            let waiting = self.pendingContinuations
-            self.pendingContinuations = []
-            for cont in waiting {
-                cont.resume(returning: nil)
-            }
         }
     }
 
