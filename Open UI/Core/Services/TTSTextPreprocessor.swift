@@ -532,7 +532,6 @@ enum TTSTextPreprocessor {
             pattern: "(?<![A-Za-z_])(\\d{1,15}(?:\\.\\d+)?)(?![A-Za-z_%])"
         ) else { return text }
 
-        let nsText = text as NSString
         var result = text
         let matches = regex.matches(in: text, range: NSRange(text.startIndex..., in: text))
 

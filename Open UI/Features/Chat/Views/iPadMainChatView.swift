@@ -648,6 +648,8 @@ struct iPadSidebarContent: View {
     @AppStorage("sidebar_folders_expanded") private var foldersExpanded: Bool = true
     @AppStorage("sidebar_channels_expanded") private var channelsExpanded: Bool = true
     @AppStorage("sidebar_chats_expanded") private var chatsExpanded: Bool = true
+    /// Tracks which time-group sub-sections are collapsed (e.g. "Pinned", "Today").
+    @State private var collapsedSections: Set<String> = []
 
     var body: some View {
         VStack(spacing: 0) {
@@ -1234,20 +1236,38 @@ struct iPadSidebarContent: View {
             .buttonStyle(.plain)
 
             if chatsExpanded {
-                // Pinned
-                if !listViewModel.pinnedConversations.isEmpty {
-                    CollapsibleDrawerSection(title: "Pinned") {
-                        ForEach(listViewModel.pinnedConversations) { conversation in
-                            conversationRow(conversation)
+                // LazyVStack so only visible rows are created.
+                // Section headers are inlined as direct children
+                // so they don't prevent lazy row creation.
+                LazyVStack(alignment: .leading, spacing: 0, pinnedViews: []) {
+                    // ── Pinned sub-section ────────────────────
+                    if !listViewModel.pinnedConversations.isEmpty {
+                        sidebarSubSectionHeader(title: "Pinned", sectionKey: "Pinned")
+
+                        if !collapsedSections.contains("Pinned") {
+                            ForEach(listViewModel.pinnedConversations) { conversation in
+                                conversationRow(conversation)
+                                    .frame(minHeight: 36)
+                            }
                         }
                     }
-                }
 
-                // Time-grouped
-                ForEach(listViewModel.groupedConversations, id: \.0) { group in
-                    CollapsibleDrawerSection(title: group.0, count: group.1.count) {
-                        ForEach(group.1) { conversation in
-                            conversationRow(conversation)
+                    // ── Time-grouped sub-sections ─────────────
+                    ForEach(listViewModel.groupedConversations, id: \.0) { group in
+                        let sectionKey = group.0
+                        let isCollapsed = collapsedSections.contains(sectionKey)
+
+                        sidebarSubSectionHeader(
+                            title: sectionKey,
+                            count: group.1.count,
+                            sectionKey: sectionKey
+                        )
+
+                        if !isCollapsed {
+                            ForEach(group.1) { conversation in
+                                conversationRow(conversation)
+                                    .frame(minHeight: 36)
+                            }
                         }
                     }
                 }
@@ -1279,6 +1299,44 @@ struct iPadSidebarContent: View {
         } isTargeted: { isTargeted in
             withAnimation(.easeInOut(duration: AnimDuration.fast)) { drawerChatsDropActive = isTargeted }
         }
+    }
+
+    // MARK: - Sidebar Sub-Section Header (for LazyVStack chat groups)
+
+    @ViewBuilder
+    private func sidebarSubSectionHeader(title: String, count: Int? = nil, sectionKey: String) -> some View {
+        let isCollapsed = collapsedSections.contains(sectionKey)
+        Button {
+            withAnimation(.easeInOut(duration: AnimDuration.fast)) {
+                if isCollapsed { collapsedSections.remove(sectionKey) }
+                else { collapsedSections.insert(sectionKey) }
+            }
+            Haptics.play(.light)
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: "chevron.down")
+                    .scaledFont(size: 8, weight: .bold, context: .list)
+                    .foregroundStyle(theme.textTertiary)
+                    .rotationEffect(.degrees(isCollapsed ? -90 : 0))
+                    .animation(.easeInOut(duration: AnimDuration.fast), value: isCollapsed)
+                Text(title)
+                    .scaledFont(size: 12, weight: .medium, context: .list)
+                    .fontWeight(.semibold)
+                    .foregroundStyle(theme.textTertiary)
+                    .textCase(.uppercase)
+                    .tracking(0.5)
+                if let count {
+                    Text("\(count)")
+                        .scaledFont(size: 10, weight: .medium, context: .list)
+                        .foregroundStyle(theme.textTertiary)
+                        .padding(.horizontal, 5).padding(.vertical, 1)
+                        .background(theme.surfaceContainer).clipShape(Capsule())
+                }
+                Spacer()
+            }
+            .padding(.horizontal, Spacing.md).padding(.vertical, 10).contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
     }
 
     // MARK: - Conversation Row

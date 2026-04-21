@@ -274,6 +274,11 @@ struct ChatCompletionRequest: Sendable {
     /// Tool server configurations. Always sent as an array (empty `[]` when none),
     /// matching web-client behaviour. Required for pipe model compatibility.
     var toolServers: [[String: Any]]?
+    /// The user message node sent to the server so it can correctly insert it into
+    /// the chat's history tree. Required by updated OpenWebUI servers — without this
+    /// the server doesn't link the user message into the history and it disappears
+    /// when the chat is re-opened. Matches the web client's `user_message` field.
+    var userMessage: [String: Any]?
 
     struct ChatFeatures: Sendable {
         var webSearch: Bool = false
@@ -312,10 +317,6 @@ struct ChatCompletionRequest: Sendable {
         if let streamOptions { data["stream_options"] = streamOptions }
         if let terminalId, !terminalId.isEmpty { data["terminal_id"] = terminalId }
 
-        // Always include parent_message to prevent server NoneType errors
-        // (matches Flutter: data['parent_message'] = {})
-        data["parent_message"] = [String: Any]()
-
         // --- Pipe model compatibility fields ---
         // These MUST always be sent as their empty equivalents when absent so
         // the OpenWebUI pipe function receives a consistent request shape.
@@ -341,6 +342,11 @@ struct ChatCompletionRequest: Sendable {
 
         // model_item: send when available (critical for pipe routing)
         if let modelItem { data["model_item"] = modelItem }
+
+        // user_message: required by updated OpenWebUI servers to correctly insert
+        // the user message node into the chat's history tree. Without this field
+        // the server doesn't link the user message and it disappears on re-open.
+        if let userMessage { data["user_message"] = userMessage }
 
         // Always send all feature keys with explicit true/false values,
         // matching the web client behavior. If we only send `true` keys

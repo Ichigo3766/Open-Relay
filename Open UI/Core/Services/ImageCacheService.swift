@@ -341,7 +341,7 @@ actor ImageCacheService {
         Task(priority: .userInitiated) {
             // Always evict first so we pick up server-side changes made on web
             // or other devices (e.g. avatar updated while app was backgrounded).
-            await self.evict(for: url)
+            self.evict(for: url)
             self.logger.debug("Prefetching user avatar: \(url.lastPathComponent)")
             _ = await self.loadImage(from: url, authToken: authToken)
         }

@@ -772,7 +772,7 @@ struct ChatDetailView: View {
                     }
                 },
                 onFileAttachment: { showFilePicker = true },
-                onPhotoAttachment: nil,
+                onPhotoAttachment: { showPhotosPicker = true },
                 onCameraCapture: { showCameraPicker = true },
                 onWebAttachment: { showWebURLAlert = true },
                 onReferenceChatAttachment: { showReferenceChatPicker = true },
@@ -784,17 +784,7 @@ struct ChatDetailView: View {
                 dictationService: dependencies.dictationService,
                 onToolsSheetPresented: {
                     Task { await viewModel.loadTools() }
-                },
-                photoPicker: AnyView(
-                    PhotosPicker(
-                        selection: $selectedPhotos,
-                        maxSelectionCount: 5,
-                        matching: .images,
-                        photoLibrary: .shared()
-                    ) {
-                        photoPickerLabel
-                    }
-                )
+                }
             )
         }
         .background(theme.background)
@@ -2423,7 +2413,6 @@ struct ChatDetailView: View {
             Text(text)
                 .scaledFont(size: 12, weight: .medium)
                 .foregroundStyle(theme.error)
-                .lineLimit(2)
             Spacer()
             if !viewModel.isStreaming {
                 Button { Task { await viewModel.regenerateLastResponse() } } label: {
@@ -2442,7 +2431,6 @@ struct ChatDetailView: View {
             Text(message)
                 .scaledFont(size: 14)
                 .foregroundStyle(theme.textPrimary)
-                .lineLimit(3)
             Spacer()
             Button {
                 withAnimation(MicroAnimation.snappy) { viewModel.errorMessage = nil }
