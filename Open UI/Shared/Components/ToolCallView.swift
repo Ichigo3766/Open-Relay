@@ -1241,7 +1241,7 @@ private enum JSONSyntaxHighlighter {
                 return matchRange
             }()
             guard targetRange.location != NSNotFound,
-                  let swiftRange = Range(targetRange, in: nsString as String) else { continue }
+                  let _ = Range(targetRange, in: nsString as String) else { continue }
             let attrRange = result.range(of: nsString.substring(with: targetRange), options: .literal)
             if let attrRange {
                 result[attrRange].foregroundColor = color

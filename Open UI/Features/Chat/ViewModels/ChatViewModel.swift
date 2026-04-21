@@ -2354,6 +2354,10 @@ final class ChatViewModel {
             files: messageFiles
         )
 
+        // Capture the ID of the last message before appending the user message.
+        // This becomes the user message's parentId in the history tree.
+        let userMessageParentId = conversation?.messages.last?.id
+
         // Ensure conversation exists on server (skip for temporary chats)
         if conversation == nil {
             let chatTitle = String(currentText.prefix(50))
@@ -2487,6 +2491,21 @@ final class ChatViewModel {
                     allFileRefs.append(refChat.toChatFileRef())
                 }
                 if !allFileRefs.isEmpty { request.files = allFileRefs }
+
+                // Build the user_message node required by updated OpenWebUI servers.
+                // Without this, the server doesn't link the user message into the history
+                // tree, causing it to disappear when the chat is re-opened.
+                var userMsgDict: [String: Any] = [
+                    "id": userMessage.id,
+                    "parentId": (userMessageParentId as Any?) ?? NSNull(),
+                    "childrenIds": [assistantMessageId],
+                    "role": "user",
+                    "content": currentText,
+                    "timestamp": Int(userMessage.timestamp.timeIntervalSince1970),
+                    "models": [modelId]
+                ]
+                if !allFileRefs.isEmpty { userMsgDict["files"] = allFileRefs }
+                request.userMessage = userMsgDict
 
                 // Populate all common request fields (model metadata, features, params,
                 // system variables, tool IDs, terminal, background tasks, etc.)
@@ -2862,6 +2881,28 @@ final class ChatViewModel {
                     model: modelId, messages: apiMessages, stream: true,
                     chatId: effectiveChatId, sessionId: socketSessionId,
                     messageId: assistantMessageId, parentId: parentId)
+
+                // Build the user_message node for the server's history tree.
+                // For regeneration, the user message already exists — we send it
+                // again so the server correctly links it to the new assistant response.
+                let userParentId = self.conversation?.messages
+                    .first(where: { $0.id == lastUser.id })
+                    .flatMap { msg -> String? in
+                        // Find the message just before this user message
+                        guard let idx = self.conversation?.messages.firstIndex(where: { $0.id == msg.id }),
+                              idx > 0 else { return nil }
+                        return self.conversation?.messages[idx - 1].id
+                    }
+                let userMsgDict: [String: Any] = [
+                    "id": lastUser.id,
+                    "parentId": (userParentId as Any?) ?? NSNull(),
+                    "childrenIds": [assistantMessageId],
+                    "role": "user",
+                    "content": lastUser.content,
+                    "timestamp": Int(lastUser.timestamp.timeIntervalSince1970),
+                    "models": [modelId]
+                ]
+                request.userMessage = userMsgDict
 
                 // Populate all common request fields (model metadata, features, params,
                 // system variables, tool IDs, terminal, background tasks, etc.)
@@ -3285,6 +3326,24 @@ final class ChatViewModel {
                     chatId: effectiveChatId, sessionId: socketSessionId,
                     messageId: assistantMessageId, parentId: parentId)
 
+                // Build the user_message node for the server's history tree.
+                // For edit-regeneration, the user message already exists on the server.
+                let editUserParentId: String? = {
+                    guard let idx = self.conversation?.messages.firstIndex(where: { $0.id == lastUser.id }),
+                          idx > 0 else { return nil }
+                    return self.conversation?.messages[idx - 1].id
+                }()
+                let editUserMsgDict: [String: Any] = [
+                    "id": lastUser.id,
+                    "parentId": (editUserParentId as Any?) ?? NSNull(),
+                    "childrenIds": [assistantMessageId],
+                    "role": "user",
+                    "content": lastUser.content,
+                    "timestamp": Int(lastUser.timestamp.timeIntervalSince1970),
+                    "models": [modelId]
+                ]
+                request.userMessage = editUserMsgDict
+
                 // Populate all common request fields (model metadata, features, params,
                 // system variables, tool IDs, terminal, background tasks, etc.)
                 await self.populateCommonRequestFields(&request)
@@ -3437,10 +3496,10 @@ final class ChatViewModel {
         channelSubscription?.dispose()
         let acc = ContentAccumulator()
 
-        // Wire up the throttled UI update callback.
-        // The accumulator coalesces rapid token arrivals into ~30 fps
-        // updates, preventing main actor congestion that causes the
-        // "no stream then all text at once" symptom.
+        // Wire up the immediate UI update callback.
+        // The accumulator coalesces concurrent token arrivals into a single
+        // pending MainActor Task — preventing main actor flooding while still
+        // delivering each token as fast as Swift's task scheduler allows.
         let msgId = assistantMessageId
         acc.onUpdate = { [weak self] content in
             // Guard: if streaming already finished (done:true processed),
@@ -5200,6 +5259,11 @@ final class ContentAccumulator: @unchecked Sendable {
     private nonisolated(unsafe) var _content: String = ""
     private nonisolated(unsafe) var _onUpdate: (@MainActor @Sendable (_ content: String) -> Void)?
 
+    /// Guards against flooding the main actor with redundant Tasks.
+    /// When true, a Task is already queued and will read the latest content
+    /// when it executes — no need to create another one.
+    private nonisolated(unsafe) var _pendingUpdate: Bool = false
+
     /// Callback invoked on the main actor with the latest accumulated
     /// content. Set by the view model when socket handlers are registered.
     nonisolated var onUpdate: (@MainActor @Sendable (_ content: String) -> Void)? {
@@ -5222,27 +5286,55 @@ final class ContentAccumulator: @unchecked Sendable {
         return value
     }
 
+    /// Clears the pending-update flag after the queued Task executes.
+    /// Extracted as a synchronous nonisolated helper so NSLock is never
+    /// acquired from an async context (avoids Swift 6 strict-concurrency warnings).
+    nonisolated private func clearPendingFlag() {
+        lock.lock()
+        _pendingUpdate = false
+        lock.unlock()
+    }
+
     nonisolated func append(_ text: String) {
         lock.lock()
         _content += text
-        let latest = _content
+        // Only enqueue a new MainActor Task if none is already in-flight.
+        // The in-flight Task will read _content at execution time, so it will
+        // always deliver the very latest accumulated text — even if many tokens
+        // arrived while it was waiting for MainActor scheduling.
+        let needsDispatch = !_pendingUpdate
+        if needsDispatch { _pendingUpdate = true }
         let callback = _onUpdate
         lock.unlock()
 
-        Task { @MainActor in
+        guard needsDispatch else { return }
+
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            // Read the LATEST content — may include tokens that arrived
+            // after append() returned but before this Task executed.
+            let latest = self.content
             callback?(latest)
+            // Clear the flag so the next token can enqueue a new Task.
+            self.clearPendingFlag()
         }
     }
 
     nonisolated func replace(_ text: String) {
         lock.lock()
         _content = text
-        let latest = _content
+        let needsDispatch = !_pendingUpdate
+        if needsDispatch { _pendingUpdate = true }
         let callback = _onUpdate
         lock.unlock()
 
-        Task { @MainActor in
+        guard needsDispatch else { return }
+
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            let latest = self.content
             callback?(latest)
+            self.clearPendingFlag()
         }
     }
 }

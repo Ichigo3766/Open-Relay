@@ -584,10 +584,12 @@ struct RootView: View {
                    let baseURL = dependencies.apiClient?.baseURL,
                    !userId.isEmpty, !baseURL.isEmpty,
                    let avatarURL = URL(string: "\(baseURL)/api/v1/users/\(userId)/profile/image?v=\(viewModel.profileImageVersion)") {
-                    ImageCacheService.shared.prefetchUserAvatar(
-                        url: avatarURL,
-                        authToken: dependencies.apiClient?.network.authToken
-                    )
+                    Task {
+                        await ImageCacheService.shared.prefetchUserAvatar(
+                            url: avatarURL,
+                            authToken: dependencies.apiClient?.network.authToken
+                        )
+                    }
                 }
             }
     }

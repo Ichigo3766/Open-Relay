@@ -60,14 +60,14 @@ struct StreamingStatusView: View {
                     isExpanded = false
                 }
             }
-            .onChange(of: allDone) { done in
+            .onChange(of: allDone) { _, done in
                 if done && !isStreaming {
                     withAnimation(MicroAnimation.snappy) {
                         isExpanded = false
                     }
                 }
             }
-            .onChange(of: isStreaming) { streaming in
+            .onChange(of: isStreaming) { _, streaming in
                 if !streaming && allDone {
                     withAnimation(MicroAnimation.snappy) {
                         isExpanded = false

@@ -8,8 +8,9 @@ import Charts
 /// Renders markdown using MarkdownView (UIKit-backed).
 ///
 /// During streaming, a single `MarkdownView` renders the full content string.
-/// Updates are throttled to at most every 300ms so cmark parses at most 3-4×/sec,
-/// keeping CPU low regardless of how fast tokens arrive.
+/// Renders markdown content live during streaming. Content is delivered via
+/// `StreamingContentStore` (an isolated @Observable store) so only this view
+/// re-evaluates on each token — not the entire message list.
 ///
 /// When streaming ends, `finalBody` takes over for special block detection
 /// (charts, HTML, Mermaid, SVG, images).

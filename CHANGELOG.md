@@ -1,5 +1,28 @@
 # Changelog
 
+## 📦 NEXT BUILD
+
+### What's New
+
+### Improvements
+
+### Bug Fixes
+
+
+## Previous Builds
+
+## v3.2.2 — April 21, 2026
+
+### Improvements
+- Significantly improved sidebar performance for users with large conversation lists.
+
+### Bug Fixes
+- Fixed user messages disappearing when re-opening a chat after the latest OpenWebUI server update (updated the completions request to include the `user_message` field required by the new server API).
+- Fixed error messages in chat being truncated — full error text now displays without a line limit.
+- Fixed tapping Photo in the attachment menu returning to the + tools sheet after selecting a photo — the sheet now dismisses immediately when a photo is picked.
+
+## Previous Builds
+
 ## v3.2.1 — April 20, 2026
 
 ### What's New
