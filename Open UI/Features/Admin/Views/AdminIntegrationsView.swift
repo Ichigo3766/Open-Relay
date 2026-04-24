@@ -1395,9 +1395,17 @@ struct IntegrationAddAccessSheet: View {
             .navigationTitle("Add Access")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Done") { dismiss() }
-                        .fontWeight(.semibold)
+                ToolbarItem(placement: .navigationBarLeading) {
+                    Button {
+                        dismiss()
+                    } label: {
+                        Image(systemName: "xmark")
+                            .font(.system(size: 14, weight: .medium))
+                            .foregroundStyle(Color.secondary)
+                            .frame(width: 32, height: 32)
+                            .background(Color(uiColor: .systemGray5).opacity(0.6))
+                            .clipShape(Circle())
+                    }
                 }
             }
         }

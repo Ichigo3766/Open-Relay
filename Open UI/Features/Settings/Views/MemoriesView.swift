@@ -72,7 +72,7 @@ struct MemoriesView: View {
             Button {
                 withAnimation { isAddingMemory = true }
             } label: {
-                Label("Add Memory", systemImage: "plus.circle")
+                Text("Add Memory")
             }
             .buttonStyle(.borderedProminent)
             .tint(theme.brandPrimary)
@@ -166,10 +166,11 @@ struct MemoriesView: View {
                         Button {
                             withAnimation { isAddingMemory = true }
                         } label: {
-                            Label("Add Memory", systemImage: "plus.circle")
+                            Text("Add Memory")
                         }
                         .buttonStyle(.borderedProminent)
                         .tint(theme.brandPrimary)
+                        .frame(maxWidth: .infinity, alignment: .center)
                         .padding(.top, Spacing.sm)
                         .padding(.bottom, Spacing.xl)
                     }

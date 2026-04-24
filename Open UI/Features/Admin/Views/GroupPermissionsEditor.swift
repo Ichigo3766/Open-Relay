@@ -104,7 +104,8 @@ struct GroupPermissionsEditor: View {
             permToggle("Web Search",            isOn: $permissions.features.webSearch)
             permToggle("Image Generation",      isOn: $permissions.features.imageGeneration)
             permToggle("Code Interpreter",      isOn: $permissions.features.codeInterpreter)
-            permToggle("Memories",              isOn: $permissions.features.memories, isLast: true)
+            permToggle("Memories",              isOn: $permissions.features.memories)
+            permToggle("Automations",           isOn: $permissions.features.automations, isLast: true)
         }
     }
 

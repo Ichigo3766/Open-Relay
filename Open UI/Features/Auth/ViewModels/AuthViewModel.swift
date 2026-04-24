@@ -120,6 +120,27 @@ final class AuthViewModel {
         isTrustedHeaderAuth || (backendConfig?.hasSsoEnabled == true)
     }
 
+    /// The resolved workspace permissions for the current user.
+    /// Admins always get full access — their `permissions` field is never consulted.
+    /// `nil` permissions (older server without the field) also defaults to full access.
+    var workspacePermissions: GroupWorkspacePermissions {
+        guard currentUser?.role != .admin else { return .allEnabled }
+        return currentUser?.permissions?.workspace ?? .allEnabled
+    }
+
+    /// The resolved feature permissions for the current user from `/api/v1/auths/`.
+    /// Admins always get full access. `nil` permissions defaults to full access.
+    var featurePermissions: GroupFeaturePermissions {
+        guard currentUser?.role != .admin else { return .allEnabled }
+        return currentUser?.permissions?.features ?? .allEnabled
+    }
+
+    /// Whether the current user can access ANY workspace tab.
+    var hasAnyWorkspaceAccess: Bool {
+        let wp = workspacePermissions
+        return wp.models || wp.knowledge || wp.prompts || wp.tools || wp.skills
+    }
+
     // MARK: - Sign Up Validation
 
     /// Whether the sign-up name is valid (non-empty).

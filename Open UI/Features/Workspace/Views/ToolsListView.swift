@@ -173,33 +173,38 @@ struct ToolsListView: View {
         }
         .toolbar {
             ToolbarItemGroup(placement: .topBarTrailing) {
+                let wp = dependencies.authViewModel.workspacePermissions
                 // Import from URL
-                Button {
-                    Haptics.play(.light)
-                    importURL = ""
-                    showImportURLSheet = true
-                } label: {
-                    Image(systemName: "link.badge.plus")
-                        .scaledFont(size: 15, weight: .medium)
-                        .foregroundStyle(theme.brandPrimary)
-                }
-                .accessibilityLabel("Import Tool from URL")
-
-                // Export All
-                Button {
-                    Haptics.play(.light)
-                    Task { await exportAll(manager: manager) }
-                } label: {
-                    if isExportingAll {
-                        ProgressView().controlSize(.mini).tint(theme.brandPrimary)
-                    } else {
-                        Image(systemName: "square.and.arrow.up.on.square")
+                if wp.toolsImport {
+                    Button {
+                        Haptics.play(.light)
+                        importURL = ""
+                        showImportURLSheet = true
+                    } label: {
+                        Image(systemName: "link.badge.plus")
                             .scaledFont(size: 15, weight: .medium)
                             .foregroundStyle(theme.brandPrimary)
                     }
+                    .accessibilityLabel("Import Tool from URL")
                 }
-                .disabled(isExportingAll || manager.tools.isEmpty)
-                .accessibilityLabel("Export Tools")
+
+                // Export All
+                if wp.toolsExport {
+                    Button {
+                        Haptics.play(.light)
+                        Task { await exportAll(manager: manager) }
+                    } label: {
+                        if isExportingAll {
+                            ProgressView().controlSize(.mini).tint(theme.brandPrimary)
+                        } else {
+                            Image(systemName: "square.and.arrow.up.on.square")
+                                .scaledFont(size: 15, weight: .medium)
+                                .foregroundStyle(theme.brandPrimary)
+                        }
+                    }
+                    .disabled(isExportingAll || manager.tools.isEmpty)
+                    .accessibilityLabel("Export Tools")
+                }
 
                 // New Tool
                 Button {
@@ -348,11 +353,13 @@ struct ToolsListView: View {
             } label: {
                 Label("Clone", systemImage: "plus.square.on.square")
             }
-            Button {
-                Haptics.play(.light)
-                Task { await exportSingleTool(tool, manager: manager) }
-            } label: {
-                Label("Export", systemImage: "square.and.arrow.up")
+            if dependencies.authViewModel.workspacePermissions.toolsExport {
+                Button {
+                    Haptics.play(.light)
+                    Task { await exportSingleTool(tool, manager: manager) }
+                } label: {
+                    Label("Export", systemImage: "square.and.arrow.up")
+                }
             }
             Divider()
             Button(role: .destructive) {
@@ -413,20 +420,22 @@ struct ToolsListView: View {
                     }
                     .buttonStyle(.plain)
 
-                    Button {
-                        Haptics.play(.light)
-                        importURL = ""
-                        showImportURLSheet = true
-                    } label: {
-                        Label("Import URL", systemImage: "link.badge.plus")
-                            .scaledFont(size: 15, weight: .medium)
-                            .foregroundStyle(theme.brandPrimary)
-                            .padding(.horizontal, Spacing.lg)
-                            .padding(.vertical, Spacing.sm)
-                            .background(theme.brandPrimary.opacity(0.12))
-                            .clipShape(RoundedRectangle(cornerRadius: CornerRadius.md, style: .continuous))
+                    if dependencies.authViewModel.workspacePermissions.toolsImport {
+                        Button {
+                            Haptics.play(.light)
+                            importURL = ""
+                            showImportURLSheet = true
+                        } label: {
+                            Label("Import URL", systemImage: "link.badge.plus")
+                                .scaledFont(size: 15, weight: .medium)
+                                .foregroundStyle(theme.brandPrimary)
+                                .padding(.horizontal, Spacing.lg)
+                                .padding(.vertical, Spacing.sm)
+                                .background(theme.brandPrimary.opacity(0.12))
+                                .clipShape(RoundedRectangle(cornerRadius: CornerRadius.md, style: .continuous))
+                        }
+                        .buttonStyle(.plain)
                     }
-                    .buttonStyle(.plain)
                 }
             }
             Spacer()

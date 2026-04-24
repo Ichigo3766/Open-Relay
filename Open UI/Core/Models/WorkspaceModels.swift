@@ -1131,6 +1131,9 @@ struct ModelDetail: Identifiable, Sendable {
     var builtinNotes: Bool
     var builtinKnowledge: Bool
     var builtinChannels: Bool
+    var builtinTaskManagement: Bool
+    var builtinAutomations: Bool
+    var builtinCalendar: Bool
     var builtinWebSearch: Bool
     var builtinImageGen: Bool
     var builtinCodeInterpreter: Bool
@@ -1207,6 +1210,7 @@ struct ModelDetail: Identifiable, Sendable {
          defaultFeatureCodeInterpreter: Bool = false,
          builtinTime: Bool = true, builtinMemory: Bool = true, builtinChats: Bool = true,
          builtinNotes: Bool = true, builtinKnowledge: Bool = true, builtinChannels: Bool = true,
+         builtinTaskManagement: Bool = true, builtinAutomations: Bool = true, builtinCalendar: Bool = true,
          builtinWebSearch: Bool = true, builtinImageGen: Bool = true, builtinCodeInterpreter: Bool = true,
          knowledgeItems: [ModelKnowledgeEntry] = [], suggestionPrompts: [SuggestionPrompt] = [],
          ttsVoice: String = "") {
@@ -1224,7 +1228,10 @@ struct ModelDetail: Identifiable, Sendable {
         self.defaultFeatureCodeInterpreter = defaultFeatureCodeInterpreter
         self.builtinTime = builtinTime; self.builtinMemory = builtinMemory; self.builtinChats = builtinChats
         self.builtinNotes = builtinNotes; self.builtinKnowledge = builtinKnowledge
-        self.builtinChannels = builtinChannels; self.builtinWebSearch = builtinWebSearch
+        self.builtinChannels = builtinChannels
+        self.builtinTaskManagement = builtinTaskManagement; self.builtinAutomations = builtinAutomations
+        self.builtinCalendar = builtinCalendar
+        self.builtinWebSearch = builtinWebSearch
         self.builtinImageGen = builtinImageGen; self.builtinCodeInterpreter = builtinCodeInterpreter
         self.knowledgeItems = knowledgeItems; self.suggestionPrompts = suggestionPrompts
         self.toolIds = []; self.filterIds = []; self.defaultFilterIds = []; self.actionIds = []
@@ -1316,6 +1323,9 @@ struct ModelDetail: Identifiable, Sendable {
         self.builtinNotes = bt["notes"] as? Bool ?? true
         self.builtinKnowledge = bt["knowledge"] as? Bool ?? true
         self.builtinChannels = bt["channels"] as? Bool ?? true
+        self.builtinTaskManagement = bt["task_management"] as? Bool ?? true
+        self.builtinAutomations = bt["automations"] as? Bool ?? true
+        self.builtinCalendar = bt["calendar"] as? Bool ?? true
         self.builtinWebSearch = bt["web_search"] as? Bool ?? true
         self.builtinImageGen = bt["image_generation"] as? Bool ?? true
         self.builtinCodeInterpreter = bt["code_interpreter"] as? Bool ?? true
@@ -1444,6 +1454,8 @@ struct ModelDetail: Identifiable, Sendable {
         meta["builtinTools"] = [
             "time": builtinTime, "memory": builtinMemory, "chats": builtinChats,
             "notes": builtinNotes, "knowledge": builtinKnowledge, "channels": builtinChannels,
+            "task_management": builtinTaskManagement, "automations": builtinAutomations,
+            "calendar": builtinCalendar,
             "web_search": builtinWebSearch, "image_generation": builtinImageGen,
             "code_interpreter": builtinCodeInterpreter
         ]

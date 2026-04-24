@@ -825,9 +825,17 @@ private struct PromptHistoryView: View {
             .navigationTitle("Version History")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button("Done") { dismiss() }
-                        .scaledFont(size: 16).foregroundStyle(theme.brandPrimary)
+                ToolbarItem(placement: .navigationBarLeading) {
+                    Button {
+                        dismiss()
+                    } label: {
+                        Image(systemName: "xmark")
+                            .scaledFont(size: 14, weight: .medium)
+                            .foregroundStyle(Color.secondary)
+                            .frame(width: 32, height: 32)
+                            .background(Color(uiColor: .systemGray5).opacity(0.6))
+                            .clipShape(Circle())
+                    }
                 }
             }
         }

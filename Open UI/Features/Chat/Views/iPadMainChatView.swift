@@ -44,6 +44,12 @@ struct iPadMainChatView: View {
     /// Whether the memories sheet is visible.
     @State private var showMemories = false
 
+    /// Whether the calendar sheet is visible.
+    @State private var showCalendar = false
+
+    /// Whether the automations sheet is visible.
+    @State private var showAutomations = false
+
     /// Controls column visibility for the NavigationSplitView.
     @State private var columnVisibility: NavigationSplitViewVisibility = .all
 
@@ -68,6 +74,9 @@ struct iPadMainChatView: View {
 
     /// Controls the shared chats sheet presentation.
     @State private var showSharedChats = false
+
+    /// Controls the admin console sheet presentation (admin users only).
+    @State private var showAdminConsole = false
 
     /// Rename conversation state.
     @State private var renamingConversation: Conversation?
@@ -238,6 +247,29 @@ struct iPadMainChatView: View {
                 allUsers: channelListVM.allServerUsers
             )
         }
+        // Admin Console sheet (admin-only)
+        .sheet(isPresented: $showAdminConsole) {
+            NavigationStack {
+                AdminConsoleView()
+                    .toolbar {
+                        ToolbarItem(placement: .navigationBarLeading) {
+                            Button {
+                                showAdminConsole = false
+                            } label: {
+                                Image(systemName: "xmark")
+                                    .font(.system(size: 14, weight: .medium))
+                                    .foregroundStyle(Color.secondary)
+                                    .frame(width: 32, height: 32)
+                                    .background(Color(uiColor: .systemGray5).opacity(0.6))
+                                    .clipShape(Circle())
+                            }
+                        }
+                    }
+            }
+            .environment(dependencies)
+            .themed(with: dependencies.appearanceManager, accessibility: dependencies.accessibilityManager)
+            .presentationCornerRadius(20)
+        }
         // Workspace sheet
         .sheet(isPresented: $showWorkspace) {
             WorkspaceView()
@@ -249,12 +281,33 @@ struct iPadMainChatView: View {
             NavigationStack {
                 MemoriesView()
                     .toolbar {
-                        ToolbarItem(placement: .confirmationAction) {
-                            Button("Done") { showMemories = false }
+                        ToolbarItem(placement: .navigationBarLeading) {
+                            Button {
+                                showMemories = false
+                            } label: {
+                                Image(systemName: "xmark")
+                                    .font(.system(size: 14, weight: .medium))
+                                    .foregroundStyle(Color.secondary)
+                                    .frame(width: 32, height: 32)
+                                    .background(Color(uiColor: .systemGray5).opacity(0.6))
+                                    .clipShape(Circle())
+                            }
                         }
                     }
             }
             .themed(with: dependencies.appearanceManager, accessibility: dependencies.accessibilityManager)
+        }
+        // Calendar sheet
+        .sheet(isPresented: $showCalendar) {
+            CalendarView()
+                .environment(dependencies)
+                .themed(with: dependencies.appearanceManager, accessibility: dependencies.accessibilityManager)
+        }
+        // Automations sheet
+        .sheet(isPresented: $showAutomations) {
+            AutomationsListView()
+                .environment(dependencies)
+                .themed(with: dependencies.appearanceManager, accessibility: dependencies.accessibilityManager)
         }
         .overlay {
             if isExporting {
@@ -281,6 +334,9 @@ struct iPadMainChatView: View {
             showNotes: $showNotes,
             showWorkspace: $showWorkspace,
             showMemories: $showMemories,
+            showCalendar: $showCalendar,
+            showAutomations: $showAutomations,
+            showAdminConsole: $showAdminConsole,
             showDeleteAllConfirmation: $showDeleteAllConfirmation,
             showDeleteSelectedConfirmation: $showDeleteSelectedConfirmation,
             deletingConversation: $deletingConversation,
@@ -626,6 +682,9 @@ struct iPadSidebarContent: View {
     @Binding var showNotes: Bool
     @Binding var showWorkspace: Bool
     @Binding var showMemories: Bool
+    @Binding var showCalendar: Bool
+    @Binding var showAutomations: Bool
+    @Binding var showAdminConsole: Bool
     @Binding var showDeleteAllConfirmation: Bool
     @Binding var showDeleteSelectedConfirmation: Bool
     @Binding var deletingConversation: Conversation?
@@ -669,13 +728,14 @@ struct iPadSidebarContent: View {
                     pinnedModelsSection
 
                     // Folders section
-                    if !folderVM.featureDisabled {
+                    let foldersEnabled = dependencies.authViewModel.featurePermissions.folders
+                    if foldersEnabled && !folderVM.featureDisabled {
                         foldersSection(folderVM: folderVM)
                     }
 
                     // Divider between folders and channels
-                    let channelsEnabled = dependencies.authViewModel.backendConfig?.features?.enableChannels != false
-                    if (!folderVM.featureDisabled && !folderVM.folders.isEmpty) || (channelsEnabled && !channelListVM.channels.isEmpty) {
+                    let channelsEnabled = dependencies.authViewModel.featurePermissions.channels
+                    if (foldersEnabled && !folderVM.featureDisabled && !folderVM.folders.isEmpty) || (channelsEnabled && !channelListVM.channels.isEmpty) {
                         Rectangle()
                             .fill(theme.textTertiary.opacity(0.12))
                             .frame(height: 1)
@@ -1509,16 +1569,32 @@ struct iPadSidebarContent: View {
 
                 // More menu — secondary actions tucked away cleanly
                 Menu {
-                    Button { showMemories = true } label: {
-                        Label("Memories", systemImage: "brain.head.profile")
+                    if dependencies.authViewModel.featurePermissions.memories {
+                        Button { showMemories = true } label: {
+                            Label("Memories", systemImage: "brain.head.profile")
+                        }
                     }
-                    Button { showWorkspace = true } label: {
-                        Label("Workspace", systemImage: "square.grid.2x2")
+                    if dependencies.authViewModel.hasAnyWorkspaceAccess {
+                        Button { showWorkspace = true } label: {
+                            Label("Workspace", systemImage: "square.grid.2x2")
+                        }
                     }
 
-                    if dependencies.authViewModel.backendConfig?.features?.enableNotes != false {
+                    if dependencies.authViewModel.featurePermissions.notes {
                         Button { showNotes = true } label: {
                             Label("Notes", systemImage: "note.text")
+                        }
+                    }
+
+                    if dependencies.authViewModel.featurePermissions.calendar {
+                        Button { showCalendar = true } label: {
+                            Label("Calendar", systemImage: "calendar")
+                        }
+                    }
+
+                    if dependencies.authViewModel.featurePermissions.automations {
+                        Button { showAutomations = true } label: {
+                            Label("Automations", systemImage: "clock.arrow.circlepath")
                         }
                     }
 
@@ -1526,6 +1602,12 @@ struct iPadSidebarContent: View {
 
                     Button { showSettings = true } label: {
                         Label("Settings", systemImage: "gearshape")
+                    }
+
+                    if dependencies.authViewModel.currentUser?.role == .admin {
+                        Button { showAdminConsole = true } label: {
+                            Label("Admin Console", systemImage: "shield.lefthalf.filled")
+                        }
                     }
                 } label: {
                     Image(systemName: "ellipsis.circle")
@@ -1707,8 +1789,17 @@ private extension View {
                 NavigationStack {
                     NotesListView()
                         .toolbar {
-                            ToolbarItem(placement: .confirmationAction) {
-                                Button("Done") { showNotes.wrappedValue = false }
+                            ToolbarItem(placement: .navigationBarLeading) {
+                                Button {
+                                    showNotes.wrappedValue = false
+                                } label: {
+                                    Image(systemName: "xmark")
+                                        .font(.system(size: 14, weight: .medium))
+                                        .foregroundStyle(Color.secondary)
+                                        .frame(width: 32, height: 32)
+                                        .background(Color(uiColor: .systemGray5).opacity(0.6))
+                                        .clipShape(Circle())
+                                }
                             }
                         }
                 }

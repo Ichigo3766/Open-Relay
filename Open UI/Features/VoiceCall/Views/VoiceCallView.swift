@@ -562,8 +562,17 @@ struct VoiceCallSettingsSheet: View {
             .navigationTitle("Voice Settings")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Done") { dismiss() }
+                ToolbarItem(placement: .navigationBarLeading) {
+                    Button {
+                        dismiss()
+                    } label: {
+                        Image(systemName: "xmark")
+                            .scaledFont(size: 14, weight: .medium)
+                            .foregroundStyle(Color.secondary)
+                            .frame(width: 32, height: 32)
+                            .background(Color(uiColor: .systemGray5).opacity(0.6))
+                            .clipShape(Circle())
+                    }
                 }
             }
         }

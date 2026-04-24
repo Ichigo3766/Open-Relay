@@ -1,7 +1,7 @@
 import Foundation
 
 /// Represents an authenticated user from the OpenWebUI server.
-struct User: Codable, Identifiable, Hashable, Sendable {
+struct User: Codable, Identifiable, Sendable {
     let id: String
     var username: String
     var email: String
@@ -12,6 +12,7 @@ struct User: Codable, Identifiable, Hashable, Sendable {
     var bio: String?
     var gender: String?
     var dateOfBirth: String?
+    var permissions: GroupPermissions?
 
     enum UserRole: String, Codable, Sendable {
         case user
@@ -30,6 +31,7 @@ struct User: Codable, Identifiable, Hashable, Sendable {
         case bio
         case gender
         case dateOfBirth = "date_of_birth"
+        case permissions
     }
 
     init(
@@ -42,7 +44,8 @@ struct User: Codable, Identifiable, Hashable, Sendable {
         isActive: Bool = true,
         bio: String? = nil,
         gender: String? = nil,
-        dateOfBirth: String? = nil
+        dateOfBirth: String? = nil,
+        permissions: GroupPermissions? = nil
     ) {
         self.id = id
         self.username = username
@@ -54,6 +57,7 @@ struct User: Codable, Identifiable, Hashable, Sendable {
         self.bio = bio
         self.gender = gender
         self.dateOfBirth = dateOfBirth
+        self.permissions = permissions
     }
 
     init(from decoder: Decoder) throws {
@@ -70,10 +74,16 @@ struct User: Codable, Identifiable, Hashable, Sendable {
         bio = try container.decodeIfPresent(String.self, forKey: .bio)
         gender = try container.decodeIfPresent(String.self, forKey: .gender)
         dateOfBirth = try container.decodeIfPresent(String.self, forKey: .dateOfBirth)
+        permissions = try container.decodeIfPresent(GroupPermissions.self, forKey: .permissions)
     }
 
     /// Display name, preferring `name` over `username`.
     var displayName: String {
         name ?? username
     }
+}
+
+extension User: Hashable {
+    static func == (lhs: User, rhs: User) -> Bool { lhs.id == rhs.id }
+    func hash(into hasher: inout Hasher) { hasher.combine(id) }
 }

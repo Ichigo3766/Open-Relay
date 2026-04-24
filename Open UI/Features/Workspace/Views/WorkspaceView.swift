@@ -32,6 +32,19 @@ struct WorkspaceView: View {
 
     @State private var selectedTab: WorkspaceTab = .models
 
+    private var availableTabs: [WorkspaceTab] {
+        let wp = dependencies.authViewModel.workspacePermissions
+        return WorkspaceTab.allCases.filter { tab in
+            switch tab {
+            case .models:    return wp.models
+            case .knowledge: return wp.knowledge
+            case .prompts:   return wp.prompts
+            case .skills:    return wp.skills
+            case .tools:     return wp.tools
+            }
+        }
+    }
+
     var body: some View {
         NavigationStack {
             VStack(spacing: 0) {
@@ -56,7 +69,6 @@ struct WorkspaceView: View {
                         SkillsListView()
                     case .tools:
                         ToolsListView()
-                    
                     }
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -64,6 +76,12 @@ struct WorkspaceView: View {
             .background(theme.background)
             .navigationTitle("Workspace")
             .navigationBarTitleDisplayMode(.inline)
+            .onAppear {
+                // Ensure selectedTab is always one the user can actually see
+                if !availableTabs.contains(selectedTab) {
+                    selectedTab = availableTabs.first ?? .models
+                }
+            }
             .toolbar {
                 ToolbarItem(placement: .navigationBarLeading) {
                     Button {
@@ -86,7 +104,7 @@ struct WorkspaceView: View {
     private var tabBar: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 8) {
-                ForEach(WorkspaceTab.allCases, id: \.self) { tab in
+                ForEach(availableTabs, id: \.self) { tab in
                     Button {
                         withAnimation(.easeInOut(duration: 0.18)) {
                             selectedTab = tab

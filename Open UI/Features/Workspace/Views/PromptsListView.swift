@@ -247,32 +247,37 @@ struct PromptsListView: View {
         } message: { Text(errorMessage ?? "") }
         .toolbar {
             ToolbarItemGroup(placement: .topBarTrailing) {
+                let wp = dependencies.authViewModel.workspacePermissions
                 // Import button
-                Button {
-                    Haptics.play(.light)
-                    showImportPicker = true
-                } label: {
-                    Image(systemName: "square.and.arrow.down")
-                        .scaledFont(size: 15, weight: .medium)
-                        .foregroundStyle(theme.brandPrimary)
-                }
-                .accessibilityLabel("Import Prompts")
-
-                // Export All button
-                Button {
-                    Haptics.play(.light)
-                    Task { await exportAll(manager: manager) }
-                } label: {
-                    if isExportingAll {
-                        ProgressView().controlSize(.mini).tint(theme.brandPrimary)
-                    } else {
-                        Image(systemName: "square.and.arrow.up.on.square")
+                if wp.promptsImport {
+                    Button {
+                        Haptics.play(.light)
+                        showImportPicker = true
+                    } label: {
+                        Image(systemName: "square.and.arrow.down")
                             .scaledFont(size: 15, weight: .medium)
                             .foregroundStyle(theme.brandPrimary)
                     }
+                    .accessibilityLabel("Import Prompts")
                 }
-                .disabled(isExportingAll || manager.prompts.isEmpty)
-                .accessibilityLabel("Export Prompts")
+
+                // Export All button
+                if wp.promptsExport {
+                    Button {
+                        Haptics.play(.light)
+                        Task { await exportAll(manager: manager) }
+                    } label: {
+                        if isExportingAll {
+                            ProgressView().controlSize(.mini).tint(theme.brandPrimary)
+                        } else {
+                            Image(systemName: "square.and.arrow.up.on.square")
+                                .scaledFont(size: 15, weight: .medium)
+                                .foregroundStyle(theme.brandPrimary)
+                        }
+                    }
+                    .disabled(isExportingAll || manager.prompts.isEmpty)
+                    .accessibilityLabel("Export Prompts")
+                }
 
                 // New Prompt button
                 Button {
@@ -486,11 +491,13 @@ struct PromptsListView: View {
             } label: {
                 Label("Clone", systemImage: "plus.square.on.square")
             }
-            Button {
-                Haptics.play(.light)
-                Task { await exportSinglePrompt(prompt, manager: manager) }
-            } label: {
-                Label("Export", systemImage: "square.and.arrow.up")
+            if dependencies.authViewModel.workspacePermissions.promptsExport {
+                Button {
+                    Haptics.play(.light)
+                    Task { await exportSinglePrompt(prompt, manager: manager) }
+                } label: {
+                    Label("Export", systemImage: "square.and.arrow.up")
+                }
             }
             Divider()
             Button(role: .destructive) {
