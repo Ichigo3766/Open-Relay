@@ -178,7 +178,7 @@ final class KnowledgeManager {
             for file in files {
                 group.addTask { [self] in
                     // Upload with processing so the server extracts text/embeddings
-                    let fileId = try await self.apiClient.uploadFile(
+                    let (fileId, _) = try await self.apiClient.uploadFile(
                         data: file.data,
                         fileName: file.fileName,
                         knowledgeId: knowledgeId
@@ -220,7 +220,7 @@ final class KnowledgeManager {
         onUploaded: ((String) -> Void)? = nil
     ) async throws -> KnowledgeDetail {
         // 1. Upload the file, passing knowledge_id metadata so the server indexes it correctly.
-        let fileId = try await apiClient.uploadFile(
+        let (fileId, _) = try await apiClient.uploadFile(
             data: fileData,
             fileName: fileName,
             knowledgeId: knowledgeId,
@@ -261,7 +261,7 @@ final class KnowledgeManager {
         guard let fileData = content.data(using: .utf8) else {
             throw KnowledgeManagerError.invalidResponse
         }
-        let fileId = try await apiClient.uploadFile(
+        let (fileId, _) = try await apiClient.uploadFile(
             data: fileData,
             fileName: fileName,
             knowledgeId: knowledgeId
@@ -302,7 +302,7 @@ final class KnowledgeManager {
             .joined(separator: "_")
         let fileName = safe.isEmpty ? "content.txt" : "\(safe).txt"
 
-        let fileId = try await apiClient.uploadFile(
+        let (fileId, _) = try await apiClient.uploadFile(
             data: fileData,
             fileName: fileName,
             knowledgeId: knowledgeId

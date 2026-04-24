@@ -389,18 +389,37 @@ final class ChannelViewModel {
         var fileRefs: [[String: Any]] = []
         for attachment in currentAttachments {
             if let fileId = attachment.uploadedFileId {
+                let fileObject = attachment.uploadedFileObject ?? [:]
+                let isImage = attachment.type == .image
+                let contentType: String = isImage ? "image/jpeg" : "application/octet-stream"
+                let size: Int = (fileObject["meta"] as? [String: Any]).flatMap { $0["size"] as? Int } ?? 0
                 fileRefs.append([
-                    "type": attachment.type == .image ? "image" : "file",
+                    "type": "file",
+                    "file": fileObject.isEmpty ? ["id": fileId, "filename": attachment.name, "meta": ["name": attachment.name, "content_type": contentType, "size": size]] : fileObject,
                     "id": fileId,
-                    "name": attachment.name
+                    "url": fileId,
+                    "name": attachment.name,
+                    "status": "uploaded",
+                    "size": size,
+                    "error": "",
+                    "content_type": contentType
                 ])
             } else if let data = attachment.data {
                 do {
-                    let fileId = try await apiClient.uploadFile(data: data, fileName: attachment.name)
+                    let (fileId, fileObject) = try await apiClient.uploadFile(data: data, fileName: attachment.name)
+                    let isImage = attachment.type == .image
+                    let contentType: String = isImage ? "image/jpeg" : "application/octet-stream"
+                    let size: Int = (fileObject["meta"] as? [String: Any]).flatMap { $0["size"] as? Int } ?? 0
                     fileRefs.append([
-                        "type": attachment.type == .image ? "image" : "file",
+                        "type": "file",
+                        "file": fileObject.isEmpty ? ["id": fileId, "filename": attachment.name, "meta": ["name": attachment.name, "content_type": contentType, "size": size]] : fileObject,
                         "id": fileId,
-                        "name": attachment.name
+                        "url": fileId,
+                        "name": attachment.name,
+                        "status": "uploaded",
+                        "size": size,
+                        "error": "",
+                        "content_type": contentType
                     ])
                 } catch {
                     logger.error("File upload failed: \(error.localizedDescription)")
@@ -501,18 +520,37 @@ final class ChannelViewModel {
         var fileRefs: [[String: Any]] = []
         for attachment in currentAttachments {
             if let fileId = attachment.uploadedFileId {
+                let fileObject = attachment.uploadedFileObject ?? [:]
+                let isImage = attachment.type == .image
+                let contentType: String = isImage ? "image/jpeg" : "application/octet-stream"
+                let size: Int = (fileObject["meta"] as? [String: Any]).flatMap { $0["size"] as? Int } ?? 0
                 fileRefs.append([
-                    "type": attachment.type == .image ? "image" : "file",
+                    "type": "file",
+                    "file": fileObject.isEmpty ? ["id": fileId, "filename": attachment.name, "meta": ["name": attachment.name, "content_type": contentType, "size": size]] : fileObject,
                     "id": fileId,
-                    "name": attachment.name
+                    "url": fileId,
+                    "name": attachment.name,
+                    "status": "uploaded",
+                    "size": size,
+                    "error": "",
+                    "content_type": contentType
                 ])
             } else if let data = attachment.data {
                 do {
-                    let fileId = try await apiClient.uploadFile(data: data, fileName: attachment.name)
+                    let (fileId, fileObject) = try await apiClient.uploadFile(data: data, fileName: attachment.name)
+                    let isImage = attachment.type == .image
+                    let contentType: String = isImage ? "image/jpeg" : "application/octet-stream"
+                    let size: Int = (fileObject["meta"] as? [String: Any]).flatMap { $0["size"] as? Int } ?? 0
                     fileRefs.append([
-                        "type": attachment.type == .image ? "image" : "file",
+                        "type": "file",
+                        "file": fileObject.isEmpty ? ["id": fileId, "filename": attachment.name, "meta": ["name": attachment.name, "content_type": contentType, "size": size]] : fileObject,
                         "id": fileId,
-                        "name": attachment.name
+                        "url": fileId,
+                        "name": attachment.name,
+                        "status": "uploaded",
+                        "size": size,
+                        "error": "",
+                        "content_type": contentType
                     ])
                 } catch {
                     logger.error("Thread file upload failed: \(error.localizedDescription)")
@@ -845,17 +883,19 @@ final class ChannelViewModel {
             let fileName = source[i].name
             
             do {
-                let fileId = try await apiClient.uploadFile(data: data, fileName: fileName)
+                let (fileId, fileObject) = try await apiClient.uploadFile(data: data, fileName: fileName)
                 if isThread {
                     if let i = threadAttachments.firstIndex(where: { $0.id == attachmentId }) {
                         threadAttachments[i].uploadStatus = .completed
                         threadAttachments[i].uploadedFileId = fileId
+                        threadAttachments[i].uploadedFileObject = fileObject
                         threadAttachments[i].data = nil
                     }
                 } else {
                     if let i = attachments.firstIndex(where: { $0.id == attachmentId }) {
                         attachments[i].uploadStatus = .completed
                         attachments[i].uploadedFileId = fileId
+                        attachments[i].uploadedFileObject = fileObject
                         attachments[i].data = nil
                     }
                 }

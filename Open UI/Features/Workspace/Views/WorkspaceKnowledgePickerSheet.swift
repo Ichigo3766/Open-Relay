@@ -384,7 +384,7 @@ struct WorkspaceKnowledgePickerSheet: View {
                 }
 
                 // Upload file (no knowledgeId — this is a standalone file)
-                let fileId = try await api.uploadFile(data: data, fileName: fileName)
+                let (fileId, _) = try await api.uploadFile(data: data, fileName: fileName)
                 uploadProgress = 1.0
 
                 logger.info("[KnowledgePicker] File uploaded successfully: id='\(fileId)' name='\(fileName)'")

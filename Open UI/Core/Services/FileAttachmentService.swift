@@ -343,7 +343,7 @@ final class FileAttachmentService {
         do {
             // For non-images: transition to .processing once upload completes,
             // while waiting for the server's SSE processing poll.
-            let fileId = try await manager.uploadFile(
+            let (fileId, fileObject) = try await manager.uploadFile(
                 data: data,
                 fileName: fileName,
                 onUploaded: { [weak self] _ in
@@ -354,7 +354,7 @@ final class FileAttachmentService {
                     }
                 }
             )
-            updateAttachmentStatus(id: id, status: .completed, fileId: fileId)
+            updateAttachmentStatus(id: id, status: .completed, fileId: fileId, fileObject: fileObject)
             logger.info("Attachment \(fileName) uploaded and processed successfully")
         } catch {
             // Surface the server error message (e.g. transcription failure) to the user.
@@ -376,11 +376,13 @@ final class FileAttachmentService {
         id: UUID,
         status: ChatAttachment.UploadStatus,
         fileId: String? = nil,
+        fileObject: [String: Any]? = nil,
         error: String? = nil
     ) {
         guard let index = pendingAttachments.firstIndex(where: { $0.id == id }) else { return }
         pendingAttachments[index].uploadStatus = status
         if let fileId { pendingAttachments[index].uploadedFileId = fileId }
+        if let fileObject { pendingAttachments[index].uploadedFileObject = fileObject }
         if let error { pendingAttachments[index].uploadError = error }
     }
 
@@ -395,16 +397,34 @@ final class FileAttachmentService {
     }
 
     /// Returns pre-uploaded file references for all completed attachments.
+    /// Builds the rich web-UI-format file ref so the server can locate the image/file content.
     /// Used by ChatViewModel.sendMessage() instead of uploading at send time.
     func getUploadedFileRefs() -> [[String: Any]] {
         pendingAttachments.compactMap { attachment -> [String: Any]? in
             guard let fileId = attachment.uploadedFileId else { return nil }
             // Skip audio attachments — they're handled separately via transcription
             guard attachment.type != .audio else { return nil }
+
+            let fileObject = attachment.uploadedFileObject ?? [:]
+            let filename = attachment.name
+            let isImage = attachment.type == .image
+            let contentType: String = isImage ? "image/jpeg" : "application/octet-stream"
+            let size: Int = (fileObject["meta"] as? [String: Any]).flatMap { $0["size"] as? Int } ?? 0
+
             return [
-                "type": attachment.type == .image ? "image" : "file",
+                "type": "file",
+                "file": fileObject.isEmpty ? [
+                    "id": fileId,
+                    "filename": filename,
+                    "meta": ["name": filename, "content_type": contentType, "size": size]
+                ] : fileObject,
                 "id": fileId,
-                "name": attachment.name
+                "url": fileId,
+                "name": filename,
+                "status": "uploaded",
+                "size": size,
+                "error": "",
+                "content_type": contentType
             ]
         }
     }

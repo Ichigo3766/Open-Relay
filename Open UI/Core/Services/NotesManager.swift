@@ -243,7 +243,8 @@ final class NotesManager: @unchecked Sendable {
         guard let apiClient else {
             throw NotesError.serverUnavailable
         }
-        return try await apiClient.uploadFile(data: data, fileName: fileName)
+        let (fileId, _) = try await apiClient.uploadFile(data: data, fileName: fileName)
+        return fileId
     }
 
     /// Uploads a file attachment for a note.
@@ -251,7 +252,8 @@ final class NotesManager: @unchecked Sendable {
         guard let apiClient else {
             throw NotesError.serverUnavailable
         }
-        return try await apiClient.uploadFile(data: data, fileName: fileName)
+        let (fileId, _) = try await apiClient.uploadFile(data: data, fileName: fileName)
+        return fileId
     }
 }
 

@@ -1113,7 +1113,7 @@ struct ChatDetailView: View {
             let grew = newSize.width > oldContentHeight + 1
             if grew && viewModel.isStreaming && !isScrolledUp {
                 let now = Date()
-                if now.timeIntervalSince(lastProgrammaticScrollTime) > 0.1 {
+                if now.timeIntervalSince(lastProgrammaticScrollTime) > 0.2 {
                     lastProgrammaticScrollTime = now
                     withAnimation(.easeOut(duration: 0.15)) {
                         scrollPosition.scrollTo(edge: .bottom)

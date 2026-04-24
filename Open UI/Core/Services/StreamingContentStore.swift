@@ -1,9 +1,6 @@
 import Foundation
 import QuartzCore
 import SwiftUI
-import os.log
-
-private let drainLog = OSLog(subsystem: "com.openui.openui", category: "DrainTick")
 
 /// Isolates streaming message state from the main conversation model.
 ///
@@ -59,7 +56,13 @@ private let drainLog = OSLog(subsystem: "com.openui.openui", category: "DrainTic
 /// within the same RunLoop iteration, eliminating the Task-scheduler hop
 /// that previously caused ticks to queue up and fire back-to-back.
 ///
-/// - Server finished → flush instantly to `displayContent`.
+/// ### Finishing mode
+/// When the server completes (`endStreaming()` is called), the store
+/// enters `isFinishing` mode instead of instantly flushing remaining
+/// buffered content. The display link keeps running at the **same drain
+/// rate** until every buffered character has been revealed, then cleans
+/// up automatically. This prevents the jarring "dump all at once" artifact
+/// at the end of a response while keeping the API identical for callers.
 @MainActor @Observable
 final class StreamingContentStore {
     // MARK: - Live Streaming State
@@ -86,6 +89,7 @@ final class StreamingContentStore {
     var streamingError: ChatMessageError?
 
     /// Whether streaming is actively in progress.
+    /// Remains `true` during finishing mode (buffer draining after server done).
     var isActive: Bool = false
 
     /// The model ID for the streaming message.
@@ -122,6 +126,11 @@ final class StreamingContentStore {
     /// EMA with a wildly inflated inter-burst interval.
     private var isFirstBurst: Bool = true
 
+    /// True once the server has finished sending tokens. The display link
+    /// keeps running to drain remaining buffer — no new tokens will arrive.
+    /// Buffer is NOT instantly flushed; drain continues at the same rate.
+    private var isFinishing: Bool = false
+
     // MARK: - CADisplayLink (synchronous — no Task trampoline)
 
     private final class DisplayLinkTarget: NSObject {
@@ -149,11 +158,17 @@ final class StreamingContentStore {
         streamingError = nil
         streamingModelId = modelId
         isActive = true
+        isFinishing = false
         startDisplayLink()
     }
 
     /// Updates the streaming content (called on each token batch from the server).
     func updateContent(_ content: String) {
+        // Ignore late tokens arriving after the server has signalled completion.
+        // Socket events are async and can race with endStreaming(); this guard
+        // prevents a stale token from growing streamingContent while isFinishing
+        // is true, which would create a buffer the drain algorithm never catches up to.
+        guard !isFinishing else { return }
         streamingContent = content
     }
 
@@ -187,12 +202,17 @@ final class StreamingContentStore {
         streamingError = error
     }
 
-    /// Ends the streaming session and flushes the remaining buffer.
+    /// Ends the streaming session.
+    ///
+    /// Returns the full `StreamingResult` immediately so the caller can write
+    /// the authoritative content to the conversation model. However, the
+    /// display link is kept alive in "finishing" mode — the remaining buffered
+    /// characters drain at the **same rate** as during active streaming.
+    /// Once the visible buffer is empty the store cleans itself up automatically.
+    ///
+    /// For abort/cancel paths use `abortStreaming()` which instantly flushes.
     @discardableResult
     func endStreaming() -> StreamingResult {
-        stopDisplayLink()
-        displayContent = streamingContent
-
         let result = StreamingResult(
             messageId: streamingMessageId,
             content: streamingContent,
@@ -200,14 +220,34 @@ final class StreamingContentStore {
             sources: streamingSources,
             error: streamingError
         )
-        streamingMessageId = nil
-        streamingContent = ""
-        displayContent = ""
-        streamingStatusHistory = []
-        streamingSources = []
-        streamingError = nil
-        streamingModelId = nil
-        isActive = false
+
+        // If there are still chars to drain, enter finishing mode.
+        // The display link keeps running; cleanup happens in drainTick().
+        if displayContent.count < streamingContent.count {
+            isFinishing = true
+            // isActive stays true — the streaming view remains visible
+        } else {
+            // Nothing left to drain — clean up immediately
+            completeCleanup()
+        }
+
+        return result
+    }
+
+    /// Immediately flushes all remaining buffer and stops the display link.
+    /// Use this for abort / cancel / error paths where smooth drain is undesirable.
+    /// Returns the full `StreamingResult` so callers can persist partial content.
+    @discardableResult
+    func abortStreaming() -> StreamingResult {
+        let result = StreamingResult(
+            messageId: streamingMessageId,
+            content: streamingContent,
+            statusHistory: streamingStatusHistory,
+            sources: streamingSources,
+            error: streamingError
+        )
+        stopDisplayLink()
+        completeCleanup()
         return result
     }
 
@@ -217,6 +257,21 @@ final class StreamingContentStore {
         let statusHistory: [ChatStatusUpdate]
         let sources: [ChatSourceReference]
         let error: ChatMessageError?
+    }
+
+    // MARK: - Internal cleanup
+
+    private func completeCleanup() {
+        streamingMessageId = nil
+        streamingContent = ""
+        displayContent = ""
+        streamingStatusHistory = []
+        streamingSources = []
+        streamingError = nil
+        streamingModelId = nil
+        isActive = false
+        isFinishing = false
+        stopDisplayLink()
     }
 
     // MARK: - CADisplayLink
@@ -262,17 +317,27 @@ final class StreamingContentStore {
     /// **Fast model (buffer > 40):** proportional drain
     ///   - Each frame: max(steadyRate, buffer / 6) — proportional dominates
     ///   - Behaviour identical to original — fast models unaffected
+    ///
+    /// **Finishing mode:** same algorithm, no rate change. Once buffer is
+    ///   fully drained, triggers completeCleanup() to stop the display link.
     private func drainTick() {
         let full = streamingContent
         let displayed = displayContent
         let totalCount = full.count
         let buffered = totalCount - displayed.count
 
+        // In finishing mode, if buffer is empty we're done — clean up.
+        if isFinishing && buffered == 0 {
+            completeCleanup()
+            return
+        }
+
         framesSinceLastBurst += 1
 
         guard buffered > 0 else { return }
 
         // Burst detection: did streamingContent grow since the last frame?
+        // In finishing mode this will always be 0 (no new tokens arrive).
         let newChars = totalCount - lastKnownTotal
         lastKnownTotal = totalCount
 
@@ -306,11 +371,11 @@ final class StreamingContentStore {
         if buffered <= 40 {
             charsThisFrame = steadyRate
 
-            // Tail-reserve brake: when only 3 or fewer chars remain, apply a
-            // quadratic slow-down so the last chars linger until the next burst
-            // arrives rather than popping out and leaving a visible freeze.
-            // Factor drops from 1.0 at buffered=4 to 0.25 at buffered=1.
-            if buffered <= 3 {
+            // Tail-reserve brake: when only 3 or fewer chars remain AND we are
+            // still actively receiving tokens (not finishing), apply a quadratic
+            // slow-down so the last chars linger until the next burst arrives.
+            // During finishing mode we skip this so the tail drains naturally.
+            if buffered <= 3 && !isFinishing {
                 let brakeFactor = (Double(buffered) / 4.0)  // 0.25 … 0.75
                 charsThisFrame = steadyRate * brakeFactor
             }
@@ -326,8 +391,6 @@ final class StreamingContentStore {
         let endOffset = displayed.count + reveal
         let endIdx = full.index(full.startIndex, offsetBy: endOffset)
         let newDisplay = String(full[..<endIdx])
-        os_log("DRAIN reveal=%d buffered=%d steadyRate=%.2f displayLen=%d", log: drainLog, type: .debug,
-               reveal, buffered, steadyRate, newDisplay.count)
         displayContent = newDisplay
     }
 }

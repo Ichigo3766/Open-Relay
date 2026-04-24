@@ -12,8 +12,8 @@ struct StreamingStatusView: View {
     init(statusHistory: [ChatStatusUpdate], isStreaming: Bool = true) {
         self.statusHistory = statusHistory
         self.isStreaming = isStreaming
-        // Start collapsed when loading an existing (non-streaming) chat
-        _isExpanded = State(initialValue: isStreaming)
+        // Always start collapsed
+        _isExpanded = State(initialValue: false)
     }
 
     /// Visible (non-hidden) status items.
