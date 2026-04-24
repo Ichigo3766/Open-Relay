@@ -1,4 +1,13 @@
-# Changelog
+## v3.3.1 — April 24, 2026
+
+### Improvements
+- Significantly improved text streaming — Experience the new typewriter-style streaming instead of pop-ins.
+
+### Bug Fixes
+- Fixed server-side filter content not appearing in the chat until navigating away and back.
+- Fixed models not able to see image attachments.
+
+## Previous Builds
 
 ## v3.3 — April 24, 2026
 

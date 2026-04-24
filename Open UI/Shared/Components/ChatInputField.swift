@@ -26,6 +26,10 @@ struct ChatAttachment: Identifiable {
     /// The server-assigned file ID after successful upload + processing.
     var uploadedFileId: String?
 
+    /// The full server-response object returned by the files API after upload.
+    /// Used to build rich file references matching the web UI payload format.
+    var uploadedFileObject: [String: Any]?
+
     /// Error message if upload or processing failed.
     var uploadError: String?
 

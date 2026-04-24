@@ -1291,13 +1291,15 @@ final class APIClient: @unchecked Sendable {
         fileName: String,
         knowledgeId: String? = nil,
         onUploaded: ((String) -> Void)? = nil
-    ) async throws -> String {
+    ) async throws -> (fileId: String, fileObject: [String: Any]) {
         let mime = mimeType(for: fileName)
         let isImage = mime.hasPrefix("image/")
 
-        let queryItems: [URLQueryItem]? = isImage ? nil : [
-            URLQueryItem(name: "process", value: "true")
-        ]
+        // Images: ?process=false — server stores the file without text extraction.
+        // Documents: ?process=true — server extracts text/embeddings and we SSE-poll for completion.
+        let queryItems: [URLQueryItem] = isImage
+            ? [URLQueryItem(name: "process", value: "false")]
+            : [URLQueryItem(name: "process", value: "true")]
 
         // Per the API spec, attach knowledge_id as a metadata field in the multipart body
         // so the server can associate the file with the knowledge base during upload.
@@ -1332,7 +1334,7 @@ final class APIClient: @unchecked Sendable {
             try await waitForFileProcessing(fileId: fileId)
         }
 
-        return fileId
+        return (fileId: fileId, fileObject: response)
     }
 
     /// Polls `GET /api/v1/files/{id}/process/status?stream=true` via SSE

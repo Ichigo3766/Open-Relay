@@ -186,6 +186,14 @@ final class ChatViewModel {
     private(set) var sessionId: String = UUID().uuidString
     private let logger = Logger(subsystem: "com.openui", category: "ChatViewModel")
     private var hasFinishedStreaming = false
+    /// Tracks the content length at the last `extractAndApplyTasksFromContent` call.
+    /// Prevents the O(n) task-extraction scan from running on every single token;
+    /// it only fires when the content has grown by ≥ 100 chars since the last scan.
+    private var lastTaskExtractionLength: Int = 0
+    /// Cached value of the "streamingHaptics" UserDefaults preference.
+    /// Updated whenever UserDefaults.didChangeNotification fires so toggling in
+    /// Settings takes effect immediately without a per-token UserDefaults read.
+    private var streamingHapticsEnabled: Bool = true
     private var activeTaskId: String?
     private var recoveryTimer: Timer?
     /// Cancellable delay task for the initial recovery timer delay.
@@ -382,7 +390,7 @@ final class ChatViewModel {
 
                 // Phase 2: Upload the text file through the normal files pipeline
                 guard let mgr = manager else { return }
-                let fileId = try await mgr.uploadFile(
+                let (fileId, fileObject) = try await mgr.uploadFile(
                     data: textData,
                     fileName: fileName,
                     onUploaded: { [weak self] _ in
@@ -399,6 +407,7 @@ final class ChatViewModel {
                 if let idx = attachments.firstIndex(where: { $0.id == attachmentId }) {
                     attachments[idx].uploadStatus = .completed
                     attachments[idx].uploadedFileId = fileId
+                    attachments[idx].uploadedFileObject = fileObject
                     attachments[idx].data = nil
                 }
                 logger.info("Web page \(normalised) scraped + uploaded: \(fileId)")
@@ -447,7 +456,7 @@ final class ChatViewModel {
                 // onUploaded fires after the file is stored on the server but BEFORE
                 // SSE processing completes — we switch the chip from "uploading" to
                 // "processing" so the user sees the two-phase status.
-                let fileId = try await manager.uploadFile(
+                let (fileId, fileObject) = try await manager.uploadFile(
                     data: data,
                     fileName: fileName,
                     onUploaded: { [weak self] _ in
@@ -463,6 +472,7 @@ final class ChatViewModel {
                 if let idx = attachments.firstIndex(where: { $0.id == attachmentId }) {
                     attachments[idx].uploadStatus = .completed
                     attachments[idx].uploadedFileId = fileId
+                    attachments[idx].uploadedFileObject = fileObject
                     // STORAGE FIX: Release raw file data after successful upload.
                     // The file ID is sufficient for referencing the file going forward.
                     // Holding multi-MB image data in memory indefinitely causes bloat.
@@ -516,6 +526,7 @@ final class ChatViewModel {
         setupRetryAttachmentObserver()
         setupMemorySettingObserver()
         setupFunctionsConfigObserver()
+        setupStreamingHapticsObserver()
     }
 
     /// Registers the observer that handles retry requests posted by the
@@ -559,6 +570,23 @@ final class ChatViewModel {
                 guard let self else { return }
                 self.memoryEnabled = newValue
             }
+        }
+    }
+
+    /// Seeds `streamingHapticsEnabled` from UserDefaults and keeps it in sync.
+    /// Using a cached Bool avoids a per-token UserDefaults read (the hot path
+    /// calls `triggerStreamingHaptic()` on every token at up to 60 Hz).
+    private func setupStreamingHapticsObserver() {
+        // Seed initial value
+        streamingHapticsEnabled = UserDefaults.standard.object(forKey: "streamingHaptics") as? Bool ?? true
+        // Keep in sync when Settings changes the preference
+        NotificationCenter.default.addObserver(
+            forName: UserDefaults.didChangeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            guard let self else { return }
+            self.streamingHapticsEnabled = UserDefaults.standard.object(forKey: "streamingHaptics") as? Bool ?? true
         }
     }
 
@@ -2405,22 +2433,49 @@ final class ChatViewModel {
         var fileRefs: [[String: Any]] = []
         for attachment in currentAttachments {
             if let fileId = attachment.uploadedFileId {
-                // Already uploaded + processed — just reference the ID
+                // Already uploaded + processed — build rich web-UI-format ref
+                let fileObject = attachment.uploadedFileObject ?? [:]
+                let isImage = attachment.type == .image
+                let contentType: String = isImage ? "image/jpeg" : mimeType(for: attachment.name)
+                let size: Int = (fileObject["meta"] as? [String: Any]).flatMap { $0["size"] as? Int } ?? 0
                 fileRefs.append([
-                    "type": attachment.type == .image ? "image" : "file",
+                    "type": "file",
+                    "file": fileObject.isEmpty ? [
+                        "id": fileId,
+                        "filename": attachment.name,
+                        "meta": ["name": attachment.name, "content_type": contentType, "size": size]
+                    ] : fileObject,
                     "id": fileId,
-                    "name": attachment.name
+                    "url": fileId,
+                    "name": attachment.name,
+                    "status": "uploaded",
+                    "size": size,
+                    "error": "",
+                    "content_type": contentType
                 ])
             } else if let data = attachment.data, attachment.uploadStatus != .error {
                 // Fallback: upload now (e.g., audio transcript text files that don't go
                 // through uploadAttachmentImmediately). Skip attachments that previously
                 // failed — the error chip is already shown; the user must retry or remove.
                 do {
-                    let fileId = try await manager.uploadFile(data: data, fileName: attachment.name)
+                    let (fileId, fileObject) = try await manager.uploadFile(data: data, fileName: attachment.name)
+                    let isImage = attachment.type == .image
+                    let contentType: String = isImage ? "image/jpeg" : mimeType(for: attachment.name)
+                    let size: Int = (fileObject["meta"] as? [String: Any]).flatMap { $0["size"] as? Int } ?? 0
                     fileRefs.append([
-                        "type": attachment.type == .image ? "image" : "file",
+                        "type": "file",
+                        "file": fileObject.isEmpty ? [
+                            "id": fileId,
+                            "filename": attachment.name,
+                            "meta": ["name": attachment.name, "content_type": contentType, "size": size]
+                        ] : fileObject,
                         "id": fileId,
-                        "name": attachment.name
+                        "url": fileId,
+                        "name": attachment.name,
+                        "status": "uploaded",
+                        "size": size,
+                        "error": "",
+                        "content_type": contentType
                     ])
                 } catch {
                     logger.error("Upload failed: \(error.localizedDescription)")
@@ -2855,7 +2910,7 @@ final class ChatViewModel {
         // before cleanup so the partial content is preserved for server sync.
         if streamingStore.isActive, let msgId = streamingStore.streamingMessageId,
            let idx = conversation?.messages.firstIndex(where: { $0.id == msgId }) {
-            let result = streamingStore.endStreaming()
+            let result = streamingStore.abortStreaming()
             conversation?.messages[idx].content = result.content
             conversation?.messages[idx].isStreaming = false
             if !result.statusHistory.isEmpty {
@@ -3944,6 +3999,15 @@ final class ChatViewModel {
                 try? await refreshConversationMetadata(
                     chatId: chatId, assistantMessageId: assistantMessageId)
 
+                // Short delay re-fetch to catch server-side post-processing that happens
+                // AFTER chatCompleted (e.g. filter functions that append timing/performance
+                // stats like "⏱ 12.2s · ⚡ 77.7 t/s" to the message content).
+                // The filter runs asynchronously after chatCompleted finishes, so the
+                // immediate refresh above may miss it — this 1.5s delay catches it.
+                try? await Task.sleep(nanoseconds: 1_500_000_000)
+                try? await refreshConversationMetadata(
+                    chatId: chatId, assistantMessageId: assistantMessageId)
+
                 // Check if files are still missing (tool outputs take time to process).
                 // Poll with increasing delays specifically for files.
                 let needsFilePoll = self.conversation?.messages
@@ -4234,6 +4298,7 @@ final class ChatViewModel {
         isExternallyStreaming = false
         selfInitiatedStream = false
         activeTaskId = nil
+        lastTaskExtractionLength = 0
 
         // Always fire the notification — the UNUserNotificationCenterDelegate's
         // willPresent handler suppresses the banner when the user is actively
@@ -4258,7 +4323,7 @@ final class ChatViewModel {
         // in the fixed-height streaming container forever.
         if streamingStore.isActive, let msgId = streamingStore.streamingMessageId,
            let idx = conversation?.messages.firstIndex(where: { $0.id == msgId }) {
-            let result = streamingStore.endStreaming()
+            let result = streamingStore.abortStreaming()
             // Only overwrite content if the store has meaningful content
             // (adoptServerMessages may have already set the correct content)
             if !result.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
@@ -4274,7 +4339,7 @@ final class ChatViewModel {
             }
         } else if streamingStore.isActive {
             // Store is active but message not found — just flush it
-            streamingStore.endStreaming()
+            streamingStore.abortStreaming()
         }
         chatSubscription?.dispose()
         chatSubscription = nil
@@ -5307,9 +5372,13 @@ final class ChatViewModel {
         }
 
         // Extract and apply task list updates live from the streaming content.
-        // The function guards internally (only runs when "create_tasks" / "update_task" is present)
-        // so this is effectively free for normal messages.
-        extractAndApplyTasksFromContent(content)
+        // Gate on a 100-char delta to avoid the O(n) string scan on every token.
+        // The function also guards internally (only fires when the magic keywords are present),
+        // so normal messages pay only the cheap length comparison.
+        if content.count - lastTaskExtractionLength >= 100 {
+            lastTaskExtractionLength = content.count
+            extractAndApplyTasksFromContent(content)
+        }
 
         // Trigger streaming haptic feedback (throttled to ~10 Hz to avoid
         // overwhelming the Taptic Engine while still feeling responsive)
@@ -5320,12 +5389,10 @@ final class ChatViewModel {
 
     /// Fires a subtle haptic pulse during token streaming, throttled via
     /// the centralized `Haptics` service to avoid excessive motor usage.
-    /// Reads the preference live so toggling in Settings takes effect immediately.
-    /// The read only happens at ~3 Hz (throttled inside `streamingTick`) so the
-    /// UserDefaults overhead is negligible.
+    /// Uses the cached `streamingHapticsEnabled` flag (updated via
+    /// UserDefaults.didChangeNotification) to avoid a per-token UserDefaults read.
     private func triggerStreamingHaptic() {
-        let enabled = UserDefaults.standard.object(forKey: "streamingHaptics") as? Bool ?? true
-        guard enabled else { return }
+        guard streamingHapticsEnabled else { return }
         Haptics.streamingTick()
     }
 
@@ -5396,11 +5463,12 @@ final class ChatViewModel {
                     conversation?.messages[index].files = serverAssistant.files
                 }
             }
-            // Also update content if server has more (e.g., tool appended text)
+            // Also update content if server has different content (e.g., tool appended text,
+            // server-side filter functions that add timing/performance stats after completion)
             if let index = conversation?.messages.firstIndex(where: { $0.id == assistantMessageId }) {
                 let localContent = conversation?.messages[index].content.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
                 let serverContent = serverAssistant.content.trimmingCharacters(in: .whitespacesAndNewlines)
-                if !serverContent.isEmpty && serverContent.count > localContent.count {
+                if !serverContent.isEmpty && serverContent != localContent {
                     conversation?.messages[index].content = serverAssistant.content
                 }
                 // Copy usage stats from server — the server stores them after

@@ -129,21 +129,26 @@ enum ToolCallParser {
     static func parseOrdered(_ content: String) -> OrderedParseResult {
         // Pre-process: convert raw <think>…</think> tags (sent by models
         // like Qwen, DeepSeek, etc.) into <details type="reasoning"> blocks
-        // so the existing regex picks them up and renders them as
+        // so the state-machine tokenizer picks them up and renders them as
         // collapsible ReasoningView instead of raw visible text.
         let content = preprocessThinkTags(content)
 
-        let pattern = #"<details\s+[^>]*>[\s\S]*?</details>"#
-
-        guard let regex = try? NSRegularExpression(pattern: pattern, options: [.dotMatchesLineSeparators]) else {
-            return OrderedParseResult(
-                segments: [.text(content)],
-                allToolCalls: []
-            )
-        }
-
-        let nsContent = content as NSString
-        let matches = regex.matches(in: content, range: NSRange(location: 0, length: nsContent.length))
+        // Use a quote-aware state-machine tokenizer instead of the old regex
+        // `#"<details\s+[^>]*>[\s\S]*?</details>"#`.
+        //
+        // The regex used `[^>]*` to match opening-tag attributes — this breaks
+        // whenever a quoted attribute value (e.g. `result="…"`) contains a `>`
+        // character, which is common in tool results that include HTML snippets,
+        // URLs with query strings, or angle-bracket operators. When that happens
+        // the regex terminates the opening-tag match prematurely, causing the
+        // rest of the block (including all the JSON tool-result content) to be
+        // treated as surrounding text and rendered raw in the chat.
+        //
+        // The tokenizer below tracks quote state so it only treats `>` as the
+        // end of the opening tag when it is NOT inside a quoted string, and it
+        // tracks nesting depth to find the correct matching `</details>` even
+        // when blocks are nested.
+        let matches = findDetailsBlocks(in: content)
 
         guard !matches.isEmpty else {
             return OrderedParseResult(
@@ -154,13 +159,12 @@ enum ToolCallParser {
 
         var segments: [ContentSegment] = []
         var allToolCalls: [ToolCallData] = []
-        var currentIndex = 0
+        var currentPos = content.startIndex
 
         for match in matches {
             // Text before this details block
-            if match.range.location > currentIndex {
-                let textRange = NSRange(location: currentIndex, length: match.range.location - currentIndex)
-                let textBefore = nsContent.substring(with: textRange)
+            if match.start > currentPos {
+                let textBefore = String(content[currentPos..<match.start])
                     .replacingOccurrences(of: "\n\n\n+", with: "\n\n", options: .regularExpression)
                     .trimmingCharacters(in: .whitespacesAndNewlines)
                 if !textBefore.isEmpty {
@@ -168,7 +172,7 @@ enum ToolCallParser {
                 }
             }
 
-            let block = nsContent.substring(with: match.range)
+            let block = match.block
 
             if block.contains("type=\"tool_calls\"") || block.contains("type='tool_calls'") {
                 if let toolCall = parseToolCallBlock(block) {
@@ -187,12 +191,12 @@ enum ToolCallParser {
                 }
             }
 
-            currentIndex = match.range.location + match.range.length
+            currentPos = match.end
         }
 
         // Remaining text after the last details block
-        if currentIndex < nsContent.length {
-            let remaining = nsContent.substring(from: currentIndex)
+        if currentPos < content.endIndex {
+            let remaining = String(content[currentPos...])
                 .replacingOccurrences(of: "\n\n\n+", with: "\n\n", options: .regularExpression)
                 .trimmingCharacters(in: .whitespacesAndNewlines)
             if !remaining.isEmpty {
@@ -201,6 +205,186 @@ enum ToolCallParser {
         }
 
         return OrderedParseResult(segments: segments, allToolCalls: allToolCalls)
+    }
+
+    // MARK: - State-machine <details> block tokenizer
+
+    /// Represents a single `<details>…</details>` block found by the tokenizer.
+    private struct DetailsMatch {
+        /// Index of the `<` that opens the `<details` tag.
+        let start: String.Index
+        /// Index just past the `>` that closes the `</details>` tag.
+        let end: String.Index
+        /// The full text of the block from `<details` to `</details>`.
+        let block: String
+    }
+
+    /// Scans `content` using a quote-aware state machine and returns every
+    /// top-level `<details>…</details>` block it finds.
+    ///
+    /// Key properties:
+    /// - Tracks whether the scanner is inside a double- or single-quoted
+    ///   attribute value so that a `>` inside e.g. `result="…&gt;…"` does NOT
+    ///   prematurely terminate the opening-tag scan.
+    /// - Tracks nesting depth so nested `<details>` blocks are consumed as
+    ///   part of the outer block rather than returning the outer block early.
+    /// - Returns an incomplete (mid-stream) block only if it starts with a
+    ///   valid `<details` open tag that has a fully-parsed opening tag (i.e. we
+    ///   found the closing `>` of the opening tag) but whose `</details>` has
+    ///   not yet arrived. In that case the block is skipped and left as
+    ///   surrounding text so that streaming does not flash partial content.
+    private static func findDetailsBlocks(in content: String) -> [DetailsMatch] {
+        var results: [DetailsMatch] = []
+        var i = content.startIndex
+
+        while i < content.endIndex {
+            // Fast-scan for the literal '<' that starts a potential tag
+            guard let ltIdx = content[i...].firstIndex(of: "<") else { break }
+
+            // Check if this is a <details opening (case-insensitive prefix check)
+            let afterLt = content.index(after: ltIdx)
+            guard afterLt < content.endIndex else { break }
+
+            // We need at least "<details" (7 more chars after '<')
+            let tagNameEnd = content.index(ltIdx, offsetBy: 8, limitedBy: content.endIndex) ?? content.endIndex
+            let tagNameSlice = content[ltIdx..<tagNameEnd].lowercased()
+
+            guard tagNameSlice.hasPrefix("<details") else {
+                // Not a <details tag — advance past this '<' and keep scanning
+                i = afterLt
+                continue
+            }
+
+            // The character right after "<details" must be whitespace, '>', or end
+            // to confirm this is the tag and not e.g. "<detailsview"
+            let charAfterTagName = tagNameEnd < content.endIndex ? content[tagNameEnd] : ">"
+            guard charAfterTagName.isWhitespace || charAfterTagName == ">" else {
+                i = afterLt
+                continue
+            }
+
+            let blockStart = ltIdx
+
+            // --- Phase 1: scan the opening tag in quote-aware mode ---
+            // We walk forward from `<details` until we find the `>` that closes
+            // the opening tag, respecting quoted attribute values.
+            var j = tagNameEnd
+            var inQuote: Character? = nil
+            var openingTagEnd: String.Index? = nil
+
+            while j < content.endIndex {
+                let ch = content[j]
+                if let q = inQuote {
+                    // Inside a quoted value — a backslash escapes the next char
+                    // (handles \" inside double-quoted attribute values, which are
+                    // common when tool results store JSON with escaped quotes like
+                    // arguments="&quot;{\"query\": \"...\"}&quot;"). Without this,
+                    // the `"` after `\` is mistaken for the closing quote, causing
+                    // the scanner to exit quote mode prematurely and then find a
+                    // false `>` end-of-opening-tag inside the attribute value.
+                    if ch == "\\" {
+                        // Skip the next character (the escaped character)
+                        let next = content.index(after: j)
+                        if next < content.endIndex {
+                            j = content.index(after: next)
+                            continue
+                        }
+                    } else if ch == q {
+                        inQuote = nil
+                    }
+                } else {
+                    if ch == "\"" || ch == "'" {
+                        inQuote = ch
+                    } else if ch == ">" {
+                        // Found the real end of the opening tag
+                        openingTagEnd = content.index(after: j)
+                        break
+                    }
+                }
+                j = content.index(after: j)
+            }
+
+            guard let bodyStart = openingTagEnd else {
+                // Opening tag not yet closed — mid-stream, skip and stop scanning
+                // (everything from here on is still arriving)
+                break
+            }
+
+            // --- Phase 2: scan for the matching </details> tracking nesting ---
+            var k = bodyStart
+            var depth = 1   // we have one open <details> tag
+
+            while k < content.endIndex && depth > 0 {
+                guard let nextLt = content[k...].firstIndex(of: "<") else {
+                    // No more '<' — closing tag hasn't arrived yet
+                    depth = -1   // sentinel: incomplete block
+                    break
+                }
+
+                let afterNextLt = content.index(after: nextLt)
+                guard afterNextLt < content.endIndex else {
+                    depth = -1
+                    break
+                }
+
+                // Peek ahead for "/details" (closing) or "details" (opening)
+                let peekEnd8 = content.index(nextLt, offsetBy: 9, limitedBy: content.endIndex) ?? content.endIndex
+                let peekSlice = content[nextLt..<peekEnd8].lowercased()
+
+                if peekSlice.hasPrefix("</details") {
+                    // Possible closing tag — consume until its '>'
+                    var m = content.index(nextLt, offsetBy: 9, limitedBy: content.endIndex) ?? content.endIndex
+                    while m < content.endIndex && content[m] != ">" { m = content.index(after: m) }
+                    if m < content.endIndex {
+                        depth -= 1
+                        k = content.index(after: m)
+                    } else {
+                        depth = -1   // mid-stream closing tag
+                        break
+                    }
+                } else if peekSlice.hasPrefix("<details") {
+                    // Nested opening tag — skip its opening tag quote-aware, then bump depth
+                    let nestedNameEnd = content.index(nextLt, offsetBy: 8, limitedBy: content.endIndex) ?? content.endIndex
+                    var m = nestedNameEnd
+                    var nestedInQuote: Character? = nil
+                    var foundClose = false
+                    while m < content.endIndex {
+                        let ch = content[m]
+                        if let q = nestedInQuote {
+                            if ch == q { nestedInQuote = nil }
+                        } else {
+                            if ch == "\"" || ch == "'" { nestedInQuote = ch }
+                            else if ch == ">" { foundClose = true; m = content.index(after: m); break }
+                        }
+                        m = content.index(after: m)
+                    }
+                    if foundClose {
+                        depth += 1
+                        k = m
+                    } else {
+                        depth = -1
+                        break
+                    }
+                } else {
+                    // Some other tag — skip past it
+                    k = afterNextLt
+                }
+            }
+
+            if depth == 0 {
+                // Successfully matched a complete block
+                let blockEnd = k
+                let block = String(content[blockStart..<blockEnd])
+                results.append(DetailsMatch(start: blockStart, end: blockEnd, block: block))
+                i = blockEnd
+            } else {
+                // Block is incomplete (still streaming) — stop; don't advance
+                // so the caller treats everything from blockStart onward as text.
+                break
+            }
+        }
+
+        return results
     }
 
     /// Parses a `<details type="reasoning">` block.
@@ -1213,248 +1397,106 @@ private struct RichUIWebView: UIViewRepresentable {
     }
 }
 
-// MARK: - JSON Syntax Highlighting
-
-/// Applies syntax highlighting colors to a JSON string, returning an AttributedString.
-private enum JSONSyntaxHighlighter {
-
-    struct Colors {
-        let key: Color
-        let string: Color
-        let number: Color
-        let keyword: Color   // true / false / null
-        let punctuation: Color
-    }
-
-    static func highlight(_ json: String, isDark: Bool) -> AttributedString {
-        let colors = isDark ? darkColors : lightColors
-        var result = AttributedString(json)
-
-        // Apply base monospaced font and punctuation color to everything first
-        result.font = .system(size: 12, design: .monospaced)
-        result.foregroundColor = colors.punctuation
-
-        let nsJSON = json as NSString
-        let fullRange = NSRange(location: 0, length: nsJSON.length)
-
-        // Keys: "key":
-        applyPattern(#""([^"\\]*(?:\\.[^"\\]*)*)"\s*:"#, to: &result, in: nsJSON, range: fullRange,
-                     color: colors.key, groupIndex: 1)
-
-        // String values: : "value"
-        applyPattern(#":\s*"([^"\\]*(?:\\.[^"\\]*)*)""#, to: &result, in: nsJSON, range: fullRange,
-                     color: colors.string, groupIndex: 1, includeQuotes: true)
-
-        // Numbers
-        applyPattern(#":\s*(-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)"#, to: &result, in: nsJSON, range: fullRange,
-                     color: colors.number, groupIndex: 1)
-
-        // Keywords: true, false, null
-        applyPattern(#"\b(true|false|null)\b"#, to: &result, in: nsJSON, range: fullRange,
-                     color: colors.keyword, groupIndex: 1)
-
-        return result
-    }
-
-    private static let lightColors = Colors(
-        key: Color(red: 0.55, green: 0.0, blue: 0.55),       // purple
-        string: Color(red: 0.13, green: 0.54, blue: 0.13),   // green
-        number: Color(red: 0.10, green: 0.37, blue: 0.72),   // blue
-        keyword: Color(red: 0.72, green: 0.27, blue: 0.07),  // orange
-        punctuation: Color(red: 0.22, green: 0.22, blue: 0.22)
-    )
-
-    private static let darkColors = Colors(
-        key: Color(red: 0.87, green: 0.60, blue: 0.87),      // lavender
-        string: Color(red: 0.56, green: 0.90, blue: 0.56),   // light green
-        number: Color(red: 0.56, green: 0.74, blue: 1.0),    // light blue
-        keyword: Color(red: 1.0, green: 0.70, blue: 0.40),   // warm orange
-        punctuation: Color(red: 0.82, green: 0.82, blue: 0.82)
-    )
-
-    private static func applyPattern(
-        _ pattern: String,
-        to result: inout AttributedString,
-        in nsString: NSString,
-        range: NSRange,
-        color: Color,
-        groupIndex: Int,
-        includeQuotes: Bool = false
-    ) {
-        guard let regex = try? NSRegularExpression(pattern: pattern, options: [.dotMatchesLineSeparators]) else { return }
-        let matches = regex.matches(in: nsString as String, range: range)
-
-        // Process in reverse so string indices remain valid as we modify
-        for match in matches.reversed() where match.numberOfRanges > groupIndex {
-            let matchRange = match.range(at: groupIndex)
-            // For string values, include surrounding quotes by expanding range
-            let targetRange: NSRange = {
-                if includeQuotes {
-                    return NSRange(location: matchRange.location - 1, length: matchRange.length + 2)
-                }
-                return matchRange
-            }()
-            guard targetRange.location != NSNotFound,
-                  let _ = Range(targetRange, in: nsString as String) else { continue }
-            let attrRange = result.range(of: nsString.substring(with: targetRange), options: .literal)
-            if let attrRange {
-                result[attrRange].foregroundColor = color
-            }
-        }
-    }
-}
-
 // MARK: - Tool Call Result Block View
 
-/// Renders the OUTPUT section — styled like a code block with syntax highlighting,
-/// line numbers, a header bar with language label + copy button, and a scroll view
-/// so the full result is always accessible (no truncation).
+/// Renders the OUTPUT section as plain scrollable text with lightweight JSON
+/// pretty-printing and character-based truncation to prevent UI freezes on
+/// large results (e.g. web search returning full HTML pages).
 private struct ToolCallResultBlockView: View {
     let content: String
-    let language: String
 
-    @State private var isCollapsed: Bool = false
-    @State private var showCopied: Bool = false
+    /// Characters shown before the "Show full output" button appears.
+    private static let truncationThreshold = 2_000
+
+    @State private var showFull: Bool = false
     @Environment(\.theme) private var theme
-    @Environment(\.colorScheme) private var colorScheme
 
+    /// Lightweight JSON pretty-print — no syntax highlighting, no AttributedString.
+    /// Falls back to the raw string if content is not valid JSON.
     private var formattedContent: String {
-        // First attempt: parse the content directly as JSON
+        // Try direct JSON parse
         if let data = content.data(using: .utf8),
            let json = try? JSONSerialization.jsonObject(with: data),
-           let prettyData = try? JSONSerialization.data(withJSONObject: json, options: [.prettyPrinted, .sortedKeys]),
+           let prettyData = try? JSONSerialization.data(withJSONObject: json, options: [.prettyPrinted]),
            let pretty = String(data: prettyData, encoding: .utf8) {
             return pretty
         }
-
-        // Second attempt: content may be a JSON string (double-encoded) — unwrap it.
-        // e.g. result attribute value: "\"{ ... }\"" → strip outer quotes then parse.
+        // Try unwrapping a double-encoded JSON string (e.g. "\"{ ... }\"")
         let stripped = content.trimmingCharacters(in: .whitespacesAndNewlines)
         if stripped.hasPrefix("\"") && stripped.hasSuffix("\"") {
-            // Remove surrounding quotes and unescape inner escaped quotes
             let inner = String(stripped.dropFirst().dropLast())
                 .replacingOccurrences(of: "\\\"", with: "\"")
                 .replacingOccurrences(of: "\\n", with: "\n")
                 .replacingOccurrences(of: "\\\\", with: "\\")
             if let data = inner.data(using: .utf8),
                let json = try? JSONSerialization.jsonObject(with: data),
-               let prettyData = try? JSONSerialization.data(withJSONObject: json, options: [.prettyPrinted, .sortedKeys]),
+               let prettyData = try? JSONSerialization.data(withJSONObject: json, options: [.prettyPrinted]),
                let pretty = String(data: prettyData, encoding: .utf8) {
                 return pretty
             }
-            // Inner wasn't JSON either — return the unescaped inner string
             return inner
         }
-
         return content
     }
 
-    private var lines: [String] {
-        formattedContent.components(separatedBy: "\n")
+    private var isTruncated: Bool {
+        !showFull && formattedContent.count > Self.truncationThreshold
+    }
+
+    private var displayContent: String {
+        guard isTruncated else { return formattedContent }
+        return String(formattedContent.prefix(Self.truncationThreshold))
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            // Header bar
-            HStack(spacing: 10) {
-                Text(language)
-                    .scaledFont(size: 11, weight: .medium)
-                    .foregroundStyle(theme.textTertiary)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 3)
-                    .background(theme.surfaceContainer.opacity(0.6))
-                    .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
-
-                Spacer()
-
-                // Collapse/Expand button
-                Button {
-                    withAnimation(.easeInOut(duration: 0.2)) {
-                        isCollapsed.toggle()
+        VStack(alignment: .leading, spacing: 0) {
+            ScrollView(.vertical, showsIndicators: true) {
+                // LazyVStack renders one Text per line so SwiftUI only lays out
+                // the lines currently visible — prevents the main-thread stall
+                // that occurs when the entire large string is measured at once.
+                LazyVStack(alignment: .leading, spacing: 0) {
+                    let lines = displayContent.components(separatedBy: "\n")
+                    ForEach(Array(lines.enumerated()), id: \.offset) { _, line in
+                        Text(line.isEmpty ? " " : line)
+                            .scaledFont(size: 12, design: .monospaced)
+                            .foregroundStyle(theme.textSecondary)
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
-                } label: {
-                    HStack(spacing: 4) {
-                        Image(systemName: isCollapsed ? "chevron.down.square" : "chevron.up.square")
-                            .scaledFont(size: 11)
-                        Text(isCollapsed ? "Expand" : "Collapse")
-                            .scaledFont(size: 11, weight: .medium)
-                    }
-                    .foregroundStyle(theme.textTertiary)
                 }
-                .buttonStyle(.plain)
-
-                // Copy button
-                Button {
-                    UIPasteboard.general.string = formattedContent
-                    withAnimation(.easeInOut(duration: 0.2)) { showCopied = true }
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
-                        withAnimation(.easeInOut(duration: 0.2)) { showCopied = false }
-                    }
-                } label: {
-                    HStack(spacing: 4) {
-                        Image(systemName: showCopied ? "checkmark" : "doc.on.doc")
-                            .scaledFont(size: 11)
-                        Text(showCopied ? "Copied!" : "Copy")
-                            .scaledFont(size: 11, weight: .medium)
-                    }
-                    .foregroundStyle(showCopied ? theme.success : theme.textTertiary)
-                }
-                .buttonStyle(.plain)
+                .padding(10)
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
-            .background(theme.surfaceContainer.opacity(theme.isDark ? 0.8 : 0.6))
+            .frame(maxHeight: 320)
 
-            Divider()
-                .overlay(theme.cardBorder.opacity(0.3))
-
-            // Code content (collapsed = hidden)
-            if !isCollapsed {
-                // Vertical scroll wraps the content. Horizontal scroll is handled
-                // by the inner ScrollView so gestures lock to one axis at a time,
-                // preventing the 360° free-panning that occurs when both axes share
-                // a single ScrollView.
-                ScrollView(.vertical, showsIndicators: true) {
-                    ScrollView(.horizontal, showsIndicators: true) {
-                        HStack(alignment: .top, spacing: 0) {
-                            // Line numbers — sticky-ish on the left
-                            VStack(alignment: .trailing, spacing: 0) {
-                                ForEach(Array(lines.enumerated()), id: \.offset) { idx, _ in
-                                    Text("\(idx + 1)")
-                                        .scaledFont(size: 11.5, design: .monospaced)
-                                        .foregroundStyle(theme.textTertiary.opacity(0.5))
-                                        .frame(minWidth: 28, alignment: .trailing)
-                                        .padding(.vertical, 1)
-                                }
-                            }
-                            .padding(.leading, 8)
-                            .padding(.trailing, 10)
-                            .padding(.vertical, 10)
-                            .background(theme.surfaceContainer.opacity(theme.isDark ? 0.4 : 0.3))
-
-                            // Syntax-highlighted code
-                            let highlighted = JSONSyntaxHighlighter.highlight(
-                                formattedContent,
-                                isDark: colorScheme == .dark
-                            )
-                            Text(highlighted)
-                                .scaledFont(size: 11.5, design: .monospaced)
-                                .lineSpacing(2)
-                                .textSelection(.enabled)
-                                .fixedSize(horizontal: true, vertical: false)
-                                .padding(.horizontal, 12)
-                                .padding(.vertical, 10)
-                        }
+            // Show full / collapse toggle
+            if formattedContent.count > Self.truncationThreshold {
+                Divider()
+                    .overlay(theme.cardBorder.opacity(0.2))
+                Button {
+                    showFull.toggle()
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: showFull ? "chevron.up" : "chevron.down")
+                            .scaledFont(size: 10, weight: .semibold)
+                        Text(showFull
+                             ? "Collapse"
+                             : "Show full output (\(formattedContent.count.formatted()) chars)")
+                            .scaledFont(size: 11, weight: .medium)
                     }
+                    .foregroundStyle(theme.textTertiary)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 6)
                 }
-                .frame(maxHeight: 320)
-                .transition(.opacity.combined(with: .move(edge: .top)))
+                .buttonStyle(.plain)
+                .background(theme.surfaceContainer.opacity(theme.isDark ? 0.4 : 0.2))
             }
         }
+        .background(theme.surfaceContainer.opacity(theme.isDark ? 0.35 : 0.25))
         .clipShape(RoundedRectangle(cornerRadius: CornerRadius.sm, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: CornerRadius.sm, style: .continuous)
-                .strokeBorder(theme.cardBorder.opacity(0.4), lineWidth: 0.5)
+                .strokeBorder(theme.cardBorder.opacity(0.35), lineWidth: 0.5)
         )
     }
 }
@@ -1551,7 +1593,7 @@ private struct ToolCallArgumentsView: View {
 // MARK: - Tool Call View
 
 /// Displays a single tool call styled like the Open WebUI web interface:
-/// - Header: checkmark/spinner + tool name + chevron
+/// - Header: checkmark/spinner + tool name + chevron (tappable to expand)
 /// - When expanded: INPUT (key-value pairs) + OUTPUT (syntax-highlighted scrollable JSON)
 /// - Rich UI HTML embeds always shown inline when present
 struct ToolCallView: View {
@@ -1559,8 +1601,6 @@ struct ToolCallView: View {
     var authToken: String? = nil
     var serverBaseURL: String? = nil
 
-    /// Collapsed by default; expanded by user tap.
-    /// Uses a stable ID so state persists across streaming re-renders.
     @State private var isExpanded: Bool = false
     @Environment(\.theme) private var theme
 
@@ -1569,9 +1609,9 @@ struct ToolCallView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            // ── Header ──────────────────────────────────────────────────
+            // ── Header (tappable to expand/collapse) ─────────────────────
             Button {
-                withAnimation(.easeInOut(duration: 0.22)) {
+                withAnimation(.easeInOut(duration: 0.2)) {
                     isExpanded.toggle()
                 }
             } label: {
@@ -1599,7 +1639,6 @@ struct ToolCallView: View {
 
                     Spacer()
 
-                    // Chevron on the right
                     Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
                         .scaledFont(size: 10, weight: .semibold)
                         .foregroundStyle(theme.textTertiary)
@@ -1610,8 +1649,46 @@ struct ToolCallView: View {
             .buttonStyle(.plain)
 
             // ── Body ─────────────────────────────────────────────────────
-            if hasEmbeds && toolCall.isDone {
-                // Rich UI embeds — always visible, this IS the visual result
+            if isExpanded {
+                VStack(alignment: .leading, spacing: Spacing.sm) {
+                    // Arguments (INPUT)
+                    if let args = toolCall.arguments, !args.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("INPUT")
+                                .scaledFont(size: 10, weight: .semibold)
+                                .foregroundStyle(theme.textTertiary)
+                                .padding(.horizontal, 2)
+                            ToolCallArgumentsView(arguments: args)
+                        }
+                    }
+
+                    // Result (OUTPUT)
+                    if let result = toolCall.result, !result.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("OUTPUT")
+                                .scaledFont(size: 10, weight: .semibold)
+                                .foregroundStyle(theme.textTertiary)
+                                .padding(.horizontal, 2)
+                            ToolCallResultBlockView(content: result)
+                        }
+                    }
+
+                    // Rich UI embeds — always visible when expanded
+                    if hasEmbeds && toolCall.isDone {
+                        ForEach(Array(toolCall.embeds.enumerated()), id: \.offset) { _, embedHTML in
+                            RichUIEmbedView(
+                                html: embedHTML,
+                                toolArgs: toolCall.arguments,
+                                authToken: authToken,
+                                serverBaseURL: serverBaseURL
+                            )
+                        }
+                    }
+                }
+                .padding(.bottom, Spacing.sm)
+                .transition(.opacity.combined(with: .move(edge: .top)))
+            } else if hasEmbeds && toolCall.isDone {
+                // Rich UI embeds always visible even when collapsed
                 VStack(alignment: .leading, spacing: Spacing.sm) {
                     ForEach(Array(toolCall.embeds.enumerated()), id: \.offset) { _, embedHTML in
                         RichUIEmbedView(
@@ -1624,46 +1701,6 @@ struct ToolCallView: View {
                 }
                 .padding(.top, Spacing.xs)
                 .padding(.bottom, Spacing.sm)
-
-            } else if isExpanded {
-                VStack(alignment: .leading, spacing: Spacing.sm) {
-
-                    // INPUT section
-                    if let args = toolCall.arguments, !args.isEmpty {
-                        VStack(alignment: .leading, spacing: 5) {
-                            Text("INPUT")
-                                .scaledFont(size: 10, weight: .semibold)
-                                .foregroundStyle(theme.textTertiary)
-                                .tracking(0.8)
-
-                            ToolCallArgumentsView(arguments: args)
-                        }
-                    }
-
-                    // OUTPUT section
-                    if let result = toolCall.result, !result.isEmpty {
-                        VStack(alignment: .leading, spacing: 5) {
-                            Text("OUTPUT")
-                                .scaledFont(size: 10, weight: .semibold)
-                                .foregroundStyle(theme.textTertiary)
-                                .tracking(0.8)
-
-                            ToolCallResultBlockView(content: result, language: "json")
-                        }
-                    }
-
-                    // If done but no result yet shown
-                    if toolCall.isDone,
-                       (toolCall.arguments == nil || toolCall.arguments!.isEmpty),
-                       (toolCall.result == nil || toolCall.result!.isEmpty) {
-                        Text("No input or output available")
-                            .scaledFont(size: 12)
-                            .foregroundStyle(theme.textTertiary)
-                    }
-                }
-                .padding(.top, 2)
-                .padding(.bottom, Spacing.sm)
-                .transition(.opacity.combined(with: .move(edge: .top)))
             }
         }
     }
@@ -1692,9 +1729,9 @@ private struct CollapsedToolCallGroup: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            // Summary header
+            // Summary header (tappable to expand/collapse)
             Button {
-                withAnimation(.easeInOut(duration: 0.22)) {
+                withAnimation(.easeInOut(duration: 0.2)) {
                     isExpanded.toggle()
                 }
             } label: {
@@ -1731,28 +1768,20 @@ private struct CollapsedToolCallGroup: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .accessibilityLabel(Text("\(allDone ? "Completed" : "Running") \(calls.count) \(groupLabel) calls. \(isExpanded ? "Tap to collapse." : "Tap to expand.")"))
 
-            // Individual calls revealed when expanded
+            // Expanded: individual tool calls
             if isExpanded {
-                Divider()
-                    .overlay(Color.primary.opacity(0.07))
-
                 VStack(alignment: .leading, spacing: 0) {
-                    ForEach(calls) { call in
+                    ForEach(Array(calls.enumerated()), id: \.offset) { index, call in
+                        if index > 0 {
+                            Divider()
+                                .overlay(Color.primary.opacity(0.07))
+                        }
                         ToolCallView(
                             toolCall: call,
                             authToken: authToken,
                             serverBaseURL: serverBaseURL
                         )
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 2)
-
-                        if call.id != calls.last?.id {
-                            Divider()
-                                .overlay(Color.primary.opacity(0.07))
-                                .padding(.horizontal, 12)
-                        }
                     }
                 }
                 .transition(.opacity.combined(with: .move(edge: .top)))
@@ -1820,11 +1849,7 @@ struct ToolCallsContainer: View {
                         .padding(.vertical, 2)
                     } else {
                         // Multiple same-name calls — collapsible group
-                        CollapsedToolCallGroup(
-                            calls: group,
-                            authToken: authToken,
-                            serverBaseURL: serverBaseURL
-                        )
+                        CollapsedToolCallGroup(calls: group, authToken: authToken, serverBaseURL: serverBaseURL)
                     }
                 }
             }
@@ -1983,26 +2008,15 @@ struct AssistantMessageContent: View {
     }
 
     var body: some View {
-        // OPT 3: Synchronous cache lookup — no 1-frame stale race.
-        // The class mutation happens inline during body, so the next
-        // body call in the same layout pass sees the updated cache.
-        // Fix 4: Quantize cache key to 64-byte buckets during streaming so we
-        // don't re-parse on every single token. Non-streaming uses exact length
-        // so the final parse is always correct.
-        let contentLength = content.utf8.count
-        let cacheKey = isStreaming ? (contentLength & ~63) : contentLength
+        // Cache key uses content hash so any change — including attribute
+        // value changes like done="false" → done="true" that leave the byte
+        // count identical — triggers a fresh parse. Previously using
+        // content.utf8.count caused stale isDone=false results to be returned
+        // after streaming completed, keeping the spinner running indefinitely
+        // and blocking embed rendering (which is guarded by isDone == true).
+        let cacheKey = content.hashValue
         let ordered: ToolCallParser.OrderedParseResult = {
             if cacheKey == parseCache.lastLength, let cached = parseCache.lastResult {
-                // During streaming, if the cached result is pure text (no tool calls
-                // or reasoning), return the current content directly so the drain
-                // timer's character-by-character reveal isn't stale for up to 64 bytes.
-                if isStreaming, cached.segments.count == 1,
-                   case .text = cached.segments[0] {
-                    return ToolCallParser.OrderedParseResult(
-                        segments: [.text(content)],
-                        allToolCalls: []
-                    )
-                }
                 return cached
             }
             let result = ToolCallParser.parseOrdered(content)
