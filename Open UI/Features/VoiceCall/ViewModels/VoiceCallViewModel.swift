@@ -1,5 +1,6 @@
 import Foundation
 import AVFoundation
+import UIKit
 import os.log
 
 /// Orchestrates voice call functionality by coordinating speech recognition,
@@ -141,6 +142,11 @@ final class VoiceCallViewModel {
             return
         }
 
+        // Prevent the screen from auto-locking during a voice call.
+        // The call requires continuous STT + TTS + LLM streaming — all of which
+        // stop working if the device sleeps. Restored in endCall().
+        UIApplication.shared.isIdleTimerDisabled = true
+
         // Start CallKit session
         do {
             try await callKitManager.startCall(displayName: modelName.isEmpty ? "AI Assistant" : modelName)
@@ -190,6 +196,9 @@ final class VoiceCallViewModel {
         callState = .disconnected
         currentTranscript = ""
         voiceIntensity = 0
+
+        // Re-enable auto-lock now that the call is over.
+        UIApplication.shared.isIdleTimerDisabled = false
 
         // Disable speaker override so TTS outside a call behaves normally
         ttsService.speakerOverrideEnabled = false

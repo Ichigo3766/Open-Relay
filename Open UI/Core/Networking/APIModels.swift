@@ -109,6 +109,7 @@ struct BackendConfig: Codable, Sendable {
         let enableFolders: Bool?
         let enableNotes: Bool?
         let enableChannels: Bool?
+        let enableAutomations: Bool?
         let enableCodeExecution: Bool?
         let enableCodeInterpreter: Bool?
         let enableWebsocket: Bool?
@@ -133,6 +134,7 @@ struct BackendConfig: Codable, Sendable {
             case enableFolders = "enable_folders"
             case enableNotes = "enable_notes"
             case enableChannels = "enable_channels"
+            case enableAutomations = "enable_automations"
             case enableCodeExecution = "enable_code_execution"
             case enableCodeInterpreter = "enable_code_interpreter"
             case enableWebsocket = "enable_websocket"
@@ -154,6 +156,7 @@ struct BackendConfig: Codable, Sendable {
             enableFolders = try container.decodeIfPresent(Bool.self, forKey: .enableFolders)
             enableNotes = try container.decodeIfPresent(Bool.self, forKey: .enableNotes)
             enableChannels = try container.decodeIfPresent(Bool.self, forKey: .enableChannels)
+            enableAutomations = try container.decodeIfPresent(Bool.self, forKey: .enableAutomations)
             enableCodeExecution = try container.decodeIfPresent(Bool.self, forKey: .enableCodeExecution)
             enableCodeInterpreter = try container.decodeIfPresent(Bool.self, forKey: .enableCodeInterpreter)
             enableWebsocket = try container.decodeIfPresent(Bool.self, forKey: .enableWebsocket)
@@ -533,6 +536,10 @@ struct AdminAuthConfig: Codable, Sendable {
     var enableFolders: Bool
     var folderMaxFileCount: String
     var enableChannels: Bool
+    var enableCalendar: Bool
+    var enableAutomations: Bool
+    var automationMaxCount: String
+    var automationMinInterval: String
     var enableMemories: Bool
     var enableNotes: Bool
     var enableUserWebhooks: Bool
@@ -557,6 +564,10 @@ struct AdminAuthConfig: Codable, Sendable {
         case enableFolders                 = "ENABLE_FOLDERS"
         case folderMaxFileCount            = "FOLDER_MAX_FILE_COUNT"
         case enableChannels                = "ENABLE_CHANNELS"
+        case enableCalendar                = "ENABLE_CALENDAR"
+        case enableAutomations             = "ENABLE_AUTOMATIONS"
+        case automationMaxCount            = "AUTOMATION_MAX_COUNT"
+        case automationMinInterval         = "AUTOMATION_MIN_INTERVAL"
         case enableMemories                = "ENABLE_MEMORIES"
         case enableNotes                   = "ENABLE_NOTES"
         case enableUserWebhooks            = "ENABLE_USER_WEBHOOKS"
@@ -585,6 +596,10 @@ struct AdminAuthConfig: Codable, Sendable {
         enableFolders                 = (try? c.decode(Bool.self,   forKey: .enableFolders))                 ?? true
         folderMaxFileCount            = (try? c.decode(String.self, forKey: .folderMaxFileCount))            ?? ""
         enableChannels                = (try? c.decode(Bool.self,   forKey: .enableChannels))                ?? true
+        enableCalendar                = (try? c.decode(Bool.self,   forKey: .enableCalendar))                ?? true
+        enableAutomations             = (try? c.decode(Bool.self,   forKey: .enableAutomations))             ?? true
+        automationMaxCount            = (try? c.decode(String.self, forKey: .automationMaxCount))            ?? ""
+        automationMinInterval         = (try? c.decode(String.self, forKey: .automationMinInterval))         ?? ""
         enableMemories                = (try? c.decode(Bool.self,   forKey: .enableMemories))                ?? true
         enableNotes                   = (try? c.decode(Bool.self,   forKey: .enableNotes))                   ?? true
         enableUserWebhooks            = (try? c.decode(Bool.self,   forKey: .enableUserWebhooks))            ?? true
@@ -600,6 +615,8 @@ struct AdminAuthConfig: Codable, Sendable {
         apiKeysAllowedEndpoints: String = "", defaultUserRole: String = "pending", defaultGroupID: String = "",
         jwtExpiresIn: String = "-1", enableCommunitySharing: Bool = false, enableMessageRating: Bool = false,
         enableFolders: Bool = true, folderMaxFileCount: String = "", enableChannels: Bool = true,
+        enableCalendar: Bool = true, enableAutomations: Bool = true,
+        automationMaxCount: String = "", automationMinInterval: String = "",
         enableMemories: Bool = true, enableNotes: Bool = true, enableUserWebhooks: Bool = true,
         enableUserStatus: Bool = true, pendingUserOverlayTitle: String = "", pendingUserOverlayContent: String = "",
         responseWatermark: String = ""
@@ -611,7 +628,10 @@ struct AdminAuthConfig: Codable, Sendable {
         self.defaultGroupID = defaultGroupID; self.jwtExpiresIn = jwtExpiresIn
         self.enableCommunitySharing = enableCommunitySharing; self.enableMessageRating = enableMessageRating
         self.enableFolders = enableFolders; self.folderMaxFileCount = folderMaxFileCount
-        self.enableChannels = enableChannels; self.enableMemories = enableMemories; self.enableNotes = enableNotes
+        self.enableChannels = enableChannels
+        self.enableCalendar = enableCalendar; self.enableAutomations = enableAutomations
+        self.automationMaxCount = automationMaxCount; self.automationMinInterval = automationMinInterval
+        self.enableMemories = enableMemories; self.enableNotes = enableNotes
         self.enableUserWebhooks = enableUserWebhooks; self.enableUserStatus = enableUserStatus
         self.pendingUserOverlayTitle = pendingUserOverlayTitle; self.pendingUserOverlayContent = pendingUserOverlayContent
         self.responseWatermark = responseWatermark
@@ -2239,6 +2259,15 @@ struct GroupWorkspacePermissions: Codable, Sendable {
         toolsImport = (try? c.decode(Bool.self, forKey: .toolsImport)) ?? false
         toolsExport = (try? c.decode(Bool.self, forKey: .toolsExport)) ?? false
     }
+
+    /// All permissions enabled — used for admin users and as the backwards-compat default
+    /// when the server does not send a `permissions` field.
+    static let allEnabled = GroupWorkspacePermissions(
+        models: true, knowledge: true, prompts: true, tools: true, skills: true,
+        modelsImport: true, modelsExport: true,
+        promptsImport: true, promptsExport: true,
+        toolsImport: true, toolsExport: true
+    )
 }
 
 /// Sharing-level permissions within a group.
@@ -2397,9 +2426,11 @@ struct GroupFeaturePermissions: Codable, Sendable {
     var imageGeneration: Bool
     var codeInterpreter: Bool
     var memories: Bool
+    var automations: Bool
+    var calendar: Bool
 
     enum CodingKeys: String, CodingKey {
-        case notes, channels, folders, memories
+        case notes, channels, folders, memories, automations, calendar
         case apiKeys = "api_keys"
         case directToolServers = "direct_tool_servers"
         case webSearch = "web_search"
@@ -2409,11 +2440,13 @@ struct GroupFeaturePermissions: Codable, Sendable {
 
     init(apiKeys: Bool = false, notes: Bool = true, channels: Bool = true, folders: Bool = true,
          directToolServers: Bool = false, webSearch: Bool = true, imageGeneration: Bool = true,
-         codeInterpreter: Bool = false, memories: Bool = true) {
+         codeInterpreter: Bool = false, memories: Bool = true, automations: Bool = false,
+         calendar: Bool = false) {
         self.apiKeys = apiKeys; self.notes = notes; self.channels = channels
         self.folders = folders; self.directToolServers = directToolServers
         self.webSearch = webSearch; self.imageGeneration = imageGeneration
         self.codeInterpreter = codeInterpreter; self.memories = memories
+        self.automations = automations; self.calendar = calendar
     }
 
     init(from decoder: Decoder) throws {
@@ -2427,7 +2460,15 @@ struct GroupFeaturePermissions: Codable, Sendable {
         imageGeneration = (try? c.decode(Bool.self, forKey: .imageGeneration)) ?? true
         codeInterpreter = (try? c.decode(Bool.self, forKey: .codeInterpreter)) ?? false
         memories = (try? c.decode(Bool.self, forKey: .memories)) ?? true
+        automations = (try? c.decode(Bool.self, forKey: .automations)) ?? false
+        calendar = (try? c.decode(Bool.self, forKey: .calendar)) ?? false
     }
+
+    /// All features enabled — used as the fallback when a user has no explicit permissions set.
+    static let allEnabled = GroupFeaturePermissions(
+        apiKeys: true, notes: true, channels: true, folders: true,
+        directToolServers: true, webSearch: true, imageGeneration: true,
+        codeInterpreter: true, memories: true, automations: true, calendar: true)
 }
 
 /// Settings permissions within a group.

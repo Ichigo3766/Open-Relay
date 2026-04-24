@@ -61,6 +61,9 @@ final class ChatViewModel {
     var isStreaming: Bool = false
     var isLoadingConversation: Bool = false
     var isLoadingModels: Bool = false
+    /// Tasks managed by the model's built-in task tools (create_tasks / update_task).
+    /// Populated from the server on load and updated in real-time during streaming.
+    var tasks: [ChatTask] = []
     var errorMessage: String?
     var inputText: String = ""
     var attachments: [ChatAttachment] = []
@@ -221,29 +224,6 @@ final class ChatViewModel {
     /// sync when the background duration was trivially short.
     @ObservationIgnored nonisolated(unsafe) private var backgroundEnteredAt: Date?
 
-    // MARK: - User Version Branch Snapshots
-
-    /// Stores the "latest branch" snapshot for a user message when the user
-    /// navigates away from it to an older version.
-    ///
-    /// Key = user message ID.
-    /// Value = (userContent, latestAssistant, downstreamMessages) — everything
-    /// needed to reconstruct the latest branch without hitting the server.
-    ///
-    /// This ensures that switching back to "latest" doesn't lose any locally-
-    /// enriched version data that would be overwritten by a server fetch.
-    private struct LatestBranchSnapshot {
-        var userContent: String
-        var userFiles: [ChatMessageFile]
-        var userTimestamp: Date
-        var assistantMessage: ChatMessage?
-        var downstreamMessages: [ChatMessage]
-    }
-    private var latestBranchSnapshots: [String: LatestBranchSnapshot] = [:]
-    /// Snapshots of downstream messages when navigating assistant regeneration version history.
-    /// Keyed by the assistant message id.
-    private var assistantBranchSnapshots: [String: LatestBranchSnapshot] = [:]
-
     /// The current auth token for authenticated image requests (model avatars).
     var serverAuthToken: String? {
         manager?.apiClient.network.authToken
@@ -251,6 +231,68 @@ final class ChatViewModel {
 
     var messages: [ChatMessage] {
         conversation?.messages ?? []
+    }
+
+    // MARK: - Tree Sync Helpers
+
+    /// Syncs the conversation to the server using the tree-based history.
+    /// The history tree is always kept in sync by all tree-mutating operations,
+    /// so this just serializes the current tree state to the server.
+    /// Copies content and metadata from the flat `conversation.messages` list back into
+    /// their corresponding tree nodes.
+    ///
+    /// The history tree nodes are created with empty content (e.g. assistant nodes are
+    /// created at send/edit time before streaming begins). Streaming content flows into
+    /// `conversation.messages` but the tree nodes are never updated in-place.
+    /// Calling this before any `syncToServerViaTree()` ensures we never overwrite the
+    /// server's good data with stale/empty tree nodes.
+    private func syncFlatMessagesToTreeNodes() {
+        guard conversation?.history.isPopulated == true else { return }
+        for msg in conversation?.messages ?? [] {
+            // Only update if this node actually exists in the tree
+            guard conversation?.history.nodes[msg.id] != nil else { continue }
+            conversation?.history.updateNode(id: msg.id) { node in
+                // Don't overwrite non-empty tree node content with an empty flat message
+                // (this protects nodes on inactive branches that are absent from flat messages)
+                if !msg.content.isEmpty {
+                    node.content = msg.content
+                }
+                node.done = !msg.isStreaming
+                if !msg.sources.isEmpty { node.sources = msg.sources }
+                if !msg.statusHistory.isEmpty { node.statusHistory = msg.statusHistory }
+                if let error = msg.error { node.error = error }
+                if !msg.files.isEmpty { node.files = msg.files }
+                if let usage = msg.usage { node.usage = usage }
+            }
+        }
+    }
+
+    private func syncToServerViaTree() async {
+        // Ensure tree nodes have up-to-date content from the flat messages list before
+        // syncing to the server. Tree nodes are created with empty content at send/edit time
+        // and streaming content only flows into conversation.messages — without this step,
+        // syncToServerViaTree() would overwrite the server's good data with empty strings.
+        syncFlatMessagesToTreeNodes()
+
+        guard let chatId = conversationId ?? conversation?.id, let manager else { return }
+        let modelId = selectedModelId ?? conversation?.model ?? ""
+
+        guard let conv = conversation, conv.history.isPopulated else {
+            // Tree not populated — fall back to flat-list sync
+            try? await manager.syncConversationMessages(
+                id: chatId, messages: conversation?.messages ?? [], model: modelId,
+                title: conversation?.title, chatParams: conversation?.chatParams)
+            return
+        }
+
+        try? await manager.apiClient.syncConversationHistory(
+            id: chatId,
+            history: conv.history,
+            model: modelId,
+            systemPrompt: conv.systemPrompt,
+            chatParams: conv.chatParams,
+            title: conv.title
+        )
     }
 
     var selectedModel: AIModel? {
@@ -750,6 +792,8 @@ final class ChatViewModel {
             // Versions are now stored as sibling messages on the server,
             // so server-fetched data already contains them.
             conversation = fetched
+            // Populate tasks from the server conversation
+            tasks = fetched.tasks
             // Always adopt the last-used model for existing chats.
             // Priority: last assistant message's model (the actual model used
             // most recently) > conversation-level model > fallback.
@@ -930,6 +974,50 @@ final class ChatViewModel {
             return
         }
 
+        // Merge the server's history tree into our local history.
+        // The server tree is authoritative for all non-streaming nodes.
+        if serverConversation.history.isPopulated {
+            for (id, serverNode) in serverConversation.history.nodes {
+                if let localNode = conversation?.history.nodes[id] {
+                    // Node exists locally — update content fields but keep local
+                    // content if we're actively streaming this message.
+                    let isActivelyStreaming = streamingStore.streamingMessageId == id && streamingStore.isActive
+                    if !isActivelyStreaming {
+                        var updated = serverNode
+                        // Preserve local childrenIds if they have more entries
+                        // (local may have new branches not yet on server)
+                        if localNode.childrenIds.count > serverNode.childrenIds.count {
+                            updated.childrenIds = localNode.childrenIds
+                        }
+                        // CRITICAL: Never overwrite a non-empty local tree node content
+                        // with empty server content. This prevents adoptServerMessages()
+                        // from undoing the content we wrote to the tree node in
+                        // updateAssistantMessage(isStreaming:false).
+                        //
+                        // How this bug occurs:
+                        // 1. editMessage() syncs tree to server with empty assistant node
+                        // 2. Streaming completes → updateAssistantMessage writes content to local tree node
+                        // 3. refreshConversationMetadata() → adoptServerMessages() runs
+                        // 4. Server still has the empty assistant node from step 1
+                        // 5. WITHOUT this guard: server's empty node overwrites our good local node
+                        // 6. Now the tree node is empty again; any future sync sends empty to server
+                        if !localNode.content.isEmpty && updated.content.isEmpty {
+                            updated.content = localNode.content
+                            updated.done = true
+                        }
+                        conversation?.history.nodes[id] = updated
+                    }
+                } else {
+                    // New node from server — add directly
+                    conversation?.history.nodes[id] = serverNode
+                }
+            }
+            // Update currentId from server unless we're actively streaming
+            if !isStreaming, let serverCurrentId = serverConversation.history.currentId {
+                conversation?.history.currentId = serverCurrentId
+            }
+        }
+
         let serverMessages = serverConversation.messages
 
         // Build a set of server message IDs for removal detection
@@ -977,10 +1065,27 @@ final class ChatViewModel {
                 if local.isStreaming != serverMsg.isStreaming {
                     conversation!.messages[localIdx].isStreaming = serverMsg.isStreaming
                 }
+                // CRITICAL: Sync parentId from server. Locally-created messages
+                // always have parentId = nil (it's not set in the UI layer when
+                // the user sends a message). The server's tree has the correct
+                // parentId for every node. Without this, downstream messages
+                // captured by regenerateResponse/restoreAssistantVersion retain
+                // nil parentId, causing editMessage's fallback to pick the wrong
+                // parent (the currently-displayed message instead of the real
+                // tree parent).
+                if local.parentId == nil, let serverParentId = serverMsg.parentId {
+                    conversation!.messages[localIdx].parentId = serverParentId
+                }
 
-                // Merge versions: keep local-only versions + server versions
-                var mergedVersions = serverMsg.versions
-                let serverVersionIds = Set(mergedVersions.map(\.id))
+                // Merge versions: keep local-only versions + server versions.
+                // The tree is the source of truth — versions are just sibling nodes
+                // for the UI version counter. Server content wins; local-only versions
+                // (not yet synced) are appended.
+                var mergedVersions: [ChatMessageVersion] = []
+                let serverVersionIds = Set(serverMsg.versions.map(\.id))
+                // Start with server versions (authoritative)
+                mergedVersions = serverMsg.versions
+                // Append any local-only versions (not yet on server)
                 for localVersion in local.versions {
                     if !serverVersionIds.contains(localVersion.id) {
                         mergedVersions.append(localVersion)
@@ -1039,6 +1144,12 @@ final class ChatViewModel {
         // conversation is nil.
         if serverConversation.tags != conversation?.tags {
             conversation?.tags = serverConversation.tags
+        }
+        // Sync tasks from server — ensures task list stays current after
+        // syncWithServer() / reloadConversation() calls.
+        if !serverConversation.tasks.isEmpty || !tasks.isEmpty {
+            tasks = serverConversation.tasks
+            conversation?.tasks = serverConversation.tasks
         }
     }
 
@@ -2395,6 +2506,41 @@ final class ChatViewModel {
             id: assistantMessageId, role: .assistant, content: "",
             timestamp: .now, model: modelId, isStreaming: true))
 
+        // ── Build / update the history tree ─────────────────────────────────
+        // This ensures the tree is always populated with correct parentId /
+        // childrenIds from the very first message, so that later calls to
+        // editMessage() (which bootstraps the tree if empty) see a proper
+        // branching structure instead of an orphaned root node.
+        let userNodeModels = [modelId]
+        let userHistoryNode = HistoryNode(
+            id: userMessage.id,
+            parentId: userMessageParentId,
+            childrenIds: [assistantMessageId],
+            role: .user,
+            content: currentText,
+            timestamp: userMessage.timestamp,
+            files: messageFiles,
+            models: userNodeModels
+        )
+        let assistantHistoryNode = HistoryNode(
+            id: assistantMessageId,
+            parentId: userMessage.id,
+            childrenIds: [],
+            role: .assistant,
+            content: "",
+            timestamp: userMessage.timestamp,
+            model: modelId,
+            done: false
+        )
+        conversation?.history.nodes[userMessage.id] = userHistoryNode
+        conversation?.history.nodes[assistantMessageId] = assistantHistoryNode
+        // Wire user node as a child of its parent (if parent exists in tree)
+        if let pid = userMessageParentId {
+            conversation?.history.appendChildId(userMessage.id, to: pid)
+        }
+        conversation?.history.currentId = assistantMessageId
+        // ────────────────────────────────────────────────────────────────────
+
         // Build API messages with image content fetched from server
         let apiMessages = await buildAPIMessagesAsync()
         let parentId = userMessage.id
@@ -2456,19 +2602,11 @@ final class ChatViewModel {
                 effectiveChatId: effectiveChatId)
         }
 
-        // Sync conversation to server — this writes the message tree structure
-        // (user message + assistant placeholder with parentId/childrenIds) so the
-        // server has the complete history tree. Content passes through as-is
-        // (including <details> blocks) which the web client handles natively.
-        if let chatId = effectiveChatId {
-            do {
-                try await manager.syncConversationMessages(
-                    id: chatId, messages: conversation?.messages ?? [], model: modelId,
-                    title: conversation?.title, chatParams: conversation?.chatParams)
-            } catch {
-                logger.warning("Pre-sync failed: \(error.localizedDescription)")
-            }
-        }
+        // Sync conversation to server — this writes the complete message tree
+        // (with proper parentId/childrenIds) so the server has the full branching
+        // structure before the generation starts. Uses tree-based sync now that the
+        // history tree is always populated in sendMessage().
+        await syncToServerViaTree()
 
         // Send message to server. When socket is connected, use HTTP POST + socket events.
         // When socket is unavailable (e.g., Cloudflare blocking WebSocket), fall back to
@@ -2726,6 +2864,19 @@ final class ChatViewModel {
             if !result.sources.isEmpty {
                 conversation?.messages[idx].sources = result.sources
             }
+            // Also write partial content into the history tree node so that
+            // when regenerateResponse() later calls rederiveMessages() (which
+            // rebuilds the flat list FROM the tree), the stopped version
+            // retains its partial content instead of showing empty.
+            conversation?.history.updateNode(id: msgId) { node in
+                node.content = result.content
+                if !result.statusHistory.isEmpty {
+                    node.statusHistory = result.statusHistory
+                }
+                if !result.sources.isEmpty {
+                    node.sources = result.sources
+                }
+            }
         } else if let idx = conversation?.messages.lastIndex(where: { $0.role == .assistant && $0.isStreaming }) {
             conversation?.messages[idx].isStreaming = false
         }
@@ -2733,15 +2884,10 @@ final class ChatViewModel {
         cleanupStreaming()
 
         // Sync partial content to server so the chat isn't blank.
-        // This is user-initiated stop — the partial content is clean streamed
-        // text (no tool result blocks), safe to save back to the server.
+        // Use tree-based sync so the history node (with partial content) is
+        // what gets persisted — this ensures version switching works correctly.
         Task {
-            if let chatId = conversationId ?? conversation?.id, let manager {
-                let modelId = selectedModelId ?? conversation?.model ?? ""
-                try? await manager.syncConversationMessages(
-                    id: chatId, messages: conversation?.messages ?? [], model: modelId,
-                    title: conversation?.title, chatParams: conversation?.chatParams)
-            }
+            await self.syncToServerViaTree()
         }
     }
 
@@ -2760,73 +2906,71 @@ final class ChatViewModel {
     /// messages.
     func regenerateResponse(messageId: String) async {
         guard !isStreaming || isExternallyStreaming else { return }
-        guard let assistantIdx = conversation?.messages.firstIndex(where: { $0.id == messageId && $0.role == .assistant }) else { return }
+        guard conversation != nil else { return }
 
-        // Capture downstream messages BEFORE truncating.
-        // If regenerating a mid-conversation message, everything after it belongs
-        // to the current branch and must be preserved in the version — not deleted.
-        let totalCount = conversation?.messages.count ?? 0
-        let downstreamMessages: [ChatMessage] = assistantIdx + 1 < totalCount
-            ? Array(conversation!.messages[(assistantIdx + 1)..<totalCount])
-            : []
+        // ── Tree-first regeneration (replicates OpenWebUI exactly) ──────────
+        // 1. Look up the old assistant node in the history tree.
+        //    If the tree isn't populated yet, bootstrap it from the flat list.
+        if !conversation!.history.isPopulated {
+            conversation!.history = APIClient.buildHistoryFromFlatMessages(conversation!.messages)
+        }
+        guard let oldNode = conversation!.history.nodes[messageId], oldNode.role == .assistant else { return }
 
-        // Truncate downstream messages from the flat list (they're now saved in the version).
-        if assistantIdx + 1 < totalCount {
-            conversation?.messages.removeSubrange((assistantIdx + 1)..<totalCount)
+        // 2. The parent of the old assistant node (the user message).
+        guard let parentId = oldNode.parentId else {
+            // Root-level assistant with no parent — can't regenerate without a user message
+            return
         }
 
-        // Save the current response as a version before regenerating.
-        // Include downstream messages so version-switching can restore them.
-        // Include files and model so switching versions restores images/attachments.
-        let currentMessage = conversation!.messages[assistantIdx]
-        let version = ChatMessageVersion(
-            content: currentMessage.content,
-            timestamp: currentMessage.timestamp,
-            model: currentMessage.model,
-            error: currentMessage.error,
-            files: currentMessage.files,
-            sources: currentMessage.sources,
-            followUps: currentMessage.followUps,
-            usage: currentMessage.usage,
-            downstreamMessages: downstreamMessages
-        )
-        conversation?.messages[assistantIdx].versions.append(version)
-
-        // Clear the current content, files, and reset for a new response
-        // Files must be cleared so tool-generated images from previous
-        // generation don't persist into the new response
-        conversation?.messages[assistantIdx].content = ""
-        conversation?.messages[assistantIdx].files = []
-        conversation?.messages[assistantIdx].embeds = []
-        conversation?.messages[assistantIdx].isStreaming = true
-        conversation?.messages[assistantIdx].error = nil
-        conversation?.messages[assistantIdx].sources = []
-        conversation?.messages[assistantIdx].statusHistory = []
-        conversation?.messages[assistantIdx].followUps = []
-        conversation?.messages[assistantIdx].usage = nil
-        conversation?.messages[assistantIdx].timestamp = .now
-        // Update the model to the currently selected one so the bubble label
-        // reflects the new model immediately (e.g. user switched model before regenerating).
-        conversation?.messages[assistantIdx].model = selectedModelId ?? conversation?.model
-
-        // Get the user's last message to resend
-        guard let lastUser = conversation?.messages.last(where: { $0.role == .user }) else { return }
-
-        let apiMessages = await buildAPIMessagesAsync()
-        let parentId = lastUser.id
-        let assistantMessageId = currentMessage.id
+        // 3. Create a NEW assistant placeholder node (new UUID) as a sibling of the old one.
+        //    Both are children of the same user node.
+        let newAssistantId = UUID().uuidString
         let modelId = selectedModelId ?? conversation?.model ?? ""
-        sessionId = UUID().uuidString
-        let effectiveChatId = conversationId ?? conversation?.id
+        let newAssistantNode = HistoryNode(
+            id: newAssistantId,
+            parentId: parentId,
+            childrenIds: [],
+            role: .assistant,
+            content: "",
+            timestamp: .now,
+            model: modelId,
+            done: false
+        )
+        conversation!.history.nodes[newAssistantId] = newAssistantNode
 
-        // Reset streaming state — must set hasFinishedStreaming = false so
-        // the new streaming session's cleanup will work
+        // 4. Add the new assistant as a child of the user node (sibling to old assistant).
+        if conversation!.history.nodes[parentId] != nil {
+            if !conversation!.history.nodes[parentId]!.childrenIds.contains(newAssistantId) {
+                conversation!.history.nodes[parentId]!.childrenIds.append(newAssistantId)
+            }
+        }
+
+        // 5. Update currentId to the new assistant.
+        conversation!.history.currentId = newAssistantId
+
+        // 6. Re-derive the flat messages list from the tree.
+        conversation!.rederiveMessages()
+
+        // Reset the task list — the new regen branch starts with no tasks.
+        tasks = []
+        conversation?.tasks = []
+
+        // 7. Sync to server via tree-based API before streaming.
+        await syncToServerViaTree()
+
+        // 8. Get the user message (parentId) for the API messages build.
+        guard conversation?.messages.contains(where: { $0.role == .user }) == true else { return }
+        let apiMessages = await buildAPIMessagesAsync()
+        let effectiveChatId = conversationId ?? conversation?.id
+        sessionId = UUID().uuidString
+
+        // Reset streaming state
         isStreaming = true
         hasFinishedStreaming = false
         selfInitiatedStream = true
 
         // Activate the isolated streaming store for the regenerated message
-        streamingStore.beginStreaming(messageId: assistantMessageId, modelId: modelId)
+        streamingStore.beginStreaming(messageId: newAssistantId, modelId: modelId)
 
         // Cancel any previous subscriptions/timers
         chatSubscription?.dispose()
@@ -2837,7 +2981,7 @@ final class ChatViewModel {
         recoveryTimer = nil
 
         guard let socket = socketService else {
-            updateAssistantMessage(id: assistantMessageId, content: "No connection available.",
+            updateAssistantMessage(id: newAssistantId, content: "No connection available.",
                                    isStreaming: false, error: ChatMessageError(content: "No socket"))
             isStreaming = false
             return
@@ -2846,7 +2990,7 @@ final class ChatViewModel {
             let ok = await socket.ensureConnected(timeout: 10.0)
             if !ok {
                 updateAssistantMessage(
-                    id: assistantMessageId,
+                    id: newAssistantId,
                     content: "Unable to connect. Check your connection.",
                     isStreaming: false,
                     error: ChatMessageError(content: "Connection failed"))
@@ -2857,22 +3001,18 @@ final class ChatViewModel {
 
         let socketSessionId = socket.sid ?? sessionId
 
-        // Sync the cleared message to server BEFORE registering socket handlers
-        // so the server knows we've cleared the content and won't send old content back.
-        if let chatId = effectiveChatId {
-            do {
-                try await manager?.syncConversationMessages(
-                    id: chatId, messages: conversation?.messages ?? [], model: modelId,
-                    title: conversation?.title, chatParams: conversation?.chatParams)
-            } catch {
-                logger.warning("Pre-sync for regeneration failed: \(error.localizedDescription)")
-            }
-        }
+        // Get the user message node to build user_message dict for the request.
+        // The parentId of the new assistant IS the user message ID.
+        guard let userNode = conversation!.history.nodes[parentId] else { return }
 
         registerSocketHandlers(
-            socket: socket, assistantMessageId: assistantMessageId,
+            socket: socket, assistantMessageId: newAssistantId,
             modelId: modelId, socketSessionId: socketSessionId,
             effectiveChatId: effectiveChatId)
+
+        let capturedNewAssistantId = newAssistantId
+        let capturedParentId = parentId
+        let capturedUserNode = userNode
 
         streamingTask = Task { [weak self] in
             guard let self, let manager = self.manager else { return }
@@ -2880,32 +3020,24 @@ final class ChatViewModel {
                 var request = ChatCompletionRequest(
                     model: modelId, messages: apiMessages, stream: true,
                     chatId: effectiveChatId, sessionId: socketSessionId,
-                    messageId: assistantMessageId, parentId: parentId)
+                    messageId: capturedNewAssistantId, parentId: capturedParentId)
 
                 // Build the user_message node for the server's history tree.
-                // For regeneration, the user message already exists — we send it
-                // again so the server correctly links it to the new assistant response.
-                let userParentId = self.conversation?.messages
-                    .first(where: { $0.id == lastUser.id })
-                    .flatMap { msg -> String? in
-                        // Find the message just before this user message
-                        guard let idx = self.conversation?.messages.firstIndex(where: { $0.id == msg.id }),
-                              idx > 0 else { return nil }
-                        return self.conversation?.messages[idx - 1].id
-                    }
+                // childrenIds = all children of the user node (includes old + new assistant).
+                let allChildrenIds = self.conversation?.history.nodes[capturedParentId]?.childrenIds ?? [capturedNewAssistantId]
+                let userGrandParentId = capturedUserNode.parentId
                 let userMsgDict: [String: Any] = [
-                    "id": lastUser.id,
-                    "parentId": (userParentId as Any?) ?? NSNull(),
-                    "childrenIds": [assistantMessageId],
+                    "id": capturedParentId,
+                    "parentId": (userGrandParentId as Any?) ?? NSNull(),
+                    "childrenIds": allChildrenIds,
                     "role": "user",
-                    "content": lastUser.content,
-                    "timestamp": Int(lastUser.timestamp.timeIntervalSince1970),
-                    "models": [modelId]
+                    "content": capturedUserNode.content,
+                    "timestamp": Int(capturedUserNode.timestamp.timeIntervalSince1970),
+                    "models": capturedUserNode.models.isEmpty ? [modelId] : capturedUserNode.models
                 ]
                 request.userMessage = userMsgDict
 
-                // Populate all common request fields (model metadata, features, params,
-                // system variables, tool IDs, terminal, background tasks, etc.)
+                // Populate all common request fields
                 await self.populateCommonRequestFields(&request)
 
                 if request.isPipeModel {
@@ -2920,14 +3052,14 @@ final class ChatViewModel {
                             if let delta = event.contentDelta, !delta.isEmpty {
                                 acc.append(delta)
                                 self.updateAssistantMessage(
-                                    id: assistantMessageId, content: acc.content, isStreaming: true)
+                                    id: capturedNewAssistantId, content: acc.content, isStreaming: true)
                             }
                             if event.isFinished { break }
                         }
                     } catch {
                         if !Task.isCancelled {
                             self.updateAssistantMessage(
-                                id: assistantMessageId,
+                                id: capturedNewAssistantId,
                                 content: acc.content.isEmpty ? "" : acc.content,
                                 isStreaming: false,
                                 error: ChatMessageError(content: error.localizedDescription))
@@ -2939,7 +3071,7 @@ final class ChatViewModel {
                     if Task.isCancelled { return }
 
                     self.finishStreamingSuccessfully(
-                        assistantMessageId: assistantMessageId,
+                        assistantMessageId: capturedNewAssistantId,
                         modelId: modelId,
                         socketSessionId: socketSessionId,
                         effectiveChatId: effectiveChatId,
@@ -2949,7 +3081,7 @@ final class ChatViewModel {
                     let json = try await manager.sendMessageHTTP(request: request)
 
                     if let err = json["error"] as? String, !err.isEmpty {
-                        self.updateAssistantMessage(id: assistantMessageId, content: "",
+                        self.updateAssistantMessage(id: capturedNewAssistantId, content: "",
                                                      isStreaming: false, error: ChatMessageError(content: err))
                         self.cleanupStreaming()
                         return
@@ -2961,12 +3093,10 @@ final class ChatViewModel {
                     }
 
                     self.logger.info("Regenerate HTTP POST done – waiting for socket events")
-                    // Do NOT start recovery timer for regeneration — the server still
-                    // may have stale content until new streaming completes.
                 }
             } catch {
                 if !Task.isCancelled {
-                    self.updateAssistantMessage(id: assistantMessageId, content: "",
+                    self.updateAssistantMessage(id: capturedNewAssistantId, content: "",
                                                  isStreaming: false,
                                                  error: ChatMessageError(content: error.localizedDescription))
                     self.cleanupStreaming()
@@ -3011,251 +3141,230 @@ final class ChatViewModel {
     /// - Switching back to an old branch restores all downstream messages
     func editMessage(id: String, newContent: String) async {
         guard !isStreaming || isExternallyStreaming else { return }
-        guard let userIndex = conversation?.messages.firstIndex(where: { $0.id == id }) else { return }
-        guard conversation?.messages[userIndex].role == .user else { return }
+        guard conversation != nil else { return }
 
-        let oldUserContent = conversation!.messages[userIndex].content
-        let oldUserTimestamp = conversation!.messages[userIndex].timestamp
-        let oldUserFiles = conversation!.messages[userIndex].files
+        // ── Tree-first edit (replicates OpenWebUI exactly) ─────────────────
+        // 1. Look up the old user node in the history tree.
+        //    If the tree isn't populated yet, bootstrap it from the flat list.
+        if !conversation!.history.isPopulated {
+            conversation!.history = APIClient.buildHistoryFromFlatMessages(conversation!.messages)
+        }
+        guard let oldNode = conversation!.history.nodes[id], oldNode.role == .user else { return }
 
-        // Find the paired assistant message (immediately following the user message)
-        let assistantIndex: Int? = {
-            let nextIdx = userIndex + 1
-            if nextIdx < (conversation?.messages.count ?? 0),
-               conversation?.messages[nextIdx].role == .assistant {
-                return nextIdx
-            }
-            return nil
-        }()
+        // 2. The parent of the old user node (an assistant node, or nil for root).
+        let parentId = oldNode.parentId
 
-        // Collect ALL downstream messages (everything after the assistant, if any).
-        // These belong to the OLD branch and must be hidden when on the new branch,
-        // and restored when the user navigates back to the old branch.
-        let downstreamStartIdx: Int = {
-            if let aIdx = assistantIndex { return aIdx + 1 }
-            return userIndex + 1
-        }()
-        let totalCount = conversation?.messages.count ?? 0
-        let downstreamMessages: [ChatMessage] = downstreamStartIdx < totalCount
-            ? Array(conversation!.messages[downstreamStartIdx..<totalCount])
-            : []
-
-        // Capture the old assistant message (with its versions from regenerations)
-        let pairedAssistantMsg = assistantIndex.map { conversation!.messages[$0] }
-
-        // Create the version entry for the OLD user message branch.
-        // This is a sibling node in the server tree (parentId: null, new UUID).
-        let oldUserVersionId = UUID().uuidString
-        let oldUserVersion = ChatMessageVersion(
-            id: oldUserVersionId,
-            content: oldUserContent,
-            timestamp: oldUserTimestamp,
-            files: oldUserFiles,
-            pairedAssistantId: pairedAssistantMsg?.id,
-            pairedAssistantContent: pairedAssistantMsg?.content,
-            pairedAssistantModel: pairedAssistantMsg?.model,
-            pairedAssistantFiles: pairedAssistantMsg?.files ?? [],
-            pairedAssistantSources: pairedAssistantMsg?.sources ?? [],
-            pairedAssistantVersions: pairedAssistantMsg?.versions ?? [],
-            downstreamMessages: downstreamMessages
+        // 3. Create a NEW user node (new UUID) with the edited content.
+        //    This is a sibling of the old user node under the same parent.
+        let newUserId = UUID().uuidString
+        let newUserNode = HistoryNode(
+            id: newUserId,
+            parentId: parentId,
+            childrenIds: [],   // will get the assistant ID below
+            role: .user,
+            content: newContent,
+            timestamp: .now,
+            files: oldNode.files,
+            models: oldNode.models
         )
-        conversation?.messages[userIndex].versions.append(oldUserVersion)
+        conversation!.history.nodes[newUserId] = newUserNode
 
-        // Update the current user message with the NEW content.
-        conversation?.messages[userIndex].content = newContent
-        conversation?.messages[userIndex].timestamp = .now
+        // 4. Add the new user node as a child of the parent (if parent exists).
+        if let pid = parentId {
+            if conversation!.history.nodes[pid] != nil {
+                if !(conversation!.history.nodes[pid]!.childrenIds.contains(newUserId)) {
+                    conversation!.history.nodes[pid]!.childrenIds.append(newUserId)
+                }
+            }
+        }
+        // For root-level user edits (parentId == nil), both nodes are root siblings.
+        // The server treats all null-parentId nodes as root siblings automatically.
 
-        // Create a BRAND NEW assistant message with a NEW UUID.
-        // This is critical: the old assistant ID stays in the old branch's version data.
-        // A new ID means each branch has its own distinct assistant node in the tree.
+        // 5. Create a NEW assistant placeholder node.
         let newAssistantId = UUID().uuidString
-        let newAssistantMessage = ChatMessage(
+        let assistantModel = selectedModelId ?? conversation?.model ?? ""
+        let newAssistantNode = HistoryNode(
             id: newAssistantId,
+            parentId: newUserId,
+            childrenIds: [],
             role: .assistant,
             content: "",
             timestamp: .now,
-            model: selectedModelId ?? conversation?.model,
-            isStreaming: true
+            model: assistantModel,
+            done: false
         )
+        conversation!.history.nodes[newAssistantId] = newAssistantNode
 
-        // Rebuild the flat list: keep messages up to and including the user message,
-        // then append the NEW assistant placeholder. Remove the old assistant and all
-        // downstream messages — they are now stored in the old branch version.
-        var newMessages = Array(conversation!.messages[0...userIndex])
-        newMessages.append(newAssistantMessage)
-        conversation?.messages = newMessages
+        // 6. Wire the assistant as a child of the new user node.
+        conversation!.history.nodes[newUserId]!.childrenIds.append(newAssistantId)
 
-        // Sync to server — this writes the new branch structure:
-        // - Active user message (mutated) with the old content as a version sibling
-        // - New assistant placeholder
-        // The old assistant + downstream are recorded inside the version's
-        // pairedAssistantId/pairedAssistantContent/downstreamMessages fields.
-        if let chatId = conversationId ?? conversation?.id, let manager {
-            let modelId = selectedModelId ?? conversation?.model ?? ""
-            try? await manager.syncConversationMessages(
-                id: chatId, messages: conversation?.messages ?? [], model: modelId,
-                title: conversation?.title, chatParams: conversation?.chatParams)
-        }
+        // 7. Update currentId to the new assistant (deepest leaf of the new branch).
+        conversation!.history.currentId = newAssistantId
 
-        // Generate into the new assistant message
+        // 8. Re-derive the flat messages list from the tree.
+        conversation!.rederiveMessages()
+
+        // Reset the task list — the new edit branch starts fresh.
+        tasks = []
+        conversation?.tasks = []
+
+        // 9. Sync to server via tree-based API (lossless, no buildChatPayload).
+        await syncToServerViaTree()
+
+        // 10. Stream the AI response into the new assistant placeholder.
         await regenerateIntoExistingMessage(assistantMessageId: newAssistantId)
     }
 
-    /// Restores an old user message branch into the flat list.
-    ///
-    /// Called by the UI when the user navigates to an older version via the ← → arrows.
-    /// Replaces the messages after the user message with the branch's saved content:
-    /// the old assistant (with its regeneration versions) + any downstream messages.
+    /// Restores an old user message branch by switching `history.currentId` to the
+    /// selected sibling's deepest leaf, then re-deriving the flat message list from
+    /// the tree. Matches OpenWebUI's `showMessage()` function exactly.
     ///
     /// - Parameters:
-    ///   - userMessageId: The ID of the user message being versioned.
-    ///   - version: The ChatMessageVersion to restore (nil = restore to latest/current branch).
+    ///   - userMessageId: The ID of the user message currently on the active branch.
+    ///   - version: The sibling version to switch to (nil = latest / `userMessageId` itself).
     func restoreUserVersion(userMessageId: String, version: ChatMessageVersion?) {
-        guard let userIndex = conversation?.messages.firstIndex(where: { $0.id == userMessageId }) else { return }
+        guard conversation != nil else { return }
 
-        if let version {
-            // ── Switching TO an old branch ──────────────────────────────────────
-            // Before swapping content, snapshot the CURRENT (latest) branch so we
-            // can restore it without hitting the server when the user navigates back.
-            if latestBranchSnapshots[userMessageId] == nil {
-                // Only capture once — the very first time we leave the latest branch.
-                // Subsequent switches between old branches should not overwrite it.
-                let currentUser = conversation!.messages[userIndex]
-                let assistantMsg = userIndex + 1 < (conversation?.messages.count ?? 0)
-                    ? conversation?.messages[userIndex + 1]
-                    : nil
-                let downstream: [ChatMessage] = {
-                    guard let msgs = conversation?.messages,
-                          let startIdx = assistantMsg.flatMap({ am in msgs.firstIndex(where: { $0.id == am.id }) })
-                    else { return [] }
-                    let afterAssistant = startIdx + 1
-                    guard afterAssistant < msgs.count else { return [] }
-                    return Array(msgs[afterAssistant...])
-                }()
-                latestBranchSnapshots[userMessageId] = LatestBranchSnapshot(
-                    userContent: currentUser.content,
-                    userFiles: currentUser.files,
-                    userTimestamp: currentUser.timestamp,
-                    assistantMessage: assistantMsg?.role == .assistant ? assistantMsg : nil,
-                    downstreamMessages: downstream
-                )
-            }
+        // Determine the target user node to switch to.
+        // `version.id` is the sibling user node the user wants to view.
+        // nil means "go back to the current/latest user node".
+        let targetUserId = version?.id ?? userMessageId
 
-            // Swap the user message to the old branch's content.
-            conversation?.messages[userIndex].content = version.content
-            conversation?.messages[userIndex].files = version.files
-            conversation?.messages[userIndex].timestamp = version.timestamp
-
-            // Rebuild flat list: messages up through the user, then old assistant + downstream.
-            var restoredMessages = Array(conversation!.messages[0...userIndex])
-
-            if let pairedId = version.pairedAssistantId,
-               let pairedContent = version.pairedAssistantContent {
-                var restoredAssistant = ChatMessage(
-                    id: pairedId,
-                    role: .assistant,
-                    content: pairedContent,
-                    timestamp: version.timestamp,
-                    model: version.pairedAssistantModel,
-                    files: version.pairedAssistantFiles,
-                    sources: version.pairedAssistantSources
-                )
-                restoredAssistant.versions = version.pairedAssistantVersions
-                restoredMessages.append(restoredAssistant)
-            }
-
-            restoredMessages.append(contentsOf: version.downstreamMessages)
-            conversation?.messages = restoredMessages
-
-        } else {
-            // ── Restoring to LATEST branch ───────────────────────────────────────
-            // Use the locally cached snapshot — no server round-trip required.
-            // This is critical: the server fetch was overwriting locally-enriched
-            // version data (downstreamMessages, pairedAssistantVersions, etc.).
-            if let snapshot = latestBranchSnapshots[userMessageId] {
-                // Restore user message to its latest content.
-                conversation?.messages[userIndex].content = snapshot.userContent
-                conversation?.messages[userIndex].files = snapshot.userFiles
-                conversation?.messages[userIndex].timestamp = snapshot.userTimestamp
-
-                // Rebuild flat list: messages up through user, then latest assistant + downstream.
-                var restoredMessages = Array(conversation!.messages[0...userIndex])
-                if let assistant = snapshot.assistantMessage {
-                    restoredMessages.append(assistant)
-                }
-                restoredMessages.append(contentsOf: snapshot.downstreamMessages)
-                conversation?.messages = restoredMessages
-
-                // Clear snapshot — we are back on the latest branch.
-                latestBranchSnapshots.removeValue(forKey: userMessageId)
-            } else {
-                // No snapshot available (e.g. app restarted) — fall back to server fetch.
-                Task {
-                    if let chatId = self.conversationId ?? self.conversation?.id,
-                       let manager = self.manager {
-                        if let fetched = try? await manager.fetchConversation(id: chatId) {
-                            self.adoptServerMessages(serverConversation: fetched)
-                        }
-                    }
-                }
-            }
+        // Ensure the tree is populated.
+        if !conversation!.history.isPopulated {
+            conversation!.history = APIClient.buildHistoryFromFlatMessages(conversation!.messages)
         }
+
+        // Walk to the deepest leaf of the target user node's branch and set currentId.
+        let leaf = conversation!.history.deepestLeaf(from: targetUserId)
+        conversation!.history.currentId = leaf
+
+        // Re-derive the flat message list from the new active branch.
+        conversation!.rederiveMessages()
+
+        // Navigation-only: use syncCurrentIdToServer to avoid corrupting tree order.
+        Task { await syncCurrentIdToServer() }
     }
 
-    /// Swaps the downstream messages when navigating assistant regeneration versions.
+    /// Navigates to a specific assistant regeneration version by switching
+    /// `history.currentId` to the selected sibling's deepest leaf, then
+    /// re-deriving the flat message list from the tree.
     ///
-    /// Called by the ← → version buttons in the assistant action bar when switching
-    /// between regeneration versions. Only the downstream messages are swapped —
-    /// the assistant message itself stays in place and `activeVersionIndex` in the
-    /// view handles which version's content is displayed.
+    /// Matches OpenWebUI's `showMessage()` function: change currentId, re-derive.
     ///
     /// - Parameters:
-    ///   - assistantMessageId: The ID of the assistant message being versioned.
-    ///   - versionIndex: -1 = latest (current message content), 0...N-1 = older version
+    ///   - assistantMessageId: The ID of the assistant message currently active.
+    ///   - versionIndex: -1 = stay on current (`assistantMessageId`), 0...N-1 = sibling version
     func restoreAssistantVersion(assistantMessageId: String, versionIndex: Int) {
-        guard let assistantIdx = conversation?.messages.firstIndex(where: {
-            $0.id == assistantMessageId && $0.role == .assistant
-        }) else { return }
+        guard conversation != nil else { return }
 
-        let totalCount = conversation?.messages.count ?? 0
-
-        if versionIndex >= 0 {
-            // ── Switching TO an old version ──────────────────────────────────
-            // Snapshot the current (latest) downstream exactly once, before
-            // we first leave the latest branch.
-            if assistantBranchSnapshots[assistantMessageId] == nil {
-                let downstream: [ChatMessage] = assistantIdx + 1 < totalCount
-                    ? Array(conversation!.messages[(assistantIdx + 1)..<totalCount])
-                    : []
-                let currentAssistant = conversation!.messages[assistantIdx]
-                assistantBranchSnapshots[assistantMessageId] = LatestBranchSnapshot(
-                    userContent: "",
-                    userFiles: [],
-                    userTimestamp: currentAssistant.timestamp,
-                    assistantMessage: currentAssistant,
-                    downstreamMessages: downstream
-                )
-            }
-
-            // Replace downstream with this version's saved downstream messages.
-            var restoredMessages = Array(conversation!.messages[0...assistantIdx])
-            let versions = conversation!.messages[assistantIdx].versions
-            if versionIndex < versions.count {
-                restoredMessages.append(contentsOf: versions[versionIndex].downstreamMessages)
-            }
-            conversation?.messages = restoredMessages
-
-        } else {
-            // ── Restoring to LATEST ───────────────────────────────────────────
-            if let snapshot = assistantBranchSnapshots[assistantMessageId] {
-                var restoredMessages = Array(conversation!.messages[0...assistantIdx])
-                restoredMessages.append(contentsOf: snapshot.downstreamMessages)
-                conversation?.messages = restoredMessages
-                assistantBranchSnapshots.removeValue(forKey: assistantMessageId)
-            }
-            // If no snapshot exists (e.g. only 1 version and we're already on latest),
-            // nothing to do — the flat list is already correct.
+        // Ensure the tree is populated.
+        if !conversation!.history.isPopulated {
+            conversation!.history = APIClient.buildHistoryFromFlatMessages(conversation!.messages)
         }
+
+        // Determine the target assistant node ID.
+        // versionIndex == -1: stay on the current node (assistantMessageId).
+        // versionIndex >= 0: switch to that sibling from message.versions[].id
+        let targetAssistantId: String
+        if versionIndex >= 0,
+           let msgIdx = conversation?.messages.firstIndex(where: { $0.id == assistantMessageId }),
+           versionIndex < (conversation?.messages[msgIdx].versions.count ?? 0) {
+            targetAssistantId = conversation!.messages[msgIdx].versions[versionIndex].id
+        } else {
+            targetAssistantId = assistantMessageId
+        }
+
+        // Walk to the deepest leaf of the target assistant node's branch and set currentId.
+        let leaf = conversation!.history.deepestLeaf(from: targetAssistantId)
+        conversation!.history.currentId = leaf
+
+        // Re-derive the flat message list from the new active branch.
+        conversation!.rederiveMessages()
+
+        // Navigation-only: use syncCurrentIdToServer to avoid corrupting tree order.
+        Task { await syncCurrentIdToServer() }
+    }
+
+    /// Navigates to a specific assistant version by its sibling node ID directly.
+    ///
+    /// This is the preferred navigation method for the UI ← → version arrows.
+    /// Unlike `restoreAssistantVersion(versionIndex:)`, this does NOT depend on
+    /// `message.versions[]` index arithmetic — it works correctly regardless of
+    /// which sibling is currently the "main" message (i.e. after any branch switch
+    /// that rebuilds the flat message list via `rederiveMessages()`).
+    ///
+    /// - Parameters:
+    ///   - targetSiblingId: The ID of the sibling assistant node to switch to.
+    func restoreAssistantVersionById(targetSiblingId: String) {
+        guard conversation != nil else { return }
+
+        // Ensure the tree is populated.
+        if !conversation!.history.isPopulated {
+            conversation!.history = APIClient.buildHistoryFromFlatMessages(conversation!.messages)
+        }
+
+        // Walk to the deepest leaf of the target node and set currentId.
+        let leaf = conversation!.history.deepestLeaf(from: targetSiblingId)
+        conversation!.history.currentId = leaf
+
+        // Re-derive the flat message list from the new active branch.
+        conversation!.rederiveMessages()
+
+        // Sync ONLY currentId to server — do NOT call syncFlatMessagesToTreeNodes()
+        // first. Version switching is navigation-only: no content changed, so copying
+        // the flat list back into tree nodes would risk corrupting inactive-branch nodes.
+        Task { await syncCurrentIdToServer() }
+    }
+
+    /// Navigates to a specific user version by its sibling node ID directly.
+    ///
+    /// This is the preferred navigation method for the UI user ← → version arrows.
+    /// Unlike `restoreUserVersion(version:)`, this always switches to the target
+    /// regardless of which sibling is currently the main message.
+    ///
+    /// - Parameters:
+    ///   - targetSiblingId: The ID of the sibling user node to switch to.
+    func restoreUserVersionById(targetSiblingId: String) {
+        guard conversation != nil else { return }
+
+        if !conversation!.history.isPopulated {
+            conversation!.history = APIClient.buildHistoryFromFlatMessages(conversation!.messages)
+        }
+
+        let leaf = conversation!.history.deepestLeaf(from: targetSiblingId)
+        conversation!.history.currentId = leaf
+        conversation!.rederiveMessages()
+
+        // Same as restoreAssistantVersionById — navigation only, skip flat→tree copy.
+        Task { await syncCurrentIdToServer() }
+    }
+
+    /// Sends the full history tree to the server WITHOUT first copying the flat
+    /// message list back into tree nodes.
+    ///
+    /// Used exclusively by version-switch operations (restoreAssistantVersionById /
+    /// restoreUserVersionById) where only `currentId` changed and all tree node
+    /// content/childrenIds are already correct from the original server data.
+    /// Calling syncFlatMessagesToTreeNodes() in these cases risks overwriting
+    /// metadata on inactive-branch nodes with stale/empty flat-list data,
+    /// which can cause the server to reorder childrenIds.
+    private func syncCurrentIdToServer() async {
+        guard let chatId = conversationId ?? conversation?.id, let manager else { return }
+        let modelId = selectedModelId ?? conversation?.model ?? ""
+
+        guard let conv = conversation, conv.history.isPopulated else {
+            return
+        }
+
+        try? await manager.apiClient.syncConversationHistory(
+            id: chatId,
+            history: conv.history,
+            model: modelId,
+            systemPrompt: conv.systemPrompt,
+            chatParams: conv.chatParams,
+            title: conv.title
+        )
     }
 
     /// Regenerates content for an existing assistant message placeholder.
@@ -3303,15 +3412,9 @@ final class ChatViewModel {
         sessionId = UUID().uuidString
         let socketSessionId = socket.sid ?? sessionId
 
-        if let chatId = effectiveChatId {
-            do {
-                try await manager?.syncConversationMessages(
-                    id: chatId, messages: conversation?.messages ?? [], model: modelId,
-                    title: conversation?.title, chatParams: conversation?.chatParams)
-            } catch {
-                logger.warning("Pre-sync for edit-regen failed: \(error.localizedDescription)")
-            }
-        }
+        // Sync the full tree (not just the active branch flat-list) so the original
+        // branch's assistant node is preserved on the server.
+        await syncToServerViaTree()
 
         registerSocketHandlers(
             socket: socket, assistantMessageId: assistantMessageId,
@@ -3336,7 +3439,9 @@ final class ChatViewModel {
                 let editUserMsgDict: [String: Any] = [
                     "id": lastUser.id,
                     "parentId": (editUserParentId as Any?) ?? NSNull(),
-                    "childrenIds": [assistantMessageId],
+                    // Send ALL children from the tree, not just the new assistant.
+                    // This preserves all existing regeneration siblings on the server.
+                    "childrenIds": self.conversation?.history.nodes[lastUser.id]?.childrenIds ?? [assistantMessageId],
                     "role": "user",
                     "content": lastUser.content,
                     "timestamp": Int(lastUser.timestamp.timeIntervalSince1970),
@@ -3392,93 +3497,53 @@ final class ChatViewModel {
         }
     }
 
-    /// Deletes a specific message from the conversation.
-    /// For user messages with versions (edit history):
-    /// - If viewing the main (latest) content (vIdx < 0): promote the last version to main.
-    /// - If viewing an older version (vIdx >= 0): remove only that version.
-    /// - If no versions exist: delete the entire user + following assistant message pair.
+    /// Deletes a specific message (and its entire descendant subtree) from the
+    /// conversation tree. Matches OpenWebUI's tree-based `deleteMessage()`:
     ///
-    /// For assistant messages with versions (regeneration history):
-    /// - Only the currently viewed version is removed instead of the entire message.
-    /// - If viewing the main (latest) content, the most recent version is promoted.
-    /// - If viewing an older version, that version is removed from the array.
-    /// - The full message is only deleted when no versions remain.
+    /// 1. Remove the node from its parent's `childrenIds`
+    /// 2. Remove the node and all descendants from `history.nodes`
+    /// 3. Navigate to the deepest leaf of the parent node (or any remaining root)
+    /// 4. Re-derive the flat message list from the updated tree
+    /// 5. Sync to server via the tree-based API
     ///
-    /// - Parameter activeVersionIndex: The currently viewed version index.
-    ///   For user messages: the `activeUserVersionIndex` value (-1 = latest, 0...N-1 = older version).
-    ///   For assistant messages: -1 = latest content, 0...N-1 = a specific regeneration version.
+    /// The `activeVersionIndex` parameter is kept for call-site compatibility
+    /// but is no longer used — versions are sibling nodes in the tree, so
+    /// deleting "the active version" just means removing the node we're currently on.
     func deleteMessage(id: String, activeVersionIndex: Int? = nil) async {
         guard !isStreaming || isExternallyStreaming else { return }
-        guard let index = conversation?.messages.firstIndex(where: { $0.id == id }) else { return }
+        guard conversation != nil else { return }
 
-        let message = conversation!.messages[index]
-        let vIdx = activeVersionIndex ?? -1
+        // Ensure tree is populated
+        if !conversation!.history.isPopulated {
+            conversation!.history = APIClient.buildHistoryFromFlatMessages(conversation!.messages)
+        }
 
-        if message.role == .user {
-            if !message.versions.isEmpty {
-                // User message has edit history — version-aware deletion
-                if vIdx < 0 {
-                    // Viewing main (latest) content — promote the last version to main
-                    let lastVersion = message.versions.last!
-                    conversation?.messages[index].content = lastVersion.content
-                    conversation?.messages[index].timestamp = lastVersion.timestamp
-                    conversation?.messages[index].files = lastVersion.files
-                    conversation?.messages[index].versions.removeLast()
-                } else if vIdx >= 0 && vIdx < message.versions.count {
-                    // Viewing a specific older version — remove just that version
-                    conversation?.messages[index].versions.remove(at: vIdx)
-                } else {
-                    // Invalid index — fall back to removing entire user + assistant pair
-                    var removeIndices = IndexSet([index])
-                    if index + 1 < (conversation?.messages.count ?? 0),
-                       conversation?.messages[index + 1].role == .assistant {
-                        removeIndices.insert(index + 1)
-                    }
-                    conversation?.messages.remove(atOffsets: removeIndices)
-                }
-            } else {
-                // No versions — remove user message and the following assistant message (if any)
-                var removeIndices = IndexSet([index])
-                if index + 1 < (conversation?.messages.count ?? 0),
-                   conversation?.messages[index + 1].role == .assistant {
-                    removeIndices.insert(index + 1)
-                }
-                conversation?.messages.remove(atOffsets: removeIndices)
-            }
-        } else if message.role == .assistant && !message.versions.isEmpty {
-            // Assistant message with versions — only remove the active version
-            let vIdx = activeVersionIndex ?? -1
+        guard conversation!.history.nodes[id] != nil else { return }
+        let parentId = conversation!.history.nodes[id]!.parentId
 
-            if vIdx < 0 {
-                // Viewing the main (latest) content — promote the last version
-                let lastVersion = message.versions.last!
-                conversation?.messages[index].content = lastVersion.content
-                conversation?.messages[index].timestamp = lastVersion.timestamp
-                conversation?.messages[index].model = lastVersion.model
-                conversation?.messages[index].error = lastVersion.error
-                conversation?.messages[index].files = lastVersion.files
-                conversation?.messages[index].sources = lastVersion.sources
-                conversation?.messages[index].followUps = lastVersion.followUps
-                conversation?.messages[index].versions.removeLast()
-            } else if vIdx >= 0 && vIdx < message.versions.count {
-                // Viewing a specific older version — remove it
-                conversation?.messages[index].versions.remove(at: vIdx)
-            } else {
-                // Invalid index — fall back to removing the entire message
-                conversation?.messages.remove(at: index)
-            }
+        // Remove the node and its entire subtree (also cleans up parent's childrenIds)
+        conversation!.history.removeSubtree(rootId: id)
+
+        // Recalculate the active branch pointer
+        if let parentId, conversation!.history.nodes[parentId] != nil {
+            // Navigate into parent's remaining children (if any), or stay on parent
+            conversation!.history.currentId = conversation!.history.deepestLeaf(from: parentId)
+        } else if let anyRoot = conversation!.history.nodes.values
+            .filter({ $0.parentId == nil })
+            .sorted(by: { $0.timestamp < $1.timestamp })
+            .first {
+            // No parent — find any remaining root node
+            conversation!.history.currentId = conversation!.history.deepestLeaf(from: anyRoot.id)
         } else {
-            // No versions — remove just this message
-            conversation?.messages.remove(at: index)
+            // Tree is now empty
+            conversation!.history.currentId = nil
         }
 
-        // Sync to server
-        if let chatId = conversationId ?? conversation?.id, let manager {
-            let modelId = selectedModelId ?? conversation?.model ?? ""
-            try? await manager.syncConversationMessages(
-                id: chatId, messages: conversation?.messages ?? [], model: modelId,
-                title: conversation?.title, chatParams: conversation?.chatParams)
-        }
+        // Re-derive the flat message list from the updated tree
+        conversation!.rederiveMessages()
+
+        // Sync tree to server
+        await syncToServerViaTree()
 
         NotificationCenter.default.post(name: .conversationListNeedsRefresh, object: nil)
     }
@@ -4142,6 +4207,24 @@ final class ChatViewModel {
             title: title,
             preview: preview
         )
+    }
+
+    /// Updates a task status locally and syncs to server.
+    /// Called from TaskListView when the user taps a task row.
+    func updateTaskStatus(taskId: String, newStatus: String) {
+        // Update locally immediately (optimistic)
+        if let idx = tasks.firstIndex(where: { $0.id == taskId }) {
+            tasks[idx].status = newStatus
+        }
+        if let idx = conversation?.tasks.firstIndex(where: { $0.id == taskId }) {
+            conversation?.tasks[idx].status = newStatus
+        }
+        // Sync to server
+        guard let chatId = conversationId ?? conversation?.id,
+              let apiClient = manager?.apiClient else { return }
+        Task {
+            _ = try? await apiClient.updateChatTask(chatId: chatId, taskId: taskId, status: newStatus)
+        }
     }
 
     private func cleanupStreaming() {
@@ -5024,6 +5107,124 @@ final class ChatViewModel {
         return "An unexpected error occurred"
     }
 
+    /// Extracts and updates tasks from a create_tasks or update_task tool call block
+    /// embedded in the streaming assistant message content.
+    /// Only processes tool calls that are fully complete (isDone == true) to avoid
+    /// parsing truncated/invalid JSON that arrives token-by-token during streaming.
+    private func extractAndApplyTasksFromContent(_ content: String) {
+        guard content.contains("create_tasks") || content.contains("update_task") else { return }
+
+        let ordered = ToolCallParser.parseOrdered(content)
+        for segment in ordered.segments {
+            guard case .toolCall(let tc) = segment else { continue }
+            guard tc.name == "create_tasks" || tc.name == "update_task" else { continue }
+            // Only process complete tool calls — streaming delivers truncated JSON
+            // in the arguments attribute which JSONSerialization cannot parse.
+            guard tc.isDone else { continue }
+
+            if tc.name == "create_tasks" {
+                // Prefer tc.result (server-authoritative, contains assigned IDs),
+                // fall back to tc.arguments using robust multi-strategy parsing.
+                let taskDict = parseTaskJSON(tc.result) ?? parseTaskJSON(tc.arguments)
+                if let taskArray = taskDict?["tasks"] as? [[String: Any]] {
+                    let parsed = taskArray.compactMap { t -> ChatTask? in
+                        guard let id = t["id"] as? String,
+                              let content = t["content"] as? String,
+                              let status = t["status"] as? String
+                        else { return nil }
+                        return ChatTask(id: id, content: content, status: status)
+                    }
+                    if !parsed.isEmpty {
+                        tasks = parsed
+                        conversation?.tasks = parsed
+                    }
+                }
+            } else if tc.name == "update_task" {
+                // Prefer tc.result — server returns the full updated task list after each update_task call.
+                // Fall back to single-task delta from tc.arguments if result is unavailable.
+                if let resultDict = parseTaskJSON(tc.result),
+                   let taskArray = resultDict["tasks"] as? [[String: Any]] {
+                    let parsed = taskArray.compactMap { t -> ChatTask? in
+                        guard let id = t["id"] as? String,
+                              let content = t["content"] as? String,
+                              let status = t["status"] as? String
+                        else { return nil }
+                        return ChatTask(id: id, content: content, status: status)
+                    }
+                    if !parsed.isEmpty {
+                        tasks = parsed
+                        conversation?.tasks = parsed
+                    }
+                } else {
+                    // Fallback: apply a single-task status change from arguments
+                    let argsDict = parseTaskJSON(tc.arguments)
+                    if let json = argsDict,
+                       let taskId = json["id"] as? String ?? json["task_id"] as? String,
+                       let newStatus = json["status"] as? String {
+                        if let idx = tasks.firstIndex(where: { $0.id == taskId }) {
+                            tasks[idx].status = newStatus
+                        }
+                        if let convIdx = conversation?.tasks.firstIndex(where: { $0.id == taskId }) {
+                            conversation?.tasks[convIdx].status = newStatus
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Robustly parses a JSON string into a `[String: Any]` dictionary.
+    /// Handles four encoding variations seen in server-sent tool call attributes:
+    /// 1. Plain JSON object string
+    /// 2. Double-encoded: outer JSON is a string whose value is a JSON object
+    /// 3. Backslash-escaped quotes (`\"`) that must be stripped before parsing
+    /// 4. Regex extraction of individual task objects as a last resort
+    private func parseTaskJSON(_ source: String?) -> [String: Any]? {
+        guard let source, !source.isEmpty else { return nil }
+
+        // Strategy 1: direct parse
+        if let data = source.data(using: .utf8),
+           let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            return json
+        }
+
+        // Strategy 2: double-encoded — outer value is a JSON string wrapping another JSON object
+        if let data = source.data(using: .utf8),
+           let str = try? JSONSerialization.jsonObject(with: data) as? String,
+           let innerData = str.data(using: .utf8),
+           let json = try? JSONSerialization.jsonObject(with: innerData) as? [String: Any] {
+            return json
+        }
+
+        // Strategy 3: strip backslash-escaped quotes produced by HTML attribute encoding
+        let unescaped = source.replacingOccurrences(of: "\\\"", with: "\"")
+        if let data = unescaped.data(using: .utf8),
+           let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            return json
+        }
+
+        // Strategy 4: regex extraction — pull task objects directly from the raw string
+        let taskPattern = #"\{[^{}]*"id"\s*:\s*"[^"]+[^{}]*"content"\s*:\s*"[^"]+[^{}]*"status"\s*:\s*"[^"]+"[^{}]*\}"#
+        if let regex = try? NSRegularExpression(pattern: taskPattern),
+           let tasksRange = source.range(of: #""tasks"\s*:\s*\["#, options: .regularExpression) {
+            let searchString = String(source[tasksRange.lowerBound...])
+            let nsSearch = searchString as NSString
+            let matches = regex.matches(in: searchString, range: NSRange(location: 0, length: nsSearch.length))
+            let taskDicts: [[String: Any]] = matches.compactMap { match in
+                let raw = nsSearch.substring(with: match.range)
+                guard let d = raw.data(using: .utf8),
+                      let obj = try? JSONSerialization.jsonObject(with: d) as? [String: Any]
+                else { return nil }
+                return obj
+            }
+            if !taskDicts.isEmpty {
+                return ["tasks": taskDicts]
+            }
+        }
+
+        return nil
+    }
+
     private func updateAssistantMessage(
         id: String, content: String, isStreaming: Bool,
         sources: [ChatSourceReference]? = nil,
@@ -5070,15 +5271,45 @@ final class ChatViewModel {
                 if let storeError = result.error {
                     conversation?.messages[index].error = storeError
                 }
+                // ── CRITICAL: Write final content into the history tree node NOW ──
+                // This is the ONLY correct place to do this. The flat messages list
+                // (`conversation.messages`) only contains the ACTIVE branch. As soon as
+                // the user edits this message, `rederiveMessages()` switches to the new
+                // branch and this message disappears from the flat list. Any subsequent
+                // `syncToServerViaTree()` call (which iterates the flat list) will never
+                // see this node again and can't update it — causing the empty-content bug.
+                // By writing to the tree node here (at the moment streaming completes,
+                // while the message is still on the active branch), the node is permanently
+                // up-to-date in the tree regardless of any future branch switches.
+                if !finalContent.isEmpty {
+                    conversation?.history.updateNode(id: id) { node in
+                        node.content = finalContent
+                        node.done = true
+                        if !result.sources.isEmpty { node.sources = result.sources }
+                        if !result.statusHistory.isEmpty { node.statusHistory = result.statusHistory }
+                    }
+                }
             } else {
                 // Normal non-streaming update (e.g., error before streaming started)
                 conversation?.messages[index].content = content
                 conversation?.messages[index].isStreaming = isStreaming
+                // Also update tree node for non-streaming completions (e.g., error paths)
+                if !isStreaming && !content.isEmpty {
+                    conversation?.history.updateNode(id: id) { node in
+                        node.content = content
+                        node.done = true
+                    }
+                }
             }
             if let sources { conversation?.messages[index].sources = sources }
             if let statusHistory { conversation?.messages[index].statusHistory = statusHistory }
             if let error { conversation?.messages[index].error = error }
         }
+
+        // Extract and apply task list updates live from the streaming content.
+        // The function guards internally (only runs when "create_tasks" / "update_task" is present)
+        // so this is effectively free for normal messages.
+        extractAndApplyTasksFromContent(content)
 
         // Trigger streaming haptic feedback (throttled to ~10 Hz to avoid
         // overwhelming the Taptic Engine while still feeling responsive)
@@ -5186,6 +5417,12 @@ final class ChatViewModel {
                     conversation?.messages[index].embeds = serverAssistant.embeds
                 }
             }
+        }
+        // Sync tasks from server after a metadata refresh — catches tasks that
+        // were created/updated during streaming and are now stored server-side.
+        if !refreshed.tasks.isEmpty && refreshed.tasks != tasks {
+            tasks = refreshed.tasks
+            conversation?.tasks = refreshed.tasks
         }
     }
 

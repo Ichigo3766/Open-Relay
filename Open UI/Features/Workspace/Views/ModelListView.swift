@@ -176,32 +176,37 @@ struct ModelListView: View {
         }
         .toolbar {
             ToolbarItemGroup(placement: .topBarTrailing) {
+                let wp = dependencies.authViewModel.workspacePermissions
                 // Import
-                Button {
-                    Haptics.play(.light)
-                    showImportPicker = true
-                } label: {
-                    Image(systemName: "square.and.arrow.down")
-                        .scaledFont(size: 15, weight: .medium)
-                        .foregroundStyle(theme.brandPrimary)
-                }
-                .accessibilityLabel("Import Models")
-
-                // Export All
-                Button {
-                    Haptics.play(.light)
-                    Task { await exportAll(manager: manager) }
-                } label: {
-                    if isExportingAll {
-                        ProgressView().controlSize(.mini).tint(theme.brandPrimary)
-                    } else {
-                        Image(systemName: "square.and.arrow.up.on.square")
+                if wp.modelsImport {
+                    Button {
+                        Haptics.play(.light)
+                        showImportPicker = true
+                    } label: {
+                        Image(systemName: "square.and.arrow.down")
                             .scaledFont(size: 15, weight: .medium)
                             .foregroundStyle(theme.brandPrimary)
                     }
+                    .accessibilityLabel("Import Models")
                 }
-                .disabled(isExportingAll || manager.models.isEmpty)
-                .accessibilityLabel("Export Models")
+
+                // Export All
+                if wp.modelsExport {
+                    Button {
+                        Haptics.play(.light)
+                        Task { await exportAll(manager: manager) }
+                    } label: {
+                        if isExportingAll {
+                            ProgressView().controlSize(.mini).tint(theme.brandPrimary)
+                        } else {
+                            Image(systemName: "square.and.arrow.up.on.square")
+                                .scaledFont(size: 15, weight: .medium)
+                                .foregroundStyle(theme.brandPrimary)
+                        }
+                    }
+                    .disabled(isExportingAll || manager.models.isEmpty)
+                    .accessibilityLabel("Export Models")
+                }
 
                 // New Model
                 Button {
@@ -353,11 +358,13 @@ struct ModelListView: View {
             } label: {
                 Label("Clone", systemImage: "plus.square.on.square")
             }
-            Button {
-                Haptics.play(.light)
-                Task { await exportSingleModel(model, manager: manager) }
-            } label: {
-                Label("Export", systemImage: "square.and.arrow.up")
+            if dependencies.authViewModel.workspacePermissions.modelsExport {
+                Button {
+                    Haptics.play(.light)
+                    Task { await exportSingleModel(model, manager: manager) }
+                } label: {
+                    Label("Export", systemImage: "square.and.arrow.up")
+                }
             }
             Divider()
             Button(role: .destructive) {

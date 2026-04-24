@@ -1,13 +1,25 @@
 # Changelog
 
-## 📦 NEXT BUILD
+## v3.3 — April 24, 2026
 
 ### What's New
+- Added Calendar — view, create, and delete events from your Open WebUI calendars (Personal and Scheduled Tasks). Color-coded month grid with event dots, day event list, create event form with calendar picker, date/time, location, reminder options, and description. Access from the ••• menu in the sidebar.
+- Added Automations — schedule prompts to run automatically on a recurring schedule (hourly, daily, weekly, monthly, or custom RRULE). Create, edit, enable/disable, run immediately, and view execution history. Access from the ••• menu in the sidebar.
+- Admin Console → General Settings → Features now includes Calendar and Automations toggles.
+- Model editor (workspace and admin) now shows Task Management, Automations, and Calendar checkboxes in the Built-in Tools section.
+- Added task list panel above the chat input — when a model uses task management tools, a collapsible panel shows all tasks with their status.
 
 ### Improvements
+- Screen stays on during voice calls — the display no longer turns off mid-conversation, keeping the call active without needing to tap the screen.
+- Tool call OUTPUT now shows pretty-printed, expanded JSON instead of a single compressed line.
+- Multiple consecutive tool calls with the same name are now grouped into a single collapsible row.
+- Admin users can now open the Admin Console directly from the sidebar (•••) menu.
+- Various UI element consistency across the app.
 
 ### Bug Fixes
-
+- Fixed sidebar and chat features (Notes, Channels, Folders, Memories) now correctly respect the user's individual permissions from the server
+- Fixed message versioning - completely rebuilt end-to-end to match OpenWebUI's conversation tree
+- Attempting to fix Microsoft (and other OAuth) sign-in staying stuck on the web page after successful login instead of returning to the app.
 
 ## Previous Builds
 

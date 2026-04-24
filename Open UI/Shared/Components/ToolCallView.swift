@@ -315,7 +315,22 @@ enum ToolCallParser {
         let doneStr = extractAttribute("done", from: block)
         let isDone = doneStr == "true"
         let arguments = extractAttribute("arguments", from: block)
-        let result = extractAttribute("result", from: block)
+        // Try the result="" attribute first. If absent (OpenWebUI stores the output
+        // as the body between </summary> and </details>), fall back to body content.
+        let resultAttr = extractAttribute("result", from: block)
+        let result: String? = {
+            if let r = resultAttr, !r.isEmpty { return r }
+            // Body fallback: extract content between </summary> and </details>
+            let bodyPattern = #"</summary>([\s\S]*?)</details>"#
+            if let regex = try? NSRegularExpression(pattern: bodyPattern, options: [.dotMatchesLineSeparators]),
+               let match = regex.firstMatch(in: block, range: NSRange(location: 0, length: (block as NSString).length)),
+               match.numberOfRanges > 1 {
+                let body = (block as NSString).substring(with: match.range(at: 1))
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                return body.isEmpty ? nil : body
+            }
+            return nil
+        }()
         let embeds = parseEmbedsAttribute(from: block)
 
         return ToolCallData(
@@ -524,7 +539,46 @@ enum ToolCallParser {
             }
         }
 
-        // ── Phase 2: Handle incomplete <details type="reasoning"> blocks ──
+        // ── Phase 2: Handle incomplete <details type="tool_calls"> blocks ──
+        // During streaming the server emits tool call blocks incrementally.
+        // The closing </details> may not have arrived yet, so the main regex
+        // never matches and the partial block passes through as raw text.
+        // We close the block so the parser can render it as an in-progress tool call.
+        if result.contains("<details") && !result.isEmpty {
+            if let incompleteToolRegex = try? NSRegularExpression(
+                pattern: #"(<details\s+[^>]*type\s*=\s*["']tool_calls["'][^>]*>)([\s\S]*)$"#,
+                options: [.dotMatchesLineSeparators]
+            ) {
+                let nsResult = result as NSString
+                let openToolCount = countOccurrences(of: #"<details\s+[^>]*type\s*=\s*["']tool_calls["']"#, in: result)
+                let closeCount = countOccurrences(of: "</details>", in: result)
+
+                if openToolCount > closeCount {
+                    let allMatches = incompleteToolRegex.matches(
+                        in: result,
+                        range: NSRange(location: 0, length: nsResult.length)
+                    )
+                    if let match = allMatches.last, match.numberOfRanges > 1 {
+                        let openTag = nsResult.substring(with: match.range(at: 1))
+                        let innerContent = match.numberOfRanges > 2
+                            ? nsResult.substring(with: match.range(at: 2))
+                            : ""
+
+                        // Inject done="false" if not already present so the
+                        // ToolCallView shows an in-progress spinner.
+                        let tagWithDone: String = {
+                            if openTag.contains("done=") { return openTag }
+                            return openTag.replacingOccurrences(of: ">", with: " done=\"false\">")
+                        }()
+
+                        let replacement = tagWithDone + innerContent + "</details>"
+                        result = (result as NSString).replacingCharacters(in: match.range, with: replacement)
+                    }
+                }
+            }
+        }
+
+        // ── Phase 3: Handle incomplete <details type="reasoning"> blocks ──
         // During streaming, the server may have started a <details> block but
         // </details> hasn't arrived yet. The main parser's regex requires the
         // closing tag, so the partial block passes through as raw text — with
@@ -1265,14 +1319,34 @@ private struct ToolCallResultBlockView: View {
     @Environment(\.colorScheme) private var colorScheme
 
     private var formattedContent: String {
-        guard let data = content.data(using: .utf8),
-              let json = try? JSONSerialization.jsonObject(with: data),
-              let prettyData = try? JSONSerialization.data(withJSONObject: json, options: [.prettyPrinted]),
-              let pretty = String(data: prettyData, encoding: .utf8)
-        else {
-            return content
+        // First attempt: parse the content directly as JSON
+        if let data = content.data(using: .utf8),
+           let json = try? JSONSerialization.jsonObject(with: data),
+           let prettyData = try? JSONSerialization.data(withJSONObject: json, options: [.prettyPrinted, .sortedKeys]),
+           let pretty = String(data: prettyData, encoding: .utf8) {
+            return pretty
         }
-        return pretty
+
+        // Second attempt: content may be a JSON string (double-encoded) — unwrap it.
+        // e.g. result attribute value: "\"{ ... }\"" → strip outer quotes then parse.
+        let stripped = content.trimmingCharacters(in: .whitespacesAndNewlines)
+        if stripped.hasPrefix("\"") && stripped.hasSuffix("\"") {
+            // Remove surrounding quotes and unescape inner escaped quotes
+            let inner = String(stripped.dropFirst().dropLast())
+                .replacingOccurrences(of: "\\\"", with: "\"")
+                .replacingOccurrences(of: "\\n", with: "\n")
+                .replacingOccurrences(of: "\\\\", with: "\\")
+            if let data = inner.data(using: .utf8),
+               let json = try? JSONSerialization.jsonObject(with: data),
+               let prettyData = try? JSONSerialization.data(withJSONObject: json, options: [.prettyPrinted, .sortedKeys]),
+               let pretty = String(data: prettyData, encoding: .utf8) {
+                return pretty
+            }
+            // Inner wasn't JSON either — return the unescaped inner string
+            return inner
+        }
+
+        return content
     }
 
     private var lines: [String] {
@@ -1595,30 +1669,162 @@ struct ToolCallView: View {
     }
 }
 
+// MARK: - Collapsed Tool Call Group
+
+/// Renders a group of consecutive tool calls from the same MCP server as a
+/// collapsible summary row — "Explored N server-name ˅" — matching the Open
+/// WebUI web UI. Tapping the header expands to reveal individual ToolCallViews.
+private struct CollapsedToolCallGroup: View {
+    let calls: [ToolCallData]
+    var authToken: String? = nil
+    var serverBaseURL: String? = nil
+
+    @State private var isExpanded: Bool = false
+    @Environment(\.theme) private var theme
+
+    private var allDone: Bool { calls.allSatisfy(\.isDone) }
+
+    /// The group label: the shared server prefix (before `__`), or the shared
+    /// tool name if no prefix separator is present.
+    private var groupLabel: String {
+        ToolCallsContainer.serverPrefix(for: calls[0].name)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            // Summary header
+            Button {
+                withAnimation(.easeInOut(duration: 0.22)) {
+                    isExpanded.toggle()
+                }
+            } label: {
+                HStack(spacing: 8) {
+                    if allDone {
+                        Image(systemName: "checkmark.circle.fill")
+                            .scaledFont(size: 14)
+                            .foregroundStyle(theme.success)
+                    } else {
+                        ProgressView()
+                            .controlSize(.mini)
+                            .tint(theme.brandPrimary)
+                    }
+
+                    (Text("Explored ")
+                        .foregroundStyle(theme.textTertiary)
+                     + Text("\(calls.count) ")
+                        .foregroundStyle(theme.textPrimary)
+                        .fontWeight(.semibold)
+                     + Text(groupLabel)
+                        .foregroundStyle(theme.textPrimary)
+                        .fontWeight(.semibold))
+                        .scaledFont(size: 13, weight: .medium)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+
+                    Spacer()
+
+                    Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
+                        .scaledFont(size: 10, weight: .semibold)
+                        .foregroundStyle(theme.textTertiary)
+                }
+                .padding(.vertical, 10)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(Text("\(allDone ? "Completed" : "Running") \(calls.count) \(groupLabel) calls. \(isExpanded ? "Tap to collapse." : "Tap to expand.")"))
+
+            // Individual calls revealed when expanded
+            if isExpanded {
+                Divider()
+                    .overlay(Color.primary.opacity(0.07))
+
+                VStack(alignment: .leading, spacing: 0) {
+                    ForEach(calls) { call in
+                        ToolCallView(
+                            toolCall: call,
+                            authToken: authToken,
+                            serverBaseURL: serverBaseURL
+                        )
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 2)
+
+                        if call.id != calls.last?.id {
+                            Divider()
+                                .overlay(Color.primary.opacity(0.07))
+                                .padding(.horizontal, 12)
+                        }
+                    }
+                }
+                .transition(.opacity.combined(with: .move(edge: .top)))
+            }
+        }
+        .padding(.horizontal, 12)
+    }
+}
+
 // MARK: - Tool Calls Container
 
 /// Renders a list of tool calls extracted from message content.
+/// Consecutive calls sharing the same MCP server prefix (the part before `__`)
+/// are collapsed into a single expandable summary row, matching the Open WebUI
+/// web UI. Plain tool names with no prefix are grouped by exact name.
 struct ToolCallsContainer: View {
     let toolCalls: [ToolCallData]
     var authToken: String? = nil
     var serverBaseURL: String? = nil
 
+    /// Returns the server prefix for a tool name.
+    /// MCP tool names use `serverName__toolFunction` — we extract `serverName`.
+    /// Plain tool names (no `__`) return the full name unchanged.
+    static func serverPrefix(for name: String) -> String {
+        guard let separatorRange = name.range(of: "__") else { return name }
+        return String(name[name.startIndex..<separatorRange.lowerBound])
+    }
+
+    /// Groups consecutive tool calls that share the same server prefix into
+    /// sub-arrays. Different tool functions from the same MCP server
+    /// (e.g. `server__search` and `server__read`) are merged into one group.
+    private static func subGroupByName(_ calls: [ToolCallData]) -> [[ToolCallData]] {
+        var groups: [[ToolCallData]] = []
+        for call in calls {
+            let prefix = serverPrefix(for: call.name)
+            if var last = groups.last, serverPrefix(for: last[0].name) == prefix {
+                last.append(call)
+                groups[groups.count - 1] = last
+            } else {
+                groups.append([call])
+            }
+        }
+        return groups
+    }
+
     var body: some View {
         if !toolCalls.isEmpty {
+            let subGroups = Self.subGroupByName(toolCalls)
             VStack(alignment: .leading, spacing: 0) {
-                ForEach(toolCalls) { toolCall in
-                    ToolCallView(
-                        toolCall: toolCall,
-                        authToken: authToken,
-                        serverBaseURL: serverBaseURL
-                    )
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 2)
-
-                    if toolCall.id != toolCalls.last?.id {
+                ForEach(Array(subGroups.enumerated()), id: \.offset) { index, group in
+                    if index > 0 {
                         Divider()
                             .overlay(Color.primary.opacity(0.07))
                             .padding(.horizontal, 12)
+                    }
+
+                    if group.count == 1 {
+                        // Single call — render flat as before
+                        ToolCallView(
+                            toolCall: group[0],
+                            authToken: authToken,
+                            serverBaseURL: serverBaseURL
+                        )
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 2)
+                    } else {
+                        // Multiple same-name calls — collapsible group
+                        CollapsedToolCallGroup(
+                            calls: group,
+                            authToken: authToken,
+                            serverBaseURL: serverBaseURL
+                        )
                     }
                 }
             }
@@ -1787,6 +1993,16 @@ struct AssistantMessageContent: View {
         let cacheKey = isStreaming ? (contentLength & ~63) : contentLength
         let ordered: ToolCallParser.OrderedParseResult = {
             if cacheKey == parseCache.lastLength, let cached = parseCache.lastResult {
+                // During streaming, if the cached result is pure text (no tool calls
+                // or reasoning), return the current content directly so the drain
+                // timer's character-by-character reveal isn't stale for up to 64 bytes.
+                if isStreaming, cached.segments.count == 1,
+                   case .text = cached.segments[0] {
+                    return ToolCallParser.OrderedParseResult(
+                        segments: [.text(content)],
+                        allToolCalls: []
+                    )
+                }
                 return cached
             }
             let result = ToolCallParser.parseOrdered(content)

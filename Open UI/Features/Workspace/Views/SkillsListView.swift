@@ -204,32 +204,35 @@ struct SkillsListView: View {
         }
         .toolbar {
             ToolbarItemGroup(placement: .topBarTrailing) {
-                // Import button
-                Button {
-                    Haptics.play(.light)
-                    showImportPicker = true
-                } label: {
-                    Image(systemName: "square.and.arrow.down")
-                        .scaledFont(size: 15, weight: .medium)
-                        .foregroundStyle(theme.brandPrimary)
-                }
-                .accessibilityLabel("Import Skill")
-
-                // Export All button
-                Button {
-                    Haptics.play(.light)
-                    Task { await exportAll(manager: manager) }
-                } label: {
-                    if isExportingAll {
-                        ProgressView().controlSize(.mini).tint(theme.brandPrimary)
-                    } else {
-                        Image(systemName: "square.and.arrow.up.on.square")
+                let isAdmin = dependencies.authViewModel.currentUser?.role == .admin
+                // Import button (admin only — no dedicated skills_import permission in API)
+                if isAdmin {
+                    Button {
+                        Haptics.play(.light)
+                        showImportPicker = true
+                    } label: {
+                        Image(systemName: "square.and.arrow.down")
                             .scaledFont(size: 15, weight: .medium)
                             .foregroundStyle(theme.brandPrimary)
                     }
+                    .accessibilityLabel("Import Skill")
+
+                    // Export All button (admin only)
+                    Button {
+                        Haptics.play(.light)
+                        Task { await exportAll(manager: manager) }
+                    } label: {
+                        if isExportingAll {
+                            ProgressView().controlSize(.mini).tint(theme.brandPrimary)
+                        } else {
+                            Image(systemName: "square.and.arrow.up.on.square")
+                                .scaledFont(size: 15, weight: .medium)
+                                .foregroundStyle(theme.brandPrimary)
+                        }
+                    }
+                    .disabled(isExportingAll || manager.skills.isEmpty)
+                    .accessibilityLabel("Export All Skills")
                 }
-                .disabled(isExportingAll || manager.skills.isEmpty)
-                .accessibilityLabel("Export All Skills")
 
                 // New Skill button
                 Button {
@@ -389,11 +392,13 @@ struct SkillsListView: View {
             } label: {
                 Label("Clone", systemImage: "plus.square.on.square")
             }
-            Button {
-                Haptics.play(.light)
-                Task { await exportSingleSkill(skill, manager: manager) }
-            } label: {
-                Label("Export", systemImage: "square.and.arrow.up")
+            if dependencies.authViewModel.currentUser?.role == .admin {
+                Button {
+                    Haptics.play(.light)
+                    Task { await exportSingleSkill(skill, manager: manager) }
+                } label: {
+                    Label("Export", systemImage: "square.and.arrow.up")
+                }
             }
             Divider()
             Button(role: .destructive) {

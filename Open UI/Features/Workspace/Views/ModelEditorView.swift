@@ -74,6 +74,9 @@ struct ModelEditorView: View {
     @State private var builtinNotes = true
     @State private var builtinKnowledge = true
     @State private var builtinChannels = true
+    @State private var builtinTaskManagement = true
+    @State private var builtinAutomations = true
+    @State private var builtinCalendar = true
     @State private var builtinWebSearch = true
     @State private var builtinImageGen = true
     @State private var builtinCodeInterpreter = true
@@ -314,6 +317,7 @@ struct ModelEditorView: View {
                         builtinTime: $builtinTime, builtinMemory: $builtinMemory,
                         builtinChats: $builtinChats, builtinNotes: $builtinNotes,
                         builtinKnowledge: $builtinKnowledge, builtinChannels: $builtinChannels,
+                        builtinTaskManagement: $builtinTaskManagement, builtinAutomations: $builtinAutomations, builtinCalendar: $builtinCalendar,
                         builtinWebSearch: $builtinWebSearch, builtinImageGen: $builtinImageGen,
                         builtinCodeInterpreter: $builtinCodeInterpreter
                     )
@@ -1074,6 +1078,9 @@ struct ModelEditorView: View {
                     capCheckbox("Notes", systemImage: "note.text", value: $builtinNotes)
                     capCheckbox("Knowledge Base", systemImage: "cylinder.split.1x2", value: $builtinKnowledge)
                     capCheckbox("Channels", systemImage: "antenna.radiowaves.left.and.right", value: $builtinChannels)
+                    capCheckbox("Task Management", systemImage: "checklist", value: $builtinTaskManagement)
+                    capCheckbox("Automations", systemImage: "gearshape.2", value: $builtinAutomations)
+                    capCheckbox("Calendar", systemImage: "calendar", value: $builtinCalendar)
                     capCheckbox("Web Search", systemImage: "magnifyingglass", value: $builtinWebSearch)
                     capCheckbox("Image Generation", systemImage: "photo.badge.plus", value: $builtinImageGen)
                     capCheckbox("Code Interpreter", systemImage: "chevron.left.forwardslash.chevron.right", value: $builtinCodeInterpreter)
@@ -1315,6 +1322,9 @@ struct ModelEditorView: View {
         builtinTime = model.builtinTime; builtinMemory = model.builtinMemory
         builtinChats = model.builtinChats; builtinNotes = model.builtinNotes
         builtinKnowledge = model.builtinKnowledge; builtinChannels = model.builtinChannels
+        builtinTaskManagement = model.builtinTaskManagement
+        builtinAutomations = model.builtinAutomations
+        builtinCalendar = model.builtinCalendar
         builtinWebSearch = model.builtinWebSearch; builtinImageGen = model.builtinImageGen
         builtinCodeInterpreter = model.builtinCodeInterpreter
 
@@ -1518,6 +1528,7 @@ struct ModelEditorView: View {
             defaultFeatureWebSearch: defaultWebSearch, defaultFeatureImageGen: defaultImageGen, defaultFeatureCodeInterpreter: defaultCodeInterpreter,
             builtinTime: builtinTime, builtinMemory: builtinMemory, builtinChats: builtinChats,
             builtinNotes: builtinNotes, builtinKnowledge: builtinKnowledge, builtinChannels: builtinChannels,
+            builtinTaskManagement: builtinTaskManagement, builtinAutomations: builtinAutomations, builtinCalendar: builtinCalendar,
             builtinWebSearch: builtinWebSearch, builtinImageGen: builtinImageGen, builtinCodeInterpreter: builtinCodeInterpreter,
             knowledgeItems: knowledgeItems,
             suggestionPrompts: suggestionPrompts,
@@ -2529,6 +2540,9 @@ struct ModelToolsAndCapabilitiesSection: View {
     @Binding var builtinNotes: Bool
     @Binding var builtinKnowledge: Bool
     @Binding var builtinChannels: Bool
+    @Binding var builtinTaskManagement: Bool
+    @Binding var builtinAutomations: Bool
+    @Binding var builtinCalendar: Bool
     @Binding var builtinWebSearch: Bool
     @Binding var builtinImageGen: Bool
     @Binding var builtinCodeInterpreter: Bool
@@ -2788,6 +2802,9 @@ struct ModelToolsAndCapabilitiesSection: View {
                     capCheckbox("Notes", value: $builtinNotes)
                     capCheckbox("Knowledge Base", value: $builtinKnowledge)
                     capCheckbox("Channels", value: $builtinChannels)
+                    capCheckbox("Task Management", value: $builtinTaskManagement)
+                    capCheckbox("Automations", value: $builtinAutomations)
+                    capCheckbox("Calendar", value: $builtinCalendar)
                     capCheckbox("Web Search", value: $builtinWebSearch)
                     capCheckbox("Image Generation", value: $builtinImageGen)
                     capCheckbox("Code Interpreter", value: $builtinCodeInterpreter)
