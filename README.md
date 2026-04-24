@@ -50,6 +50,12 @@ Open Relay connects to your Open WebUI server and lets you have conversations wi
 
 **🧠 Memories** — View, add, edit, and delete AI memories (Settings → Personalization → Memories) that persist across conversations.
 
+**Automations** - Automations let you schedule prompts to run automatically at recurring times.
+
+**Task Management** - Task Management gives agentic models a structured way to plan and track multi-step work in a chat. Instead of keeping an implicit plan in free text, the model can maintain a live task list with explicit statuses.
+
+**📅 Calendar** - Schedule, track, and manage events — with AI that can plan for you.
+
 **🎙️ On-Device TTS (Marvis Neural Voice)** — Built-in on-device text-to-speech powered by MLX. Downloads a \~250MB model once, then runs completely locally — no data leaves your phone. You can also use Apple's system voices or your server's TTS with voice selection.
 
 **🎤 On-Device Speech-to-Text** — Voice input with Apple's on-device speech recognition, your server's STT endpoint (fully supports live mic and voice calls), or an on-device Qwen3 ASR model for offline transcription.

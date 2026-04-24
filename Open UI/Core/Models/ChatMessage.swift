@@ -130,6 +130,12 @@ struct ChatMessageFile: Codable, Hashable, Sendable {
 
 struct ChatMessage: Identifiable, Hashable, Sendable {
     let id: String
+    /// The original parent message ID from the server's history tree.
+    /// Preserved on parse so that `buildChatPayload()` can write back
+    /// downstream / version branch messages with their ORIGINAL parentId
+    /// instead of recalculating it from array position (which corrupts
+    /// multi-generation version trees on sync).
+    var parentId: String?
     var role: MessageRole
     var content: String
     var timestamp: Date
@@ -156,6 +162,7 @@ struct ChatMessage: Identifiable, Hashable, Sendable {
 
     init(
         id: String = UUID().uuidString,
+        parentId: String? = nil,
         role: MessageRole,
         content: String,
         timestamp: Date = .now,
@@ -173,6 +180,7 @@ struct ChatMessage: Identifiable, Hashable, Sendable {
         embeds: [String] = []
     ) {
         self.id = id
+        self.parentId = parentId
         self.role = role
         self.content = content
         self.timestamp = timestamp
@@ -337,28 +345,20 @@ private struct AnyEncodable: Encodable {
     }
 }
 
-/// A previous version of an assistant response, stored when the user
-/// retries / regenerates a response.
+/// A sibling node in the OpenWebUI history tree, used purely for the
+/// version-switcher UI ("2 / 3" counter and prev/next navigation).
 ///
-/// Each version corresponds to a **sibling message** in the OpenWebUI
-/// history tree. The `id` field tracks the sibling's message ID so
-/// we can round-trip versions through the server without duplication.
-///
-/// For **user message versions** (edit history), `pairedAssistantId`
-/// stores the ID of the assistant message that responded to this version
-/// of the user message. This allows the UI to switch the displayed AI
-/// response when the user navigates between edit versions.
+/// The tree is always the source of truth for branching. A `ChatMessageVersion`
+/// is derived from sibling nodes in `MessageHistory.createMessagesList()` and
+/// carries only the fields needed to display the alternate content in the UI.
+/// No nested message data, no downstream chains — just the sibling node's
+/// own content and metadata.
 struct ChatMessageVersion: Codable, Equatable, Hashable, Sendable {
     enum CodingKeys: String, CodingKey {
         case id, content, timestamp, model, error, files, sources, followUps, usage, statusHistory
-        case pairedAssistantId, pairedAssistantContent, pairedAssistantModel
-        case pairedAssistantFiles, pairedAssistantSources, pairedAssistantVersions
-        case downstreamMessages
     }
 
-    /// Sibling message ID in the OpenWebUI history tree.
-    /// Generated locally for app-created versions; preserved from server
-    /// for server-created siblings.
+    /// The sibling node's message ID in the history tree.
     var id: String
     var content: String
     var timestamp: Date
@@ -367,31 +367,8 @@ struct ChatMessageVersion: Codable, Equatable, Hashable, Sendable {
     var files: [ChatMessageFile]
     var sources: [ChatSourceReference]
     var followUps: [String]
-    /// Tool execution status updates for this specific version.
     var statusHistory: [ChatStatusUpdate]
-    /// Token usage for this specific version, captured when the response completes.
     var usage: [String: Any]?
-    /// For user message versions only: the ID of the assistant message
-    /// that is the active (current) response to this user version.
-    var pairedAssistantId: String?
-
-    /// For user message versions only: stores the AI response content that was
-    /// generated in response to this (older) user message version.
-    var pairedAssistantContent: String?
-    var pairedAssistantModel: String?
-    var pairedAssistantFiles: [ChatMessageFile]
-    var pairedAssistantSources: [ChatSourceReference]
-
-    /// Regeneration versions for the OLD branch's assistant message.
-    /// When the user regenerated the AI response multiple times on the old
-    /// branch before editing the user message, those are stored here so
-    /// they can be restored if the user switches back to this branch.
-    var pairedAssistantVersions: [ChatMessageVersion]
-
-    /// Messages that came AFTER the user+assistant pair on this old branch
-    /// (i.e., the continuation of the conversation). Stored here so that
-    /// switching to this branch restores the full context.
-    var downstreamMessages: [ChatMessage]
 
     init(
         id: String = UUID().uuidString,
@@ -403,14 +380,7 @@ struct ChatMessageVersion: Codable, Equatable, Hashable, Sendable {
         sources: [ChatSourceReference] = [],
         followUps: [String] = [],
         statusHistory: [ChatStatusUpdate] = [],
-        usage: [String: Any]? = nil,
-        pairedAssistantId: String? = nil,
-        pairedAssistantContent: String? = nil,
-        pairedAssistantModel: String? = nil,
-        pairedAssistantFiles: [ChatMessageFile] = [],
-        pairedAssistantSources: [ChatSourceReference] = [],
-        pairedAssistantVersions: [ChatMessageVersion] = [],
-        downstreamMessages: [ChatMessage] = []
+        usage: [String: Any]? = nil
     ) {
         self.id = id
         self.content = content
@@ -422,25 +392,15 @@ struct ChatMessageVersion: Codable, Equatable, Hashable, Sendable {
         self.followUps = followUps
         self.statusHistory = statusHistory
         self.usage = usage
-        self.pairedAssistantId = pairedAssistantId
-        self.pairedAssistantContent = pairedAssistantContent
-        self.pairedAssistantModel = pairedAssistantModel
-        self.pairedAssistantFiles = pairedAssistantFiles
-        self.pairedAssistantSources = pairedAssistantSources
-        self.pairedAssistantVersions = pairedAssistantVersions
-        self.downstreamMessages = downstreamMessages
     }
 
-    // Custom decoder for backwards compatibility — if fields are missing
-    // from JSON (e.g., cached data from before this field existed),
-    // fall back to defaults.
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         self.id = (try? container.decode(String.self, forKey: .id)) ?? UUID().uuidString
-        self.content = try container.decode(String.self, forKey: .content)
-        self.timestamp = try container.decode(Date.self, forKey: .timestamp)
-        self.model = try container.decodeIfPresent(String.self, forKey: .model)
-        self.error = try container.decodeIfPresent(ChatMessageError.self, forKey: .error)
+        self.content = (try? container.decode(String.self, forKey: .content)) ?? ""
+        self.timestamp = (try? container.decode(Date.self, forKey: .timestamp)) ?? .now
+        self.model = try? container.decodeIfPresent(String.self, forKey: .model)
+        self.error = try? container.decodeIfPresent(ChatMessageError.self, forKey: .error)
         self.files = (try? container.decode([ChatMessageFile].self, forKey: .files)) ?? []
         self.sources = (try? container.decode([ChatSourceReference].self, forKey: .sources)) ?? []
         self.followUps = (try? container.decode([String].self, forKey: .followUps)) ?? []
@@ -450,13 +410,6 @@ struct ChatMessageVersion: Codable, Equatable, Hashable, Sendable {
         } else {
             self.usage = nil
         }
-        self.pairedAssistantId = try? container.decodeIfPresent(String.self, forKey: .pairedAssistantId)
-        self.pairedAssistantContent = try? container.decodeIfPresent(String.self, forKey: .pairedAssistantContent)
-        self.pairedAssistantModel = try? container.decodeIfPresent(String.self, forKey: .pairedAssistantModel)
-        self.pairedAssistantFiles = (try? container.decode([ChatMessageFile].self, forKey: .pairedAssistantFiles)) ?? []
-        self.pairedAssistantSources = (try? container.decode([ChatSourceReference].self, forKey: .pairedAssistantSources)) ?? []
-        self.pairedAssistantVersions = (try? container.decode([ChatMessageVersion].self, forKey: .pairedAssistantVersions)) ?? []
-        self.downstreamMessages = (try? container.decode([ChatMessage].self, forKey: .downstreamMessages)) ?? []
     }
 
     func encode(to encoder: Encoder) throws {
@@ -473,17 +426,8 @@ struct ChatMessageVersion: Codable, Equatable, Hashable, Sendable {
         if let usage {
             try c.encode(AnyCodableMap(usage), forKey: .usage)
         }
-        try c.encodeIfPresent(pairedAssistantId, forKey: .pairedAssistantId)
-        try c.encodeIfPresent(pairedAssistantContent, forKey: .pairedAssistantContent)
-        try c.encodeIfPresent(pairedAssistantModel, forKey: .pairedAssistantModel)
-        try c.encode(pairedAssistantFiles, forKey: .pairedAssistantFiles)
-        try c.encode(pairedAssistantSources, forKey: .pairedAssistantSources)
-        try c.encode(pairedAssistantVersions, forKey: .pairedAssistantVersions)
-        try c.encode(downstreamMessages, forKey: .downstreamMessages)
     }
 
-    // Manual Equatable — compares all fields except `usage` ([String: Any] isn't Equatable).
-    // usage is compared by presence only (nil vs non-nil) to avoid false positives.
     static func == (lhs: ChatMessageVersion, rhs: ChatMessageVersion) -> Bool {
         lhs.id == rhs.id
             && lhs.content == rhs.content
@@ -494,16 +438,8 @@ struct ChatMessageVersion: Codable, Equatable, Hashable, Sendable {
             && lhs.sources == rhs.sources
             && lhs.followUps == rhs.followUps
             && (lhs.usage == nil) == (rhs.usage == nil)
-            && lhs.pairedAssistantId == rhs.pairedAssistantId
-            && lhs.pairedAssistantContent == rhs.pairedAssistantContent
-            && lhs.pairedAssistantModel == rhs.pairedAssistantModel
-            && lhs.pairedAssistantFiles == rhs.pairedAssistantFiles
-            && lhs.pairedAssistantSources == rhs.pairedAssistantSources
-            && lhs.pairedAssistantVersions == rhs.pairedAssistantVersions
-            && lhs.downstreamMessages == rhs.downstreamMessages
     }
 
-    // Manual Hashable — hashes all Hashable fields; usage is hashed by presence only.
     func hash(into hasher: inout Hasher) {
         hasher.combine(id)
         hasher.combine(content)
@@ -514,9 +450,6 @@ struct ChatMessageVersion: Codable, Equatable, Hashable, Sendable {
         hasher.combine(sources)
         hasher.combine(followUps)
         hasher.combine(usage != nil)
-        hasher.combine(pairedAssistantId)
-        hasher.combine(pairedAssistantContent)
-        hasher.combine(pairedAssistantModel)
     }
 }
 

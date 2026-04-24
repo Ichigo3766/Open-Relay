@@ -29,6 +29,12 @@ struct MainChatView: View {
     /// Controls the workspace sheet presentation.
     @State private var showWorkspace = false
 
+    /// Controls the calendar sheet presentation.
+    @State private var showCalendar = false
+
+    /// Controls the automations sheet presentation.
+    @State private var showAutomations = false
+
     /// Controls the memories sheet presentation.
     @State private var showMemories = false
 
@@ -43,6 +49,9 @@ struct MainChatView: View {
 
     /// Controls the shared chats sheet presentation.
     @State private var showSharedChats = false
+
+    /// Controls the admin console sheet presentation (admin users only).
+    @State private var showAdminConsole = false
 
     /// Channel list VM for sidebar display.
     @State private var channelListVM = ChannelListViewModel()
@@ -467,8 +476,17 @@ struct MainChatView: View {
                 NavigationStack {
                     NotesListView()
                         .toolbar {
-                            ToolbarItem(placement: .confirmationAction) {
-                                Button("Done") { showNotes = false }
+                            ToolbarItem(placement: .navigationBarLeading) {
+                                Button {
+                                    showNotes = false
+                                } label: {
+                                    Image(systemName: "xmark")
+                                        .font(.system(size: 14, weight: .medium))
+                                        .foregroundStyle(Color.secondary)
+                                        .frame(width: 32, height: 32)
+                                        .background(Color(uiColor: .systemGray5).opacity(0.6))
+                                        .clipShape(Circle())
+                                }
                             }
                         }
                 }
@@ -477,8 +495,17 @@ struct MainChatView: View {
                 NavigationStack {
                     ChannelsListView()
                         .toolbar {
-                            ToolbarItem(placement: .cancellationAction) {
-                                Button("Done") { showChannels = false }
+                            ToolbarItem(placement: .navigationBarLeading) {
+                                Button {
+                                    showChannels = false
+                                } label: {
+                                    Image(systemName: "xmark")
+                                        .font(.system(size: 14, weight: .medium))
+                                        .foregroundStyle(Color.secondary)
+                                        .frame(width: 32, height: 32)
+                                        .background(Color(uiColor: .systemGray5).opacity(0.6))
+                                        .clipShape(Circle())
+                                }
                             }
                         }
                 }
@@ -638,17 +665,61 @@ struct MainChatView: View {
                     .environment(dependencies)
                     .themed(with: dependencies.appearanceManager, accessibility: dependencies.accessibilityManager)
             }
+            // Calendar sheet
+            .sheet(isPresented: $showCalendar) {
+                CalendarView()
+                    .environment(dependencies)
+                    .themed(with: dependencies.appearanceManager, accessibility: dependencies.accessibilityManager)
+            }
+            // Automations sheet
+            .sheet(isPresented: $showAutomations) {
+                AutomationsListView()
+                    .environment(dependencies)
+                    .themed(with: dependencies.appearanceManager, accessibility: dependencies.accessibilityManager)
+            }
             // Memories sheet
             .sheet(isPresented: $showMemories) {
                 NavigationStack {
                     MemoriesView()
                         .toolbar {
-                            ToolbarItem(placement: .confirmationAction) {
-                                Button("Done") { showMemories = false }
+                            ToolbarItem(placement: .navigationBarLeading) {
+                                Button {
+                                    showMemories = false
+                                } label: {
+                                    Image(systemName: "xmark")
+                                        .font(.system(size: 14, weight: .medium))
+                                        .foregroundStyle(Color.secondary)
+                                        .frame(width: 32, height: 32)
+                                        .background(Color(uiColor: .systemGray5).opacity(0.6))
+                                        .clipShape(Circle())
+                                }
                             }
                         }
                 }
                 .themed(with: dependencies.appearanceManager, accessibility: dependencies.accessibilityManager)
+            }
+            // Admin Console sheet (admin-only)
+            .sheet(isPresented: $showAdminConsole) {
+                NavigationStack {
+                    AdminConsoleView()
+                        .toolbar {
+                            ToolbarItem(placement: .navigationBarLeading) {
+                                Button {
+                                    showAdminConsole = false
+                                } label: {
+                                    Image(systemName: "xmark")
+                                        .font(.system(size: 14, weight: .medium))
+                                        .foregroundStyle(Color.secondary)
+                                        .frame(width: 32, height: 32)
+                                        .background(Color(uiColor: .systemGray5).opacity(0.6))
+                                        .clipShape(Circle())
+                                }
+                            }
+                        }
+                }
+                .environment(dependencies)
+                .themed(with: dependencies.appearanceManager, accessibility: dependencies.accessibilityManager)
+                .presentationCornerRadius(20)
             }
             // Account picker sheet (multi-account per server)
             .sheet(isPresented: Bindable(dependencies.authViewModel).showAccountPicker) {
@@ -1184,13 +1255,14 @@ struct MainChatView: View {
 
                     // ── FOLDERS SECTION (always visible so user can create new folders) ─
                     let folderVM = listViewModel.folderViewModel
-                    if !folderVM.featureDisabled {
+                    let foldersEnabled = dependencies.authViewModel.featurePermissions.folders
+                    if foldersEnabled && !folderVM.featureDisabled {
                         drawerFoldersSection(folderVM: folderVM)
                     }
 
                     // ── DIVIDER between Folders & Channels ──────────────
-                    let channelsEnabled = dependencies.authViewModel.backendConfig?.features?.enableChannels != false
-                    if (!folderVM.featureDisabled && !folderVM.folders.isEmpty) || (channelsEnabled && !channelListVM.channels.isEmpty) {
+                    let channelsEnabled = dependencies.authViewModel.featurePermissions.channels
+                    if (foldersEnabled && !folderVM.featureDisabled && !folderVM.folders.isEmpty) || (channelsEnabled && !channelListVM.channels.isEmpty) {
                         Rectangle()
                             .fill(theme.textTertiary.opacity(0.15))
                             .frame(height: 1)
@@ -1199,7 +1271,7 @@ struct MainChatView: View {
                     }
 
                     // ── CHANNELS SECTION (shown only when enabled on server) ──
-                    if channelsEnabled {
+                    if channelsEnabled {  // swiftlint:disable:this opening_brace
                     VStack(alignment: .leading, spacing: 0) {
                         // Collapsible header
                         Button {
@@ -2230,24 +2302,46 @@ struct MainChatView: View {
 
                 // More menu — secondary actions tucked away cleanly
                 Menu {
-                    Button {
-                        closeDrawer()
-                        showMemories = true
-                    } label: {
-                        Label("Memories", systemImage: "brain.head.profile")
+                    if dependencies.authViewModel.featurePermissions.memories {
+                        Button {
+                            closeDrawer()
+                            showMemories = true
+                        } label: {
+                            Label("Memories", systemImage: "brain.head.profile")
+                        }
                     }
-                    Button {
-                        showWorkspace = true
-                    } label: {
-                        Label("Workspace", systemImage: "square.grid.2x2")
+                    if dependencies.authViewModel.hasAnyWorkspaceAccess {
+                        Button {
+                            showWorkspace = true
+                        } label: {
+                            Label("Workspace", systemImage: "square.grid.2x2")
+                        }
                     }
 
-                    if dependencies.authViewModel.backendConfig?.features?.enableNotes != false {
+                    if dependencies.authViewModel.featurePermissions.notes {
                         Button {
                             closeDrawer()
                             showNotes = true
                         } label: {
                             Label("Notes", systemImage: "note.text")
+                        }
+                    }
+
+                    if dependencies.authViewModel.featurePermissions.calendar {
+                        Button {
+                            closeDrawer()
+                            showCalendar = true
+                        } label: {
+                            Label("Calendar", systemImage: "calendar")
+                        }
+                    }
+
+                    if dependencies.authViewModel.featurePermissions.automations {
+                        Button {
+                            closeDrawer()
+                            showAutomations = true
+                        } label: {
+                            Label("Automations", systemImage: "clock.arrow.circlepath")
                         }
                     }
 
@@ -2258,6 +2352,15 @@ struct MainChatView: View {
                         showSettings = true
                     } label: {
                         Label("Settings", systemImage: "gearshape")
+                    }
+
+                    if dependencies.authViewModel.currentUser?.role == .admin {
+                        Button {
+                            closeDrawer()
+                            showAdminConsole = true
+                        } label: {
+                            Label("Admin Console", systemImage: "shield.lefthalf.filled")
+                        }
                     }
                 } label: {
                     Image(systemName: "ellipsis.circle")

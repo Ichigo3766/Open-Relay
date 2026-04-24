@@ -68,6 +68,19 @@ final class ConversationManager: @unchecked Sendable {
         )
     }
 
+    /// Syncs conversation using the tree-based history directly.
+    /// Preferred over `saveConversation` when the history tree is the source of truth.
+    func syncConversationHistory(_ conversation: Conversation) async throws {
+        try await apiClient.syncConversationHistory(
+            id: conversation.id,
+            history: conversation.history,
+            model: conversation.model,
+            systemPrompt: conversation.systemPrompt,
+            chatParams: conversation.chatParams,
+            title: conversation.title
+        )
+    }
+
     // MARK: - Delete
 
     func deleteConversation(id: String) async throws {

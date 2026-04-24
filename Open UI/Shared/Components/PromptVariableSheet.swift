@@ -445,7 +445,7 @@ struct PromptVariableSheet: View {
         let binding = Binding<Color>(
             get: {
                 if let hex = values[variable.name], !hex.isEmpty {
-                    return Color(hex: hex)
+                    return Color(hex: hex) ?? .blue
                 }
                 return .blue
             },
@@ -531,22 +531,6 @@ struct PromptVariableSheet: View {
 // MARK: - Color Hex Helpers
 
 private extension Color {
-    init(hex: String) {
-        let hex = hex.trimmingCharacters(in: CharacterSet.alphanumerics.inverted)
-        var int: UInt64 = 0
-        Scanner(string: hex).scanHexInt64(&int)
-        let r, g, b: Double
-        switch hex.count {
-        case 6:
-            r = Double((int >> 16) & 0xFF) / 255
-            g = Double((int >> 8) & 0xFF) / 255
-            b = Double(int & 0xFF) / 255
-        default:
-            r = 0; g = 0; b = 0
-        }
-        self.init(red: r, green: g, blue: b)
-    }
-
     func toHex() -> String {
         guard let components = UIColor(self).cgColor.components, components.count >= 3 else {
             return "#000000"

@@ -651,6 +651,21 @@ struct ChatDetailView: View {
                 ))
             }
 
+            // ── Task List Panel (above input field) ──
+            if !vm.tasks.isEmpty {
+                TaskListView(
+                    tasks: vm.tasks,
+                    isStreaming: vm.isStreaming,
+                    onToggleStatus: { taskId, newStatus in
+                        viewModel.updateTaskStatus(taskId: taskId, newStatus: newStatus)
+                    }
+                )
+                .transition(.asymmetric(
+                    insertion: .move(edge: .bottom).combined(with: .opacity),
+                    removal: .opacity
+                ))
+            }
+
             ChatInputField(
                 text: $vm.inputText,
                 attachments: $vm.attachments,
@@ -661,9 +676,9 @@ struct ChatDetailView: View {
                 webSearchEnabled: $vm.webSearchEnabled,
                 imageGenerationEnabled: $vm.imageGenerationEnabled,
                 codeInterpreterEnabled: $vm.codeInterpreterEnabled,
-                isWebSearchAvailable: isFeatureAvailable("web_search", serverEnabled: dependencies.authViewModel.backendConfig?.features?.enableWebSearch),
-                isImageGenerationAvailable: isFeatureAvailable("image_generation", serverEnabled: dependencies.authViewModel.backendConfig?.features?.enableImageGeneration),
-                isCodeInterpreterAvailable: isFeatureAvailable("code_interpreter", serverEnabled: dependencies.authViewModel.backendConfig?.features?.enableCodeInterpreter),
+                isWebSearchAvailable: dependencies.authViewModel.featurePermissions.webSearch && isFeatureAvailable("web_search", serverEnabled: dependencies.authViewModel.backendConfig?.features?.enableWebSearch),
+                isImageGenerationAvailable: dependencies.authViewModel.featurePermissions.imageGeneration && isFeatureAvailable("image_generation", serverEnabled: dependencies.authViewModel.backendConfig?.features?.enableImageGeneration),
+                isCodeInterpreterAvailable: dependencies.authViewModel.featurePermissions.codeInterpreter && isFeatureAvailable("code_interpreter", serverEnabled: dependencies.authViewModel.backendConfig?.features?.enableCodeInterpreter),
                 tools: vm.availableTools,
                 selectedToolIds: $vm.selectedToolIds,
                 isLoadingTools: vm.isLoadingTools,
@@ -791,6 +806,7 @@ struct ChatDetailView: View {
         .animation(.easeOut(duration: 0.2), value: vm.isShowingKnowledgePicker)
         .animation(.easeOut(duration: 0.15), value: vm.selectedKnowledgeItems.count)
         .animation(.easeOut(duration: 0.15), value: vm.selectedReferenceChats.count)
+        .animation(.easeOut(duration: 0.25), value: vm.tasks.count)
         .sheet(isPresented: $showReferenceChatPicker) {
             ReferenceChatPickerView(
                 isPresented: $showReferenceChatPicker,
@@ -1908,9 +1924,22 @@ struct ChatDetailView: View {
     // MARK: - Assistant Action Bar
 
     private func assistantActionBar(for message: ChatMessage) -> some View {
-        let totalVersions = message.versions.count + 1
-        let currentIdx = activeVersionIndex[message.id] ?? -1
-        let displayIndex = currentIdx < 0 ? totalVersions : (currentIdx + 1)
+        // Build a timestamp-sorted list of ALL sibling IDs (current main + versions).
+        // This is the single source of truth for position — it never gets stale
+        // because it is derived fresh from the message object on every render.
+        // After any rederiveMessages() call (branch switch, edit, regen), the
+        // message object is replaced with the new active sibling, so its
+        // .timestamp and .versions[] are always authoritative.
+        let allSiblings: [(id: String, timestamp: Date)] = {
+            var sibs: [(id: String, timestamp: Date)] = [(message.id, message.timestamp)]
+            for v in message.versions { sibs.append((v.id, v.timestamp)) }
+            sibs.sort { $0.timestamp < $1.timestamp }
+            return sibs
+        }()
+        let totalVersions = allSiblings.count
+        // The current active sibling is the main message (message.id).
+        // Its 1-based position in the sorted siblings list is the displayIndex.
+        let displayIndex: Int = (allSiblings.firstIndex(where: { $0.id == message.id }) ?? 0) + 1
 
         return HStack(spacing: 6) {
             // Speak
@@ -1941,31 +1970,27 @@ struct ChatDetailView: View {
             .buttonStyle(.plain)
             .accessibilityLabel("Copy")
 
-            // Version switcher (only when versions exist and not overriding with a user edit version)
-            if !message.versions.isEmpty && !viewModel.isStreaming && assistantContentOverride[message.id] == nil {
+            // Version switcher (only when siblings exist and not overriding with a user edit version)
+            if totalVersions > 1 && !viewModel.isStreaming && assistantContentOverride[message.id] == nil {
                 HStack(spacing: 2) {
                     Button {
-                        let newIdx: Int
-                        if currentIdx < 0 {
-                            newIdx = message.versions.count - 1
-                        } else if currentIdx > 0 {
-                            newIdx = currentIdx - 1
-                        } else {
-                            newIdx = currentIdx
-                        }
-                        if newIdx != currentIdx {
-                            withAnimation(MicroAnimation.snappy) {
-                                activeVersionIndex[message.id] = newIdx
-                            }
-                            viewModel.restoreAssistantVersion(assistantMessageId: message.id, versionIndex: newIdx)
+                        // Navigate to the sibling BEFORE the current one in sorted order.
+                        let currentPos = displayIndex - 1 // 0-based
+                        let targetPos = currentPos - 1
+                        if targetPos >= 0 {
+                            let targetId = allSiblings[targetPos].id
+                            // restoreAssistantVersionById() calls rederiveMessages() which
+                            // replaces the message object entirely. After that, the target
+                            // sibling IS the main message and all state is correct.
+                            viewModel.restoreAssistantVersionById(targetSiblingId: targetId)
                             Haptics.play(.light)
                         }
                     } label: {
                         compactActionIcon(icon: "chevron.left", isActive: false, size: 10)
                     }
                     .buttonStyle(.plain)
-                    .disabled(currentIdx == 0)
-                    .opacity(currentIdx == 0 ? 0.35 : 1)
+                    .disabled(displayIndex == 1)
+                    .opacity(displayIndex == 1 ? 0.35 : 1)
 
                     Text("\(displayIndex)/\(totalVersions)")
                         .scaledFont(size: 11, weight: .semibold)
@@ -1973,34 +1998,26 @@ struct ChatDetailView: View {
                         .frame(minWidth: 28)
 
                     Button {
-                        let newIdx: Int
-                        if currentIdx >= 0 && currentIdx < message.versions.count - 1 {
-                            newIdx = currentIdx + 1
-                        } else if currentIdx == message.versions.count - 1 {
-                            newIdx = -1
-                        } else {
-                            newIdx = currentIdx
-                        }
-                        if newIdx != currentIdx {
-                            withAnimation(MicroAnimation.snappy) {
-                                activeVersionIndex[message.id] = newIdx
-                            }
-                            viewModel.restoreAssistantVersion(assistantMessageId: message.id, versionIndex: newIdx)
+                        // Navigate to the sibling AFTER the current one in sorted order.
+                        let currentPos = displayIndex - 1 // 0-based
+                        let targetPos = currentPos + 1
+                        if targetPos < allSiblings.count {
+                            let targetId = allSiblings[targetPos].id
+                            viewModel.restoreAssistantVersionById(targetSiblingId: targetId)
                             Haptics.play(.light)
                         }
                     } label: {
                         compactActionIcon(icon: "chevron.right", isActive: false, size: 10)
                     }
                     .buttonStyle(.plain)
-                    .disabled(currentIdx < 0)
-                    .opacity(currentIdx < 0 ? 0.35 : 1)
+                    .disabled(displayIndex == totalVersions)
+                    .opacity(displayIndex == totalVersions ? 0.35 : 1)
                 }
             }
 
             // Regenerate
             if !viewModel.isStreaming {
                 Button {
-                    activeVersionIndex[message.id] = -1
                     Task { await viewModel.regenerateResponse(messageId: message.id) }
                     Haptics.play(.light)
                 } label: {
@@ -2011,24 +2028,12 @@ struct ChatDetailView: View {
             }
 
             // Delete (only shown when there are multiple versions / regeneration history)
-            if !viewModel.isStreaming && !message.versions.isEmpty {
+            if !viewModel.isStreaming && totalVersions > 1 {
                 Button {
-                    let vIdx = activeVersionIndex[message.id] ?? -1
-                    Task { await viewModel.deleteMessage(id: message.id, activeVersionIndex: vIdx) }
-                    // Reset version index after deletion so UI doesn't point at a stale slot
-                    if vIdx >= 0 {
-                        // If we deleted a version, adjust the index
-                        if message.versions.count <= 1 {
-                            // Last version was removed — reset to main content
-                            activeVersionIndex.removeValue(forKey: message.id)
-                        } else if vIdx >= message.versions.count - 1 {
-                            // Deleted the last version in the array — step back
-                            activeVersionIndex[message.id] = max(0, vIdx - 1)
-                        }
-                    } else {
-                        // Deleted main content, promoted last version — reset to main
-                        activeVersionIndex.removeValue(forKey: message.id)
-                    }
+                    Task { await viewModel.deleteMessage(id: message.id) }
+                    // After deletion, rederiveMessages() replaces the message list —
+                    // no index tracking needed. Just clear any stale state.
+                    activeVersionIndex.removeValue(forKey: message.id)
                     Haptics.play(.light)
                 } label: {
                     compactActionIcon(icon: "trash", isActive: false)
@@ -2037,14 +2042,9 @@ struct ChatDetailView: View {
                 .accessibilityLabel("Delete Version")
             }
 
-            // Usage info — shown whenever the server returned usage data on this message
-            // Version-aware: show the usage for whichever version is currently displayed
-            let displayUsage: [String: Any]? = {
-                if currentIdx >= 0 && currentIdx < message.versions.count {
-                    return message.versions[currentIdx].usage
-                }
-                return message.usage
-            }()
+            // Usage info — always show from the current active message (message.usage).
+            // The current message IS the active sibling after any rederiveMessages() call.
+            let displayUsage: [String: Any]? = message.usage
             if let usage = displayUsage, !usage.isEmpty {
                 Button {
                     withAnimation(MicroAnimation.snappy) {
@@ -2094,52 +2094,39 @@ struct ChatDetailView: View {
     // MARK: - User Version Switcher (always-visible when edit history exists)
 
     /// Compact ← N/N → version arrows shown directly below the user bubble.
-    /// When navigating to an older user message version, also switches the
-    /// paired AI assistant message to its corresponding version.
+    /// Navigates user edit branches by sibling ID (not index), matching the same
+    /// approach as assistantActionBar. This ensures switching the user message
+    /// ALSO switches the paired assistant — because restoreUserVersionById walks
+    /// to the deepest leaf of the target user branch (which includes the assistant).
     private func userVersionSwitcher(for message: ChatMessage) -> some View {
-        let totalVersions = message.versions.count + 1
-        let currentUserIdx = activeUserVersionIndex[message.id] ?? -1
-        let displayUserIndex = currentUserIdx < 0 ? totalVersions : (currentUserIdx + 1)
-
-        /// Switch to a user version index, restoring the correct branch context.
-        /// This updates the flat message list so downstream messages match the branch.
-        func switchToUserVersion(_ newIdx: Int) {
-            withAnimation(MicroAnimation.snappy) {
-                activeUserVersionIndex[message.id] = newIdx
-
-                // Clear all assistant version overrides for this user message's pair —
-                // the branch restoration handles displaying the correct content directly
-                // in the flat message list, so no overrides are needed.
-                if let userMsgIdx = viewModel.messages.firstIndex(where: { $0.id == message.id }),
-                   userMsgIdx + 1 < viewModel.messages.count,
-                   viewModel.messages[userMsgIdx + 1].role == .assistant {
-                    let assistantId = viewModel.messages[userMsgIdx + 1].id
-                    assistantContentOverride.removeValue(forKey: assistantId)
-                    activeVersionIndex[assistantId] = -1
-                }
-
-                if newIdx < 0 {
-                    // Restore to the latest (current) branch
-                    viewModel.restoreUserVersion(userMessageId: message.id, version: nil)
-                } else if newIdx < message.versions.count {
-                    let version = message.versions[newIdx]
-                    // Restore the old branch: swap in the old assistant + downstream messages
-                    viewModel.restoreUserVersion(userMessageId: message.id, version: version)
-                    // Also update user message content display
-                    activeUserVersionIndex[message.id] = newIdx
-                }
-            }
-            Haptics.play(.light)
-        }
+        // Build a timestamp-sorted list of ALL sibling IDs (current + versions),
+        // identical to the approach in assistantActionBar. This avoids stale index
+        // state and is always correct even after rederiveMessages() rebuilds the list.
+        let allSiblings: [(id: String, timestamp: Date)] = {
+            var sibs: [(id: String, timestamp: Date)] = [(message.id, message.timestamp)]
+            for v in message.versions { sibs.append((v.id, v.timestamp)) }
+            sibs.sort { $0.timestamp < $1.timestamp }
+            return sibs
+        }()
+        let totalVersions = allSiblings.count
+        // Current active sibling is message.id. Its 1-based position = displayIndex.
+        let displayIndex: Int = (allSiblings.firstIndex(where: { $0.id == message.id }) ?? 0) + 1
 
         return HStack(spacing: 0) {
             Spacer(minLength: 0)
             HStack(spacing: 2) {
                 Button {
-                    if currentUserIdx < 0 {
-                        switchToUserVersion(message.versions.count - 1)
-                    } else if currentUserIdx > 0 {
-                        switchToUserVersion(currentUserIdx - 1)
+                    // Navigate to the sibling BEFORE the current one.
+                    let currentPos = displayIndex - 1 // 0-based
+                    let targetPos = currentPos - 1
+                    if targetPos >= 0 {
+                        let targetId = allSiblings[targetPos].id
+                        // restoreUserVersionById navigates to the deepest leaf of the
+                        // target user branch — this switches BOTH user AND assistant.
+                        assistantContentOverride = [:]
+                        activeVersionIndex = [:]
+                        viewModel.restoreUserVersionById(targetSiblingId: targetId)
+                        Haptics.play(.light)
                     }
                 } label: {
                     Image(systemName: "chevron.left")
@@ -2149,19 +2136,24 @@ struct ChatDetailView: View {
                         .contentShape(Circle())
                 }
                 .buttonStyle(.plain)
-                .disabled(currentUserIdx == 0)
-                .opacity(currentUserIdx == 0 ? 0.35 : 1)
+                .disabled(displayIndex == 1)
+                .opacity(displayIndex == 1 ? 0.35 : 1)
 
-                Text("\(displayUserIndex)/\(totalVersions)")
+                Text("\(displayIndex)/\(totalVersions)")
                     .scaledFont(size: 11, weight: .semibold)
                     .foregroundStyle(theme.textTertiary)
                     .frame(minWidth: 28)
 
                 Button {
-                    if currentUserIdx >= 0 && currentUserIdx < message.versions.count - 1 {
-                        switchToUserVersion(currentUserIdx + 1)
-                    } else if currentUserIdx == message.versions.count - 1 {
-                        switchToUserVersion(-1)
+                    // Navigate to the sibling AFTER the current one.
+                    let currentPos = displayIndex - 1 // 0-based
+                    let targetPos = currentPos + 1
+                    if targetPos < allSiblings.count {
+                        let targetId = allSiblings[targetPos].id
+                        assistantContentOverride = [:]
+                        activeVersionIndex = [:]
+                        viewModel.restoreUserVersionById(targetSiblingId: targetId)
+                        Haptics.play(.light)
                     }
                 } label: {
                     Image(systemName: "chevron.right")
@@ -2171,8 +2163,8 @@ struct ChatDetailView: View {
                         .contentShape(Circle())
                 }
                 .buttonStyle(.plain)
-                .disabled(currentUserIdx < 0)
-                .opacity(currentUserIdx < 0 ? 0.35 : 1)
+                .disabled(displayIndex == totalVersions)
+                .opacity(displayIndex == totalVersions ? 0.35 : 1)
             }
             .padding(.trailing, 2)
         }
@@ -3011,7 +3003,11 @@ private struct IsolatedAssistantMessage: View {
 
         let vIdx = activeVersionIndex
         let rawContent: String = {
-            if isActivelyStreaming { return streamingStore.streamingContent }
+            // During streaming, use displayContent (the smoothly-drained version)
+            // rather than streamingContent (raw server tokens). This gives the
+            // typewriter effect — characters flow in at a smooth, readable rate
+            // instead of bursting in large chunks.
+            if isActivelyStreaming { return streamingStore.displayContent }
             // If there's a content override (older user edit version), use it
             if let override = contentOverride { return override }
             if vIdx >= 0 && vIdx < message.versions.count { return message.versions[vIdx].content }

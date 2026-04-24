@@ -7,10 +7,21 @@ import Charts
 
 /// Renders markdown using MarkdownView (UIKit-backed).
 ///
-/// During streaming, a single `MarkdownView` renders the full content string.
-/// Renders markdown content live during streaming. Content is delivered via
-/// `StreamingContentStore` (an isolated @Observable store) so only this view
-/// re-evaluates on each token — not the entire message list.
+/// During streaming, a single `MarkdownView` renders the `displayContent` string
+/// which is smoothly drained from the raw server tokens by `StreamingContentStore`.
+/// This gives a typewriter effect — characters flow in at a readable pace rather
+/// than bursting in large chunks.
+///
+/// ## Parse Throttling
+/// During streaming, the underlying MarkdownView (which runs a full CommonMark
+/// parse + CoreText layout pass on every update) is throttled via the MarkdownView
+/// library's built-in `lastHeightMeasureTime` coordinator — updated at most once
+/// per frame (16ms). On top of that, SwiftUI's own coalescing means view updates
+/// are already capped at display refresh rate.
+///
+/// ## Animated Height
+/// The container height is animated with a spring so content grows smoothly
+/// instead of jumping as new lines appear.
 ///
 /// When streaming ends, `finalBody` takes over for special block detection
 /// (charts, HTML, Mermaid, SVG, images).
@@ -66,7 +77,11 @@ struct StreamingMarkdownView: View {
         } else {
             // Render content directly — no flush delay.
             // cmark parses at token rate; only IsolatedAssistantMessage re-evaluates per token.
-            MarkdownView(content, theme: scaledTheme).codeAutoScroll(true)
+            // Height animation is handled inside MarkdownView+View.swift via the
+            // animatedHeight binding — adding a second .animation here fires on every
+            // character drain tick and causes cumulative layout jitter.
+            MarkdownView(content, theme: scaledTheme)
+                .codeAutoScroll(true)
         }
     }
 

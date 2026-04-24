@@ -279,6 +279,9 @@ final class APIClient: @unchecked Sendable {
 
         network.saveAuthToken(response.token)
 
+        // Fetch full user from /api/v1/auths/ to capture permissions field.
+        // AuthResponse doesn't include permissions — only the GET /api/v1/auths/ response does.
+        if let fullUser = try? await getCurrentUser() { return fullUser }
         return User(
             id: response.id ?? "",
             username: response.name ?? email,
@@ -300,6 +303,8 @@ final class APIClient: @unchecked Sendable {
 
         network.saveAuthToken(response.token)
 
+        // Fetch full user from /api/v1/auths/ to capture permissions field.
+        if let fullUser = try? await getCurrentUser() { return fullUser }
         return User(
             id: response.id ?? "",
             username: response.name ?? username,
@@ -321,6 +326,8 @@ final class APIClient: @unchecked Sendable {
 
         network.saveAuthToken(response.token)
 
+        // Fetch full user from /api/v1/auths/ to capture permissions field.
+        if let fullUser = try? await getCurrentUser() { return fullUser }
         return User(
             id: response.id ?? "",
             username: response.name ?? name,
@@ -918,6 +925,63 @@ final class APIClient: @unchecked Sendable {
         )
     }
 
+    /// Syncs conversation using the tree-based history directly.
+    ///
+    /// This is the new preferred sync method. Instead of reconstructing the tree
+    /// from a flat message array + version arrays (the old `buildChatPayload`),
+    /// it serializes `MessageHistory.nodes` directly. This is a lossless round-trip
+    /// — every node in the tree is preserved exactly as-is.
+    func syncConversationHistory(
+        id: String,
+        history: MessageHistory,
+        model: String?,
+        systemPrompt: String? = nil,
+        chatParams: ChatAdvancedParams? = nil,
+        title: String? = nil
+    ) async throws {
+        // Build the flat messages array from the current branch (for server compat)
+        let flatMessages = history.createMessagesList()
+        let messagesArray: [[String: Any]] = flatMessages.map { msg in
+            var dict: [String: Any] = [
+                "role": msg.role.rawValue,
+                "content": msg.content
+            ]
+            if let model = msg.model { dict["model"] = model }
+            return dict
+        }
+
+        // Build params dict
+        var paramsDict: [String: Any] = chatParams?.toRequestParams() ?? [:]
+        if let systemPrompt, !systemPrompt.trimmingCharacters(in: .whitespaces).isEmpty {
+            paramsDict["system"] = systemPrompt
+        } else if let sp = chatParams?.systemPrompt, !sp.trimmingCharacters(in: .whitespaces).isEmpty {
+            paramsDict["system"] = sp
+        }
+
+        var chat: [String: Any] = [
+            "id": "",
+            "title": title ?? "",
+            "models": model.map { [$0] } ?? [],
+            "params": paramsDict,
+            "history": history.toServerDict(),
+            "messages": messagesArray,
+            "tags": [String](),
+            "timestamp": Int(Date().timeIntervalSince1970 * 1000)
+        ]
+
+        if let systemPrompt, !systemPrompt.trimmingCharacters(in: .whitespaces).isEmpty {
+            chat["system"] = systemPrompt
+        } else if let sp = chatParams?.systemPrompt, !sp.trimmingCharacters(in: .whitespaces).isEmpty {
+            chat["system"] = sp
+        }
+
+        try await network.requestVoidJSON(
+            path: "/api/v1/chats/\(id)",
+            method: .post,
+            body: ["chat": chat]
+        )
+    }
+
     /// Posts to `/api/chat/completed` to trigger server-side post-processing
     /// (filter pipelines, usage tracking, background tasks). Fire-and-forget.
     func sendChatCompleted(
@@ -975,6 +1039,24 @@ final class APIClient: @unchecked Sendable {
             }
         }
         return []
+    }
+
+    /// Updates a single task's status for the given chat.
+    /// `POST /api/v1/tasks/{chat_id}/update` with body `{"task_id": ..., "status": ...}`
+    @discardableResult
+    func updateChatTask(chatId: String, taskId: String, status: String) async throws -> ChatTask? {
+        let body: [String: Any] = ["task_id": taskId, "status": status]
+        let (data, _) = try await network.requestRaw(
+            path: "/api/v1/tasks/\(chatId)/update",
+            method: .post,
+            body: try JSONSerialization.data(withJSONObject: body)
+        )
+        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let id = json["id"] as? String,
+              let content = json["content"] as? String,
+              let taskStatus = json["status"] as? String
+        else { return nil }
+        return ChatTask(id: id, content: content, status: taskStatus)
     }
 
     // MARK: - User Settings
@@ -2820,6 +2902,138 @@ final class APIClient: @unchecked Sendable {
         return array.compactMap { parseConversationSummary($0) }
     }
 
+    // MARK: - Automations
+
+    func getAutomations(page: Int = 1) async throws -> [Automation] {
+        let (data, _) = try await network.requestRaw(
+            path: "/api/v1/automations/list",
+            queryItems: [URLQueryItem(name: "page", value: "\(page)")]
+        )
+        let decoder = JSONDecoder()
+        let response = try decoder.decode(AutomationListResponse.self, from: data)
+        return response.items
+    }
+
+    func getAutomation(id: String) async throws -> Automation {
+        let (data, _) = try await network.requestRaw(path: "/api/v1/automations/\(id)")
+        return try JSONDecoder().decode(Automation.self, from: data)
+    }
+
+    func createAutomation(name: String, prompt: String, modelId: String, rrule: String) async throws -> Automation {
+        let bodyDict: [String: Any] = [
+            "name": name,
+            "data": [
+                "prompt": prompt,
+                "model_id": modelId,
+                "rrule": rrule
+            ] as [String: Any]
+        ]
+        let bodyData = try JSONSerialization.data(withJSONObject: bodyDict)
+        let (data, _) = try await network.requestRaw(
+            path: "/api/v1/automations/create",
+            method: .post,
+            body: bodyData
+        )
+        return try JSONDecoder().decode(Automation.self, from: data)
+    }
+
+    func updateAutomation(id: String, name: String, prompt: String, modelId: String, rrule: String) async throws -> Automation {
+        let bodyDict: [String: Any] = [
+            "name": name,
+            "data": [
+                "prompt": prompt,
+                "model_id": modelId,
+                "rrule": rrule
+            ] as [String: Any]
+        ]
+        let bodyData = try JSONSerialization.data(withJSONObject: bodyDict)
+        let (data, _) = try await network.requestRaw(
+            path: "/api/v1/automations/\(id)/update",
+            method: .post,
+            body: bodyData
+        )
+        return try JSONDecoder().decode(Automation.self, from: data)
+    }
+
+    func toggleAutomation(id: String) async throws -> Automation {
+        let (data, _) = try await network.requestRaw(
+            path: "/api/v1/automations/\(id)/toggle",
+            method: .post
+        )
+        return try JSONDecoder().decode(Automation.self, from: data)
+    }
+
+    func runAutomation(id: String) async throws -> Automation {
+        let (data, _) = try await network.requestRaw(
+            path: "/api/v1/automations/\(id)/run",
+            method: .post
+        )
+        return try JSONDecoder().decode(Automation.self, from: data)
+    }
+
+    func getAutomationRuns(id: String, skip: Int = 0, limit: Int = 50) async throws -> [AutomationRun] {
+        let (data, _) = try await network.requestRaw(
+            path: "/api/v1/automations/\(id)/runs",
+            queryItems: [
+                URLQueryItem(name: "skip", value: "\(skip)"),
+                URLQueryItem(name: "limit", value: "\(limit)")
+            ]
+        )
+        return try JSONDecoder().decode([AutomationRun].self, from: data)
+    }
+
+    func deleteAutomation(id: String) async throws {
+        try await network.requestVoid(
+            path: "/api/v1/automations/\(id)/delete",
+            method: .delete
+        )
+    }
+
+    // MARK: - Calendars
+
+    func getCalendars() async throws -> [OWCalendar] {
+        let (data, _) = try await network.requestRaw(path: "/api/v1/calendars/")
+        return try JSONDecoder().decode([OWCalendar].self, from: data)
+    }
+
+    func getCalendarEvents(start: Date, end: Date) async throws -> [CalendarEvent] {
+        let iso8601Formatter: DateFormatter = {
+            let f = DateFormatter()
+            f.dateFormat = "yyyy-MM-dd'T'HH:mm:ss"
+            f.locale = Locale(identifier: "en_US_POSIX")
+            f.timeZone = TimeZone(secondsFromGMT: 0)
+            return f
+        }()
+        let startStr = iso8601Formatter.string(from: start)
+        let endStr   = iso8601Formatter.string(from: end)
+        let (data, _) = try await network.requestRaw(
+            path: "/api/v1/calendars/events",
+            queryItems: [
+                URLQueryItem(name: "start", value: startStr),
+                URLQueryItem(name: "end",   value: endStr)
+            ]
+        )
+        return try JSONDecoder().decode([CalendarEvent].self, from: data)
+    }
+
+    func createCalendarEvent(_ request: CalendarEventCreateRequest) async throws -> CalendarEvent {
+        let bodyData = try JSONEncoder().encode(request)
+        let (data, _) = try await network.requestRaw(
+            path: "/api/v1/calendars/events/create",
+            method: .post,
+            body: bodyData,
+            contentType: "application/json"
+        )
+        return try JSONDecoder().decode(CalendarEvent.self, from: data)
+    }
+
+    func deleteCalendarEvent(id: String) async throws {
+        try await network.requestVoid(
+            path: "/api/v1/calendars/events/\(id)/delete",
+            method: .delete
+        )
+    }
+
     // MARK: - Memories
 
     func getMemories() async throws -> [[String: Any]] {
@@ -3232,6 +3446,7 @@ final class APIClient: @unchecked Sendable {
 
         var model: String?
         var systemPrompt: String?
+        var history = MessageHistory()
         var messages: [ChatMessage] = []
         var chatParams: ChatAdvancedParams?
 
@@ -3240,7 +3455,23 @@ final class APIClient: @unchecked Sendable {
                 model = first
             }
             systemPrompt = chat["system"] as? String
-            messages = parseMessages(from: chat)
+
+            // Parse the history tree directly into MessageHistory
+            if let historyJSON = chat["history"] as? [String: Any],
+               let messagesMap = historyJSON["messages"] as? [String: [String: Any]],
+               let currentId = historyJSON["currentId"] as? String {
+                history = MessageHistory.fromServerJSON(
+                    historyJSON,
+                    messagesMap: messagesMap,
+                    currentId: currentId
+                )
+                messages = history.createMessagesList()
+            } else if let msgArray = chat["messages"] as? [[String: Any]] {
+                // Fallback for legacy format without history tree
+                messages = msgArray.compactMap { parseSingleMessage($0) }
+                // Build a synthetic history from the flat list
+                history = Self.buildHistoryFromFlatMessages(messages)
+            }
 
             // Parse server-side params (set via web UI or another client)
             if let params = chat["params"] as? [String: Any], !params.isEmpty {
@@ -3251,6 +3482,17 @@ final class APIClient: @unchecked Sendable {
             }
         }
 
+        // Parse top-level tasks array from the conversation JSON.
+        // OpenWebUI stores tasks at the root level of the chat object
+        // (alongside "id", "title", "chat", etc.) — NOT inside "chat".
+        let tasks: [ChatTask] = (json["tasks"] as? [[String: Any]])?.compactMap { t in
+            guard let taskId = t["id"] as? String,
+                  let content = t["content"] as? String,
+                  let status = t["status"] as? String
+            else { return nil }
+            return ChatTask(id: taskId, content: content, status: status)
+        } ?? []
+
         var conv = Conversation(
             id: id,
             title: title,
@@ -3258,15 +3500,52 @@ final class APIClient: @unchecked Sendable {
             updatedAt: updatedAt,
             model: model,
             systemPrompt: systemPrompt,
+            history: history,
             messages: messages,
             pinned: pinned,
             archived: archived,
             shareId: shareId,
             folderId: folderId,
-            tags: tags
+            tags: tags,
+            tasks: tasks
         )
         conv.chatParams = chatParams
         return conv
+    }
+
+    /// Builds a `MessageHistory` from a flat message array (for legacy or locally-created conversations).
+    ///
+    /// Creates a simple linear chain where each message's parent is the previous message.
+    static func buildHistoryFromFlatMessages(_ messages: [ChatMessage]) -> MessageHistory {
+        var history = MessageHistory()
+        var previousId: String?
+
+        for msg in messages {
+            let node = HistoryNode(
+                id: msg.id,
+                parentId: previousId,
+                childrenIds: [],
+                role: msg.role,
+                content: msg.content,
+                timestamp: msg.timestamp,
+                model: msg.model,
+                files: msg.files,
+                sources: msg.sources,
+                followUps: msg.followUps,
+                statusHistory: msg.statusHistory,
+                error: msg.error,
+                usage: msg.usage,
+                embeds: msg.embeds
+            )
+            history.addNode(node)
+            if let prevId = previousId {
+                history.appendChildId(msg.id, to: prevId)
+            }
+            previousId = msg.id
+        }
+
+        history.currentId = messages.last?.id
+        return history
     }
 
     private func parseMessages(from chat: [String: Any]) -> [ChatMessage] {
@@ -3327,6 +3606,10 @@ final class APIClient: @unchecked Sendable {
                 }
             }
 
+            // Build versions from siblings — the tree already has the correct structure.
+            // Versions are sibling nodes (same parent, same role, different ID).
+            // The version object carries only the sibling's own content/metadata;
+            // branch navigation uses restoreUserVersion/restoreAssistantVersion + deepestLeaf.
             if let children = childrenIds, children.count > 1 {
                 var versions: [ChatMessageVersion] = []
                 for siblingId in children {
@@ -3335,84 +3618,13 @@ final class APIClient: @unchecked Sendable {
                           (sibling["role"] as? String) == msgRole
                     else { continue }
 
-                    // For user message siblings, find their paired assistant child
-                    // and populate all paired assistant fields so the UI can display
-                    // the correct AI response when navigating between edit versions.
-                    var pairedAssistantId: String?
-                    var pairedAssistantContent: String?
-                    var pairedAssistantModel: String?
-                    var pairedAssistantFiles: [ChatMessageFile] = []
-                    var pairedAssistantSources: [ChatSourceReference] = []
-
-                    var pairedDownstreamMessages: [ChatMessage] = []
-
-                    if msgRole == "user" {
-                        if let siblingChildren = sibling["childrenIds"] as? [String],
-                           let firstChild = siblingChildren.last,
-                           let childMsg = messagesMap[firstChild],
-                           (childMsg["role"] as? String) == "assistant" {
-                            pairedAssistantId = firstChild
-                            pairedAssistantContent = childMsg["content"] as? String
-                            pairedAssistantModel = childMsg["model"] as? String ?? childMsg["modelName"] as? String
-
-                            // Parse paired assistant files
-                            if let rawFiles = childMsg["files"] as? [[String: Any]] {
-                                for file in rawFiles {
-                                    let fileType = file["type"] as? String
-                                    let fileUrl = file["url"] as? String ?? file["id"] as? String
-                                    let fileName = file["name"] as? String
-                                    let contentType = file["content_type"] as? String
-                                        ?? (file["meta"] as? [String: Any])?["content_type"] as? String
-                                    pairedAssistantFiles.append(ChatMessageFile(
-                                        type: fileType, url: fileUrl, name: fileName, contentType: contentType
-                                    ))
-                                }
-                            }
-
-                            // Parse paired assistant sources
-                            if let rawSources = childMsg["sources"] as? [[String: Any]] {
-                                for src in rawSources {
-                                    let srcUrl = (src["url"] as? String) ?? (src["source"] as? String)
-                                    let srcTitle = (src["name"] as? String) ?? (src["title"] as? String)
-                                    let srcId = src["id"] as? String
-                                    pairedAssistantSources.append(ChatSourceReference(id: srcId, title: srcTitle, url: srcUrl))
-                                }
-                            }
-
-                            // Walk the paired assistant's child chain to reconstruct
-                            // downstream messages (messages that came after this branch's
-                            // assistant response). This restores them after an app restart.
-                            var walkId: String? = (childMsg["childrenIds"] as? [String])?.last
-                            var visited = Set<String>()
-                            while let nextId = walkId, !visited.contains(nextId) {
-                                visited.insert(nextId)
-                                guard let nextMsg = messagesMap[nextId] else { break }
-                                if let parsed = parseSingleMessage(nextMsg) {
-                                    pairedDownstreamMessages.append(parsed)
-                                }
-                                walkId = (nextMsg["childrenIds"] as? [String])?.last
-                            }
-                        }
-                    }
-
-                    if var version = parseSiblingAsVersion(sibling, id: siblingId) {
-                        version.pairedAssistantId = pairedAssistantId
-                        version.pairedAssistantContent = pairedAssistantContent
-                        version.pairedAssistantModel = pairedAssistantModel
-                        version.pairedAssistantFiles = pairedAssistantFiles
-                        version.pairedAssistantSources = pairedAssistantSources
-                        version.downstreamMessages = pairedDownstreamMessages
+                    if let version = parseSiblingAsVersion(sibling, id: siblingId) {
                         versions.append(version)
                     }
                 }
 
                 if !versions.isEmpty {
-                    // For user messages, also find the current message's paired assistant
                     if msgRole == "user" {
-                        // The current message's paired assistant is already in the flat list
-                        // (it will be parsed as the next message). We still want to show
-                        // the version count correctly.
-                        // Sort versions by timestamp so oldest edits come first
                         message.versions = versions.sorted { $0.timestamp < $1.timestamp }
                     } else {
                         message.versions = versions
@@ -3505,6 +3717,64 @@ final class APIClient: @unchecked Sendable {
             followUps: followUps,
             statusHistory: statusHistory
         )
+    }
+
+    /// Parses a message from the history tree and attaches its sibling versions.
+    /// Unlike `parseSingleMessage`, this method also resolves the message's parent
+    /// in `messagesMap` to find siblings with the same role — giving each downstream
+    /// message its own version navigation (e.g. "1/2" arrows) when it has siblings.
+    ///
+    /// Used when walking downstream messages inside old version branches so that
+    /// those messages correctly display version navigation in the UI.
+    private func parseMessageWithVersions(
+        _ msgData: [String: Any],
+        id: String,
+        in messagesMap: [String: [String: Any]]
+    ) -> ChatMessage? {
+        // Ensure the id is set on the message data for parseSingleMessage
+        var msgWithId = msgData
+        msgWithId["id"] = id
+
+        guard var message = parseSingleMessage(msgWithId) else { return nil }
+
+        let msgRole = msgData["role"] as? String
+        let parentId = msgData["parentId"] as? String
+
+        // Find siblings by looking up parent's childrenIds
+        var siblingIds: [String]? = nil
+        if let pid = parentId, !pid.isEmpty,
+           let parentNode = messagesMap[pid],
+           let children = parentNode["childrenIds"] as? [String],
+           children.count > 1 {
+            siblingIds = children
+        }
+
+        guard let children = siblingIds else { return message }
+
+        // Build versions for each sibling with the same role.
+        // The version object only carries the sibling's own content/metadata.
+        // Branch navigation uses restoreUserVersion/restoreAssistantVersion + deepestLeaf.
+        var versions: [ChatMessageVersion] = []
+        for siblingId in children {
+            guard siblingId != id,
+                  let sibling = messagesMap[siblingId],
+                  (sibling["role"] as? String) == msgRole
+            else { continue }
+
+            if let version = parseSiblingAsVersion(sibling, id: siblingId) {
+                versions.append(version)
+            }
+        }
+
+        if !versions.isEmpty {
+            if msgRole == "user" {
+                message.versions = versions.sorted { $0.timestamp < $1.timestamp }
+            } else {
+                message.versions = versions
+            }
+        }
+
+        return message
     }
 
     private func parseSingleMessage(_ msg: [String: Any]) -> ChatMessage? {
@@ -3644,8 +3914,16 @@ final class APIClient: @unchecked Sendable {
             }
         }
 
+        // Preserve the original parentId from the server's history tree.
+        // This is critical for round-trip correctness: downstream messages in
+        // old version branches MUST keep their original parentId so that
+        // buildChatPayload() doesn't corrupt the tree by recalculating it
+        // from the current branch's array position.
+        let parentId = msg["parentId"] as? String
+
         return ChatMessage(
             id: id,
+            parentId: parentId,
             role: role,
             content: content,
             timestamp: timestamp,
@@ -3678,6 +3956,13 @@ final class APIClient: @unchecked Sendable {
             let parentId: String?
             if msg.role == .assistant {
                 parentId = lastUserId ?? previousId
+            } else if let storedParentId = msg.parentId, !storedParentId.isEmpty {
+                // User messages from editMessage() carry a stored parentId that
+                // points to the correct assistant version in the tree. Use it
+                // instead of recalculating from flat list position (which would
+                // incorrectly point to whichever assistant version is currently
+                // displayed, not the one the user was actually viewing when editing).
+                parentId = storedParentId
             } else {
                 parentId = previousId
             }
@@ -3767,213 +4052,68 @@ final class APIClient: @unchecked Sendable {
 
             messagesMap[msg.id] = msgDict
 
-            // Write version siblings into the history tree BEFORE the current message.
-            // OpenWebUI stores regeneration history as siblings: multiple children of
-            // the same parent with the same role. The active message must be LAST in
-            // childrenIds so the web UI shows it as the current version (N/N).
-            //
-            // For USER message versions (edits), parentId is nil (root-level siblings).
-            // For ASSISTANT message versions (regenerations), parentId is the user message ID.
-            if !msg.versions.isEmpty && msg.role == .user && parentId == nil {
-                // Root-level user message siblings — each version has parentId: null
+            // Write version siblings into the history tree.
+            // NOTE: buildChatPayload is used only as a fallback when the tree is not populated.
+            // The tree-based sync (syncConversationHistory) handles the full version/branching
+            // structure correctly. Here we just write the sibling node's own content.
+            if !msg.versions.isEmpty {
+                let pid = (msg.role == .user) ? parentId : parentId
                 for version in msg.versions {
                     let siblingId = version.id
                     guard messagesMap[siblingId] == nil else { continue }
 
                     var siblingDict: [String: Any] = [
                         "id": siblingId,
-                        "parentId": NSNull(),
-                        "childrenIds": [String](),
-                        "role": "user",
-                        "content": version.content,
-                        "timestamp": Int(version.timestamp.timeIntervalSince1970)
-                    ]
-                    if let m = model {
-                        siblingDict["models"] = [m]
-                    }
-                    if let pairedId = version.pairedAssistantId {
-                        siblingDict["childrenIds"] = [pairedId]
-                    }
-                    messagesMap[siblingId] = siblingDict
-
-                    // Also write the paired assistant node into the history tree.
-                    // Without this, the server's tree has a dangling child reference:
-                    // the user sibling points to an assistant ID that doesn't exist.
-                    // This causes the WebUI to fail navigation between edit branches
-                    // and breaks round-trip sync (pairedAssistantContent is lost on reload).
-                    if let pairedId = version.pairedAssistantId,
-                       messagesMap[pairedId] == nil,
-                       let pairedContent = version.pairedAssistantContent {
-                        var pairedDict: [String: Any] = [
-                            "id": pairedId,
-                            "parentId": siblingId,
-                            "childrenIds": [String](),
-                            "role": "assistant",
-                            "content": pairedContent,
-                            "timestamp": Int(version.timestamp.timeIntervalSince1970),
-                            "done": true,
-                            "modelIdx": 0
-                        ]
-                        if let m = version.pairedAssistantModel ?? model {
-                            pairedDict["model"] = m
-                            pairedDict["modelName"] = m
-                        }
-                        if !version.pairedAssistantFiles.isEmpty {
-                            let filesArr: [[String: Any]] = version.pairedAssistantFiles.compactMap { file -> [String: Any]? in
-                                guard let url = file.url else { return nil }
-                                var dict: [String: Any] = ["type": file.type ?? "file", "id": url, "url": url]
-                                if let name = file.name { dict["name"] = name }
-                                if let ct = file.contentType { dict["content_type"] = ct }
-                                return dict
-                            }
-                            if !filesArr.isEmpty { pairedDict["files"] = filesArr }
-                        }
-                        if !version.pairedAssistantSources.isEmpty {
-                            let sourcesArr: [[String: Any]] = version.pairedAssistantSources.map { source in
-                                var dict: [String: Any] = [:]
-                                if let id = source.id { dict["id"] = id }
-                                if let title = source.title { dict["name"] = title }
-                                if let url = source.url { dict["url"] = url; dict["source"] = url }
-                                dict["document"] = [] as [String]
-                                return dict
-                            }
-                            pairedDict["sources"] = sourcesArr
-                        }
-
-                        // Write downstream messages for this old branch into the tree.
-                        // Each downstream message chains off the previous via parentId.
-                        // This allows the WebUI to navigate the full old conversation branch.
-                        var lastDownstreamId = pairedId
-                        for downMsg in version.downstreamMessages {
-                            let downMsgParent: String = {
-                                if downMsg.role == .assistant {
-                                    // The last user message in the downstream chain is the parent
-                                    return lastDownstreamId
-                                }
-                                return lastDownstreamId
-                            }()
-                            var downDict: [String: Any] = [
-                                "id": downMsg.id,
-                                "parentId": downMsgParent,
-                                "childrenIds": [String](),
-                                "role": downMsg.role.rawValue,
-                                "content": downMsg.content,
-                                "timestamp": Int(downMsg.timestamp.timeIntervalSince1970)
-                            ]
-                            if downMsg.role == .assistant {
-                                if let m = downMsg.model { downDict["model"] = m; downDict["modelName"] = m }
-                                downDict["modelIdx"] = 0
-                                downDict["done"] = true
-                            }
-                            if downMsg.role == .user, let m = model {
-                                downDict["models"] = [m]
-                            }
-                            if !downMsg.files.isEmpty {
-                                let filesArr: [[String: Any]] = downMsg.files.compactMap { file -> [String: Any]? in
-                                    guard let url = file.url else { return nil }
-                                    var dict: [String: Any] = ["type": file.type ?? "file", "id": url, "url": url]
-                                    if let name = file.name { dict["name"] = name }
-                                    if let ct = file.contentType { dict["content_type"] = ct }
-                                    return dict
-                                }
-                                if !filesArr.isEmpty { downDict["files"] = filesArr }
-                            }
-                            messagesMap[downMsg.id] = downDict
-                            // Update parent's childrenIds
-                            if var parentDict = messagesMap[downMsgParent] as? [String: Any] {
-                                var children = parentDict["childrenIds"] as? [String] ?? []
-                                if !children.contains(downMsg.id) {
-                                    children.append(downMsg.id)
-                                    parentDict["childrenIds"] = children
-                                    messagesMap[downMsgParent] = parentDict
-                                }
-                            }
-                            lastDownstreamId = downMsg.id
-                        }
-
-                        // First downstream child of the old assistant
-                        if version.downstreamMessages.isEmpty {
-                            pairedDict["childrenIds"] = []
-                        } else if let firstDown = version.downstreamMessages.first {
-                            pairedDict["childrenIds"] = [firstDown.id]
-                        }
-
-                        messagesMap[pairedId] = pairedDict
-                        // Update sibling's childrenIds to include the paired assistant
-                        if var updated = messagesMap[siblingId] as? [String: Any] {
-                            updated["childrenIds"] = [pairedId]
-                            messagesMap[siblingId] = updated
-                        }
-                    }
-                }
-            } else if !msg.versions.isEmpty, let pid = parentId {
-                for version in msg.versions {
-                    let siblingId = version.id
-                    guard messagesMap[siblingId] == nil else { continue }
-
-                    var siblingDict: [String: Any] = [
-                        "id": siblingId,
-                        "parentId": pid,
+                        "parentId": pid.map { $0 as Any } ?? NSNull(),
                         "childrenIds": [String](),
                         "role": msg.role.rawValue,
                         "content": version.content,
-                        "timestamp": Int(version.timestamp.timeIntervalSince1970),
-                        "done": true
+                        "timestamp": Int(version.timestamp.timeIntervalSince1970)
                     ]
-
-                    if let m = version.model ?? msg.model {
+                    if msg.role == .user, let m = model {
+                        siblingDict["models"] = [m]
+                    }
+                    if let m = version.model ?? msg.model, msg.role == .assistant {
                         siblingDict["model"] = m
                         siblingDict["modelName"] = m
-                    }
-                    if msg.role == .assistant {
                         siblingDict["modelIdx"] = 0
+                        siblingDict["done"] = true
                     }
-
                     if !version.files.isEmpty {
-                        let filesArr: [[String: Any]] = version.files.compactMap { file -> [String: Any]? in
+                        let filesArr = version.files.compactMap { file -> [String: Any]? in
                             guard let url = file.url else { return nil }
-                            var dict: [String: Any] = ["type": file.type ?? "file", "id": url, "url": url]
-                            if let name = file.name { dict["name"] = name }
-                            if let ct = file.contentType { dict["content_type"] = ct }
-                            return dict
+                            var d: [String: Any] = ["type": file.type ?? "file", "id": url, "url": url]
+                            if let name = file.name { d["name"] = name }
+                            if let ct = file.contentType { d["content_type"] = ct }
+                            return d
                         }
                         if !filesArr.isEmpty { siblingDict["files"] = filesArr }
                     }
-
                     if !version.sources.isEmpty {
-                        let sourcesArr: [[String: Any]] = version.sources.map { source in
-                            var dict: [String: Any] = [:]
-                            if let id = source.id { dict["id"] = id }
-                            if let title = source.title { dict["name"] = title }
-                            if let url = source.url { dict["url"] = url; dict["source"] = url }
-                            if let snippet = source.snippet { dict["snippet"] = snippet }
-                            if let type = source.type { dict["type"] = type }
-                            if let meta = source.metadata {
-                                var metaDict: [String: Any] = [:]
-                                for (k, v) in meta { metaDict[k] = v }
-                                if !metaDict.isEmpty { dict["metadata"] = [metaDict] }
-                            }
-                            return dict
+                        siblingDict["sources"] = version.sources.map { source -> [String: Any] in
+                            var d: [String: Any] = [:]
+                            if let id = source.id { d["id"] = id }
+                            if let title = source.title { d["name"] = title }
+                            if let url = source.url { d["url"] = url; d["source"] = url }
+                            d["document"] = [] as [String]
+                            return d
                         }
-                        siblingDict["sources"] = sourcesArr
                     }
-
-                    if !version.followUps.isEmpty {
-                        siblingDict["followUps"] = version.followUps
-                    }
-
+                    if !version.followUps.isEmpty { siblingDict["followUps"] = version.followUps }
                     if let error = version.error, let content = error.content {
                         siblingDict["error"] = ["content": content]
                     }
-
                     messagesMap[siblingId] = siblingDict
 
-                    if var parent = messagesMap[pid] as? [String: Any] {
-                        var children = parent["childrenIds"] as? [String] ?? []
-                        if !children.contains(siblingId) {
-                            children.append(siblingId)
-                            parent["childrenIds"] = children
-                            messagesMap[pid] = parent
+                    // Register this sibling in the parent's childrenIds
+                    if let pid {
+                        if var pDict = messagesMap[pid] as? [String: Any] {
+                            var children = pDict["childrenIds"] as? [String] ?? []
+                            if !children.contains(siblingId) {
+                                children.append(siblingId)
+                                pDict["childrenIds"] = children
+                                messagesMap[pid] = pDict
+                            }
                         }
                     }
                 }

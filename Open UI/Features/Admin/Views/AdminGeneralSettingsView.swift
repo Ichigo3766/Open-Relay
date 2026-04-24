@@ -432,6 +432,51 @@ struct AdminGeneralSettingsView: View {
                     Divider().padding(.leading, Spacing.md)
 
                     inlineToggleRow(
+                        title: "Calendar",
+                        subtitle: "Enable the Calendar feature for all users.",
+                        isOn: Binding(
+                            get: { viewModel.authConfig.enableCalendar },
+                            set: { viewModel.authConfig.enableCalendar = $0 }
+                        )
+                    )
+
+                    Divider().padding(.leading, Spacing.md)
+
+                    inlineToggleRow(
+                        title: "Automations",
+                        subtitle: "Enable the Automations feature for all users.",
+                        isOn: Binding(
+                            get: { viewModel.authConfig.enableAutomations },
+                            set: { viewModel.authConfig.enableAutomations = $0 }
+                        )
+                    )
+
+                    if viewModel.authConfig.enableAutomations {
+                        Divider().padding(.leading, Spacing.md)
+                        inlineTextFieldRow(
+                            title: "Max Automation Count",
+                            placeholder: "Leave empty for unlimited",
+                            text: Binding(
+                                get: { viewModel.authConfig.automationMaxCount },
+                                set: { viewModel.authConfig.automationMaxCount = $0 }
+                            ),
+                            keyboardType: .numberPad
+                        )
+                        Divider().padding(.leading, Spacing.md)
+                        inlineTextFieldRow(
+                            title: "Min Automation Interval",
+                            placeholder: "Minimum interval in seconds",
+                            text: Binding(
+                                get: { viewModel.authConfig.automationMinInterval },
+                                set: { viewModel.authConfig.automationMinInterval = $0 }
+                            ),
+                            keyboardType: .numberPad
+                        )
+                    }
+
+                    Divider().padding(.leading, Spacing.md)
+
+                    inlineToggleRow(
                         title: "Memories",
                         subtitle: "Allow users to save memories across conversations.",
                         isOn: Binding(

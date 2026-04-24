@@ -182,6 +182,10 @@ struct SSOWebViewRepresentable: UIViewRepresentable {
 
         let webView = WKWebView(frame: .zero, configuration: config)
         webView.navigationDelegate = context.coordinator
+        // WKUIDelegate is needed so that providers (e.g. Microsoft) that open
+        // account pickers or consent screens via window.open() / target="_blank"
+        // are rendered inside this same WebView rather than being silently dropped.
+        webView.uiDelegate = context.coordinator
         webView.allowsBackForwardNavigationGestures = true
 
         // Set a realistic mobile Safari user agent for maximum OAuth compatibility.
@@ -206,7 +210,7 @@ struct SSOWebViewRepresentable: UIViewRepresentable {
 
     // MARK: - Coordinator
 
-    final class Coordinator: NSObject, WKNavigationDelegate {
+    final class Coordinator: NSObject, WKNavigationDelegate, WKUIDelegate {
         @Binding var state: SSOWebViewState
         let onTokenCaptured: (String) -> Void
         let serverURL: String
@@ -319,8 +323,92 @@ struct SSOWebViewRepresentable: UIViewRepresentable {
             decidePolicyFor navigationAction: WKNavigationAction,
             decisionHandler: @escaping (WKNavigationActionPolicy) -> Void
         ) {
-            // Allow all navigation — required for OAuth redirect chains
+            guard let url = navigationAction.request.url else {
+                decisionHandler(.allow)
+                return
+            }
+
+            // Proactively detect when the OAuth callback lands back on our server.
+            // This fires BEFORE didFinish, giving us an early trigger point to start
+            // watching for the token cookie — particularly important for Microsoft which
+            // may set the cookie during the redirect chain rather than after page load.
+            if isOurServer(url) && !state.tokenCaptured {
+                let path = url.path.lowercased()
+                // Trigger early capture on the OAuth callback path or the root page
+                // (OpenWebUI redirects to / after a successful OAuth callback).
+                let isCallbackOrRoot = path.contains("/oauth/") || path == "/" || path.isEmpty
+                if isCallbackOrRoot {
+                    let attemptId = captureAttemptId
+                    logger.debug("SSO: proactive capture trigger at \(url.path)")
+                    Task { @MainActor in
+                        // Brief wait for cookies to be written before trying to read them
+                        try? await Task.sleep(nanoseconds: 200_000_000) // 200ms
+                        await attemptTokenCaptureWithRetry(attemptId: attemptId)
+                    }
+                }
+            }
+
             decisionHandler(.allow)
+        }
+
+        /// Response policy — inspect HTTP response headers/cookies from the server
+        /// callback before the page finishes rendering. This catches token cookies
+        /// that are set in the HTTP response itself.
+        func webView(
+            _ webView: WKWebView,
+            decidePolicyFor navigationResponse: WKNavigationResponse,
+            decisionHandler: @escaping (WKNavigationResponsePolicy) -> Void
+        ) {
+            if let httpResponse = navigationResponse.response as? HTTPURLResponse,
+               let url = httpResponse.url,
+               isOurServer(url),
+               !state.tokenCaptured {
+
+                // Check Set-Cookie headers from the HTTP response directly
+                if let allHeaders = httpResponse.allHeaderFields as? [String: String] {
+                    let cookieHeaders = HTTPCookie.cookies(
+                        withResponseHeaderFields: allHeaders,
+                        for: url
+                    )
+                    for cookie in cookieHeaders {
+                        if isTokenCookie(cookie) && isValidJWT(cookie.value) {
+                            let token = cookie.value
+                            logger.info("SSO: found token in HTTP response Set-Cookie header")
+                            let attemptId = captureAttemptId
+                            Task { @MainActor in
+                                guard !state.tokenCaptured, attemptId == captureAttemptId else { return }
+                                await handleToken(token)
+                            }
+                            break
+                        }
+                    }
+                }
+            }
+            decisionHandler(.allow)
+        }
+
+        // MARK: - WKUIDelegate
+
+        /// Handles window.open() / target="_blank" navigation actions.
+        ///
+        /// Microsoft's OAuth flow (and some other providers) open the account picker,
+        /// consent screen, or MFA prompts in a new window. Without this delegate
+        /// method, WKWebView silently drops those requests and the login flow appears
+        /// to hang. We load the new URL in the existing WebView instead.
+        func webView(
+            _ webView: WKWebView,
+            createWebViewWith configuration: WKWebViewConfiguration,
+            for navigationAction: WKNavigationAction,
+            windowFeatures: WKWindowFeatures
+        ) -> WKWebView? {
+            // Load the new window's URL in the existing WebView rather than opening
+            // a separate window (which WKWebView doesn't support natively).
+            if let url = navigationAction.request.url {
+                logger.debug("SSO: handling window.open() for \(url.absoluteString)")
+                webView.load(URLRequest(url: url))
+            }
+            // Returning nil tells WebKit not to create a new WebView — we handled it.
+            return nil
         }
 
         // MARK: - Token Capture
@@ -330,16 +418,31 @@ struct SSOWebViewRepresentable: UIViewRepresentable {
             return url.host?.lowercased() == serverURL.host?.lowercased()
         }
 
+        /// Returns true if a cookie is a known OpenWebUI session/token cookie.
+        ///
+        /// OpenWebUI has used several cookie names across versions:
+        /// - `token` — the original JWT bearer token cookie
+        /// - `oauth_session_id` — newer session-based cookie (recent OpenWebUI versions)
+        private func isTokenCookie(_ cookie: HTTPCookie) -> Bool {
+            let name = cookie.name.lowercased()
+            return name == "token" || name == "oauth_session_id"
+        }
+
         /// Attempts token capture with retries to handle timing issues.
         private func attemptTokenCaptureWithRetry(
             attemptId: Int,
-            maxAttempts: Int = 3
+            maxAttempts: Int = 5
         ) async {
             for attempt in 0..<maxAttempts {
                 guard !state.tokenCaptured, attemptId == captureAttemptId else { return }
 
                 if attempt > 0 {
-                    try? await Task.sleep(nanoseconds: 500_000_000) // 500ms
+                    // Increasing backoff: 300ms, 600ms, 1s, 1.5s
+                    let delay: UInt64 = attempt == 1 ? 300_000_000
+                                     : attempt == 2 ? 600_000_000
+                                     : attempt == 3 ? 1_000_000_000
+                                     : 1_500_000_000
+                    try? await Task.sleep(nanoseconds: delay)
                     guard !state.tokenCaptured, attemptId == captureAttemptId else { return }
                 }
 
@@ -348,16 +451,21 @@ struct SSOWebViewRepresentable: UIViewRepresentable {
                 }
             }
 
-            logger.debug("No token found after \(maxAttempts) attempts")
+            logger.debug("SSO: no token found after \(maxAttempts) attempts")
         }
 
-        /// Attempts to capture the JWT token from cookies or localStorage.
+        /// Attempts to capture the JWT token using multiple strategies in order:
+        ///
+        /// 1. JavaScript `document.cookie` — works for non-HttpOnly cookies
+        /// 2. JavaScript `localStorage.getItem('token')` — works for JS-stored tokens
+        /// 3. Native `WKHTTPCookieStore` — works for HttpOnly cookies that JS can't read
+        ///    (this is the primary strategy for Microsoft OAuth and newer OpenWebUI)
         @discardableResult
         private func attemptTokenCapture(attemptId: Int) async -> Bool {
             guard let webView, !state.tokenCaptured else { return false }
             guard attemptId == captureAttemptId else { return false }
 
-            // Strategy 1: Check token cookie via JavaScript
+            // Strategy 1: Check token cookie via JavaScript (non-HttpOnly cookies)
             if let token = await evaluateJS(
                 webView: webView,
                 script: """
@@ -373,20 +481,29 @@ struct SSOWebViewRepresentable: UIViewRepresentable {
                 })()
                 """
             ), isValidJWT(token) {
-                logger.info("Found valid token in cookie")
+                logger.info("SSO: found valid token in JS-readable cookie")
                 await handleToken(token)
                 return true
             }
 
             guard attemptId == captureAttemptId else { return false }
 
-            // Strategy 2: Check localStorage
+            // Strategy 2: Check localStorage (older OpenWebUI versions)
             if let token = await evaluateJS(
                 webView: webView,
                 script: "localStorage.getItem('token') || ''"
             ), isValidJWT(token) {
-                logger.info("Found valid token in localStorage")
+                logger.info("SSO: found valid token in localStorage")
                 await handleToken(token)
+                return true
+            }
+
+            guard attemptId == captureAttemptId else { return false }
+
+            // Strategy 3: Native WKHTTPCookieStore — reads HttpOnly cookies that
+            // JavaScript cannot access. This is the critical path for Microsoft OAuth
+            // and any provider where OpenWebUI sets the token as an HttpOnly cookie.
+            if await attemptNativeCookieCapture(attemptId: attemptId) {
                 return true
             }
 
@@ -428,28 +545,59 @@ struct SSOWebViewRepresentable: UIViewRepresentable {
             return segments.count == 3 && cleaned.count >= 50
         }
 
-        /// Reads the `token` cookie directly from WKHTTPCookieStore.
-        /// This works for HttpOnly cookies that JavaScript cannot access via `document.cookie`.
+        /// Reads session/token cookies directly from WKHTTPCookieStore.
+        ///
+        /// This is the primary capture method for Microsoft OAuth (and any provider
+        /// where OpenWebUI sets the auth token as an HttpOnly cookie — which JS cannot
+        /// access via `document.cookie`).
+        ///
+        /// Checks for:
+        /// - `token` — original OpenWebUI JWT bearer cookie
+        /// - `oauth_session_id` — newer session cookie used in recent OpenWebUI versions
         private func attemptNativeCookieCapture(attemptId: Int) async -> Bool {
             guard let webView, !state.tokenCaptured, attemptId == captureAttemptId else { return false }
 
             return await withCheckedContinuation { continuation in
                 webView.configuration.websiteDataStore.httpCookieStore.getAllCookies { cookies in
-                    // Look for an OpenWebUI token cookie
-                    let tokenCookie = cookies.first { cookie in
-                        cookie.name == "token" &&
-                        (cookie.domain.contains(self.serverURL.components(separatedBy: "://").last?.components(separatedBy: "/").first ?? "") ||
-                         self.serverURL.contains(cookie.domain))
-                    }
-                    guard let cookie = tokenCookie,
-                          !cookie.value.isEmpty,
-                          self.isValidJWT(cookie.value) else {
+                    guard !self.state.tokenCaptured, attemptId == self.captureAttemptId else {
                         continuation.resume(returning: false)
                         return
                     }
-                    self.logger.info("Found valid token in native WKHTTPCookieStore (HttpOnly cookie)")
+
+                    let serverHost = URL(string: self.serverURL)?.host ?? ""
+
+                    // Find the first matching token cookie for our server
+                    let tokenCookie = cookies.first { cookie in
+                        self.isTokenCookie(cookie) &&
+                        !cookie.value.isEmpty &&
+                        (cookie.domain.contains(serverHost) ||
+                         serverHost.contains(cookie.domain.hasPrefix(".") ? String(cookie.domain.dropFirst()) : cookie.domain) ||
+                         self.serverURL.contains(cookie.domain))
+                    }
+
+                    guard let cookie = tokenCookie else {
+                        self.logger.debug("SSO: native cookie store: no matching token cookie found (checked \(cookies.count) cookies)")
+                        continuation.resume(returning: false)
+                        return
+                    }
+
+                    // For oauth_session_id cookies, the value may not be a JWT — it's
+                    // a session identifier. Still treat it as a valid token to pass to
+                    // the server's /api/v1/auths/signin endpoint. The server will
+                    // exchange it for a proper user session.
+                    let value = cookie.value
+                    let isJWT = self.isValidJWT(value)
+                    let isSessionId = cookie.name.lowercased() == "oauth_session_id" && !value.isEmpty
+
+                    guard isJWT || isSessionId else {
+                        self.logger.debug("SSO: native cookie '\(cookie.name)' found but value not a valid token")
+                        continuation.resume(returning: false)
+                        return
+                    }
+
+                    self.logger.info("SSO: found valid token in native WKHTTPCookieStore cookie '\(cookie.name)'")
                     Task { @MainActor in
-                        await self.handleToken(cookie.value)
+                        await self.handleToken(value)
                     }
                     continuation.resume(returning: true)
                 }
@@ -469,7 +617,7 @@ struct SSOWebViewRepresentable: UIViewRepresentable {
             state.tokenCaptured = true
             state.isLoading = true
 
-            logger.info("Handling captured SSO token")
+            logger.info("SSO: handling captured token")
             onTokenCaptured(token)
         }
     }

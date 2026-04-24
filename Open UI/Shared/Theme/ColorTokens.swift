@@ -217,4 +217,16 @@ extension Color {
         let b = Double(hex & 0xFF) / 255.0
         self.init(.sRGB, red: r, green: g, blue: b, opacity: opacity)
     }
+
+    /// Creates a `Color` from a CSS hex string (e.g. `"#FF6467"` or `"FF6467"`).
+    /// Returns `nil` if the string is not a valid 6-digit hex color.
+    init?(hex: String) {
+        var hex = hex.trimmingCharacters(in: .whitespacesAndNewlines)
+        if hex.hasPrefix("#") { hex = String(hex.dropFirst()) }
+        guard hex.count == 6, let value = UInt32(hex, radix: 16) else { return nil }
+        let r = Double((value >> 16) & 0xFF) / 255.0
+        let g = Double((value >> 8)  & 0xFF) / 255.0
+        let b = Double(value & 0xFF)          / 255.0
+        self.init(red: r, green: g, blue: b)
+    }
 }
