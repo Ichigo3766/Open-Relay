@@ -1,68 +1,12 @@
 import Foundation
 import QuartzCore
 import SwiftUI
+import os.log
+
+private let drainLog = Logger(subsystem: "com.openui", category: "DrainTick")
 
 /// Isolates streaming message state from the main conversation model.
-///
-/// ## Purpose
-/// During AI response streaming, every incoming token was mutating
-/// `conversation.messages[index].content` which — via `@Observable` on
-/// `ChatViewModel` — invalidated every view reading `messages`. That
-/// caused the **entire** message list (including large, completed messages)
-/// to re-evaluate their SwiftUI bodies on every token, destroying
-/// frame rate.
-///
-/// `StreamingContentStore` breaks this observation chain:
-/// - Token updates go to `streamingContent` on this separate `@Observable`
-/// - Only the **one** message view that is actively streaming observes
-///   this store. All other message views read from
-///   `conversation.messages` which stays frozen during streaming.
-/// - When streaming completes, final content is written back to
-///   `conversation.messages` **once**.
-///
-/// ## Token Drain (EMA Burst-Interval Adaptive Typewriter)
-/// Rather than passing every raw server token directly to the markdown
-/// renderer, `displayContent` drains from `streamingContent` at a
-/// **self-regulating rate** driven by a `CADisplayLink`.
-///
-/// ### How it works
-/// Two modes, threshold-gated on buffer size:
-///
-/// **Slow model (buffer ≤ 40 chars):** EMA-adaptive constant-rate drain.
-/// When a burst of tokens arrives the inter-burst interval (frames elapsed
-/// since the previous burst) is fed into an exponential moving average:
-///   `burstIntervalEMA = 0.3 * framesSinceLastBurst + 0.7 * burstIntervalEMA`
-/// `steadyRate` is then locked at:
-///   `steadyRate = max(buffer / burstIntervalEMA, 0.3)`
-/// Because `burstIntervalEMA` tracks the *actual* gap between TCP bursts,
-/// the buffer is consumed in exactly that many frames — eliminating the
-/// inter-burst dead zone that caused the "snap then silence" artefact.
-///
-/// **Fast model (buffer > 40 chars):** Proportional drain.
-///   `charsPerFrame = max(steadyRate, buffer / 6)`
-/// The large buffer means buffer/6 always wins — identical to original
-/// proportional behaviour. Fast models are completely unaffected.
-///
-/// ### Why EMA beats a fixed divisor
-/// A hardcoded divisor of 20 (333ms) works only when bursts arrive every
-/// 333ms. At 20 tok/s bursts arrive every ~400-500ms, leaving a ~100-170ms
-/// dead zone per burst. The EMA divisor stretches the drain to match the
-/// real inter-burst interval, producing a steady typewriter cadence at any
-/// server speed.
-///
-/// ### Why synchronous CADisplayLink (no Task trampoline)
-/// CADisplayLink already fires on the main RunLoop (main thread). Using
-/// `MainActor.assumeIsolated` lets `drainTick()` execute synchronously
-/// within the same RunLoop iteration, eliminating the Task-scheduler hop
-/// that previously caused ticks to queue up and fire back-to-back.
-///
-/// ### Finishing mode
-/// When the server completes (`endStreaming()` is called), the store
-/// enters `isFinishing` mode instead of instantly flushing remaining
-/// buffered content. The display link keeps running at the **same drain
-/// rate** until every buffered character has been revealed, then cleans
-/// up automatically. This prevents the jarring "dump all at once" artifact
-/// at the end of a response while keeping the API identical for callers.
+
 @MainActor @Observable
 final class StreamingContentStore {
     // MARK: - Live Streaming State
@@ -113,9 +57,10 @@ final class StreamingContentStore {
     private var lastKnownTotal: Int = 0
 
     /// Exponential moving average of the inter-burst interval in display-link
-    /// frames. Seed at 25 (≈417ms) — matches the typical 400ms gap at 20 tok/s.
+    /// frames. Seed at 15 (≈250ms) — fast models often burst every 100-200ms,
+    /// so a lower seed prevents over-slow drain at startup.
     /// Updated on every burst: EMA = 0.3 × observed + 0.7 × EMA
-    private var burstIntervalEMA: Double = 25
+    private var burstIntervalEMA: Double = 15
 
     /// Frame counter incremented every tick, reset to 0 on each burst arrival.
     /// Used to measure the actual gap between consecutive token bursts.
@@ -130,6 +75,31 @@ final class StreamingContentStore {
     /// keeps running to drain remaining buffer — no new tokens will arrive.
     /// Buffer is NOT instantly flushed; drain continues at the same rate.
     private var isFinishing: Bool = false
+
+    /// Counts frames elapsed since the visible buffer went to zero.
+    /// Used for momentum coasting — the drain keeps moving at steadyRate
+    /// for up to `maxCoastFrames` frames even when the buffer is empty,
+    /// smoothing out the dead zone between irregular token bursts.
+    private var coastFrames: Int = 0
+
+    /// Maximum frames to coast at steadyRate after the buffer empties.
+    /// At 60fps, 10 frames = ~167ms — enough to bridge most inter-burst gaps
+    /// without permanently overshooting when the server really is done.
+    private let maxCoastFrames: Int = 10
+
+    /// Hard cap on chars revealed per frame, regardless of server speed.
+    /// At 60fps: 6.0 chars/frame = 360 chars/sec — comfortable typewriter pace.
+    /// Prevents fast models from dumping large bursts instantly, which destroys
+    /// the character-by-character feel. The buffer simply grows and drains steadily.
+    private let maxCharsPerFrame: Double = 6.0
+
+    /// True from the frame that VIZ fast-forward is first completed (displayContent
+    /// advanced to vizEndOffset) until the next drainTick where we start fresh.
+    /// Used to trigger a single drain-state reset at the streaming→typewriter boundary.
+    private var vizTransitionPending: Bool = false
+
+    /// Throttle counter for per-frame drain logs — logs every 30 frames (~0.5s).
+    private var drainLogCounter: Int = 0
 
     // MARK: - CADisplayLink (synchronous — no Task trampoline)
 
@@ -281,9 +251,11 @@ final class StreamingContentStore {
         drainAccumulator = 0
         steadyRate = 0
         lastKnownTotal = 0
-        burstIntervalEMA = 25
+        burstIntervalEMA = 15
         framesSinceLastBurst = 0
+        coastFrames = 0
         isFirstBurst = true
+        vizTransitionPending = false
         let target = DisplayLinkTarget()
         target.store = self
         displayLinkTarget = target
@@ -299,22 +271,26 @@ final class StreamingContentStore {
         drainAccumulator = 0
         steadyRate = 0
         lastKnownTotal = 0
-        burstIntervalEMA = 25
+        burstIntervalEMA = 15
         framesSinceLastBurst = 0
+        coastFrames = 0
         isFirstBurst = true
+        vizTransitionPending = false
     }
 
     /// Called once per display frame synchronously on the main RunLoop.
     ///
-    /// ## EMA burst-interval adaptive drain
+    /// ## EMA burst-interval adaptive drain with momentum coasting
     ///
-    /// **Slow model (buffer ≤ 40):** EMA-adaptive constant-rate
+    /// **Slow model (buffer ≤ 60):** EMA-adaptive constant-rate
     ///   - On burst: update EMA with observed inter-burst frames, then
-    ///     `steadyRate = max(buffer / burstIntervalEMA, 0.3)`
+    ///     `steadyRate = max(buffer / burstIntervalEMA, 0.5)`
     ///   - Each frame: reveal steadyRate chars (constant, not proportional)
     ///   - Buffer drains in exactly `burstIntervalEMA` frames → zero dead zone
+    ///   - When buffer empties, coast at steadyRate for up to maxCoastFrames
+    ///     to bridge the gap before the next burst arrives
     ///
-    /// **Fast model (buffer > 40):** proportional drain
+    /// **Fast model (buffer > 60):** proportional drain
     ///   - Each frame: max(steadyRate, buffer / 6) — proportional dominates
     ///   - Behaviour identical to original — fast models unaffected
     ///
@@ -322,9 +298,13 @@ final class StreamingContentStore {
     ///   fully drained, triggers completeCleanup() to stop the display link.
     private func drainTick() {
         let full = streamingContent
-        let displayed = displayContent
         let totalCount = full.count
-        let buffered = totalCount - displayed.count
+
+        // `displayedCount` is read once here and kept in sync if the VIZ
+        // fast-forward block mutates `displayContent` mid-tick, so the drain
+        // arithmetic below always uses the correct post-fast-forward cursor.
+        var displayedCount = displayContent.count
+        var buffered = totalCount - displayedCount
 
         // In finishing mode, if buffer is empty we're done — clean up.
         if isFinishing && buffered == 0 {
@@ -334,7 +314,131 @@ final class StreamingContentStore {
 
         framesSinceLastBurst += 1
 
-        guard buffered > 0 else { return }
+        // VIZ fast-forward: if the full content contains VIZ markers, bypass the
+        // typewriter drain for the VIZ block itself but NOT for text after @@@VIZ-END.
+        //
+        // Problem with the old "flush full" approach:
+        //   Once @@@VIZ-START appears, `full.contains("@@@VIZ-START")` is permanently
+        //   true for the rest of the stream. Every post-VIZ token got dumped instantly
+        //   (no typewriter drain), causing choppy text AND forcing MarkdownView to
+        //   re-parse the entire multi-KB string at 60fps → 104% CPU.
+        //
+        // New approach:
+        //   - VIZ-START seen, VIZ-END not yet arrived → flush entire buffer (VIZ is
+        //     still streaming, we want InlineVisualizerView to render incrementally).
+        //   - Both markers present → fast-forward displayContent only up to the end
+        //     of @@@VIZ-END (so the viz is fully locked in), then let the normal EMA
+        //     typewriter drain handle everything that follows. This restores the smooth
+        //     character-by-character feel for any prose written after the viz block.
+        if full.contains("@@@VIZ-START") {
+            // IMPORTANT: search for "\n@@@VIZ-END" (newline-prefixed) so we only
+            // match the standalone end marker that appears on its own line.
+            // The VIZ HTML content itself may contain "@@@VIZ-END" as a JavaScript
+            // string literal (e.g. `var END_MARK = '@@@VIZ-END'`) — a bare
+            // `range(of: "@@@VIZ-END")` would find those embedded occurrences and
+            // set vizEndOffset to the wrong position, causing the drain to typewriter
+            // raw VIZ JS/HTML as plain message text.
+            let standaloneEndMarker = "\n@@@VIZ-END"
+            if let endRange = full.range(of: standaloneEndMarker) {
+                // Both markers present — fast-forward only through \n@@@VIZ-END.
+                let vizEndOffset = full.distance(from: full.startIndex, to: endRange.upperBound)
+                if displayedCount < vizEndOffset {
+                    // displayContent hasn't reached VIZ-END yet — flush up to it.
+                    // Only actually write to displayContent if it changed — avoids
+                    // triggering a SwiftUI re-render every frame once VIZ-END is locked.
+                    let newDisplay = String(full[..<endRange.upperBound])
+                    if displayContent != newDisplay {
+                        displayContent = newDisplay
+                        drainLog.debug("🎨 [VIZ] VIZ-END reached: vizEndOffset=\(vizEndOffset) totalCount=\(totalCount) postVizBuffered=\(totalCount - vizEndOffset) isFinishing=\(self.isFinishing)")
+                    }
+                    // Update local cursor so the drain arithmetic below is correct.
+                    displayedCount = vizEndOffset
+                    buffered = totalCount - displayedCount
+                    // Mark that we just landed at VIZ-END — next tick resets drain state.
+                    vizTransitionPending = true
+                }
+                // Fall through to normal drain for text after @@@VIZ-END.
+                // (buffered is now full.count - vizEndOffset chars of post-viz prose.)
+            } else {
+                // @@@VIZ-START seen but standalone @@@VIZ-END not yet arrived —
+                // flush everything so InlineVisualizerView gets partial VIZ HTML.
+                // Only write to displayContent when it actually changes to avoid
+                // spurious SwiftUI re-renders on every display-link tick (60fps)
+                // while the VIZ block is rendering (can be 5-10 seconds of frames).
+                if displayContent.count != totalCount {
+                    displayContent = full
+                    drainLog.debug("🎨 [VIZ] VIZ streaming: flushed to \(totalCount) chars (no VIZ-END yet)")
+                }
+                if isFinishing { completeCleanup() }
+                return
+            }
+        }
+
+        // Tool call / reasoning block fast-forward:
+        // When a <details type="tool_calls"> or <details type="reasoning"> block
+        // is present but not yet closed (i.e., still streaming), bypassing the
+        // typewriter drain prevents the incomplete HTML from leaking into
+        // MarkdownView as raw text — which would cause expensive CommonMark
+        // parsing + syntax highlighting on the entire block on every display-link
+        // tick (60fps). This is especially costly for the Inline Visualizer tool
+        // which embeds thousands of characters of HTML/JS in the arguments attribute.
+        //
+        // Strategy: if the number of <details opens exceeds the number of
+        // </details> closes, there is at least one unclosed block — flush immediately.
+        // Simple substring counting is O(n) but far cheaper than regex and runs
+        // on the RAW full string before any drain decisions.
+        if Self.hasUnclosedDetailsBlock(full) {
+            // Only write to displayContent when content actually grew — avoids
+            // triggering a SwiftUI re-render (and VizMarkerParser.streamingParse scan)
+            // on every display-link tick while the <details> block is streaming.
+            if displayContent.count != totalCount {
+                displayContent = full
+            }
+            if isFinishing { completeCleanup() }
+            return
+        }
+
+        // VIZ transition: we just completed the fast-forward to VIZ-END on the
+        // previous tick. Reset all drain state so the EMA algorithm starts fresh
+        // for post-VIZ prose rather than inheriting a stale lastKnownTotal (which
+        // was 0 since early-return paths never updated it) that would make newChars
+        // look like the entire 30KB message arrived in one burst.
+        //
+        // Additionally, if the server already finished while VIZ was rendering
+        // (isFinishing=true) and there's a large post-VIZ buffer, flush most of it
+        // immediately so the user sees the text appear quickly rather than waiting
+        // minutes for a 360-char/sec drain to catch up.
+        if vizTransitionPending {
+            vizTransitionPending = false
+            drainLog.debug("🔄 [VIZ→DRAIN] Transition fired: buffered=\(buffered) isFinishing=\(self.isFinishing) totalCount=\(totalCount)")
+            // Sync lastKnownTotal so newChars = 0 on this tick (clean slate).
+            lastKnownTotal = totalCount
+            // Fresh EMA seed — post-VIZ tokens are actively arriving.
+            burstIntervalEMA = 8
+            framesSinceLastBurst = 0
+            isFirstBurst = true
+            drainAccumulator = 0
+            steadyRate = 0
+
+            // Catch-up flush: if we're finishing (server done) and the post-VIZ
+            // buffer is large, advance displayContent to leave only a small tail
+            // (~2 seconds worth at 360 chars/sec) for typewriter effect.
+            // Without this, a 5000-char post-VIZ story would take ~14 seconds to
+            // drain even after the server finished sending it.
+            let catchUpThreshold = 200
+            if isFinishing && buffered > catchUpThreshold {
+                let keepForTypewriter = catchUpThreshold
+                let skipTo = totalCount - keepForTypewriter
+                let skipIdx = full.index(full.startIndex, offsetBy: skipTo)
+                displayContent = String(full[..<skipIdx])
+                displayedCount = skipTo
+                buffered = keepForTypewriter
+                lastKnownTotal = totalCount
+                drainLog.debug("🔄 [VIZ→DRAIN] Catch-up flush: skipped to \(skipTo), leaving \(keepForTypewriter) chars for typewriter")
+            }
+            // Return — start normal drain on the next tick with clean state.
+            return
+        }
 
         // Burst detection: did streamingContent grow since the last frame?
         // In finishing mode this will always be 0 (no new tokens arrive).
@@ -342,45 +446,79 @@ final class StreamingContentStore {
         lastKnownTotal = totalCount
 
         if newChars > 0 {
+            // Reset coast counter — we have real buffer to drain.
+            coastFrames = 0
+
             if isFirstBurst {
                 // Skip EMA update on the very first burst to prevent the model's
                 // thinking time (potentially seconds = hundreds of frames) from
                 // inflating burstIntervalEMA and making the first drain far too slow.
-                // Use the seeded EMA value (25 frames ≈ 417ms) for the first burst.
+                // Use the seeded EMA value (15 frames ≈ 250ms) for the first burst.
                 isFirstBurst = false
             } else {
                 // Update EMA with the observed inter-burst interval (frames).
-                // Clamp to [4, 60] — real inter-burst gaps are 12-36 frames at
+                // Clamp to [3, 60] — real inter-burst gaps are 6-36 frames at
                 // 20-60 tok/s. Ceiling of 60 (1s) prevents one long gap from
                 // dragging the EMA high and slowing subsequent bursts.
-                let observed = Double(max(4, min(framesSinceLastBurst, 60)))
+                // Floor raised to 3 (was 4) for faster responsiveness on fast models.
+                let observed = Double(max(3, min(framesSinceLastBurst, 60)))
                 burstIntervalEMA = 0.3 * observed + 0.7 * burstIntervalEMA
             }
             framesSinceLastBurst = 0
 
             // Lock in a constant drain rate that spreads the current buffer
-            // across the EMA-estimated inter-burst gap.  Floor of 0.3 lets
-            // very small bursts over long gaps trickle out gradually.
-            steadyRate = max(Double(buffered) / burstIntervalEMA, 0.3)
+            // across the EMA-estimated inter-burst gap. Floor raised to 0.5
+            // (was 0.3) — 30 chars/sec minimum keeps motion visible even
+            // during sparse token arrivals.
+            steadyRate = max(Double(buffered) / burstIntervalEMA, 0.5)
+            drainLog.debug("⚡️ [BURST] newChars=\(newChars) buffered=\(buffered) steadyRate=\(String(format: "%.2f", self.steadyRate)) ema=\(String(format: "%.1f", self.burstIntervalEMA)) isFinishing=\(self.isFinishing)")
         }
 
         // Threshold-gated dual mode:
-        // ≤ 40 chars → EMA-adaptive constant rate (slow model: zero dead zone)
-        // > 40 chars → proportional drain (fast model: keeps up with throughput)
+        // ≤ 60 chars → EMA-adaptive constant rate (slow model: zero dead zone)
+        // > 60 chars → proportional drain (fast model: keeps up with throughput)
+        //
+        // Note: No tail-reserve brake. The previous 0-3 char brake was the primary
+        // source of the "snap then pause" hiccup — it slowed drain to near-zero
+        // right when a burst was imminent. Momentum coasting replaces it: when
+        // the buffer runs dry we coast at steadyRate until the next burst.
         var charsThisFrame: Double
-        if buffered <= 40 {
-            charsThisFrame = steadyRate
-
-            // Tail-reserve brake: when only 3 or fewer chars remain AND we are
-            // still actively receiving tokens (not finishing), apply a quadratic
-            // slow-down so the last chars linger until the next burst arrives.
-            // During finishing mode we skip this so the tail drains naturally.
-            if buffered <= 3 && !isFinishing {
-                let brakeFactor = (Double(buffered) / 4.0)  // 0.25 … 0.75
-                charsThisFrame = steadyRate * brakeFactor
+        if buffered > 60 {
+            // Fast model: proportional drain dominates.
+            // Dynamic cap: scale the ceiling with buffer depth so post-VIZ catch-up
+            // isn't permanently throttled by the normal 6 char/frame typewriter cap.
+            //   buffer >   60 → cap = 15 chars/frame  (900 chars/sec — snappy, readable)
+            //   buffer >  200 → cap = 30 chars/frame  (1800 chars/sec — fast catch-up)
+            //   buffer > 1000 → cap = 50 chars/frame  (3000 chars/sec — aggressive catch-up)
+            // The previous thresholds (500/2000) left the drain capped at 6 chars/frame for
+            // the entire time buffer stays in the 60–500 range (common during post-VIZ token
+            // trickle-in), making text feel sluggish. Lowering to 60/200/1000 ensures we
+            // always drain noticeably faster than the 6-char/frame slow path.
+            let dynamicCap: Double
+            if buffered > 1000 {
+                dynamicCap = 50.0
+            } else if buffered > 200 {
+                dynamicCap = 30.0
+            } else {
+                dynamicCap = 15.0
             }
+            charsThisFrame = min(max(steadyRate, Double(buffered) / 6.0), dynamicCap)
+        } else if buffered > 0 {
+            // Slow/medium model: constant EMA rate, capped at maxCharsPerFrame
+            charsThisFrame = min(steadyRate, maxCharsPerFrame)
         } else {
-            charsThisFrame = max(steadyRate, Double(buffered) / 6.0)
+            // Buffer is empty — momentum coasting:
+            // Continue accumulating at steadyRate for up to maxCoastFrames
+            // so that when the next burst arrives, the accumulator already
+            // has some credit and characters appear immediately.
+            guard !isFinishing && coastFrames < maxCoastFrames && steadyRate > 0 else {
+                return
+            }
+            coastFrames += 1
+            drainAccumulator += steadyRate
+            // Don't reveal any chars — just pre-charge the accumulator.
+            // (The accumulator credit will be consumed when buffered > 0 again.)
+            return
         }
 
         drainAccumulator += charsThisFrame
@@ -388,9 +526,48 @@ final class StreamingContentStore {
         guard reveal > 0 else { return }
         drainAccumulator -= Double(reveal)
 
-        let endOffset = displayed.count + reveal
+        drainLogCounter += 1
+        if drainLogCounter >= 30 {
+            drainLogCounter = 0
+            drainLog.debug("🖊 [DRAIN] reveal=\(reveal) buffered=\(buffered) steadyRate=\(String(format: "%.2f", self.steadyRate)) charsThisFrame=\(String(format: "%.2f", charsThisFrame)) isFinishing=\(self.isFinishing)")
+        }
+
+        let endOffset = displayedCount + reveal
         let endIdx = full.index(full.startIndex, offsetBy: endOffset)
-        let newDisplay = String(full[..<endIdx])
-        displayContent = newDisplay
+        displayContent = String(full[..<endIdx])
+    }
+
+    // MARK: - Details Block Detection
+
+    /// Returns `true` if `content` contains at least one `<details` opening tag
+    /// that does not have a matching `</details>` closing tag.
+    ///
+    /// This is used to fast-forward tool call and reasoning blocks so that the
+    /// incomplete HTML is never passed through MarkdownView character by character.
+    ///
+    /// Uses simple substring counting (not regex) for performance — this runs
+    /// on every display-link tick (up to 60fps) so it must be O(n) and cheap.
+    private static func hasUnclosedDetailsBlock(_ content: String) -> Bool {
+        guard content.contains("<details") else { return false }
+
+        // Count opening <details tags (case-insensitive substring count)
+        var openCount = 0
+        var searchRange = content.startIndex..<content.endIndex
+        let openTag = "<details"
+        while let range = content.range(of: openTag, options: .caseInsensitive, range: searchRange) {
+            openCount += 1
+            searchRange = range.upperBound..<content.endIndex
+        }
+
+        // Count closing </details> tags
+        var closeCount = 0
+        searchRange = content.startIndex..<content.endIndex
+        let closeTag = "</details>"
+        while let range = content.range(of: closeTag, options: .caseInsensitive, range: searchRange) {
+            closeCount += 1
+            searchRange = range.upperBound..<content.endIndex
+        }
+
+        return openCount > closeCount
     }
 }

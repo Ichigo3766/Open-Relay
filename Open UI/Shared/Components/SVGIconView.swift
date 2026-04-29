@@ -56,3 +56,49 @@ struct SVGIconView: UIViewRepresentable {
 
     func updateUIView(_ webView: WKWebView, context: Context) {}
 }
+
+/// Fetches an SVG from an HTTP/HTTPS URL and renders it via `SVGIconView`.
+/// Shows a bolt fallback while loading or on failure.
+struct RemoteSVGIconView: View {
+    let url: String
+
+    @State private var svgString: String? = nil
+    @State private var hasFailed = false
+
+    var body: some View {
+        Group {
+            if let svg = svgString {
+                SVGIconView(svgString: svg)
+                    .frame(width: 28, height: 28)
+                    .contentShape(Circle())
+            } else {
+                Image(systemName: hasFailed ? "bolt.fill" : "bolt.fill")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(Color(.secondaryLabel).opacity(0.7))
+                    .frame(width: 28, height: 28)
+                    .contentShape(Circle())
+            }
+        }
+        .task(id: url) {
+            await fetchSVG()
+        }
+    }
+
+    private func fetchSVG() async {
+        guard let parsedURL = URL(string: url) else {
+            hasFailed = true
+            return
+        }
+        do {
+            let (data, _) = try await URLSession.shared.data(from: parsedURL)
+            if let svgText = String(data: data, encoding: .utf8),
+               svgText.contains("<svg") {
+                await MainActor.run { svgString = svgText }
+            } else {
+                await MainActor.run { hasFailed = true }
+            }
+        } catch {
+            await MainActor.run { hasFailed = true }
+        }
+    }
+}

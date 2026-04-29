@@ -55,6 +55,7 @@ struct AppearanceSettingsView: View {
                             onChange: { manager.useTintedBackgrounds = $0 }
                         )
                     )
+
                 }
 
             }

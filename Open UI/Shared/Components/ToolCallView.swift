@@ -1,6 +1,9 @@
 import SwiftUI
 import WebKit
 import os.log
+import UniformTypeIdentifiers
+
+private let vizLog = Logger(subsystem: "com.openui", category: "VizPipeline")
 
 // MARK: - Tool Call Data
 
@@ -558,7 +561,13 @@ enum ToolCallParser {
             return []
         }
 
-        return array.filter { !$0.isEmpty }
+        // Filter out data-iv-build embeds — these are the Inline Visualizer plugin's
+        // HTMLResponse iframes that depend on parent.document DOM access (impossible in
+        // a sandboxed WKWebView). The native InlineVisualizerView renders visualizations
+        // instead, so these embeds must be suppressed unconditionally in BOTH the
+        // message-level path (messageEmbeds filter in AssistantMessageContent.body) AND
+        // here in the tool-call path so they never reach RichUIEmbedView.
+        return array.filter { !$0.isEmpty && !$0.contains("data-iv-build") }
     }
 
     // MARK: - Raw Reasoning Tag Preprocessing
@@ -1157,14 +1166,183 @@ struct RichUIEmbedView: View {
         let bridge = """
         <script>
         (function() {
-          // Inject tool args so embeds can access window.args
+          // ── 1. Tool args injection ──────────────────────────────────────────
           try {
             window.args = JSON.parse(`\(argsJSON)`);
           } catch(e) {
             window.args = null;
           }
 
-          // Bridge parent.postMessage to our native handler.
+          // ── 2. Console.log forwarding to native logger ──────────────────────
+          // Forwards console.log/warn/error to the native richUIBridge so we can
+          // see JS output in the Xcode log (or Console.app) as "RichUIWebView: JS console: ..."
+          var _nativeLog = function(level, args) {
+            try {
+              var msg = Array.prototype.slice.call(args).map(function(a) {
+                try { return typeof a === 'object' ? JSON.stringify(a) : String(a); } catch(e) { return String(a); }
+              }).join(' ');
+              window.webkit.messageHandlers.richUIBridge.postMessage({ type: 'log', level: level, msg: msg });
+            } catch(e) {}
+          };
+          var _origConsoleLog   = console.log.bind(console);
+          var _origConsoleWarn  = console.warn.bind(console);
+          var _origConsoleError = console.error.bind(console);
+          console.log   = function() { _nativeLog('log',   arguments); _origConsoleLog.apply(console, arguments);   };
+          console.warn  = function() { _nativeLog('warn',  arguments); _origConsoleWarn.apply(console, arguments);  };
+          console.error = function() { _nativeLog('error', arguments); _origConsoleError.apply(console, arguments); };
+
+          // ── 3. Download interception ────────────────────────────────────────
+          // Ace Step (and similar tools) use:
+          //   fetch(url) → blob → URL.createObjectURL(blob) → a.href = blobURL → a.click()
+          // WKWebView cannot handle blob-URL downloads natively, so we intercept
+          // this pattern at two levels:
+
+          // Level A: Track blob URLs → original fetch URL mapping.
+          // When fetch() is called for a URL that looks like a file endpoint,
+          // we record it so we can resolve the original URL when a.click() fires.
+          var _blobUrlToOriginal = {};  // blobURL → { url, filename }
+          var _origFetch = window.fetch.bind(window);
+          window.fetch = function(input, init) {
+            var url = (typeof input === 'string') ? input : (input && input.url) || '';
+            var p = _origFetch.apply(this, arguments);
+            // Track the promise → original URL so we can intercept createObjectURL below
+            p._richUISourceURL = url;
+            return p;
+          };
+
+          // Level B: Override URL.createObjectURL to tag blob URLs with their MIME type.
+          // Also override Response.prototype.blob() to carry the fetch source URL
+          // through the response chain so we can resolve blob: URLs to their origin.
+          var _origResponseBlob = Response.prototype.blob;
+          Response.prototype.blob = function() {
+            var self = this;
+            var sourceURL = (self.url) || '';
+            return _origResponseBlob.apply(this, arguments).then(function(blob) {
+              // Tag the blob with its HTTP origin URL for later resolution
+              try { blob._richUISourceURL = sourceURL; } catch(e) {}
+              return blob;
+            });
+          };
+
+          var _origCreateObjectURL = URL.createObjectURL.bind(URL);
+          URL.createObjectURL = function(obj) {
+            var blobURL = _origCreateObjectURL(obj);
+            // Capture MIME type from the Blob/File object itself (e.g. 'audio/mpeg',
+            // 'video/mp4', 'image/png') — this lets us derive the correct file
+            // extension later without hardcoding any specific format.
+            var mimeType = (obj && obj.type) ? obj.type : '';
+            var sourceURL = (obj && obj._richUISourceURL) ? obj._richUISourceURL : '';
+            _blobUrlToOriginal[blobURL] = { url: sourceURL || blobURL, mimeType: mimeType };
+            console.log('[RichUI] createObjectURL: blobURL=' + blobURL.substring(0, 60) + ' mime=' + mimeType + ' source=' + sourceURL.substring(0, 80));
+            return blobURL;
+          };
+
+          // Level C: Intercept all anchor clicks at the document level.
+          // IMPORTANT: Skip placeholder hrefs (href="#", empty, javascript:) so
+          // the embed's own JS click handler can run first (e.g. Ace Step's Save
+          // button uses <a href="#" download> as a placeholder and handles the
+          // real download asynchronously via fetch→blob→createObjectURL→a.click()).
+          // The real download anchor (with blob: or https: href) is caught by Level D.
+          document.addEventListener('click', function(e) {
+            var el = e.target;
+            // Walk up the DOM in case the click target is a child of <a>
+            while (el && el.tagName !== 'A') { el = el.parentElement; }
+            if (!el) return;
+            var a = el;
+            var href = a.href || '';
+            var dlAttr = a.getAttribute('download');
+            if (dlAttr === null) return;  // not a download link — ignore
+
+            // Skip placeholder hrefs — let the embed's own JS handler run.
+            // The real download will be a blob: or https: URL caught by Level D.
+            var rawHref = a.getAttribute('href') || '';
+            if (!href ||
+                rawHref === '#' ||
+                rawHref === '' ||
+                rawHref.toLowerCase().startsWith('javascript:') ||
+                href === window.location.href ||
+                href === window.location.href + '#') {
+              console.log('[RichUI] Level C: skipping placeholder href="' + rawHref + '" — letting embed handle it');
+              return;
+            }
+
+            var filename = dlAttr || href.split('/').pop() || 'download';
+            var mimeType = '';
+            console.log('[RichUI] Level C anchor click: href=' + href.substring(0, 80) + ' download=' + dlAttr);
+
+            e.preventDefault();
+            e.stopImmediatePropagation();
+
+            // If it's a blob: URL, resolve to the original fetch URL and MIME type
+            var resolvedURL = href;
+            if (href.startsWith('blob:')) {
+              var tracked = _blobUrlToOriginal[href];
+              if (tracked) {
+                mimeType = tracked.mimeType || '';
+                if (tracked.url && !tracked.url.startsWith('blob:')) {
+                  resolvedURL = tracked.url;
+                  console.log('[RichUI] Level C resolved blob to: ' + resolvedURL + ' mime=' + mimeType);
+                }
+              }
+            }
+
+            // Send to native
+            try {
+              window.webkit.messageHandlers.richUIBridge.postMessage({
+                type: 'download',
+                url: resolvedURL,
+                filename: filename,
+                mimeType: mimeType
+              });
+            } catch(err) {
+              console.error('[RichUI] download bridge postMessage failed: ' + err);
+            }
+          }, true);
+
+          // Level D: Also intercept programmatic a.click() by monkey-patching
+          // HTMLAnchorElement.prototype.click. Some embeds create a detached <a>
+          // (not in DOM), set href + download, then call .click() — the DOM
+          // listener above won't fire for detached elements.
+          // This is the primary catch for the Ace Step pattern:
+          //   fetch(url) → resp.blob() → URL.createObjectURL(blob) → a.href=blobURL → a.click()
+          var _origAnchorClick = HTMLAnchorElement.prototype.click;
+          HTMLAnchorElement.prototype.click = function() {
+            var a = this;
+            var href = a.href || '';
+            var dlAttr = a.getAttribute('download');
+            if (dlAttr !== null && href) {
+              var filename = dlAttr || href.split('/').pop() || 'download';
+              var mimeType = '';
+              console.log('[RichUI] Level D anchor.click(): href=' + href.substring(0, 80) + ' download=' + dlAttr);
+
+              var resolvedURL = href;
+              if (href.startsWith('blob:')) {
+                var tracked = _blobUrlToOriginal[href];
+                if (tracked) {
+                  mimeType = tracked.mimeType || '';
+                  if (tracked.url && !tracked.url.startsWith('blob:')) {
+                    resolvedURL = tracked.url;
+                    console.log('[RichUI] Level D resolved blob to: ' + resolvedURL + ' mime=' + mimeType);
+                  }
+                }
+              }
+
+              try {
+                window.webkit.messageHandlers.richUIBridge.postMessage({
+                  type: 'download',
+                  url: resolvedURL,
+                  filename: filename,
+                  mimeType: mimeType
+                });
+              } catch(err) {
+                console.error('[RichUI] download bridge postMessage (Level D) failed: ' + err);
+              }
+              return;  // Don't call original .click()
+            }
+            return _origAnchorClick.apply(this, arguments);
+          };
+
+          // ── 4. parent.postMessage bridge ────────────────────────────────────
           // The embed HTML calls parent.postMessage({ type: 'iframe:height', height: h }, '*')
           // for auto-sizing. In a WKWebView there is no real parent frame, so we
           // intercept this and forward it to our WKScriptMessageHandler.
@@ -1198,6 +1376,8 @@ struct RichUIEmbedView: View {
             _nativePost(msg);
             try { _origPost(msg, targetOrigin || '*'); } catch(e) {}
           };
+
+          console.log('[RichUI] bridge installed');
         })();
         </script>
         """
@@ -1213,8 +1393,10 @@ struct RichUIEmbedView: View {
 
 // MARK: - Rich UI WKWebView Wrapper
 
+private let richUILog = Logger(subsystem: "com.openui", category: "RichUIWebView")
+
 /// UIViewRepresentable wrapping a WKWebView for Rich UI embeds.
-/// Handles height reporting and URL scheme routing.
+/// Handles height reporting, URL scheme routing, slider gestures, and downloads.
 private struct RichUIWebView: UIViewRepresentable {
     let html: String
     @Binding var height: CGFloat
@@ -1227,7 +1409,7 @@ private struct RichUIWebView: UIViewRepresentable {
     var serverBaseURL: String? = nil
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(height: $height, authToken: authToken)
+        Coordinator(height: $height, authToken: authToken, serverBaseURL: serverBaseURL)
     }
 
     func makeUIView(context: Context) -> WKWebView {
@@ -1244,31 +1426,48 @@ private struct RichUIWebView: UIViewRepresentable {
         // Allow inline media playback (useful for media-rich embeds)
         config.allowsInlineMediaPlayback = true
 
-        // iOS WKWebView normally requires a direct user gesture to start audio/video.
-        // Even though the user taps the embed's play button, the JS `.play()` call
-        // may not be considered a "direct" gesture by WebKit's heuristics (it goes
-        // through a synthetic mouse/click event inside the webview). Setting this to
-        // `[]` removes ALL media playback restrictions so audio/video play works
-        // exactly as it does in a browser — matching the web UI behaviour.
+        // Remove ALL gesture-to-play restrictions so JS .play() from embed
+        // buttons works exactly like a browser (no direct-gesture requirement).
         config.mediaTypesRequiringUserActionForPlayback = []
+
+        // Allow JS to open windows (window.open / target="_blank")
+        config.preferences.javaScriptCanOpenWindowsAutomatically = true
 
         let webView = WKWebView(frame: .zero, configuration: config)
         webView.isOpaque = false
         webView.backgroundColor = .clear
-        // Allow vertical scroll so tall embeds (weather cards, dashboards) are
-        // fully accessible. The SwiftUI .frame(height:) cap limits the webview
-        // height, and internal scroll lets the user see the rest of the content.
-        webView.scrollView.isScrollEnabled = true
-        webView.scrollView.bounces = false
-        webView.scrollView.showsVerticalScrollIndicator = true
-        webView.scrollView.showsHorizontalScrollIndicator = false
-        webView.navigationDelegate = context.coordinator
-        webView.allowsLinkPreview = false
 
-        // Disable long-press selection to keep chat UX clean
+        // ── Scroll / gesture setup ────────────────────────────────────────────
+        // Disable the scroll view entirely so it has NO gesture recognizers that
+        // compete with HTML interactive elements.
+        //
+        // Background: WKWebView's internal scroll view owns a UIScrollViewPanGestureRecognizer
+        // that has higher UIKit priority than WebKit's touch-handling. When the user
+        // drags an <input type="range"> slider, the pan recognizer fires first and
+        // claims the touch sequence — the slider thumb never moves.
+        //
+        // Setting isScrollEnabled = false removes the pan recognizer from the
+        // responder chain, giving touches directly to WebKit. The SwiftUI .frame()
+        // already constrains the webview height to content size (via postMessage /
+        // scrollHeight fallback), so vertical scrolling inside the webview is not
+        // needed — the parent chat ScrollView handles page-level scroll.
+        webView.scrollView.isScrollEnabled = false
+        webView.scrollView.bounces = false
+        webView.scrollView.showsVerticalScrollIndicator = false
+        webView.scrollView.showsHorizontalScrollIndicator = false
+        webView.scrollView.delaysContentTouches = false
+        // Belt-and-suspenders: also set cancelsTouchesInView = false so any
+        // residual recognizer still in the tree doesn't swallow horizontal drags.
+        webView.scrollView.panGestureRecognizer.cancelsTouchesInView = false
+
+        webView.navigationDelegate = context.coordinator
+        webView.uiDelegate = context.coordinator
+        webView.allowsLinkPreview = false
         webView.allowsBackForwardNavigationGestures = false
 
         context.coordinator.webView = webView
+
+        richUILog.debug("makeUIView: loading HTML (\(html.count) bytes), baseURL=\(serverBaseURL ?? "nil")")
         webView.loadHTMLString(html, baseURL: resolvedBaseURL)
         return webView
     }
@@ -1276,32 +1475,34 @@ private struct RichUIWebView: UIViewRepresentable {
     func updateUIView(_ webView: WKWebView, context: Context) {
         // Only reload if the HTML actually changed (e.g. args updated)
         if context.coordinator.loadedHTML != html {
+            richUILog.debug("updateUIView: HTML changed, reloading (\(html.count) bytes)")
             context.coordinator.loadedHTML = html
-            // Update coordinator's auth token in case it changed
             context.coordinator.authToken = authToken
+            context.coordinator.serverBaseURL = serverBaseURL
             webView.loadHTMLString(html, baseURL: resolvedBaseURL)
         }
     }
 
-    /// The base URL passed to WKWebView for origin-based security:
-    /// - Relative `/api/` paths resolve against this origin.
-    /// - `localStorage` is not blocked by a null-origin restriction.
-    /// Falls back to nil when no server URL is configured.
+    /// The base URL passed to WKWebView for origin-based security.
     private var resolvedBaseURL: URL? {
         guard let base = serverBaseURL, !base.isEmpty else { return nil }
         return URL(string: base)
     }
 
-    final class Coordinator: NSObject, WKScriptMessageHandler, WKNavigationDelegate {
+    // MARK: - Coordinator
+
+    final class Coordinator: NSObject, WKScriptMessageHandler, WKNavigationDelegate, WKUIDelegate, WKDownloadDelegate {
         @Binding var height: CGFloat
         var loadedHTML: String?
         weak var webView: WKWebView?
-        /// Auth token injected into localStorage after every page load.
         var authToken: String?
+        var serverBaseURL: String?
+        private var pendingDownloadURL: URL?
 
-        init(height: Binding<CGFloat>, authToken: String?) {
+        init(height: Binding<CGFloat>, authToken: String?, serverBaseURL: String?) {
             _height = height
             self.authToken = authToken
+            self.serverBaseURL = serverBaseURL
         }
 
         // MARK: WKScriptMessageHandler
@@ -1313,23 +1514,45 @@ private struct RichUIWebView: UIViewRepresentable {
             guard message.name == "richUIBridge",
                   let body = message.body as? [String: Any] else { return }
 
-            switch body["type"] as? String {
+            let msgType = body["type"] as? String ?? "unknown"
+            richUILog.debug("JS→native message: type=\(msgType) body=\(body as NSDictionary)")
+
+            switch msgType {
             case "height":
-                // Accept both Double (JS number) and CGFloat
                 let h: CGFloat? = {
                     if let v = body["value"] as? Double { return CGFloat(v) }
                     if let v = body["value"] as? CGFloat { return v }
                     return nil
                 }()
                 if let h, h > 1 {
+                    richUILog.debug("height update: \(h)pt")
                     DispatchQueue.main.async { [weak self] in self?.height = h }
                 }
+
             case "openUrl":
                 if let urlString = body["url"] as? String, let url = URL(string: urlString) {
+                    richUILog.debug("openUrl: \(urlString)")
                     DispatchQueue.main.async { UIApplication.shared.open(url) }
                 }
+
+            case "download":
+                // JS download bridge: embed intercepted a fetch+blob download
+                // and forwarded the file URL + suggested filename to us.
+                // mimeType is passed from the Blob object's .type property so we
+                // can derive the correct file extension without hardcoding any format.
+                let urlString = body["url"] as? String ?? ""
+                let filename   = body["filename"] as? String ?? "download"
+                let mimeType   = body["mimeType"] as? String ?? ""
+                richUILog.debug("download bridge: url=\(urlString) filename=\(filename) mime=\(mimeType)")
+                fetchAndShare(urlString: urlString, filename: filename, hintMimeType: mimeType)
+
+            case "log":
+                // JS console.log forwarding
+                let logMsg = body["msg"] as? String ?? "(empty)"
+                richUILog.debug("JS console: \(logMsg)")
+
             default:
-                break
+                richUILog.warning("unhandled JS message type: \(msgType)")
             }
         }
 
@@ -1341,57 +1564,337 @@ private struct RichUIWebView: UIViewRepresentable {
             decisionHandler: @escaping (WKNavigationActionPolicy) -> Void
         ) {
             guard let url = navigationAction.request.url else {
+                richUILog.debug("navigationAction: no URL → allow")
                 decisionHandler(.allow)
                 return
             }
 
-            // Allow the initial HTML load (about:blank or data: scheme)
+            let scheme = url.scheme?.lowercased() ?? ""
+            let navType = navigationAction.navigationType.rawValue
+            richUILog.debug("navigationAction: type=\(navType) scheme=\(scheme) url=\(url.absoluteString.prefix(120))")
+
+            // ── Always allow in-context navigations ──────────────────────────
+            // .other covers: initial load, fetch/XHR, JS-triggered src changes,
+            // blob navigations. These are in-page requests, never page-leaving.
             if navigationAction.navigationType == .other {
                 decisionHandler(.allow)
                 return
             }
 
-            // Route all link taps / window.open / form submits to the system
-            // This handles sms:, tel:, mailto:, https:, custom schemes, etc.
+            // In-document schemes — never navigate away.
+            if scheme == "blob" || scheme == "data" || scheme == "javascript" || scheme == "about" {
+                decisionHandler(.allow)
+                return
+            }
+
+            // Same-origin API calls (relative /api/ paths).
+            if let baseHost = webView.url?.host, let urlHost = url.host, baseHost == urlHost {
+                richUILog.debug("navigationAction: same-origin → allow")
+                decisionHandler(.allow)
+                return
+            }
+
+            // External links — open in Safari, cancel webview navigation.
+            if scheme == "http" || scheme == "https" {
+                richUILog.debug("navigationAction: external link → open in Safari")
+                DispatchQueue.main.async { UIApplication.shared.open(url) }
+                decisionHandler(.cancel)
+                return
+            }
+
+            // System URL schemes (tel:, mailto:, etc.)
             if UIApplication.shared.canOpenURL(url) {
-                UIApplication.shared.open(url)
+                richUILog.debug("navigationAction: system URL → open")
+                DispatchQueue.main.async { UIApplication.shared.open(url) }
             }
             decisionHandler(.cancel)
         }
 
+        // MARK: WKUIDelegate
+
+        func webView(
+            _ webView: WKWebView,
+            createWebViewWith configuration: WKWebViewConfiguration,
+            for navigationAction: WKNavigationAction,
+            windowFeatures: WKWindowFeatures
+        ) -> WKWebView? {
+            if let url = navigationAction.request.url {
+                richUILog.debug("window.open: \(url.absoluteString.prefix(120))")
+                DispatchQueue.main.async { UIApplication.shared.open(url) }
+            }
+            return nil
+        }
+
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-            // Inject the auth token into localStorage so the embed's authFetch()
-            // helper can include it on Bearer-authenticated `/api/` requests.
-            // We do this on every didFinish (not just the first) so that if the
-            // page reloads it still has the token.
-                if let token = authToken, !token.isEmpty {
-                    // Escape single quotes in the token to prevent JS injection.
-                    let safeToken = token.replacingOccurrences(of: "'", with: "\\'")
-                    webView.evaluateJavaScript("localStorage.setItem('token', '\(safeToken)')") { _, err in
-                        if let err {
-                            Logger(subsystem: "com.openui", category: "RichUIWebView")
-                                .warning("localStorage inject error: \(err.localizedDescription)")
-                        }
+            richUILog.debug("didFinish: injecting auth token and measuring height")
+
+            // Inject auth token into localStorage for authenticated API calls.
+            if let token = authToken, !token.isEmpty {
+                let safeToken = token.replacingOccurrences(of: "'", with: "\\'")
+                webView.evaluateJavaScript("localStorage.setItem('token', '\(safeToken)')") { _, err in
+                    if let err {
+                        richUILog.warning("localStorage inject error: \(err.localizedDescription)")
+                    } else {
+                        richUILog.debug("auth token injected into localStorage")
                     }
                 }
+            } else {
+                richUILog.debug("no auth token to inject")
+            }
 
-            // Fallback: measure actual content height after load.
-            // Only fires if the embed hasn't already reported its height via postMessage.
-            // Use body.scrollHeight (content size) not documentElement.scrollHeight (viewport size).
-            webView.evaluateJavaScript("document.body.scrollHeight") { [weak self] result, _ in
+            // Measure content height as fallback when postMessage hasn't fired.
+            webView.evaluateJavaScript("document.body.scrollHeight") { [weak self] result, err in
                 guard let self else { return }
+                if let err {
+                    richUILog.warning("scrollHeight eval error: \(err.localizedDescription)")
+                    return
+                }
                 let h: CGFloat? = {
                     if let v = result as? Double { return CGFloat(v) }
                     if let v = result as? CGFloat { return v }
                     return nil
                 }()
                 guard let h, h > 1 else { return }
+                richUILog.debug("scrollHeight fallback: \(h)pt (current=\(self.height)pt)")
                 DispatchQueue.main.async {
-                    // Only use fallback if postMessage hasn't already set a real height
-                    if self.height <= 1 {
-                        self.height = h
-                    }
+                    if self.height <= 1 { self.height = h }
                 }
+            }
+        }
+
+        func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
+            richUILog.error("didFail navigation: \(error.localizedDescription)")
+        }
+
+        func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
+            richUILog.error("didFailProvisional: \(error.localizedDescription)")
+        }
+
+        /// Intercept navigation responses with `Content-Disposition: attachment`.
+        func webView(
+            _ webView: WKWebView,
+            decidePolicyFor navigationResponse: WKNavigationResponse,
+            decisionHandler: @escaping (WKNavigationResponsePolicy) -> Void
+        ) {
+            let response = navigationResponse.response as? HTTPURLResponse
+            let statusCode   = response?.statusCode ?? 0
+            let disposition  = response?.value(forHTTPHeaderField: "Content-Disposition") ?? ""
+            let mimeType     = response?.mimeType ?? navigationResponse.response.mimeType ?? ""
+            let canShow      = navigationResponse.canShowMIMEType
+            richUILog.debug("navigationResponse: status=\(statusCode) mime=\(mimeType) disposition='\(disposition)' canShow=\(canShow) url=\(navigationResponse.response.url?.absoluteString.prefix(120) ?? "nil")")
+
+            let isDownload = disposition.lowercased().contains("attachment") ||
+                             (!mimeType.hasPrefix("text/") &&
+                              !mimeType.hasPrefix("image/") &&
+                              !mimeType.contains("html") &&
+                              !mimeType.contains("javascript") &&
+                              !mimeType.isEmpty &&
+                              !canShow)
+
+            if isDownload {
+                richUILog.debug("navigationResponse: routing to WKDownloadDelegate")
+                decisionHandler(.download)
+            } else {
+                richUILog.debug("navigationResponse: allowing display")
+                decisionHandler(.allow)
+            }
+        }
+
+        // MARK: WKDownloadDelegate
+
+        func webView(_ webView: WKWebView, navigationResponse: WKNavigationResponse, didBecome download: WKDownload) {
+            richUILog.debug("WKDownload: navigationResponse became download")
+            download.delegate = self
+        }
+
+        func webView(_ webView: WKWebView, navigationAction: WKNavigationAction, didBecome download: WKDownload) {
+            richUILog.debug("WKDownload: navigationAction became download")
+            download.delegate = self
+        }
+
+        func download(
+            _ download: WKDownload,
+            decideDestinationUsing response: URLResponse,
+            suggestedFilename: String
+        ) async -> URL? {
+            let tmp  = FileManager.default.temporaryDirectory
+            let dest = tmp.appendingPathComponent(suggestedFilename)
+            try? FileManager.default.removeItem(at: dest)
+            pendingDownloadURL = dest
+            richUILog.debug("WKDownload: destination=\(dest.path) suggestedFilename=\(suggestedFilename)")
+            return dest
+        }
+
+        func downloadDidFinish(_ download: WKDownload) {
+            guard let fileURL = pendingDownloadURL else {
+                richUILog.error("WKDownload: finished but pendingDownloadURL is nil")
+                return
+            }
+            pendingDownloadURL = nil
+            richUILog.debug("WKDownload: finished at \(fileURL.path)")
+            presentShareSheet(for: fileURL)
+        }
+
+        func download(_ download: WKDownload, didFailWithError error: Error, resumeData: Data?) {
+            richUILog.error("WKDownload: failed — \(error.localizedDescription)")
+            pendingDownloadURL = nil
+        }
+
+        // MARK: - Native download fetch (JS bridge path)
+
+        /// Fetches a file URL with auth token via URLSession and presents the share sheet.
+        /// Called when the JS download bridge intercepts a fetch+blob download.
+        ///
+        /// - Parameters:
+        ///   - urlString: The URL to fetch (absolute or relative to serverBaseURL).
+        ///   - filename: Suggested filename from the `download` attribute or URL path.
+        ///   - hintMimeType: MIME type reported by the Blob object (e.g. `audio/mpeg`,
+        ///     `video/mp4`). Used as a fallback if the HTTP response doesn't include a
+        ///     meaningful Content-Type. Never hardcoded to a specific format.
+        private func fetchAndShare(urlString: String, filename: String, hintMimeType: String = "") {
+            guard !urlString.isEmpty else {
+                richUILog.error("fetchAndShare: empty URL string")
+                return
+            }
+
+            // Resolve relative URLs against the server base URL
+            let resolvedURL: URL? = {
+                if urlString.hasPrefix("http://") || urlString.hasPrefix("https://") {
+                    return URL(string: urlString)
+                }
+                guard let base = serverBaseURL, let baseURL = URL(string: base) else { return nil }
+                return URL(string: urlString, relativeTo: baseURL)?.absoluteURL
+            }()
+
+            guard let url = resolvedURL else {
+                richUILog.error("fetchAndShare: could not resolve URL '\(urlString)'")
+                return
+            }
+
+            richUILog.debug("fetchAndShare: fetching \(url.absoluteString) as '\(filename)' hint-mime=\(hintMimeType)")
+
+            var request = URLRequest(url: url)
+            if let token = authToken, !token.isEmpty {
+                request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+                richUILog.debug("fetchAndShare: added Authorization header")
+            }
+
+            URLSession.shared.dataTask(with: request) { [weak self] data, response, error in
+                guard let self else { return }
+
+                if let error {
+                    richUILog.error("fetchAndShare: URLSession error — \(error.localizedDescription)")
+                    return
+                }
+
+                let httpResp = response as? HTTPURLResponse
+                let statusCode = httpResp?.statusCode ?? 0
+                richUILog.debug("fetchAndShare: response status=\(statusCode) bytes=\(data?.count ?? 0)")
+
+                guard let data, !data.isEmpty else {
+                    richUILog.error("fetchAndShare: no data received (status=\(statusCode))")
+                    return
+                }
+
+                // ── Determine the correct file extension ────────────────────────
+                // Priority: (1) URL path has extension, (2) Content-Type header,
+                // (3) JS-passed mimeType hint, (4) keep filename as-is.
+                // This is fully generic — no hardcoded format names.
+                let finalFilename = Self.resolveFilename(
+                    suggestedName: filename,
+                    responseContentType: httpResp?.value(forHTTPHeaderField: "Content-Type"),
+                    hintMimeType: hintMimeType
+                )
+
+                // Write to temp file then present share sheet
+                let dest = FileManager.default.temporaryDirectory.appendingPathComponent(finalFilename)
+                do {
+                    try data.write(to: dest, options: .atomic)
+                    richUILog.debug("fetchAndShare: wrote \(data.count) bytes to \(dest.path)")
+                    DispatchQueue.main.async { self.presentShareSheet(for: dest) }
+                } catch {
+                    richUILog.error("fetchAndShare: write failed — \(error.localizedDescription)")
+                }
+            }.resume()
+        }
+
+        /// Resolves the best filename for a downloaded file.
+        ///
+        /// Strategy (in order of priority):
+        /// 1. If `suggestedName` already has a file extension → use it unchanged.
+        /// 2. Derive extension from `responseContentType` (HTTP `Content-Type` header).
+        /// 3. Derive extension from `hintMimeType` (JS Blob.type from the webview).
+        /// 4. Fallback: keep `suggestedName` as-is (no extension appended).
+        ///
+        /// Uses `UTType` (UniformTypeIdentifiers) for MIME→extension mapping so
+        /// it works correctly for any media type (audio, video, image, document…)
+        /// without hardcoding format names.
+        private static func resolveFilename(
+            suggestedName: String,
+            responseContentType: String?,
+            hintMimeType: String
+        ) -> String {
+            // Strip query parameters and fragments from the name
+            let baseName = suggestedName
+                .components(separatedBy: "?").first?
+                .components(separatedBy: "#").first ?? suggestedName
+
+            // If the name already has a meaningful extension, keep it.
+            let existingExt = (baseName as NSString).pathExtension
+            if !existingExt.isEmpty && existingExt.count <= 5 {
+                richUILog.debug("resolveFilename: using existing extension '\(existingExt)' from '\(baseName)'")
+                return baseName
+            }
+
+            // Try to derive extension from MIME type.
+            // Use Content-Type header first, fall back to JS hint.
+            let mimeToTry: [String] = [
+                // Content-Type may be "audio/mpeg; charset=utf-8" — strip params
+                (responseContentType ?? "").components(separatedBy: ";").first?
+                    .trimmingCharacters(in: .whitespaces) ?? "",
+                hintMimeType.components(separatedBy: ";").first?
+                    .trimmingCharacters(in: .whitespaces) ?? ""
+            ]
+
+            for mime in mimeToTry where !mime.isEmpty && mime != "application/octet-stream" {
+                if let utType = UTType(mimeType: mime),
+                   let ext = utType.preferredFilenameExtension,
+                   !ext.isEmpty {
+                    let resolved = baseName.isEmpty ? "download.\(ext)" : "\(baseName).\(ext)"
+                    richUILog.debug("resolveFilename: derived extension '\(ext)' from MIME '\(mime)' → '\(resolved)'")
+                    return resolved
+                }
+            }
+
+            // Last resort: no extension available — keep baseName (or fallback)
+            let fallback = baseName.isEmpty ? "download" : baseName
+            richUILog.debug("resolveFilename: no extension derived, using '\(fallback)'")
+            return fallback
+        }
+
+        // MARK: - Share Sheet
+
+        private func presentShareSheet(for fileURL: URL) {
+            richUILog.debug("presentShareSheet: \(fileURL.lastPathComponent)")
+            guard let scene = UIApplication.shared.connectedScenes
+                .compactMap({ $0 as? UIWindowScene })
+                .first(where: { $0.activationState == .foregroundActive }),
+                  let rootVC = scene.windows.first(where: { $0.isKeyWindow })?.rootViewController else {
+                richUILog.error("presentShareSheet: no key window / rootViewController found")
+                return
+            }
+
+            var topVC = rootVC
+            while let presented = topVC.presentedViewController { topVC = presented }
+
+            let activityVC = UIActivityViewController(activityItems: [fileURL], applicationActivities: nil)
+            if let popover = activityVC.popoverPresentationController {
+                popover.sourceView  = topVC.view
+                popover.sourceRect  = CGRect(x: topVC.view.bounds.midX, y: topVC.view.bounds.midY, width: 0, height: 0)
+                popover.permittedArrowDirections = []
+            }
+            topVC.present(activityVC, animated: true) {
+                richUILog.debug("presentShareSheet: share sheet presented")
             }
         }
     }
@@ -1721,10 +2224,18 @@ private struct CollapsedToolCallGroup: View {
 
     private var allDone: Bool { calls.allSatisfy(\.isDone) }
 
-    /// The group label: the shared server prefix (before `__`), or the shared
-    /// tool name if no prefix separator is present.
+    /// The group label: a comma-separated list of unique tool names (with
+    /// underscores replaced by spaces), preserving order of first appearance.
+    /// E.g. "web_search, web_search, fetch_page" → "web_search, fetch_page"
     private var groupLabel: String {
-        ToolCallsContainer.serverPrefix(for: calls[0].name)
+        var seen = Set<String>()
+        var unique: [String] = []
+        for call in calls {
+            if seen.insert(call.name).inserted {
+                unique.append(call.name)
+            }
+        }
+        return unique.joined(separator: ", ")
     }
 
     var body: some View {
@@ -1810,21 +2321,15 @@ struct ToolCallsContainer: View {
         return String(name[name.startIndex..<separatorRange.lowerBound])
     }
 
-    /// Groups consecutive tool calls that share the same server prefix into
-    /// sub-arrays. Different tool functions from the same MCP server
-    /// (e.g. `server__search` and `server__read`) are merged into one group.
+    /// Groups all consecutive tool calls into a single group.
+    /// All tool calls in a single `ToolCallsContainer` are already consecutive
+    /// (they come from the same position in the message content), so we treat
+    /// them all as one group — matching the Open WebUI web UI behavior where
+    /// any mix of consecutive tools (e.g. web_search + fetch_page) collapses
+    /// into a single "Explored N tool_a, tool_b" row.
     private static func subGroupByName(_ calls: [ToolCallData]) -> [[ToolCallData]] {
-        var groups: [[ToolCallData]] = []
-        for call in calls {
-            let prefix = serverPrefix(for: call.name)
-            if var last = groups.last, serverPrefix(for: last[0].name) == prefix {
-                last.append(call)
-                groups[groups.count - 1] = last
-            } else {
-                groups.append([call])
-            }
-        }
-        return groups
+        guard !calls.isEmpty else { return [] }
+        return [calls]
     }
 
     var body: some View {
@@ -2022,12 +2527,35 @@ struct AssistantMessageContent: View {
             let result = ToolCallParser.parseOrdered(content)
             parseCache.lastLength = cacheKey
             parseCache.lastResult = result
+            // Log segment count and VIZ presence once per parse
+            let hasViz = content.contains("@@@VIZ-START")
+            vizLog.debug("AssistantMessageContent parsed: contentLen=\(content.count), hasVIZ=\(hasViz), segments=\(result.segments.count), toolCalls=\(result.allToolCalls.count)")
+            if hasViz {
+                let segTypes = result.segments.map { seg -> String in
+                    switch seg {
+                    case .text(let s): return "text(\(s.count))"
+                    case .toolCall(let tc): return "toolCall(\(tc.name))"
+                    case .reasoning: return "reasoning"
+                    }
+                }.joined(separator: ", ")
+                vizLog.debug("AssistantMessageContent VIZ segments: \(segTypes)")
+            }
             return result
         }()
 
         let groups: [SegmentGroup] = {
             let base = Self.groupSegments(ordered.segments)
-            guard !messageEmbeds.isEmpty else { return base }
+            // Phase 4: Always suppress data-iv-build embeds on iOS.
+            // The inline-visualizer plugin's HTMLResponse embed uses a JS DOM observer
+            // that calls parent.document — which is sandboxed/impossible in WKWebView.
+            // Suppressing unconditionally (not gated on @@@VIZ-START being present yet)
+            // eliminates the race-condition flash where the broken embed briefly appears
+            // before the VIZ markers arrive in displayContent.
+            // The native InlineVisualizerView handles all visualization rendering instead.
+            let filteredEmbeds: [String] = messageEmbeds.filter { !$0.contains("data-iv-build") }
+            guard !filteredEmbeds.isEmpty else { return base }
+            let messageEmbeds = filteredEmbeds
+            vizLog.debug("AssistantMessageContent embed inject: filteredEmbeds=\(filteredEmbeds.count), rawMessageEmbeds=\(self.messageEmbeds.count)")
 
             // Search from the end for the last toolCalls group
             var mutableGroups = base

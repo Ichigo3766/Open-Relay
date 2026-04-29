@@ -525,6 +525,7 @@ struct ChatSettingsView: View {
     @AppStorage("suggestionsEnabled") private var suggestionsEnabled = true
     @AppStorage("temporaryChatDefault") private var temporaryChatDefault = false
     @AppStorage("expandThinkingWhileStreaming") private var expandThinkingWhileStreaming = true
+    @AppStorage("citationShowDomain") private var citationShowDomain: Bool = true
     @AppStorage("quickPills") private var quickPillsData: String = ""
     @State private var availableTools: [ToolItem] = []
     @State private var isLoadingTools = false
@@ -607,6 +608,15 @@ struct ChatSettingsView: View {
                 Text("Thinking...")
             } footer: {
                 Text("When enabled, reasoning blocks expand automatically while the model is thinking and collapse once done. When disabled, they stay collapsed unless you tap to open them.")
+            }
+
+            Section {
+                Toggle("Show citation domains", isOn: $citationShowDomain)
+                    .tint(theme.brandPrimary)
+            } header: {
+                Text("Citations")
+            } footer: {
+                Text("When enabled, citation badges show the website domain (e.g. bbc.com). When disabled, the page title is shown instead.")
             }
 
             Section {

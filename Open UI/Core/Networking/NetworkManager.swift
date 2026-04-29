@@ -320,6 +320,44 @@ final class NetworkManager: NSObject, Sendable {
         return json
     }
 
+    /// Like `requestJSON` but tolerates responses that are not a JSON object (e.g. `null`,
+    /// an array, or an empty body). Returns an empty dict in those cases instead of throwing.
+    /// Use this for endpoints like `/api/chat/actions/{id}` that may return `null`.
+    @discardableResult
+    func requestJSONOrVoid(
+        path: String,
+        method: HTTPMethod = .get,
+        queryItems: [URLQueryItem]? = nil,
+        body: [String: Any]? = nil,
+        authenticated: Bool = true,
+        timeout: TimeInterval? = nil
+    ) async throws -> [String: Any] {
+        let bodyData: Data?
+        if let body {
+            bodyData = try JSONSerialization.data(withJSONObject: body)
+        } else {
+            bodyData = nil
+        }
+
+        let urlRequest = try buildRequest(
+            path: path,
+            method: method,
+            queryItems: queryItems,
+            body: bodyData,
+            authenticated: authenticated,
+            timeout: timeout
+        )
+
+        let (data, response) = try await performRequest(urlRequest)
+        try validateHTTPResponse(response, data: data)
+
+        // Tolerate null / array / empty body — return empty dict rather than throwing.
+        guard !data.isEmpty,
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { return [:] }
+        return json
+    }
+
     func requestJSONArray(
         path: String,
         method: HTTPMethod = .get,
@@ -382,7 +420,7 @@ final class NetworkManager: NSObject, Sendable {
             method: method,
             body: bodyData,
             authenticated: authenticated,
-            timeout: 300
+            timeout: 600
         )
         urlRequest.setValue("text/event-stream", forHTTPHeaderField: "Accept")
 
@@ -410,8 +448,8 @@ final class NetworkManager: NSObject, Sendable {
         defer { _streamingSessionLock.unlock() }
         if let existing = _streamingSessionBacking { return existing }
         let config = URLSessionConfiguration.default
-        config.timeoutIntervalForRequest = 300
-        config.timeoutIntervalForResource = 600
+        config.timeoutIntervalForRequest = 600
+        config.timeoutIntervalForResource = 1200
         config.waitsForConnectivity = true
         config.urlCache = nil
         config.requestCachePolicy = .reloadIgnoringLocalCacheData

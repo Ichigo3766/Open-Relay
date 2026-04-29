@@ -197,12 +197,14 @@ struct MainChatView: View {
     // each modifier group independently (fixes "unable to type-check" error).
 
     private func mainContent(voiceCallBinding: Binding<Bool>) -> some View {
-        applyOverlays(
-            content: applyLifecycleHandlers(
-                content: applyDialogsAndAlerts(
-                    content: applySheets(
-                        content: mainZStack(voiceCallBinding: voiceCallBinding),
-                        voiceCallBinding: voiceCallBinding
+        applyAccountSwitchHandler(
+            content: applyOverlays(
+                content: applyLifecycleHandlers(
+                    content: applyDialogsAndAlerts(
+                        content: applySheets(
+                            content: mainZStack(voiceCallBinding: voiceCallBinding),
+                            voiceCallBinding: voiceCallBinding
+                        )
                     )
                 )
             )
@@ -1028,6 +1030,33 @@ struct MainChatView: View {
                         group.addTask { await listViewModel.folderViewModel.refreshFolders() }
                     }
                 }
+            }
+    }
+
+    /// Watches `authViewModel.accountSwitchCount` via `.onChange` and performs a
+    /// full app state reset when the user switches accounts. This is intentionally a
+    /// separate function from `applyLifecycleHandlers` — the Swift type-checker
+    /// has a complexity limit that `applyLifecycleHandlers` already approaches,
+    /// and adding another modifier there causes a "unable to type-check" build
+    /// error. Keeping it here in its own tiny function sidesteps that limit.
+    private func applyAccountSwitchHandler<Content: View>(content: Content) -> some View {
+        content
+            .onChange(of: dependencies.authViewModel.accountSwitchCount) {
+                // Account was switched — perform a full reset so the new account's
+                // conversations, folders, channels, and model selector all load fresh.
+                // 1. Clear navigation state so no stale conversation/channel is shown.
+                activeConversationId = nil
+                activeChannelId = nil
+                activeFolderWorkspaceId = nil
+                // 2. Clear the conversation/folder list immediately so stale chats vanish.
+                listViewModel.clearAll()
+                // 3. Purge all cached ChatViewModels (holds old account's messages/models).
+                dependencies.activeChatStore.clear()
+                // 4. Force the new-chat view to recreate so it picks up the new account's
+                //    default model (cachedSelectedModelId was cleared by activeChatStore.clear()).
+                newChatGeneration += 1
+                // 5. Reload all lists from the server for the new account.
+                Task { await refreshAllDataOnForeground() }
             }
     }
 

@@ -336,6 +336,17 @@ final class ChatListViewModel {
         }
     }
 
+    /// Instantly clears all conversation and folder data so the sidebar shows empty
+    /// while the new account's data is being fetched. Call this on account switch
+    /// before calling `refreshConversations()`.
+    func clearAll() {
+        backgroundFetchTask?.cancel()
+        backgroundFetchTask = nil
+        conversations = []
+        lastRefreshDate = nil
+        folderViewModel.folders = []
+    }
+
     /// Silently refreshes conversations if enough time has passed since the last refresh.
     /// Only re-fetches page 1 to check for new/changed items near the top.
     func refreshIfStale() async {

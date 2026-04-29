@@ -206,6 +206,9 @@ extension Notification.Name {
     // Broadcast: dismiss all presented overlays (camera, file picker, voice call, sheets)
     // before starting a new quick action to prevent stacking.
     static let openUIDismissOverlays = Notification.Name("com.openui.dismissOverlays")
+    // Posted after a successful account switch so MainChatView/iPadMainChatView
+    // immediately reload conversations, folders, and channels for the new account.
+    static let openUIAccountSwitched = Notification.Name("com.openui.accountSwitched")
 }
 
 // MARK: - Shortcut Donation Helper

@@ -203,6 +203,13 @@ final class AuthViewModel {
     /// Set to `true` to present the account picker sheet.
     var showAccountPicker: Bool = false
 
+    /// Monotonically increasing counter bumped each time an account switch
+    /// completes. Views observe this via `.onChange(of:)` — which is reliably
+    /// delivered even after sheet dismissal / view re-renders, unlike
+    /// `.onReceive` on a NotificationCenter publisher that fires before the
+    /// presenting sheet has fully dismissed.
+    var accountSwitchCount: Int = 0
+
     /// Weak reference to the app's dependency container.
     /// Set after init by `AppDependencyContainer` since `self` is not
     /// yet available during the container's own initializer.
@@ -1516,6 +1523,12 @@ final class AuthViewModel {
             authType: account.authType,
             hasActiveSession: true
         )
+
+        // Bump the observable counter so SwiftUI views can react via .onChange(of:).
+        // This is more reliable than a NotificationCenter post because .onChange on
+        // an @Observable property is delivered even after the sheet dismisses and the
+        // view hierarchy re-renders — the new value is still there to be observed.
+        accountSwitchCount += 1
 
         logger.info("🔄 Account switch complete — user='\(self.currentUser?.displayName ?? "unknown")'")
     }

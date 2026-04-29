@@ -435,6 +435,23 @@ final class SocketIOService: NSObject, @unchecked Sendable, URLSessionWebSocketD
         send(message)
     }
 
+    /// Sends a Socket.IO ACK packet in response to a server event that carried an ack ID.
+    /// The server uses `sio.call()` to send events that require a client acknowledgement;
+    /// the client must reply with `43<ackId>[responseValue]` so the server's await can resume.
+    func emitAck(_ ackId: Int, data: Any?) {
+        let payload: [Any]
+        if let data {
+            payload = [data]
+        } else {
+            payload = []
+        }
+        guard let jsonData = try? JSONSerialization.data(withJSONObject: payload),
+              let jsonString = String(data: jsonData, encoding: .utf8)
+        else { return }
+        // Engine.IO MESSAGE "4" + Socket.IO ACK "3" + ack ID + payload array
+        send("43\(ackId)\(jsonString)")
+    }
+
     // MARK: - Event Registration
 
     /// Registers a handler for chat events, optionally scoped to a conversation/session.
@@ -731,9 +748,20 @@ final class SocketIOService: NSObject, @unchecked Sendable, URLSessionWebSocketD
             handleDisconnect(reason: "Server namespace disconnect")
 
         case "2":
-            // Socket.IO EVENT
-            let jsonStr = String(raw.dropFirst())
-            parseAndDispatchEvent(jsonStr)
+            // Socket.IO EVENT — may carry a numeric ack ID prefix before the JSON array.
+            // Format without ack: `2["eventName", payload]`
+            // Format with ack:    `2<digits>["eventName", payload]`
+            let rest = String(raw.dropFirst())
+            var ackId: Int? = nil
+            var jsonStr = rest
+            if let bracketIdx = rest.firstIndex(of: "[") {
+                let prefix = String(rest[rest.startIndex..<bracketIdx])
+                if !prefix.isEmpty, let id = Int(prefix) {
+                    ackId = id
+                    jsonStr = String(rest[bracketIdx...])
+                }
+            }
+            parseAndDispatchEvent(jsonStr, ackId: ackId)
 
         case "3":
             // Socket.IO ACK - not currently used
@@ -755,7 +783,7 @@ final class SocketIOService: NSObject, @unchecked Sendable, URLSessionWebSocketD
 
     // MARK: - Private: Event Dispatch
 
-    private func parseAndDispatchEvent(_ jsonStr: String) {
+    private func parseAndDispatchEvent(_ jsonStr: String, ackId: Int? = nil) {
         guard let data = jsonStr.data(using: .utf8),
               let array = try? JSONSerialization.jsonObject(with: data) as? [Any],
               let eventName = array.first as? String
@@ -770,7 +798,7 @@ final class SocketIOService: NSObject, @unchecked Sendable, URLSessionWebSocketD
 
         switch eventName {
         case "events", "chat-events":
-            dispatchChatEvent(payload)
+            dispatchChatEvent(payload, ackId: ackId)
         case "events:channel", "channel-events":
             dispatchChannelEvent(payload)
         default:
@@ -778,23 +806,40 @@ final class SocketIOService: NSObject, @unchecked Sendable, URLSessionWebSocketD
         }
     }
 
-    private func dispatchChatEvent(_ event: [String: Any]) {
+    private func dispatchChatEvent(_ event: [String: Any], ackId: Int? = nil) {
         let chatId = event["chat_id"] as? String
         let eventSessionId = extractSessionId(from: event)
+        let eventType = (event["data"] as? [String: Any])?["type"] as? String ?? event["type"] as? String ?? "?"
 
         handlerLock.lock()
         let handlers = Array(chatHandlers.values)
         handlerLock.unlock()
 
+        logger.info("📨 [Socket] dispatchChatEvent type=\(eventType, privacy: .public) chatId=\(chatId ?? "nil", privacy: .public) sessionId=\(eventSessionId ?? "nil", privacy: .public) ackId=\(ackId.map(String.init) ?? "nil", privacy: .public) handlers=\(handlers.count, privacy: .public)")
+
+        var delivered = 0
         for reg in handlers {
-            if shouldDeliver(
+            let delivers = shouldDeliver(
                 registeredConversationId: reg.conversationId,
                 registeredSessionId: reg.sessionId,
                 incomingChatId: chatId,
                 incomingSessionId: eventSessionId
-            ) {
-                reg.handler(event, nil)
+            )
+            if delivers {
+                // Construct a real ack callback when the server sent an ack ID,
+                // so __event_call__ handlers can reply and unblock sio.call() on the server.
+                let ackCallback: ((Any?) -> Void)? = ackId.map { id in
+                    { [weak self] data in
+                        self?.logger.info("🔁 [Socket] emitAck id=\(id, privacy: .public) data=\(String(describing: data), privacy: .public)")
+                        self?.emitAck(id, data: data)
+                    }
+                }
+                reg.handler(event, ackCallback)
+                delivered += 1
             }
+        }
+        if delivered == 0 {
+            logger.warning("⚠️ [Socket] dispatchChatEvent — NO handler matched! type=\(eventType, privacy: .public) sessionId=\(eventSessionId ?? "nil", privacy: .public) chatId=\(chatId ?? "nil", privacy: .public)")
         }
     }
 

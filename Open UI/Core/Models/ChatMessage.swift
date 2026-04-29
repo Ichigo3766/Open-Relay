@@ -17,19 +17,29 @@ struct ChatSourceReference: Codable, Identifiable, Hashable, Sendable {
     var metadata: [String: String]?
 
     /// A short, human-readable label for inline citation badges.
-    /// Mirrors the OpenWebUI web interface which shows shortened page
-    /// titles instead of numeric IDs.
     ///
-    /// Priority: non-URL title → domain name from URL → nil (caller
-    /// should fall back to the citation number).
-    var displayLabel: String? {
-        // 1. Use the title if it's a real title (not a raw URL)
-        if let title, !title.isEmpty, !title.hasPrefix("http") {
-            return Self.truncateTitle(title, maxLength: 24)
-        }
-        // 2. Fall back to a cleaned-up domain name
-        if let url = resolvedURL, let domain = Self.domainFromURL(url) {
-            return domain
+    /// - Parameter preferDomain: When `true` (default), shows the domain (e.g. "fox.com")
+    ///   before falling back to the page title. When `false`, shows the page title first.
+    /// - Returns: The label string, or `nil` if the caller should fall back to the citation number.
+    func displayLabel(preferDomain: Bool = true) -> String? {
+        if preferDomain {
+            // 1. Try domain from URL first
+            if let url = resolvedURL, let domain = Self.domainFromURL(url) {
+                return domain
+            }
+            // 2. Fall back to page title
+            if let title, !title.isEmpty, !title.hasPrefix("http") {
+                return Self.truncateTitle(title, maxLength: 24)
+            }
+        } else {
+            // 1. Use the title if it's a real title (not a raw URL)
+            if let title, !title.isEmpty, !title.hasPrefix("http") {
+                return Self.truncateTitle(title, maxLength: 24)
+            }
+            // 2. Fall back to a cleaned-up domain name
+            if let url = resolvedURL, let domain = Self.domainFromURL(url) {
+                return domain
+            }
         }
         return nil
     }

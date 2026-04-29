@@ -4,6 +4,7 @@ import UniformTypeIdentifiers
 import AVFoundation
 import QuickLook
 import MarkdownView
+import os.log
 
 // MARK: - Chat Detail View
 
@@ -12,6 +13,8 @@ struct ChatDetailView: View {
     @Environment(AppRouter.self) private var router
     @Environment(\.theme) private var theme
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+
+    private let logger = Logger(subsystem: "com.openui", category: "ChatDetailView")
 
     private let initialConversationId: String?
     @State private var viewModel: ChatViewModel
@@ -56,6 +59,19 @@ struct ChatDetailView: View {
     @State private var showCopiedToast = false
     @State private var activeActionMessageId: String?
     @State private var activeVersionIndex: [String: Int] = [:]
+
+    // MARK: Action event handling (dynamic input/confirmation/notification)
+
+    /// Pending `__event_call__` input prompt waiting for user text.
+    @State private var actionInputRequest: ActionInputRequest? = nil
+    /// Pending `__event_call__` confirmation waiting for user yes/no.
+    @State private var actionConfirmRequest: ActionConfirmRequest? = nil
+    /// Toast message from `__event_emitter__` notification events.
+    @State private var actionNotificationToast: String? = nil
+    /// Continuation used to resume the streaming task with the user's input/confirmation response.
+    @State private var actionCallContinuation: CheckedContinuation<ActionCallResponse, Never>? = nil
+    /// Bound to the TextField inside the action input alert.
+    @State private var actionInputText: String = ""
     @State private var speakingMessageId: String?
     @State private var ttsGeneratingMessageId: String?
     @State private var usagePopoverMessageId: String?
@@ -346,6 +362,18 @@ struct ChatDetailView: View {
             // All other URLs → open in Safari normally
             UIApplication.shared.open(url)
         }
+        // Handle sendPrompt bridge calls from InlineVisualizerView.
+        // Populates the chat input and sends immediately — same pattern as suggestion taps.
+        .onReceive(NotificationCenter.default.publisher(for: .vizSendPrompt)) { notification in
+            guard let text = notification.userInfo?["text"] as? String, !text.isEmpty else { return }
+            if viewModel.isStreaming {
+                // Queue the prompt — set input but don't send while the model is busy
+                viewModel.inputText = text
+            } else {
+                viewModel.inputText = text
+                Task { await viewModel.sendMessage() }
+            }
+        }
         .overlay {
             if isDownloadingFile {
                 ZStack {
@@ -370,6 +398,14 @@ struct ChatDetailView: View {
         } message: {
             Text(downloadErrorMessage)
         }
+        // MARK: Action event modifiers (input dialog, confirmation, notification toast)
+        .applyActionEventModifiers(
+            actionInputRequest: $actionInputRequest,
+            actionConfirmRequest: $actionConfirmRequest,
+            actionNotificationToast: $actionNotificationToast,
+            actionCallContinuation: $actionCallContinuation,
+            actionInputText: $actionInputText
+        )
         .sheet(item: $downloadedFileURL) { url in
             ShareSheetView(activityItems: [url])
         }
@@ -1001,7 +1037,6 @@ struct ChatDetailView: View {
             .padding(.bottom, 8)
             .frame(maxWidth: iPadMaxContentWidth)
             .frame(maxWidth: .infinity)
-            .clipped()
         }
         .background(ScrollViewHorizontalLock())
         .scrollIndicators(.hidden)
@@ -2573,23 +2608,40 @@ struct ChatDetailView: View {
 
     // MARK: - Action Button Helpers
 
-    /// Renders the icon for an action button. Decodes SVG data URIs into images,
-    /// falls back to an SF Symbol if SVG decoding fails.
+    /// Renders the icon for an action button.
+    /// Handles three icon formats:
+    ///  1. Base64 SVG data URI  (`data:image/svg+xml;base64,...`) — decoded inline.
+    ///  2. Inline SVG string    (starts with `<svg`) — rendered directly.
+    ///  3. HTTP/HTTPS URL       — fetched remotely by RemoteSVGIconView.
+    ///  4. Everything else      — bolt.fill SF Symbol fallback.
     @ViewBuilder
     private func actionButtonIcon(action: AIModelAction) -> some View {
-        if let iconStr = action.icon,
-           iconStr.hasPrefix("data:image/svg+xml;base64,"),
-           let base64 = iconStr.components(separatedBy: ",").last,
-           let svgData = Data(base64Encoded: base64),
-           let svgString = String(data: svgData, encoding: .utf8) {
-            // Render SVG via a tiny WKWebView-free approach:
-            // Use the SVG string to create a UIImage via Core Graphics.
-            // Fallback: just use the SF Symbol name from the action name.
-            SVGIconView(svgString: svgString)
-                .frame(width: 28, height: 28)
-                .contentShape(Circle())
+        if let iconStr = action.icon, !iconStr.isEmpty {
+            if iconStr.hasPrefix("data:image/svg+xml;base64,"),
+               let base64 = iconStr.components(separatedBy: ",").last,
+               let svgData = Data(base64Encoded: base64),
+               let svgString = String(data: svgData, encoding: .utf8) {
+                // Base64-encoded SVG data URI
+                SVGIconView(svgString: svgString)
+                    .frame(width: 28, height: 28)
+                    .contentShape(Circle())
+            } else if iconStr.hasPrefix("<svg") || iconStr.hasPrefix("<?xml") {
+                // Raw SVG string
+                SVGIconView(svgString: iconStr)
+                    .frame(width: 28, height: 28)
+                    .contentShape(Circle())
+            } else if iconStr.hasPrefix("http://") || iconStr.hasPrefix("https://") {
+                // Remote URL (e.g., https://www.svgrepo.com/show/…/pdf-file.svg)
+                RemoteSVGIconView(url: iconStr)
+            } else {
+                // Unknown format — fallback
+                Image(systemName: "bolt.fill")
+                    .scaledFont(size: 12, weight: .medium)
+                    .foregroundStyle(theme.textTertiary.opacity(0.7))
+                    .frame(width: 28, height: 28)
+                    .contentShape(Circle())
+            }
         } else {
-            // Fallback: generic action icon
             Image(systemName: "bolt.fill")
                 .scaledFont(size: 12, weight: .medium)
                 .foregroundStyle(theme.textTertiary.opacity(0.7))
@@ -2599,19 +2651,27 @@ struct ChatDetailView: View {
     }
 
     /// Invokes a function-based action button on an assistant message.
-    /// Builds the request body matching the web UI format and calls the API.
-    /// After invocation, re-fetches the conversation to pick up content updates.
+    ///
+    /// Open WebUI action protocol:
+    /// - POST `/api/chat/actions/{id}` is **plain JSON** (not SSE). The HTTP response
+    ///   arrives only after the entire action finishes.
+    /// - While the HTTP request is pending the server emits events via **Socket.IO**
+    ///   on the `"events"` channel targeted at `session_id` (which must equal `socket.sid`):
+    ///   - `__event_emitter__`: fire-and-forget status/notification/replace/message updates.
+    ///   - `__event_call__`:    bidirectional call via `sio.call()` — carries a Socket.IO
+    ///     ack ID. The client must respond via the ack callback to unblock the server.
     private func invokeActionButton(action: AIModelAction, message: ChatMessage) async {
+        logger.info("🔵 [Action] invokeActionButton: action=\(action.id, privacy: .public) messageId=\(message.id, privacy: .public)")
         guard let apiClient = dependencies.apiClient else { return }
 
-        // Show "Generating..." inline on the message while the action runs
+        // Show initial "Running…" status pill
+        let statusUpdate = ChatStatusUpdate(action: action.name, description: "\(action.name)…", done: false)
         if let idx = viewModel.conversation?.messages.firstIndex(where: { $0.id == message.id }) {
-            viewModel.conversation?.messages[idx].statusHistory.append(
-                ChatStatusUpdate(action: action.name, description: "\(action.name)…", done: false)
-            )
+            viewModel.conversation?.messages[idx].statusHistory.append(statusUpdate)
         }
 
-        // Build the message array for the action request
+        // Build request body. session_id MUST be socket.sid so the server can target
+        // this Socket.IO session for __event_call__ and __event_emitter__ events.
         let messageArray: [[String: Any]] = viewModel.messages.map { msg in
             var dict: [String: Any] = [
                 "role": msg.role.rawValue,
@@ -2621,10 +2681,7 @@ struct ChatDetailView: View {
             if !msg.id.isEmpty { dict["id"] = msg.id }
             return dict
         }
-
-        // Build the model_item from the selected model's rawModelItem
         let modelItem: [String: Any] = viewModel.selectedModel?.rawModelItem ?? [:]
-
         var body: [String: Any] = [
             "model": viewModel.selectedModelId ?? "",
             "messages": messageArray,
@@ -2633,30 +2690,334 @@ struct ChatDetailView: View {
         if let chatId = viewModel.conversationId ?? viewModel.conversation?.id {
             body["chat_id"] = chatId
         }
-        body["session_id"] = viewModel.sessionId
-        if !modelItem.isEmpty {
-            body["model_item"] = modelItem
+
+        // Ensure the Socket.IO connection is live before we commit a session_id to the
+        // POST body. If the socket is not connected (e.g., after backgrounding), the
+        // server cannot route __event_call__ / __event_emitter__ events back to us.
+        let socket = dependencies.socketService
+        if let socket {
+            let initialState = socket.connectionState
+            logger.info("🔵 [Action] Socket state before action: \(String(describing: initialState), privacy: .public), sid=\(socket.sid ?? "nil", privacy: .public)")
+            if initialState != .connected {
+                logger.info("🔵 [Action] Socket not connected — attempting ensureConnected...")
+                let connected = await socket.ensureConnected(timeout: 5.0)
+                logger.info("🔵 [Action] ensureConnected result: \(connected, privacy: .public), sid=\(socket.sid ?? "nil", privacy: .public)")
+            }
+        } else {
+            logger.warning("⚠️ [Action] No socket service available — action events will not be received")
         }
 
+        // Use socket.sid — must be captured AFTER ensureConnected so we have a live SID.
+        let socketSid = socket?.sid
+        let socketSessionId = socketSid ?? viewModel.sessionId
+        body["session_id"] = socketSessionId
+        if !modelItem.isEmpty { body["model_item"] = modelItem }
+
+        logger.info("🔵 [Action] Using session_id=\(socketSessionId, privacy: .public) (socket.sid=\(socketSid ?? "nil", privacy: .public))")
+
+        // Register Socket.IO handler BEFORE sending the POST so no events are missed.
+        // Scope to session_id so only events destined for this action are delivered.
+        let subscription = socket?.addChatEventHandler(sessionId: socketSessionId) { socketEvent, ack in
+            Task { @MainActor in
+                await self.handleActionSocketEvent(
+                    socketEvent: socketEvent,
+                    ack: ack,
+                    action: action,
+                    message: message
+                )
+            }
+        }
+        logger.info("🔵 [Action] Socket handler registered (subscription=\(subscription != nil, privacy: .public))")
+
         do {
-            try await apiClient.invokeAction(actionId: action.id, body: body)
-            // After the action completes, re-fetch the conversation to pick up
-            // any content changes made by the action's event emitters.
-            // The action's server-side replace events may have set isStreaming
-            // via the passive socket listener — clear it before reload.
-            try? await Task.sleep(nanoseconds: 2_000_000_000) // 2s delay for server processing
+            logger.info("🔵 [Action] Sending POST /api/chat/actions/\(action.id, privacy: .public)")
+            // Plain JSON POST — not SSE. Blocks until the full action completes on the server.
+            let actionResponse = try await apiClient.network.requestJSONOrVoid(
+                path: "/api/chat/actions/\(action.id)",
+                method: .post,
+                body: body,
+                authenticated: true,
+                timeout: 300
+            )
+            logger.info("✅ [Action] POST completed successfully")
             viewModel.isStreaming = false
+
+            // If the action returned a file result, download it in-app via the authenticated API.
+            // e.g. PDF Export returns { "result": { "success": true, "filename": "…pdf" } }
+            if let result = actionResponse["result"] as? [String: Any],
+               (result["success"] as? Bool) == true,
+               let filename = result["filename"] as? String, !filename.isEmpty {
+                logger.info("📎 [Action] Result contains file: \(filename, privacy: .public) — fetching from server")
+                isDownloadingFile = true
+                let fileId = await resolveFileId(forFilename: filename, apiClient: apiClient)
+                isDownloadingFile = false
+                if let fileId {
+                    await downloadAndShareFile(fileId: fileId)
+                } else {
+                    logger.warning("⚠️ [Action] Could not resolve file ID for '\(filename, privacy: .public)'")
+                    downloadErrorMessage = "Could not find the generated file on the server."
+                    showDownloadError = true
+                }
+            }
+
             await viewModel.reloadConversation()
         } catch {
+            logger.error("❌ [Action] POST failed: \(error.localizedDescription, privacy: .public)")
             viewModel.errorMessage = error.localizedDescription
         }
 
-        // Clear the "Generating..." status
+        // Clean up socket handler
+        subscription?.dispose()
+
+        // Clear the running status pill
         if let idx = viewModel.conversation?.messages.firstIndex(where: { $0.id == message.id }) {
             viewModel.conversation?.messages[idx].statusHistory.removeAll {
                 $0.action == action.name && $0.done != true
             }
         }
+    }
+
+    /// Processes a single Socket.IO `"events"` packet arriving during an action invocation.
+    ///
+    /// - `__event_emitter__` packets are dispatched immediately (no ack required).
+    /// - `__event_call__` packets suspend until the user responds, then call `ack` so the
+    ///   server's `await sio.call()` can resume.
+    @MainActor
+    private func handleActionSocketEvent(
+        socketEvent: [String: Any],
+        ack: ((Any?) -> Void)?,
+        action: AIModelAction,
+        message: ChatMessage
+    ) async {
+        // Open WebUI does NOT wrap events in "__event_emitter__" / "__event_call__" envelopes
+        // at the socket event level. The actual event type lives at data.type (e.g. "status",
+        // "input", "confirmation", "execute"). Whether the event requires an ack response is
+        // determined by whether ack != nil (set by the server via sio.call vs sio.emit).
+        let dataPayload = (socketEvent["data"] as? [String: Any]) ?? socketEvent
+        let innerType = (dataPayload["data"] as? [String: Any])?["type"] as? String
+            ?? dataPayload["type"] as? String ?? ""
+        let inner = (dataPayload["data"] as? [String: Any]) ?? dataPayload
+
+        logger.info("🎯 [Action] handleActionSocketEvent innerType=\(innerType, privacy: .public) ack=\(ack != nil, privacy: .public)")
+
+        if ack == nil {
+            // Fire-and-forget event from __event_emitter__ (status, notification, replace, message)
+            switch innerType {
+            case "status":
+                let description = inner["description"] as? String ?? ""
+                let done = inner["done"] as? Bool ?? false
+                let name = inner["action"] as? String ?? action.name
+                if let idx = viewModel.conversation?.messages.firstIndex(where: { $0.id == message.id }) {
+                    if let existingIdx = viewModel.conversation?.messages[idx].statusHistory.firstIndex(where: { $0.action == name && $0.done != true }) {
+                        viewModel.conversation?.messages[idx].statusHistory[existingIdx] = ChatStatusUpdate(action: name, description: description, done: done)
+                    } else {
+                        viewModel.conversation?.messages[idx].statusHistory.append(
+                            ChatStatusUpdate(action: name, description: description, done: done)
+                        )
+                    }
+                }
+            case "notification":
+                let msg = inner["content"] as? String ?? inner["message"] as? String ?? ""
+                actionNotificationToast = msg
+                Task {
+                    try? await Task.sleep(nanoseconds: 3_000_000_000)
+                    actionNotificationToast = nil
+                }
+            case "replace":
+                let content = inner["content"] as? String ?? ""
+                if let idx = viewModel.conversation?.messages.firstIndex(where: { $0.id == message.id }) {
+                    viewModel.conversation?.messages[idx].content = content
+                }
+            case "message":
+                let content = inner["content"] as? String ?? ""
+                if let idx = viewModel.conversation?.messages.firstIndex(where: { $0.id == message.id }) {
+                    viewModel.conversation?.messages[idx].content += content
+                }
+            default:
+                break
+            }
+        } else {
+            // Bidirectional call from __event_call__ (execute, input, confirmation) — must ack.
+            // For "execute" we don't need user input — handle directly and ack.
+            if innerType == "execute" {
+                let code = inner["code"] as? String ?? inner["script"] as? String ?? ""
+                let result = await handleExecuteEvent(code: code)
+                let ackValue: Any?
+                switch result {
+                case .string(let s): ackValue = s
+                case .bool(let b):   ackValue = b
+                case .cancelled:     ackValue = false
+                }
+                ack?(ackValue)
+                return
+            }
+
+            // For "input" / "confirmation" show a sheet, suspend until user responds,
+            // then call the Socket.IO ack so the server's sio.call() can resume.
+            let userResponse = await withCheckedContinuation { (continuation: CheckedContinuation<ActionCallResponse, Never>) in
+                actionCallContinuation = continuation
+                switch innerType {
+                case "input":
+                    let title   = inner["title"] as? String ?? "Input Required"
+                    let msg     = inner["message"] as? String ?? inner["description"] as? String ?? ""
+                    let placeholder = inner["placeholder"] as? String ?? ""
+                    let defaultVal  = inner["value"] as? String ?? ""
+                    actionInputText = defaultVal
+                    actionInputRequest = ActionInputRequest(
+                        title: title,
+                        message: msg,
+                        placeholder: placeholder,
+                        defaultValue: defaultVal
+                    )
+                case "confirmation":
+                    let title = inner["title"] as? String ?? "Confirm"
+                    let msg   = inner["message"] as? String ?? inner["description"] as? String ?? "Are you sure?"
+                    actionConfirmRequest = ActionConfirmRequest(title: title, message: msg)
+                default:
+                    // Unknown call type — resolve immediately so the server doesn't hang.
+                    continuation.resume(returning: .bool(true))
+                }
+            }
+
+            let ackValue: Any?
+            switch userResponse {
+            case .string(let s): ackValue = s
+            case .bool(let b):   ackValue = b
+            case .cancelled:     ackValue = false
+            }
+            ack?(ackValue)
+        }
+    }
+
+    /// Resolves a file ID from a filename by querying the user's file list.
+    /// Falls back to the most recently created file with the same extension if exact name not found.
+    private func resolveFileId(forFilename filename: String, apiClient: APIClient) async -> String? {
+        guard let files = try? await apiClient.getUserFiles(), !files.isEmpty else {
+            logger.warning("⚠️ [Action] getUserFiles() returned nil or empty")
+            return nil
+        }
+        logger.info("📂 [Action] getUserFiles returned \(files.count, privacy: .public) files")
+        for f in files.prefix(5) {
+            logger.info("  file id=\(f.id, privacy: .public) filename=\(f.filename ?? "nil", privacy: .public)")
+        }
+
+        // Exact match first
+        if let exact = files.first(where: { $0.filename == filename }) {
+            logger.info("✅ [Action] Exact file match: id=\(exact.id, privacy: .public)")
+            return exact.id
+        }
+
+        // Fallback: match by extension, pick newest (highest createdAt)
+        let ext = (filename as NSString).pathExtension.lowercased()
+        let byExt = files.filter { ($0.filename as NSString?)?.pathExtension.lowercased() == ext }
+        let newest = byExt.max(by: { ($0.createdAt ?? 0) < ($1.createdAt ?? 0) })
+        if let newest {
+            logger.info("✅ [Action] Fallback to newest '\(ext, privacy: .public)' file: id=\(newest.id, privacy: .public) filename=\(newest.filename ?? "nil", privacy: .public)")
+            return newest.id
+        }
+
+        return nil
+    }
+
+    /// Handles `__event_call__` `execute` events.
+    /// Tries proven regex fast-paths first (instant, no WKWebView overhead).
+    /// Falls back to ActionJSExecutor (hidden WKWebView) for unknown JS patterns.
+    private func handleExecuteEvent(code: String) async -> ActionCallResponse {
+        logger.info("🟡 [Execute] code length=\(code.count, privacy: .public)")
+
+        // ── Fast path 1: server file download URL (/api/v1/files/{id}) ──────────────
+        let serverBase = viewModel.serverBaseURL.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        let filesUrlPattern = #"['"]((https?://[^\s'"]+/api/v1/files/[^\s'"]+|/api/v1/files/[^\s'"]+))['"]"#
+        if let regex = try? NSRegularExpression(pattern: filesUrlPattern),
+           let match = regex.firstMatch(in: code, range: NSRange(code.startIndex..., in: code)),
+           let urlRange = Range(match.range(at: 1), in: code) {
+            let urlStr = String(code[urlRange])
+            let fullURL = urlStr.hasPrefix("/") ? "\(serverBase)\(urlStr)" : urlStr
+            let parts = fullURL.split(separator: "/")
+            if let filesIdx = parts.firstIndex(of: "files"), filesIdx + 1 < parts.count {
+                let fileId = String(parts[filesIdx + 1])
+                logger.info("🟡 [Execute] Fast-path 1: server file id=\(fileId, privacy: .public)")
+                isDownloadingFile = true
+                await downloadAndShareFile(fileId: fileId)
+                isDownloadingFile = false
+                return .bool(true)
+            }
+        }
+
+        // Extract filename from JS for use in fast paths 2 & 3
+        var fileName = "export.pdf"
+        let filenamePatterns = [
+            #"(?:fileName|filename|name)\s*=\s*['"]([^'"]+\.[a-zA-Z0-9]+)['"]"#,
+            #"saveAs\([^,]+,\s*['"]([^'"]+\.[a-zA-Z0-9]+)['"]\)"#,
+            #"download\s*=\s*['"]([^'"]+\.[a-zA-Z0-9]+)['"]"#,
+        ]
+        for pattern in filenamePatterns {
+            if let regex = try? NSRegularExpression(pattern: pattern),
+               let match = regex.firstMatch(in: code, range: NSRange(code.startIndex..., in: code)),
+               let fnRange = Range(match.range(at: 1), in: code) {
+                fileName = String(code[fnRange])
+                logger.info("🟡 [Execute] Extracted filename: \(fileName, privacy: .public)")
+                break
+            }
+        }
+
+        // ── Fast path 2: `const base64 = "..."` / `base64 = "..."` ──────────────────
+        // Open WebUI PDF export embeds the file as a base64 variable in the execute JS.
+        let base64VarPattern = #"(?:const\s+|let\s+|var\s+)?base64\s*=\s*['"]([A-Za-z0-9+/=\r\n]{20,})['"]"#
+        if let regex = try? NSRegularExpression(pattern: base64VarPattern, options: [.dotMatchesLineSeparators]),
+           let match = regex.firstMatch(in: code, range: NSRange(code.startIndex..., in: code)),
+           let b64Range = Range(match.range(at: 1), in: code) {
+            let rawB64 = String(code[b64Range])
+                .replacingOccurrences(of: "\n", with: "")
+                .replacingOccurrences(of: "\r", with: "")
+                .replacingOccurrences(of: " ", with: "")
+            if let data = Data(base64Encoded: rawB64), !data.isEmpty {
+                logger.info("✅ [Execute] Fast-path 2: base64 var → \(data.count, privacy: .public) bytes as \(fileName, privacy: .public)")
+                let tempFile = FileManager.default.temporaryDirectory.appendingPathComponent(fileName)
+                try? data.write(to: tempFile)
+                downloadedFileURL = tempFile
+                return .bool(true)
+            }
+        }
+
+        // ── Fast path 3: atob("...") call ────────────────────────────────────────────
+        let atobPattern = #"atob\(['"]([A-Za-z0-9+/=]{20,})['"]\)"#
+        if let regex = try? NSRegularExpression(pattern: atobPattern),
+           let match = regex.firstMatch(in: code, range: NSRange(code.startIndex..., in: code)),
+           let b64Range = Range(match.range(at: 1), in: code) {
+            let b64 = String(code[b64Range])
+            if let data = Data(base64Encoded: b64), !data.isEmpty {
+                logger.info("✅ [Execute] Fast-path 3: atob → \(data.count, privacy: .public) bytes as \(fileName, privacy: .public)")
+                let tempFile = FileManager.default.temporaryDirectory.appendingPathComponent(fileName)
+                try? data.write(to: tempFile)
+                downloadedFileURL = tempFile
+                return .bool(true)
+            }
+        }
+
+        // ── Fallback: WKWebView execution (catches unknown patterns) ─────────────────
+        // Skip scripts that are clearly browser-only (CDN imports, html2canvas, etc.)
+        let isBrowserOnlyScript = code.contains("import(") || code.contains("html2canvas") || code.contains("cdn.jsdelivr")
+        guard !isBrowserOnlyScript, let baseURL = URL(string: serverBase) else {
+            logger.info("🟡 [Execute] Skipping browser-only or unparseable script, unblocking server")
+            return .bool(true)
+        }
+
+        logger.info("🟡 [Execute] No regex match — delegating to ActionJSExecutor")
+        isDownloadingFile = true
+        let download = await ActionJSExecutor.shared.execute(code: code, baseURL: baseURL)
+        isDownloadingFile = false
+
+        if let download {
+            logger.info("✅ [Execute] ActionJSExecutor captured: \(download.filename, privacy: .public) \(download.data.count, privacy: .public) bytes")
+            let tempFile = FileManager.default.temporaryDirectory.appendingPathComponent(download.filename)
+            try? download.data.write(to: tempFile)
+            downloadedFileURL = tempFile
+        } else {
+            logger.warning("⚠️ [Execute] ActionJSExecutor returned nil (timeout or error)")
+        }
+
+        return .bool(true)
     }
 
     private func copyMessage(_ message: ChatMessage) {
@@ -3024,7 +3385,8 @@ private struct IsolatedAssistantMessage: View {
         let displayContent: String = {
             if isActivelyStreaming { return rawContent }
             let resolved = Self.resolveRelativeURLs(rawContent, baseURL: serverBaseURL)
-            return Self.preprocessCitations(resolved, sources: effectiveSources)
+            let preferDomain = UserDefaults.standard.object(forKey: "citationShowDomain") as? Bool ?? true
+            return Self.preprocessCitations(resolved, sources: effectiveSources, preferDomain: preferDomain)
         }()
 
         let effectiveIsStreaming = isActivelyStreaming || message.isStreaming
@@ -3045,7 +3407,57 @@ private struct IsolatedAssistantMessage: View {
 
     // MARK: - Static Preprocessing (no ChatDetailView dependency)
 
-    static func preprocessCitations(_ content: String, sources: [ChatSourceReference]) -> String {
+    static func preprocessCitations(_ content: String, sources: [ChatSourceReference], preferDomain: Bool = true) -> String {
+        guard !sources.isEmpty else { return content }
+
+        // --- Pass 1: expand [1, 2, 3] → [1][2][3] so the single-number pass handles them ---
+        var expanded = content
+        let multiPattern = #"\[(\d+(?:\s*,\s*\d+)+)\](?!\()"#
+        if let multiRegex = try? NSRegularExpression(pattern: multiPattern) {
+            let nsExpanded = expanded as NSString
+            let multiMatches = multiRegex.matches(in: expanded, range: NSRange(location: 0, length: nsExpanded.length))
+            // Process in reverse to preserve indices
+            for match in multiMatches.reversed() {
+                guard let innerRange = Range(match.range(at: 1), in: expanded) else { continue }
+                let numbers = expanded[innerRange]
+                    .split(separator: ",")
+                    .map { $0.trimmingCharacters(in: .whitespaces) }
+                    .filter { !$0.isEmpty }
+                let replacement = numbers.map { "[\($0)]" }.joined()
+                if let fullRange = Range(match.range, in: expanded) {
+                    expanded.replaceSubrange(fullRange, with: replacement)
+                }
+            }
+        }
+
+        // --- Pass 2: replace each [N] with a pill markdown link ---
+        let pattern = #"\[(\d+)\](?!\()"#
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return expanded }
+        var result = ""
+        var searchStart = expanded.startIndex
+        let nsContent = expanded as NSString
+        let matches = regex.matches(in: expanded, range: NSRange(location: 0, length: nsContent.length))
+        for match in matches {
+            guard let fullRange = Range(match.range, in: expanded),
+                  let numberRange = Range(match.range(at: 1), in: expanded) else { continue }
+            guard let index = Int(expanded[numberRange]) else { continue }
+            result += expanded[searchStart..<fullRange.lowerBound]
+            let sourceIdx = index - 1
+            if sourceIdx >= 0 && sourceIdx < sources.count,
+               let url = sources[sourceIdx].resolvedURL, !url.isEmpty {
+                let label = sources[sourceIdx].displayLabel(preferDomain: preferDomain) ?? "\(index)"
+                result += " [\(label)](\(url)#cite) "
+            } else {
+                result += expanded[fullRange]
+            }
+            searchStart = fullRange.upperBound
+        }
+        result += expanded[searchStart...]
+        return result
+    }
+
+    // Keep old signature body intact but redirect to the new implementation above
+    private static func _preprocessCitationsOld(_ content: String, sources: [ChatSourceReference], preferDomain: Bool = true) -> String {
         guard !sources.isEmpty else { return content }
         let pattern = #"\[(\d+)\](?!\()"#
         guard let regex = try? NSRegularExpression(pattern: pattern) else { return content }
@@ -3061,7 +3473,7 @@ private struct IsolatedAssistantMessage: View {
             let sourceIdx = index - 1
             if sourceIdx >= 0 && sourceIdx < sources.count,
                let url = sources[sourceIdx].resolvedURL, !url.isEmpty {
-                let label = sources[sourceIdx].displayLabel ?? "\(index)"
+                let label = sources[sourceIdx].displayLabel(preferDomain: preferDomain) ?? "\(index)"
                 // #cite suffix triggers small pill badge rendering in MarkdownView
                 result += " [\(label)](\(url)#cite) "
             } else {
@@ -3453,6 +3865,90 @@ private struct ScrollViewHorizontalLock: UIViewRepresentable {
     }
 }
 
+// MARK: - Action Event Modifiers (Type-Checker Relief)
+
+/// Extracted into a View extension to reduce the expression complexity of
+/// ChatDetailView.body. Applying these three modifiers inline in body
+/// pushed the expression past the Swift type-checker limit.
+private extension View {
+    func applyActionEventModifiers(
+        actionInputRequest: Binding<ActionInputRequest?>,
+        actionConfirmRequest: Binding<ActionConfirmRequest?>,
+        actionNotificationToast: Binding<String?>,
+        actionCallContinuation: Binding<CheckedContinuation<ActionCallResponse, Never>?>,
+        actionInputText: Binding<String>
+    ) -> some View {
+        self
+            // MARK: __event_call__ — input dialog (presented as a sheet for reliability)
+            .sheet(isPresented: Binding(
+                get: { actionInputRequest.wrappedValue != nil },
+                set: { if !$0 { } }
+            )) {
+                ActionInputSheet(
+                    request: actionInputRequest.wrappedValue!,
+                    text: actionInputText,
+                    onConfirm: {
+                        actionCallContinuation.wrappedValue?.resume(returning: .string(actionInputText.wrappedValue))
+                        actionCallContinuation.wrappedValue = nil
+                        actionInputRequest.wrappedValue = nil
+                        actionInputText.wrappedValue = ""
+                    },
+                    onCancel: {
+                        actionCallContinuation.wrappedValue?.resume(returning: .cancelled)
+                        actionCallContinuation.wrappedValue = nil
+                        actionInputRequest.wrappedValue = nil
+                        actionInputText.wrappedValue = ""
+                    }
+                )
+                .presentationDetents([.height(240)])
+                .presentationDragIndicator(.visible)
+                .interactiveDismissDisabled()
+            }
+            // MARK: __event_call__ — confirmation dialog
+            .confirmationDialog(
+                actionConfirmRequest.wrappedValue?.title ?? "Confirm",
+                isPresented: Binding(
+                    get: { actionConfirmRequest.wrappedValue != nil },
+                    set: { if !$0 { } }
+                ),
+                titleVisibility: .visible
+            ) {
+                Button("Confirm") {
+                    actionCallContinuation.wrappedValue?.resume(returning: .bool(true))
+                    actionCallContinuation.wrappedValue = nil
+                    actionConfirmRequest.wrappedValue = nil
+                }
+                Button("Cancel", role: .cancel) {
+                    actionCallContinuation.wrappedValue?.resume(returning: .bool(false))
+                    actionCallContinuation.wrappedValue = nil
+                    actionConfirmRequest.wrappedValue = nil
+                }
+            } message: {
+                if let req = actionConfirmRequest.wrappedValue { Text(req.message) }
+            }
+            // MARK: __event_emitter__ — notification toast
+            .overlay(alignment: .top) {
+                if let toastMsg = actionNotificationToast.wrappedValue {
+                    HStack(spacing: 6) {
+                        Image(systemName: "bell.fill").font(.system(size: 11, weight: .medium))
+                        Text(toastMsg).font(.system(size: 13, weight: .medium))
+                    }
+                    .foregroundStyle(Color(.systemBackground))
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 8)
+                    .background(Color(.label).opacity(0.85))
+                    .clipShape(Capsule())
+                    .padding(.top, 14 + 44) // clear navigation bar
+                    .transition(.asymmetric(
+                        insertion: .move(edge: .top).combined(with: .opacity),
+                        removal: .opacity
+                    ))
+                    .allowsHitTesting(false)
+                }
+            }
+    }
+}
+
 // MARK: - Widget & Picker Notification Handlers (Type-Checker Relief)
 
 /// Extracted into a View extension to reduce the expression complexity of
@@ -3507,4 +4003,85 @@ extension URL: @retroactive Identifiable {
 
 extension String: @retroactive Identifiable {
     public var id: String { self }
+}
+
+// MARK: - Action Event UI Models
+
+/// Carries the data for a pending `__event_call__` input prompt.
+/// Setting this on `@State` triggers the `.alert` modifier in the view body.
+struct ActionInputRequest: Identifiable {
+    let id = UUID()
+    let title: String
+    let message: String
+    let placeholder: String
+    let defaultValue: String
+}
+
+/// Carries the data for a pending `__event_call__` confirmation dialog.
+/// Setting this on `@State` triggers the `.confirmationDialog` modifier in the view body.
+struct ActionConfirmRequest: Identifiable {
+    let id = UUID()
+    let title: String
+    let message: String
+}
+
+// MARK: - ActionInputSheet
+
+/// A bottom sheet that prompts the user for text input in response to a `__event_call__` input event.
+/// Shown in place of a `.alert`-based dialog because SwiftUI alerts with TextFields are unreliable.
+struct ActionInputSheet: View {
+    let request: ActionInputRequest
+    @Binding var text: String
+    let onConfirm: () -> Void
+    let onCancel: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            // Drag handle is shown via .presentationDragIndicator(.visible)
+
+            Text(request.title)
+                .font(.headline)
+                .foregroundStyle(.primary)
+
+            if !request.message.isEmpty {
+                Text(request.message)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            }
+
+            TextField(request.placeholder, text: $text)
+                .textFieldStyle(.plain)
+                .font(.system(size: 15))
+                .padding(.horizontal, 12)
+                .padding(.vertical, 10)
+                .background(Color(.secondarySystemBackground))
+                .clipShape(RoundedRectangle(cornerRadius: 10))
+
+            HStack(spacing: 12) {
+                Button(action: onCancel) {
+                    Text("Cancel")
+                        .font(.system(size: 16, weight: .medium))
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 14)
+                        .background(Color(.secondarySystemBackground))
+                        .clipShape(Capsule())
+                }
+                .buttonStyle(.plain)
+
+                Button(action: onConfirm) {
+                    Text("Confirm")
+                        .font(.system(size: 16, weight: .semibold))
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 14)
+                        .background(Color.primary)
+                        .foregroundStyle(Color(.systemBackground))
+                        .clipShape(Capsule())
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(.horizontal, 20)
+        .padding(.top, 8)
+        .padding(.bottom, 24)
+    }
 }

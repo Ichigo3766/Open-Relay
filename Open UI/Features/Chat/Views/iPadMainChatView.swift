@@ -158,6 +158,10 @@ struct iPadMainChatView: View {
             dependencies: dependencies,
             scenePhase: scenePhase,
             activeConversationId: $activeConversationId,
+            activeChannelId: $activeChannelId,
+            activeFolderWorkspaceId: $activeFolderWorkspaceId,
+            newChatGeneration: $newChatGeneration,
+            channelListVM: channelListVM,
             hasRegisteredSocketHandlers: $hasRegisteredSocketHandlers,
             showCreateChannel: $showCreateChannel,
             showSettings: $showSettings,
@@ -2042,6 +2046,10 @@ private extension View {
         dependencies: AppDependencyContainer,
         scenePhase: ScenePhase,
         activeConversationId: Binding<String?>,
+        activeChannelId: Binding<String?> = .constant(nil),
+        activeFolderWorkspaceId: Binding<String?> = .constant(nil),
+        newChatGeneration: Binding<Int> = .constant(0),
+        channelListVM: ChannelListViewModel? = nil,
         hasRegisteredSocketHandlers: Binding<Bool>,
         showCreateChannel: Binding<Bool> = .constant(false),
         showSettings: Binding<Bool> = .constant(false),
@@ -2122,6 +2130,31 @@ private extension View {
             .onReceive(NotificationCenter.default.publisher(for: .openUINewChannel)) { _ in
                 // Widget "Channel" button — open the create-channel sheet
                 showCreateChannel.wrappedValue = true
+            }
+            .onChange(of: dependencies.authViewModel.accountSwitchCount) {
+                // Account was switched — perform a full reset so the new account's
+                // conversations, folders, channels, and model selector all load fresh.
+                // 1. Clear navigation state so no stale conversation/channel is shown.
+                activeConversationId.wrappedValue = nil
+                activeChannelId.wrappedValue = nil
+                activeFolderWorkspaceId.wrappedValue = nil
+                // 2. Clear the conversation/folder list immediately so stale chats vanish.
+                listViewModel.clearAll()
+                // 3. Purge all cached ChatViewModels (holds old account's messages/models).
+                dependencies.activeChatStore.clear()
+                // 4. Force the new-chat view to recreate so it picks up the new account's
+                //    default model (cachedSelectedModelId was cleared by activeChatStore.clear()).
+                newChatGeneration.wrappedValue += 1
+                // 5. Reload all lists from the server for the new account.
+                Task {
+                    await withTaskGroup(of: Void.self) { group in
+                        group.addTask { await listViewModel.refreshConversations() }
+                        group.addTask { await listViewModel.folderViewModel.refreshFolders() }
+                        if let channelListVM {
+                            group.addTask { await channelListVM.refreshChannels() }
+                        }
+                    }
+                }
             }
     }
 }

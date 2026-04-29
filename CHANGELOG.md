@@ -1,3 +1,23 @@
+## v3.4 — April 29, 2026
+
+### What's New
+- Added native Inline Visualizer V2 support — charts, graphs, and interactive visualizations from the inline visualizer plugin now render directly inside chat messages.
+
+### Improvements
+- Consecutive tool calls from different tools now group into a single collapsible row, matching the web UI.
+- Citation badges in AI responses now show domain names by default instead of full page titles, and correctly render grouped citations like [1, 2, 3]. Toggle between domain and title in Settings → Chat Behavior.
+- Improved math rendering accuracy — formulas inside code blocks now correctly restore their original delimiters instead of showing placeholder text.
+- Tables with clickable links now handle taps more reliably, and table cells are reused more efficiently for smoother scrolling.
+
+### Bug Fixes
+- Switching accounts now instantly clears the chat list and reloads conversations, folders, and channels for the new account.
+- Fixed some action buttons not working that required js to complete its task.
+- Fixed certain tool call Rich UI embeds (music players, video players, dashboards) being non-interactive
+- Fixed AI message content being clipped at the bottom.
+
+
+## Previous Builds
+
 ## v3.3.1 — April 24, 2026
 
 ### Improvements

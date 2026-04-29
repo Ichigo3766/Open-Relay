@@ -585,8 +585,10 @@ final class ChatViewModel {
             object: nil,
             queue: .main
         ) { [weak self] _ in
-            guard let self else { return }
-            self.streamingHapticsEnabled = UserDefaults.standard.object(forKey: "streamingHaptics") as? Bool ?? true
+            let newValue = UserDefaults.standard.object(forKey: "streamingHaptics") as? Bool ?? true
+            Task { @MainActor [weak self] in
+                self?.streamingHapticsEnabled = newValue
+            }
         }
     }
 
@@ -3767,6 +3769,10 @@ final class ChatViewModel {
             if let msg = payload?["content"] as? String { logger.info("Notification: \(msg)") }
 
         case "confirmation":
+            ack?(true)
+
+        case "execute":
+            logger.info("🔧 [Socket] Acknowledging execute event for tool pipeline")
             ack?(true)
 
         // --- Events that should only work during active streaming ---

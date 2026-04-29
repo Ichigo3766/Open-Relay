@@ -2,6 +2,9 @@ import UIKit
 import SwiftUI
 import MarkdownView
 import Charts
+import os.log
+
+private let vizLog = Logger(subsystem: "com.openui", category: "VizPipeline")
 
 // MARK: - Streaming Markdown View
 
@@ -61,64 +64,170 @@ struct StreamingMarkdownView: View {
     }
 
     var body: some View {
-        if isStreaming {
-            streamingBody
-        } else {
-            finalBody
-        }
+        unifiedBody
     }
 
-    // MARK: - Streaming Body
+    // MARK: - Unified Body
+    //
+    // A single render path is used for both streaming and final states.
+    // Keeping the same VStack+ForEach structure throughout ensures that
+    // InlineVisualizerView keeps a stable identity in the SwiftUI view tree
+    // across the streaming→final transition, so the WKWebView is never
+    // destroyed and recreated (which was the cause of the visible flash).
 
     @ViewBuilder
-    private var streamingBody: some View {
+    private var unifiedBody: some View {
         if content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             EmptyView()
         } else {
-            // Render content directly — no flush delay.
-            // cmark parses at token rate; only IsolatedAssistantMessage re-evaluates per token.
-            // Height animation is handled inside MarkdownView+View.swift via the
-            // animatedHeight binding — adding a second .animation here fires on every
-            // character drain tick and causes cumulative layout jitter.
-            MarkdownView(content, theme: scaledTheme)
-                .codeAutoScroll(true)
-        }
-    }
-
-    // MARK: - Final Body (special block detection)
-
-    @ViewBuilder
-    private var finalBody: some View {
-        if content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            EmptyView()
-        } else {
-            let parsed = parseSpecialBlocks(content)
-            VStack(alignment: .leading, spacing: 8) {
-                ForEach(Array(parsed.enumerated()), id: \.offset) { _, segment in
-                    switch segment {
-                    case .markdown(let text):
-                        if !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                            MarkdownView(text, theme: scaledTheme)
-                        }
-                    case .chart(let code):
-                        if let spec = tryParseChart(code: code) {
-                            ChartPreviewView(spec: spec, rawCode: code, language: "json")
-                        } else {
-                            MarkdownView("```json\n\(code)\n```", theme: scaledTheme)
-                        }
-                    case .html(let code):
-                        HTMLPreviewView(html: code)
-                    case .mermaid(let code):
-                        MermaidPreviewView(code: code)
-                    case .svg(let code):
-                        SVGPreviewView(code: code)
-                    case .python(let code):
-                        PythonCodeBlockView(code: code)
-                    case .markdownImage(let imageURL, let altText, let linkURL):
-                        MarkdownInlineImageView(imageURL: imageURL, altText: altText, linkURL: linkURL)
+            let segments = resolveSegments()
+            if segments.isEmpty {
+                EmptyView()
+            } else if segments.count == 1, case .markdown(let text) = segments[0] {
+                // Fast path: plain markdown only — no viz, no ForEach overhead.
+                MarkdownView(text, theme: scaledTheme)
+                    .codeAutoScroll(true)
+            } else {
+                VStack(alignment: .leading, spacing: 8) {
+                    ForEach(Array(segments.enumerated()), id: \.offset) { _, segment in
+                        segmentView(for: segment)
                     }
                 }
             }
+        }
+    }
+
+    /// Resolves the current content into renderable segments.
+    ///
+    /// During streaming, we use `streamingParse` to get a partial segment list
+    /// so that `InlineVisualizerView` appears at the same `ForEach` offset it will
+    /// occupy once streaming ends. This prevents SwiftUI from rebuilding the view
+    /// tree when `isStreaming` flips to `false`.
+    ///
+    /// ## Performance: VIZ streaming optimisation
+    /// When `@@@VIZ-START` is present, the message content contains a large
+    /// `<details type="tool_calls">` block (~20-30 KB of HTML-entity-encoded
+    /// embed HTML) BEFORE the VIZ markers. Passing this entire string to
+    /// MarkdownView on every display-link tick (60fps) forces a full CommonMark
+    /// parse + CoreText layout on the whole thing every frame — that is the
+    /// primary cause of 104% CPU during VIZ streaming.
+    ///
+    /// Fix: during streaming, **never pass the pre-VIZ prose to MarkdownView**.
+    /// The `<details>` block is already rendered by `ToolCallView`; MarkdownView
+    /// only needs the post-VIZ text (the prose written AFTER `@@@VIZ-END`).
+    /// We keep an empty `.markdown("")` placeholder at segment index 0 so the
+    /// view tree stays stable (same ForEach identity) when streaming ends and
+    /// the real pre-VIZ prose is restored.
+    private func resolveSegments() -> [ContentSegment] {
+        if isStreaming {
+            let vizState = VizMarkerParser.streamingParse(content)
+            switch vizState {
+            case .noMarkers:
+                return [.markdown(content)]
+
+            case .streaming(_, let vizContent):
+                // Pre-VIZ prose is already rendered by ToolCallView — skip it here
+                // to avoid re-parsing the giant <details> block on every frame.
+                // Empty placeholder keeps the segment index stable.
+                let _ = vizLog.debug("StreamingMarkdownView: .streaming — passing empty pre-viz prose, vizLen=\(vizContent.count)")
+                return [.markdown(""), .visualization(vizContent)]
+
+            case .complete:
+                // Both markers received while still flagged streaming.
+                // Extract only the post-VIZ text for MarkdownView so we don't
+                // re-parse the huge pre-VIZ <details> block on every drain tick.
+                let postViz = extractPostVizText(content)
+                let _ = vizLog.debug("StreamingMarkdownView: .complete during streaming — postVizLen=\(postViz.count)")
+                // Segment layout must match the final (non-streaming) layout so
+                // SwiftUI keeps view identity stable across the isStreaming flip.
+                // Final layout from parseSpecialBlocks will be:
+                //   [pre-viz markdown segments..., visualization, post-viz segments...]
+                // During streaming we emit placeholders to match the count/order.
+                var result: [ContentSegment] = []
+                // Placeholder for pre-VIZ content (rendered by ToolCallView already)
+                result.append(.markdown(""))
+                // The VIZ block itself (isStreaming=false passed in segmentView so
+                // InlineVisualizerView calls finalizeContent)
+                let vizContent = extractVizContent(content)
+                result.append(.visualization(vizContent))
+                // Post-VIZ prose draining character-by-character
+                if !postViz.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    result.append(.markdown(postViz))
+                }
+                return result
+            }
+        } else {
+            return parseSpecialBlocks(content)
+        }
+    }
+
+    /// Extracts the text that appears after `\n@@@VIZ-END` in the content.
+    /// Returns an empty string if the end marker is not present.
+    private func extractPostVizText(_ text: String) -> String {
+        let endMarker = "\n@@@VIZ-END"
+        guard let endRange = text.range(of: endMarker) else { return "" }
+        let afterEnd = String(text[endRange.upperBound...])
+        // Strip leading newline that typically follows @@@VIZ-END
+        if afterEnd.hasPrefix("\n") {
+            return String(afterEnd.dropFirst())
+        }
+        return afterEnd
+    }
+
+    /// Extracts the HTML/SVG content between `@@@VIZ-START` and `\n@@@VIZ-END`.
+    /// Returns an empty string if the start marker is not present.
+    private func extractVizContent(_ text: String) -> String {
+        let startMarker = "@@@VIZ-START"
+        let endMarker = "\n@@@VIZ-END"
+        guard let startRange = text.range(of: startMarker) else { return "" }
+        var contentStart = startRange.upperBound
+        if contentStart < text.endIndex, text[contentStart] == "\n" {
+            contentStart = text.index(after: contentStart)
+        }
+        if let endRange = text.range(of: endMarker, range: contentStart..<text.endIndex) {
+            return String(text[contentStart..<endRange.lowerBound])
+        }
+        return String(text[contentStart...])
+    }
+
+    /// Returns the SwiftUI view for a single content segment.
+    /// `isStreaming` is forwarded to `InlineVisualizerView` so the existing WKWebView
+    /// continues receiving `reconcileContent` / `finalizeContent` JS calls without
+    /// being recreated.
+    @ViewBuilder
+    private func segmentView(for segment: ContentSegment) -> some View {
+        switch segment {
+        case .markdown(let text):
+            if !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                MarkdownView(text, theme: scaledTheme)
+                    .codeAutoScroll(true)
+            }
+        case .chart(let code):
+            if let spec = tryParseChart(code: code) {
+                ChartPreviewView(spec: spec, rawCode: code, language: "json")
+            } else {
+                MarkdownView("```json\n\(code)\n```", theme: scaledTheme)
+            }
+        case .html(let code):
+            HTMLPreviewView(html: code)
+        case .mermaid(let code):
+            MermaidPreviewView(code: code)
+        case .svg(let code):
+            SVGPreviewView(code: code)
+        case .python(let code):
+            PythonCodeBlockView(code: code)
+        case .markdownImage(let imageURL, let altText, let linkURL):
+            MarkdownInlineImageView(imageURL: imageURL, altText: altText, linkURL: linkURL)
+        case .visualization(let html):
+            // Pass isStreaming only while the VIZ block itself is still open.
+            // Once \n@@@VIZ-END has arrived in the content the visualization is
+            // complete — pass false so InlineVisualizerView calls finalizeContent()
+            // and stops the spinner, even if the overall message stream is still active
+            // (e.g. post-VIZ prose is still draining character-by-character).
+            let vizComplete = content.contains("\n@@@VIZ-END")
+            let vizIsStreaming = isStreaming && !vizComplete
+            let _ = vizLog.debug("StreamingMarkdownView: rendering InlineVisualizerView isStreaming=\(vizIsStreaming) (vizComplete=\(vizComplete)), htmlLen=\(html.count)")
+            InlineVisualizerView(content: html, isStreaming: vizIsStreaming)
         }
     }
 
@@ -139,6 +248,7 @@ struct StreamingMarkdownView: View {
         case svg(String)
         case python(String)
         case markdownImage(imageURL: URL, altText: String, linkURL: URL?)
+        case visualization(String)
     }
 
     // MARK: - Markdown Image Regex Patterns
@@ -233,6 +343,23 @@ struct StreamingMarkdownView: View {
     }
 
     private func parseSpecialBlocks(_ text: String) -> [ContentSegment] {
+        // 0) First check for VIZ markers and expand them into segments.
+        //    Each text chunk from the VIZ parse is then processed for images + code blocks.
+        let vizSegments = VizMarkerParser.parse(text)
+        let hasViz = vizSegments.contains { if case .visualization = $0 { return true }; return false }
+        if hasViz {
+            var result: [ContentSegment] = []
+            for seg in vizSegments {
+                switch seg {
+                case .text(let chunk):
+                    result.append(contentsOf: parseImagesAndCodeBlocks(chunk))
+                case .visualization(let html):
+                    result.append(.visualization(html))
+                }
+            }
+            return result.isEmpty ? [.markdown(text)] : result
+        }
+
         // 1) Extract markdown images first, splitting the text around them.
         //    This runs before code-block detection so images inside prose are found.
         let images = findMarkdownImages(in: text)
@@ -263,6 +390,27 @@ struct StreamingMarkdownView: View {
             segments.append(contentsOf: parseCodeBlocks(remaining))
         }
 
+        return segments.isEmpty ? [.markdown(text)] : segments
+    }
+
+    /// Convenience combining markdown-image extraction and code-block parsing.
+    /// Used by `parseSpecialBlocks` when splitting text chunks from VIZ segments.
+    private func parseImagesAndCodeBlocks(_ text: String) -> [ContentSegment] {
+        let images = findMarkdownImages(in: text)
+        guard !images.isEmpty else { return parseCodeBlocks(text) }
+
+        var segments: [ContentSegment] = []
+        var cursor = text.startIndex
+        for img in images {
+            if cursor < img.range.lowerBound {
+                segments.append(contentsOf: parseCodeBlocks(String(text[cursor..<img.range.lowerBound])))
+            }
+            segments.append(.markdownImage(imageURL: img.imageURL, altText: img.altText, linkURL: img.linkURL))
+            cursor = img.range.upperBound
+        }
+        if cursor < text.endIndex {
+            segments.append(contentsOf: parseCodeBlocks(String(text[cursor..<text.endIndex])))
+        }
         return segments.isEmpty ? [.markdown(text)] : segments
     }
 
