@@ -518,7 +518,10 @@ enum ToolCallParser {
             }
             return nil
         }()
-        let embeds = parseEmbedsAttribute(from: block)
+        // Skip embed parsing for in-progress tool calls — embeds are only
+        // rendered once isDone == true, so parsing the 30KB+ HTML-entity-encoded
+        // iframe blob on every streaming frame is pure wasted CPU on the main thread.
+        let embeds = isDone ? parseEmbedsAttribute(from: block) : []
 
         return ToolCallData(
             id: id,
@@ -544,6 +547,12 @@ enum ToolCallParser {
     private static func parseEmbedsAttribute(from block: String) -> [String] {
         guard let raw = extractAttribute("embeds", from: block),
               !raw.isEmpty else { return [] }
+
+        // Fast bail: if the raw (still HTML-entity-encoded) attribute contains
+        // "data-iv-build", every decoded embed will be filtered out downstream.
+        // Skip the expensive ~30KB HTML entity decode + JSON parse that runs
+        // 15-20x/sec during VIZ streaming on the main thread.
+        if raw.contains("data-iv-build") { return [] }
 
         // Decode ONLY HTML entities — do NOT touch \n or \" (those are JSON escapes)
         let jsonStr = raw

@@ -388,14 +388,49 @@ final class StreamingContentStore {
         // Simple substring counting is O(n) but far cheaper than regex and runs
         // on the RAW full string before any drain decisions.
         if Self.hasUnclosedDetailsBlock(full) {
-            // Only write to displayContent when content actually grew — avoids
-            // triggering a SwiftUI re-render (and VizMarkerParser.streamingParse scan)
-            // on every display-link tick while the <details> block is streaming.
-            if displayContent.count != totalCount {
-                displayContent = full
-            }
+            // Option C: while an unclosed <details type="tool_calls"> block is
+            // streaming, do NOT update displayContent at all. The ToolCallView
+            // renders tool metadata independently; no visible UI depends on the
+            // incomplete <details> HTML being in displayContent. Suppressing all
+            // updates here eliminates the ~25 KB/tick re-render cost that was
+            // causing lag during Inline Visualizer and other tool responses.
             if isFinishing { completeCleanup() }
             return
+        }
+
+        // Closed <details> fast-forward:
+        // Once all <details> blocks are fully closed (hasUnclosedDetailsBlock passed
+        // above), any tool/reasoning HTML that displayContent hasn't yet revealed is
+        // skipped instantly. Tool output (arguments, results) can be 10–40 KB;
+        // typewriter-draining it at 360 chars/sec would take 30–100+ seconds for
+        // data the user never reads character-by-character. Only the response prose
+        // that appears AFTER the last </details> gets the typewriter effect.
+        if full.contains("</details>"),
+           let lastCloseRange = full.range(of: "</details>", options: .backwards) {
+            let lastDetailsEnd = full.distance(from: full.startIndex, to: lastCloseRange.upperBound)
+            if displayedCount < lastDetailsEnd {
+                // Jump displayContent to the end of the last </details> instantly.
+                let newDisplay = String(full[..<lastCloseRange.upperBound])
+                if displayContent != newDisplay {
+                    displayContent = newDisplay
+                }
+                displayedCount = lastDetailsEnd
+                buffered = totalCount - displayedCount
+                drainLog.debug("⏩ [DETAILS] Skipped to lastDetailsEnd=\(lastDetailsEnd) postBuffered=\(buffered) isFinishing=\(self.isFinishing)")
+                // Reset EMA drain state so post-tool prose starts fresh —
+                // prevents the giant skipped buffer from inflating lastKnownTotal
+                // and making subsequent prose appear as one enormous burst.
+                lastKnownTotal = totalCount
+                burstIntervalEMA = 8
+                framesSinceLastBurst = 0
+                isFirstBurst = true
+                drainAccumulator = 0
+                steadyRate = 0
+                // Return so the next tick starts a clean typewriter drain for
+                // whatever prose follows the tool block (buffered > 0), or lets
+                // the finishing check at the top handle cleanup (buffered == 0).
+                return
+            }
         }
 
         // VIZ transition: we just completed the fast-forward to VIZ-END on the

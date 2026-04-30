@@ -21,6 +21,9 @@ import SwiftDraw
 ///   mode switches get fresh renders
 struct SVGPreviewView: View {
     let code: String
+    /// When `true`, uses `StreamingWebPreview` (live incremental WKWebView) instead
+    /// of SwiftDraw rasterization. Defaults to `false` for backward compatibility.
+    var isStreaming: Bool = false
 
     @State private var renderedImage: UIImage?
     @State private var renderError: String?
@@ -28,6 +31,10 @@ struct SVGPreviewView: View {
     @State private var showSource = false
     @State private var codeCopied = false
     @State private var showFullscreen = false
+    @State private var streamingHeight: CGFloat = 1
+    /// Latches true the first time `isStreaming` is true. Keeps `StreamingWebPreview`
+    /// alive after streaming ends so we avoid a flash when SwiftDraw recreates.
+    @State private var wasStreaming = false
 
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.theme) private var theme
@@ -41,7 +48,9 @@ struct SVGPreviewView: View {
 
             // ── Content area ──
             ZStack {
-                if showSource {
+                if isStreaming || wasStreaming {
+                    streamingPreviewView
+                } else if showSource {
                     sourceView
                         .transition(.opacity)
                 } else {
@@ -57,10 +66,15 @@ struct SVGPreviewView: View {
             RoundedRectangle(cornerRadius: 12, style: .continuous)
                 .stroke(.quaternary)
         )
-        // Re-render whenever the SVG source or color scheme changes
-        .task(id: "\(code.hashValue)-\(colorScheme)") {
+        // Only kick off SwiftDraw rasterization when NOT streaming and never was
+        .task(id: "\(code.hashValue)-\(colorScheme)-\(isStreaming)") {
+            guard !isStreaming && !wasStreaming else { return }
             await renderSVG()
         }
+        .onChange(of: isStreaming) { _, newValue in
+            if newValue { wasStreaming = true }
+        }
+        .onAppear { if isStreaming { wasStreaming = true } }
     }
 
     // MARK: - Header Bar
@@ -79,22 +93,29 @@ struct SVGPreviewView: View {
 
             Spacer()
 
-            // Image/Source toggle
-            Button {
-                withAnimation(.easeInOut(duration: 0.2)) {
-                    showSource.toggle()
+            // Streaming spinner — replaces toggle while the block is open
+            if isStreaming {
+                ProgressView()
+                    .controlSize(.mini)
+                    .tint(.secondary)
+            } else {
+                // Image/Source toggle (only after stream completes)
+                Button {
+                    withAnimation(.easeInOut(duration: 0.2)) {
+                        showSource.toggle()
+                    }
+                    Haptics.play(.light)
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: showSource ? "skew" : "chevron.left.forwardslash.chevron.right")
+                            .scaledFont(size: 11, weight: .medium)
+                        Text(showSource ? "Image" : "Source")
+                            .scaledFont(size: 12, weight: .medium)
+                    }
+                    .foregroundStyle(.secondary)
                 }
-                Haptics.play(.light)
-            } label: {
-                HStack(spacing: 4) {
-                    Image(systemName: showSource ? "skew" : "chevron.left.forwardslash.chevron.right")
-                        .scaledFont(size: 11, weight: .medium)
-                    Text(showSource ? "Image" : "Source")
-                        .scaledFont(size: 12, weight: .medium)
-                }
-                .foregroundStyle(.secondary)
+                .buttonStyle(.plain)
             }
-            .buttonStyle(.plain)
 
             // Copy button
             Button {
@@ -121,8 +142,8 @@ struct SVGPreviewView: View {
             }
             .buttonStyle(.plain)
 
-            // Fullscreen button — only shown when render succeeded
-            if renderedImage != nil {
+            // Fullscreen button — suppressed during streaming, shown after render
+            if !isStreaming, renderedImage != nil {
                 Button {
                     showFullscreen = true
                     Haptics.play(.light)
@@ -140,6 +161,19 @@ struct SVGPreviewView: View {
         .fullScreenCover(isPresented: $showFullscreen) {
             SVGFullscreenView(code: code, image: renderedImage)
         }
+    }
+
+    // MARK: - Streaming Preview (live WKWebView during token streaming)
+
+    private var streamingPreviewView: some View {
+        StreamingWebPreview(
+            content: code,
+            mode: .svg,
+            isStreaming: isStreaming,
+            isDark: colorScheme == .dark,
+            height: $streamingHeight
+        )
+        .frame(height: min(max(streamingHeight, 80), 400))
     }
 
     // MARK: - SVG Render View

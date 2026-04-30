@@ -245,13 +245,14 @@ private struct VizWebViewRepresentable: UIViewRepresentable {
         )
         context.coordinator.lastContent = content
         context.coordinator.lastIsDark = isDark
+        context.coordinator.lastIsStreaming = isStreaming
         // If non-streaming, the shell already calls finalizeContent inline.
         // Mark finalized now so updateUIView doesn't call it a second time
         // after DOMContentLoaded has already fired (which would destroy working state).
         if !isStreaming {
             context.coordinator.finalized = true
         }
-        webView.loadHTMLString(shellHTML, baseURL: nil)
+        webView.loadHTMLString(shellHTML, baseURL: URL(string: "https://localhost"))
         return webView
     }
 
@@ -259,6 +260,11 @@ private struct VizWebViewRepresentable: UIViewRepresentable {
         let coord = context.coordinator
         let contentChanged = coord.lastContent != content
         let themeChanged  = coord.lastIsDark != isDark
+        // Detect the exact frame when streaming transitions to finished.
+        // This is used as a reliable trigger to call finalizeContent() regardless
+        // of whether the VIZ HTML content string itself changed in this update cycle.
+        let streamingJustEnded = coord.lastIsStreaming && !isStreaming
+        coord.lastIsStreaming = isStreaming
 
         if themeChanged {
             coord.lastIsDark = isDark
@@ -269,7 +275,9 @@ private struct VizWebViewRepresentable: UIViewRepresentable {
         if contentChanged {
             coord.lastContent = content
             if !coord.shellLoaded {
-                // Shell not yet loaded — queue the update, remembering whether we're streaming
+                // Shell not yet loaded — queue the update, remembering whether we're streaming.
+                // If streaming just ended in this same cycle, queue as non-streaming so the
+                // shell-load handler will call finalizeContent (not reconcileContent).
                 coord.pendingContent = content
                 coord.pendingIsStreaming = isStreaming
                 vizLog.debug("InlineVisualizerView.updateUIView: shell not loaded, queuing pending (isStreaming=\(isStreaming), contentLen=\(content.count))")
@@ -285,7 +293,8 @@ private struct VizWebViewRepresentable: UIViewRepresentable {
                     .replacingOccurrences(of: "</script", with: "<\\/script")
                 webView.evaluateJavaScript("reconcileContent(`\(escaped)`)", completionHandler: nil)
             } else {
-                // Final content — full replace
+                // Final content — full replace with script execution.
+                coord.finalized = true
                 let escaped = content
                     .replacingOccurrences(of: "\\", with: "\\\\")
                     .replacingOccurrences(of: "`", with: "\\`")
@@ -293,14 +302,23 @@ private struct VizWebViewRepresentable: UIViewRepresentable {
                     .replacingOccurrences(of: "</script", with: "<\\/script")
                 webView.evaluateJavaScript("finalizeContent(`\(escaped)`)", completionHandler: nil)
             }
-        } else if !isStreaming, coord.shellLoaded, !coord.finalized {
+        } else if !isStreaming, coord.shellLoaded, !coord.finalized || streamingJustEnded {
+            // Either: content unchanged but we haven't finalized yet (e.g. shell loaded late),
+            // OR: streaming just ended this frame — always re-finalize to execute scripts even
+            // if the VIZ HTML bytes didn't change in this exact update cycle.
             coord.finalized = true
             let escaped = content
                 .replacingOccurrences(of: "\\", with: "\\\\")
                 .replacingOccurrences(of: "`", with: "\\`")
                 .replacingOccurrences(of: "${", with: "\\${")
                 .replacingOccurrences(of: "</script", with: "<\\/script")
+            vizLog.debug("InlineVisualizerView.updateUIView: finalizeContent via fallback (streamingJustEnded=\(streamingJustEnded), finalized=\(coord.finalized))")
             webView.evaluateJavaScript("finalizeContent(`\(escaped)`)", completionHandler: nil)
+        } else if streamingJustEnded, !coord.shellLoaded {
+            // Shell hasn't loaded yet but streaming just ended — make sure any pending
+            // content will use finalizeContent when the shell finishes loading.
+            coord.pendingIsStreaming = false
+            vizLog.debug("InlineVisualizerView.updateUIView: streamingJustEnded but shell not loaded — set pendingIsStreaming=false")
         }
     }
 
@@ -312,6 +330,7 @@ private struct VizWebViewRepresentable: UIViewRepresentable {
         weak var currentWebView: WKWebView?
         var lastContent: String = ""
         var lastIsDark: Bool = false
+        var lastIsStreaming: Bool = true
         var pendingContent: String? = nil
         var shellLoaded: Bool = false
         var finalized: Bool = false
@@ -635,16 +654,21 @@ private struct VizWebViewRepresentable: UIViewRepresentable {
           }
 
           // ── Extract body content from a full HTML document (strips <!DOCTYPE>, <html>, <head>, <body> wrappers) ──
+          // Preserves <style> and <script> blocks from <head> so user CSS and CDN
+          // library imports (e.g. Chart.js, D3, Three.js) still apply.
+          // Head scripts are placed before body content so CDN libs load first.
           function extractVizBody(html) {
-            // Pull <style> blocks out of <head> so they are preserved
             var styles = '';
+            var headScripts = '';
             var headMatch = html.match(/<head[^>]*>([\\s\\S]*?)<\\/head>/i);
             if (headMatch) {
               var styleMatches = headMatch[1].match(/<style[\\s\\S]*?<\\/style>/gi);
               if (styleMatches) styles = styleMatches.join('\\n');
+              var scriptMatches = headMatch[1].match(/<script[\\s\\S]*?<\\/script>/gi);
+              if (scriptMatches) headScripts = scriptMatches.join('\\n');
             }
             var bodyMatch = html.match(/<body[^>]*>([\\s\\S]*)<\\/body>/i);
-            if (bodyMatch) return styles + bodyMatch[1];
+            if (bodyMatch) return styles + headScripts + bodyMatch[1];
             // No <body> tag — return as-is (plain fragment)
             return html;
           }

@@ -1,7 +1,7 @@
-## v3.4 — April 29, 2026
+## v3.4 — April 30, 2026
 
 ### What's New
-- Added native Inline Visualizer V2 support — charts, graphs, and interactive visualizations from the inline visualizer plugin now render directly inside chat messages.
+- Added Native Inline Live Visualization  — charts, graphs, svgs and interactive visualizations now render LIVE directly inside chat messages. No need for Inline visualizer pluggin (Works with it as well!). Add "output the code in one file" (or create a prompt in your worspace instead of typing it each time) at the end of your prompt and watch it get built live!
 
 ### Improvements
 - Consecutive tool calls from different tools now group into a single collapsible row, matching the web UI.
@@ -10,11 +10,13 @@
 - Tables with clickable links now handle taps more reliably, and table cells are reused more efficiently for smoother scrolling.
 
 ### Bug Fixes
+- Fixed JavaScript not executing in HTML code block previews — interactive apps like Kanban boards, games, and dashboards now work correctly, including drag-and-drop, button clicks, and localStorage persistence.
 - Switching accounts now instantly clears the chat list and reloads conversations, folders, and channels for the new account.
 - Fixed some action buttons not working that required js to complete its task.
 - Fixed certain tool call Rich UI embeds (music players, video players, dashboards) being non-interactive
 - Fixed AI message content being clipped at the bottom.
-
+- Fixed quick action pills disappearing from the chat input bar after starting a new chat or switching conversations.
+- Fixed built-in tools (web search, image generation, code interpreter) resetting to their model defaults after sending a message, ignoring any toggles the user had changed.
 
 ## Previous Builds
 

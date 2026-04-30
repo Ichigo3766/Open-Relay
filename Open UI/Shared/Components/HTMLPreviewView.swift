@@ -17,18 +17,22 @@ import WebKit
 /// - **Loading indicator** — subtle spinner while the webview renders
 struct HTMLPreviewView: View {
     let html: String
+    /// When `true`, uses `StreamingWebPreview` (reconcile/finalize via JS) instead
+    /// of reloading the full page. Defaults to `false` for backward compatibility.
+    var isStreaming: Bool = false
 
     /// Fixed height for all inline HTML previews. Using a consistent height
     /// prevents the jarring size variation where some previews are tiny and
     /// others are large. Content scrolls within this frame. Users can tap
     /// the fullscreen button for the complete view.
-    private let previewHeight: CGFloat = 360
+    private let previewHeight: CGFloat = 520
 
     @State private var showSource = false
     @State private var showFullscreen = false
-    @State private var contentHeight: CGFloat = 360
+    @State private var contentHeight: CGFloat = 520
     @State private var isLoading = true
     @State private var codeCopied = false
+    @State private var streamingHeight: CGFloat = 1
 
     @Environment(\.theme) private var theme
     @Environment(\.colorScheme) private var colorScheme
@@ -41,12 +45,18 @@ struct HTMLPreviewView: View {
             Divider()
 
             // ── Content area ──
+            // Always use StreamingWebPreview (which has proper finalizeContent + script
+            // re-execution). The static HTMLWebView path was never designed for JS apps —
+            // it wraps user HTML inside another document, and scripts that listen for
+            // DOMContentLoaded or use localStorage fail silently. StreamingWebPreview
+            // handles both live streaming (reconcileContent) and history loads
+            // (finalizeContent called immediately when isStreaming=false).
             ZStack {
                 if showSource {
                     sourceView
                         .transition(.opacity)
                 } else {
-                    previewView
+                    streamingPreviewView
                         .transition(.opacity)
                 }
             }
@@ -80,22 +90,29 @@ struct HTMLPreviewView: View {
 
             Spacer()
 
-            // Preview/Source toggle
-            Button {
-                withAnimation(.easeInOut(duration: 0.2)) {
-                    showSource.toggle()
+            // Streaming spinner — replaces toggle while the block is open
+            if isStreaming {
+                ProgressView()
+                    .controlSize(.mini)
+                    .tint(.secondary)
+            } else {
+                // Preview/Source toggle (only available after stream completes)
+                Button {
+                    withAnimation(.easeInOut(duration: 0.2)) {
+                        showSource.toggle()
+                    }
+                    Haptics.play(.light)
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: showSource ? "eye" : "chevron.left.forwardslash.chevron.right")
+                            .scaledFont(size: 11, weight: .medium)
+                        Text(showSource ? "Preview" : "Source")
+                            .scaledFont(size: 12, weight: .medium)
+                    }
+                    .foregroundStyle(.secondary)
                 }
-                Haptics.play(.light)
-            } label: {
-                HStack(spacing: 4) {
-                    Image(systemName: showSource ? "eye" : "chevron.left.forwardslash.chevron.right")
-                        .scaledFont(size: 11, weight: .medium)
-                    Text(showSource ? "Preview" : "Source")
-                        .scaledFont(size: 12, weight: .medium)
-                }
-                .foregroundStyle(.secondary)
+                .buttonStyle(.plain)
             }
-            .buttonStyle(.plain)
 
             // Copy button
             Button {
@@ -122,23 +139,38 @@ struct HTMLPreviewView: View {
             }
             .buttonStyle(.plain)
 
-            // Fullscreen button
-            Button {
-                showFullscreen = true
-                Haptics.play(.light)
-            } label: {
-                Image(systemName: "arrow.up.left.and.arrow.down.right")
-                    .scaledFont(size: 11, weight: .medium)
-                    .foregroundStyle(.secondary)
+            // Fullscreen button (suppressed during streaming — content incomplete)
+            if !isStreaming {
+                Button {
+                    showFullscreen = true
+                    Haptics.play(.light)
+                } label: {
+                    Image(systemName: "arrow.up.left.and.arrow.down.right")
+                        .scaledFont(size: 11, weight: .medium)
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
             }
-            .buttonStyle(.plain)
         }
         .padding(.vertical, 8)
         .padding(.horizontal, 16)
         .background(.quaternary.opacity(0.3))
     }
 
-    // MARK: - Preview View (WebView)
+    // MARK: - Streaming Preview (live reconcile/finalize via JS)
+
+    private var streamingPreviewView: some View {
+        StreamingWebPreview(
+            content: html,
+            mode: .html,
+            isStreaming: isStreaming,
+            isDark: colorScheme == .dark,
+            height: $streamingHeight
+        )
+        .frame(height: min(max(streamingHeight, 80), CGFloat(previewHeight)))
+    }
+
+    // MARK: - Preview View (WebView — static, non-streaming)
 
     private var previewView: some View {
         ZStack(alignment: .center) {
@@ -325,8 +357,7 @@ private struct HTMLFullscreenView: View {
 
     @State private var showSource = false
     @State private var codeCopied = false
-    @State private var contentHeight: CGFloat = 1000
-    @State private var isLoading = true
+    @State private var contentHeight: CGFloat = 1
     @State private var shareFileURL: URL?
 
     @Environment(\.dismiss) private var dismiss
@@ -339,13 +370,15 @@ private struct HTMLFullscreenView: View {
                     HighlightedSourceView(code: html, language: "HTML", truncate: false, maxHeight: .infinity)
                         .transition(.opacity)
                 } else {
-                    // Fullscreen webview — scrolls freely
-                    HTMLWebView(
-                        html: wrappedHTML,
-                        contentHeight: $contentHeight,
-                        isLoading: $isLoading,
-                        scrollEnabled: true
+                    // Fullscreen webview — uses StreamingWebPreview so JS executes correctly
+                    StreamingWebPreview(
+                        content: html,
+                        mode: .html,
+                        isStreaming: false,
+                        isDark: colorScheme == .dark,
+                        height: $contentHeight
                     )
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .ignoresSafeArea(edges: .bottom)
                     .transition(.opacity)
                 }

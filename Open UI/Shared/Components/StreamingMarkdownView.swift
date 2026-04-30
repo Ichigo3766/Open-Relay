@@ -120,45 +120,88 @@ struct StreamingMarkdownView: View {
     /// the real pre-VIZ prose is restored.
     private func resolveSegments() -> [ContentSegment] {
         if isStreaming {
+            // ── VIZ marker path (existing behaviour, unchanged) ──────────────
             let vizState = VizMarkerParser.streamingParse(content)
             switch vizState {
             case .noMarkers:
-                return [.markdown(content)]
+                break   // fall through to streaming code-block detection below
 
             case .streaming(_, let vizContent):
-                // Pre-VIZ prose is already rendered by ToolCallView — skip it here
-                // to avoid re-parsing the giant <details> block on every frame.
-                // Empty placeholder keeps the segment index stable.
                 let _ = vizLog.debug("StreamingMarkdownView: .streaming — passing empty pre-viz prose, vizLen=\(vizContent.count)")
                 return [.markdown(""), .visualization(vizContent)]
 
             case .complete:
-                // Both markers received while still flagged streaming.
-                // Extract only the post-VIZ text for MarkdownView so we don't
-                // re-parse the huge pre-VIZ <details> block on every drain tick.
                 let postViz = extractPostVizText(content)
                 let _ = vizLog.debug("StreamingMarkdownView: .complete during streaming — postVizLen=\(postViz.count)")
-                // Segment layout must match the final (non-streaming) layout so
-                // SwiftUI keeps view identity stable across the isStreaming flip.
-                // Final layout from parseSpecialBlocks will be:
-                //   [pre-viz markdown segments..., visualization, post-viz segments...]
-                // During streaming we emit placeholders to match the count/order.
                 var result: [ContentSegment] = []
-                // Placeholder for pre-VIZ content (rendered by ToolCallView already)
                 result.append(.markdown(""))
-                // The VIZ block itself (isStreaming=false passed in segmentView so
-                // InlineVisualizerView calls finalizeContent)
                 let vizContent = extractVizContent(content)
                 result.append(.visualization(vizContent))
-                // Post-VIZ prose draining character-by-character
                 if !postViz.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                     result.append(.markdown(postViz))
                 }
                 return result
             }
+
+            // ── Streaming code-block detection (html / svg) ───────────────────
+            // If the model is mid-way through a ```html or ```svg block (opening
+            // fence seen, closing fence not yet arrived), render a live preview
+            // instead of raw monospace text. This is the streaming analogue of
+            // parseCodeBlocks — it only fires when isStreaming=true and the block
+            // is incomplete. Once the closing ``` arrives, resolveSegments() falls
+            // through to parseSpecialBlocks() which handles the complete block.
+            if let streamingSeg = resolveStreamingCodeBlock(content) {
+                return streamingSeg
+            }
+
+            // No incomplete special block found — but there may be a *complete* block
+            // (opening AND closing fence both arrived) while post-block prose is still
+            // streaming. Use parseSpecialBlocks so HTML/SVG/chart blocks already closed
+            // render as previews instead of flashing to raw code text until streaming ends.
+            return parseSpecialBlocks(content)
+
         } else {
             return parseSpecialBlocks(content)
         }
+    }
+
+    /// Detects an incomplete (unclosed) ` ```html ` or ` ```svg ` code block
+    /// in `text` during streaming and returns a segment list with a live preview.
+    ///
+    /// Returns `nil` when no incomplete special block is found, letting the caller
+    /// fall back to plain markdown rendering.
+    private func resolveStreamingCodeBlock(_ text: String) -> [ContentSegment]? {
+        // We only care about html and svg — mermaid needs complete syntax to render.
+        let candidates: [(tag: String, makeSeg: (String) -> ContentSegment)] = [
+            ("```html\n",  { .html($0, isStreaming: true) }),
+            ("```svg\n",   { .svg($0, isStreaming: true) }),
+        ]
+
+        for (tag, makeSeg) in candidates {
+            guard let openRange = text.range(of: tag, options: .caseInsensitive) else { continue }
+
+            let contentStart = openRange.upperBound
+            let afterOpen = text[contentStart...]
+
+            // If the closing fence is already present, this is a complete block —
+            // parseSpecialBlocks (non-streaming path) handles it. Skip here.
+            if afterOpen.range(of: "\n```") != nil { continue }
+
+            // Incomplete block — extract partial content
+            let partialContent = String(afterOpen)
+            // Anything before the opening fence is plain markdown
+            let before = String(text[text.startIndex..<openRange.lowerBound])
+
+            var result: [ContentSegment] = []
+            if !before.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                result.append(.markdown(before))
+            }
+            if !partialContent.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                result.append(makeSeg(partialContent))
+            }
+            return result.isEmpty ? nil : result
+        }
+        return nil
     }
 
     /// Extracts the text that appears after `\n@@@VIZ-END` in the content.
@@ -208,12 +251,12 @@ struct StreamingMarkdownView: View {
             } else {
                 MarkdownView("```json\n\(code)\n```", theme: scaledTheme)
             }
-        case .html(let code):
-            HTMLPreviewView(html: code)
+        case .html(let code, let streaming):
+            HTMLPreviewView(html: code, isStreaming: streaming)
         case .mermaid(let code):
             MermaidPreviewView(code: code)
-        case .svg(let code):
-            SVGPreviewView(code: code)
+        case .svg(let code, let streaming):
+            SVGPreviewView(code: code, isStreaming: streaming)
         case .python(let code):
             PythonCodeBlockView(code: code)
         case .markdownImage(let imageURL, let altText, let linkURL):
@@ -243,9 +286,11 @@ struct StreamingMarkdownView: View {
     private enum ContentSegment {
         case markdown(String)
         case chart(String)
-        case html(String)
+        /// `isStreaming` — true while the closing ``` fence has not yet arrived.
+        case html(String, isStreaming: Bool)
         case mermaid(String)
-        case svg(String)
+        /// `isStreaming` — true while the closing ``` fence has not yet arrived.
+        case svg(String, isStreaming: Bool)
         case python(String)
         case markdownImage(imageURL: URL, altText: String, linkURL: URL?)
         case visualization(String)
@@ -450,9 +495,9 @@ struct StreamingMarkdownView: View {
                 }
                 if isChart { segments.append(.chart(codeContent)) }
                 else if isMermaid { segments.append(.mermaid(codeContent)) }
-                else if isSVG { segments.append(.svg(codeContent)) }
+                else if isSVG { segments.append(.svg(codeContent, isStreaming: false)) }
                 else if isPython { segments.append(.python(codeContent)) }
-                else { segments.append(.html(codeContent)) }
+                else { segments.append(.html(codeContent, isStreaming: false)) }
                 remaining = remaining[closeRange.upperBound...]
             } else {
                 let blockEnd = closeRange.upperBound

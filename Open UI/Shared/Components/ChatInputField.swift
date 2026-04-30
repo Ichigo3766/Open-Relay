@@ -725,25 +725,29 @@ struct ChatInputField: View {
                     ))
                 }
             default:
-                if let tool = tools.first(where: { $0.id == id }) {
-                    let isSelected = selectedToolIds.contains(tool.id)
-                    pills.append(QuickPill(
-                        id: tool.id,
-                        icon: "wrench",
-                        label: tool.name,
-                        isActive: isSelected,
-                        action: {
-                            withAnimation(.easeOut(duration: 0.15)) {
-                                if isSelected {
-                                    selectedToolIds.remove(tool.id)
-                                } else {
-                                    selectedToolIds.insert(tool.id)
-                                }
+                // Show the pill even when tools haven't loaded yet (e.g. right after
+                // a new chat is created and the async loadTools() hasn't returned).
+                // Use the tool name if available, otherwise derive a readable label
+                // from the stored ID so the pill is always visible.
+                let tool = tools.first(where: { $0.id == id })
+                let displayName = tool?.name ?? id.replacingOccurrences(of: "_", with: " ").capitalized
+                let isSelected = selectedToolIds.contains(id)
+                pills.append(QuickPill(
+                    id: id,
+                    icon: "wrench",
+                    label: displayName,
+                    isActive: isSelected,
+                    action: {
+                        withAnimation(.easeOut(duration: 0.15)) {
+                            if isSelected {
+                                selectedToolIds.remove(id)
+                            } else {
+                                selectedToolIds.insert(id)
                             }
-                            Haptics.play(.light)
                         }
-                    ))
-                }
+                        Haptics.play(.light)
+                    }
+                ))
             }
         }
 

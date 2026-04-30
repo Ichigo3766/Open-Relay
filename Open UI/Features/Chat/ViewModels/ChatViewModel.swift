@@ -67,9 +67,36 @@ final class ChatViewModel {
     var errorMessage: String?
     var inputText: String = ""
     var attachments: [ChatAttachment] = []
-    var webSearchEnabled: Bool = false
-    var imageGenerationEnabled: Bool = false
-    var codeInterpreterEnabled: Bool = false
+    var webSearchEnabled: Bool = false {
+        didSet {
+            guard !suppressBuiltinFeatureTracking else { return }
+            if webSearchEnabled {
+                userDisabledBuiltinFeatures.remove("web_search")
+            } else {
+                userDisabledBuiltinFeatures.insert("web_search")
+            }
+        }
+    }
+    var imageGenerationEnabled: Bool = false {
+        didSet {
+            guard !suppressBuiltinFeatureTracking else { return }
+            if imageGenerationEnabled {
+                userDisabledBuiltinFeatures.remove("image_generation")
+            } else {
+                userDisabledBuiltinFeatures.insert("image_generation")
+            }
+        }
+    }
+    var codeInterpreterEnabled: Bool = false {
+        didSet {
+            guard !suppressBuiltinFeatureTracking else { return }
+            if codeInterpreterEnabled {
+                userDisabledBuiltinFeatures.remove("code_interpreter")
+            } else {
+                userDisabledBuiltinFeatures.insert("code_interpreter")
+            }
+        }
+    }
     /// Whether memory is enabled for this chat session.
     /// Persisted to server user settings (`ui.memory`) so the web UI stays in sync.
     var memoryEnabled: Bool = false
@@ -92,6 +119,15 @@ final class ChatViewModel {
     /// Tools the user has explicitly toggled OFF during this chat session.
     /// Prevents `syncToolSelectionWithDefaults()` from re-enabling them.
     private var userDisabledToolIds: Set<String> = []
+    /// Built-in features (web_search, image_generation, code_interpreter) the user
+    /// has explicitly toggled OFF during this session. Prevents
+    /// `applyIncrementalModelDefaults()` from re-enabling them before each send.
+    private var userDisabledBuiltinFeatures: Set<String> = []
+    /// When `true`, mutations to `webSearchEnabled`, `imageGenerationEnabled`, and
+    /// `codeInterpreterEnabled` do NOT update `userDisabledBuiltinFeatures`.
+    /// Set during `syncUIWithModelDefaults()` and `restoreBuiltinFeatureState()`
+    /// so those internal resets aren't misinterpreted as explicit user overrides.
+    private var suppressBuiltinFeatureTracking: Bool = false
     var selectedKnowledgeItems: [KnowledgeItem] = []
     var knowledgeItems: [KnowledgeItem] = []
     /// Reference chat conversations selected for context in the next message.
@@ -842,6 +878,10 @@ final class ChatViewModel {
             logger.error("Failed to load conversation: \(error.localizedDescription)")
             errorMessage = error.localizedDescription
         }
+        // Clear stale override tracking so the model's server defaults apply cleanly
+        // when the user opens an existing chat. We don't persist per-chat feature state,
+        // so starting fresh here is the correct behaviour (Bug 2 fix).
+        userDisabledBuiltinFeatures = []
         isLoadingConversation = false
     }
 
@@ -2331,6 +2371,7 @@ final class ChatViewModel {
         codeInterpreterEnabled = false
         isTemporaryChat = UserDefaults.standard.bool(forKey: "temporaryChatDefault")
         userDisabledToolIds = []
+        userDisabledBuiltinFeatures = []
         selectedToolIds = []
         selectedKnowledgeItems = []
         selectedSkillIds = []
@@ -3167,6 +3208,7 @@ final class ChatViewModel {
         // Switching models is a deliberate user action — reset disabled tools
         // so the new model's defaults apply cleanly without stale overrides.
         userDisabledToolIds = []
+        userDisabledBuiltinFeatures = []
         syncUIWithModelDefaults()
         conversation?.model = modelId
         // Fetch full model config from single-model endpoint to get params.function_calling,
@@ -4565,15 +4607,18 @@ final class ChatViewModel {
             return ["1", "true"].contains(value.lowercased())
         }
 
-        // Only enable features if admin has them on — never force-disable ones
-        // the user turned on manually.
-        if defaults.contains("web_search") && isTruthy("web_search") {
+        // Only enable features if admin has them on AND the user hasn't explicitly
+        // turned them off this session. Never force-disable ones the user turned on.
+        if defaults.contains("web_search") && isTruthy("web_search")
+            && !userDisabledBuiltinFeatures.contains("web_search") {
             webSearchEnabled = true
         }
-        if defaults.contains("image_generation") && isTruthy("image_generation") {
+        if defaults.contains("image_generation") && isTruthy("image_generation")
+            && !userDisabledBuiltinFeatures.contains("image_generation") {
             imageGenerationEnabled = true
         }
-        if defaults.contains("code_interpreter") && isTruthy("code_interpreter") {
+        if defaults.contains("code_interpreter") && isTruthy("code_interpreter")
+            && !userDisabledBuiltinFeatures.contains("code_interpreter") {
             codeInterpreterEnabled = true
         }
 
@@ -4621,9 +4666,12 @@ final class ChatViewModel {
         // Each toggle is set to true only if the model has it as a
         // default AND the capability is enabled. This ensures switching
         // models correctly reflects per-model feature availability.
+        // Suppress tracking so these internal resets don't pollute userDisabledBuiltinFeatures.
+        suppressBuiltinFeatureTracking = true
         webSearchEnabled = defaults.contains("web_search") && isTruthy("web_search")
         imageGenerationEnabled = defaults.contains("image_generation") && isTruthy("image_generation")
         codeInterpreterEnabled = defaults.contains("code_interpreter") && isTruthy("code_interpreter")
+        suppressBuiltinFeatureTracking = false
 
         // Memory is an account-level preference stored server-side (ui.memory).
         // Fetch it once for all models (not just memory-capable ones) so the
