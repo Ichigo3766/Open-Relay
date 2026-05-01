@@ -240,22 +240,20 @@ extension ActionJSExecutor: WKScriptMessageHandler {
         _ userContentController: WKUserContentController,
         didReceive message: WKScriptMessage
     ) {
-        let messageName = message.name
-        let messageBody = message.body
-        guard messageName == "actionDownload",
-              let body = messageBody as? [String: Any],
-              let filename = body["filename"] as? String,
-              let base64 = body["base64"] as? String,
-              let data = Data(base64Encoded: base64)
-        else {
-            Task { @MainActor [weak self] in
-                self?.logger.warning("⚠️ [ActionJS] malformed message from JS: \(String(describing: message.body), privacy: .public)")
-            }
-            return
-        }
-        let mime = body["mimeType"] as? String ?? "application/octet-stream"
-        let download = ActionJSDownload(filename: filename, data: data, mimeType: mime)
         Task { @MainActor [weak self] in
+            let messageName = message.name
+            let messageBody = message.body
+            guard messageName == "actionDownload",
+                  let body = messageBody as? [String: Any],
+                  let filename = body["filename"] as? String,
+                  let base64 = body["base64"] as? String,
+                  let data = Data(base64Encoded: base64)
+            else {
+                self?.logger.warning("⚠️ [ActionJS] malformed message from JS: \(String(describing: message.body), privacy: .public)")
+                return
+            }
+            let mime = body["mimeType"] as? String ?? "application/octet-stream"
+            let download = ActionJSDownload(filename: filename, data: data, mimeType: mime)
             self?.logger.info("✅ [ActionJS] download intercepted: \(filename, privacy: .public) \(data.count, privacy: .public) bytes")
             self?.resolve(download)
         }

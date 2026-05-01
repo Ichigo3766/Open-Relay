@@ -79,6 +79,31 @@ enum ContentSegment: Identifiable {
 /// including both tool calls and reasoning/thinking blocks.
 enum ToolCallParser {
 
+    // MARK: - NSRegularExpression cache
+    // Compiling an NSRegularExpression is ~10–50 µs. parseOrdered() is called
+    // up to 60 times/sec during streaming so repeated compilation was a hot path.
+    // This nonisolated(unsafe) static dictionary is read-only after warm-up and
+    // safe to access from any thread via the `cachedRegex` helper below.
+    private nonisolated(unsafe) static var _regexCache: [String: NSRegularExpression] = [:]
+    private nonisolated(unsafe) static var _regexCacheLock = os_unfair_lock()
+
+    /// Returns a cached (or freshly compiled) NSRegularExpression for `pattern`.
+    /// Thread-safe via `os_unfair_lock` (non-recursive, no allocation).
+    static func cachedRegex(_ pattern: String, options: NSRegularExpression.Options = []) -> NSRegularExpression? {
+        let key = pattern + "\0\(options.rawValue)"
+        os_unfair_lock_lock(&_regexCacheLock)
+        if let cached = _regexCache[key] {
+            os_unfair_lock_unlock(&_regexCacheLock)
+            return cached
+        }
+        os_unfair_lock_unlock(&_regexCacheLock)
+        guard let rx = try? NSRegularExpression(pattern: pattern, options: options) else { return nil }
+        os_unfair_lock_lock(&_regexCacheLock)
+        _regexCache[key] = rx
+        os_unfair_lock_unlock(&_regexCacheLock)
+        return rx
+    }
+
     /// Result of parsing assistant content.
     struct ParseResult {
         let toolCalls: [ToolCallData]
@@ -407,7 +432,7 @@ enum ToolCallParser {
         // Extract summary text from <summary>...</summary>
         let summary: String = {
             let summaryPattern = #"<summary>(.*?)</summary>"#
-            if let regex = try? NSRegularExpression(pattern: summaryPattern, options: [.dotMatchesLineSeparators]),
+            if let regex = cachedRegex(summaryPattern, options: [.dotMatchesLineSeparators]),
                let match = regex.firstMatch(in: block, range: NSRange(location: 0, length: (block as NSString).length)),
                match.numberOfRanges > 1 {
                 return (block as NSString).substring(with: match.range(at: 1))
@@ -424,7 +449,7 @@ enum ToolCallParser {
         // the capture at the right place (handled below for spillover).
         let rawContentText: String = {
             let contentPattern = #"</summary>([\s\S]*?)</details>"#
-            if let regex = try? NSRegularExpression(pattern: contentPattern, options: [.dotMatchesLineSeparators]),
+            if let regex = cachedRegex(contentPattern, options: [.dotMatchesLineSeparators]),
                let match = regex.firstMatch(in: block, range: NSRange(location: 0, length: (block as NSString).length)),
                match.numberOfRanges > 1 {
                 return decodeHTMLEntities(
@@ -461,8 +486,7 @@ enum ToolCallParser {
             guard contentText.range(of: closeTag, options: .caseInsensitive) != nil else { continue }
 
             // Split at the first occurrence: before = reasoning, after = reply
-            if let splitRegex = try? NSRegularExpression(
-                pattern: "^([\\s\\S]*?)\(escapedClose)([\\s\\S]*)$",
+            if let splitRegex = cachedRegex("^([\\s\\S]*?)\(escapedClose)([\\s\\S]*)$",
                 options: [.dotMatchesLineSeparators, .caseInsensitive]
             ) {
                 let nsContent = contentText as NSString
@@ -509,7 +533,7 @@ enum ToolCallParser {
             if let r = resultAttr, !r.isEmpty { return r }
             // Body fallback: extract content between </summary> and </details>
             let bodyPattern = #"</summary>([\s\S]*?)</details>"#
-            if let regex = try? NSRegularExpression(pattern: bodyPattern, options: [.dotMatchesLineSeparators]),
+            if let regex = cachedRegex(bodyPattern, options: [.dotMatchesLineSeparators]),
                let match = regex.firstMatch(in: block, range: NSRange(location: 0, length: (block as NSString).length)),
                match.numberOfRanges > 1 {
                 let body = (block as NSString).substring(with: match.range(at: 1))
@@ -630,10 +654,8 @@ enum ToolCallParser {
 
             // Case 1: Complete pairs (thinking finished)
             // Use .caseInsensitive so <Think>, <THINK>, <Thinking>, etc. all match
-            if let completeRegex = try? NSRegularExpression(
-                pattern: "\(escapedOpen)([\\s\\S]*?)\(escapedClose)",
-                options: [.dotMatchesLineSeparators, .caseInsensitive]
-            ) {
+            if let completeRegex = cachedRegex("\(escapedOpen)([\\s\\S]*?)\(escapedClose)",
+                options: [.dotMatchesLineSeparators, .caseInsensitive]) {
                 let nsResult = result as NSString
                 let matches = completeRegex.matches(
                     in: result,
@@ -655,10 +677,8 @@ enum ToolCallParser {
             // Case 2: Unclosed tag (still streaming thinking content)
             // Case-insensitive check for the open tag
             if result.range(of: pair.open, options: .caseInsensitive) != nil {
-                if let openRegex = try? NSRegularExpression(
-                    pattern: "\(escapedOpen)([\\s\\S]*)$",
-                    options: [.dotMatchesLineSeparators, .caseInsensitive]
-                ) {
+                if let openRegex = cachedRegex("\(escapedOpen)([\\s\\S]*)$",
+                    options: [.dotMatchesLineSeparators, .caseInsensitive]) {
                     let nsResult = result as NSString
                     if let match = openRegex.firstMatch(
                         in: result,
@@ -694,10 +714,8 @@ enum ToolCallParser {
             let escapedClose = NSRegularExpression.escapedPattern(for: pair.close)
 
             // Complete pairs (case-insensitive)
-            if let completeRegex = try? NSRegularExpression(
-                pattern: "\(escapedOpen)([\\s\\S]*?)\(escapedClose)",
-                options: [.dotMatchesLineSeparators, .caseInsensitive]
-            ) {
+            if let completeRegex = cachedRegex("\(escapedOpen)([\\s\\S]*?)\(escapedClose)",
+                options: [.dotMatchesLineSeparators, .caseInsensitive]) {
                 let nsResult = result as NSString
                 let matches = completeRegex.matches(
                     in: result,
@@ -718,10 +736,8 @@ enum ToolCallParser {
 
             // Unclosed tag (case-insensitive)
             if result.range(of: pair.open, options: .caseInsensitive) != nil {
-                if let openRegex = try? NSRegularExpression(
-                    pattern: "\(escapedOpen)([\\s\\S]*)$",
-                    options: [.dotMatchesLineSeparators, .caseInsensitive]
-                ) {
+                if let openRegex = cachedRegex("\(escapedOpen)([\\s\\S]*)$",
+                    options: [.dotMatchesLineSeparators, .caseInsensitive]) {
                     let nsResult = result as NSString
                     if let match = openRegex.firstMatch(
                         in: result,
@@ -747,10 +763,8 @@ enum ToolCallParser {
         // never matches and the partial block passes through as raw text.
         // We close the block so the parser can render it as an in-progress tool call.
         if result.contains("<details") && !result.isEmpty {
-            if let incompleteToolRegex = try? NSRegularExpression(
-                pattern: #"(<details\s+[^>]*type\s*=\s*["']tool_calls["'][^>]*>)([\s\S]*)$"#,
-                options: [.dotMatchesLineSeparators]
-            ) {
+            if let incompleteToolRegex = cachedRegex(#"(<details\s+[^>]*type\s*=\s*["']tool_calls["'][^>]*>)([\s\S]*)$"#,
+                options: [.dotMatchesLineSeparators]) {
                 let nsResult = result as NSString
                 let openToolCount = countOccurrences(of: #"<details\s+[^>]*type\s*=\s*["']tool_calls["']"#, in: result)
                 let closeCount = countOccurrences(of: "</details>", in: result)
@@ -787,10 +801,8 @@ enum ToolCallParser {
         // <summary> tags visible to the user.
         // Detect an unclosed <details type="reasoning"...> and wrap it properly.
         if result.contains("<details") && !result.isEmpty {
-            if let incompleteRegex = try? NSRegularExpression(
-                pattern: #"(<details\s+[^>]*type\s*=\s*["']reasoning["'][^>]*>)([\s\S]*)$"#,
-                options: [.dotMatchesLineSeparators]
-            ) {
+            if let incompleteRegex = cachedRegex(#"(<details\s+[^>]*type\s*=\s*["']reasoning["'][^>]*>)([\s\S]*)$"#,
+                options: [.dotMatchesLineSeparators]) {
                 let nsResult = result as NSString
                 // Only act if there's an opening <details> without a matching </details>
                 // We check by counting opens vs closes for reasoning details
@@ -809,10 +821,8 @@ enum ToolCallParser {
                         // Extract summary if present, strip it from content
                         var summary = "Thinking..."
                         var bodyContent = innerContent
-                        if let summaryRegex = try? NSRegularExpression(
-                            pattern: #"<summary>([\s\S]*?)</summary>"#,
-                            options: [.dotMatchesLineSeparators]
-                        ) {
+                        if let summaryRegex = cachedRegex(#"<summary>([\s\S]*?)</summary>"#,
+                            options: [.dotMatchesLineSeparators]) {
                             let nsInner = innerContent as NSString
                             if let sMatch = summaryRegex.firstMatch(
                                 in: innerContent,
@@ -825,10 +835,8 @@ enum ToolCallParser {
                                     .trimmingCharacters(in: .whitespacesAndNewlines)
                             } else {
                                 // Partial <summary> without closing — strip it
-                                if let partialSummary = try? NSRegularExpression(
-                                    pattern: #"<summary>([\s\S]*)$"#,
-                                    options: [.dotMatchesLineSeparators]
-                                ) {
+                                if let partialSummary = cachedRegex(#"<summary>([\s\S]*)$"#,
+                                    options: [.dotMatchesLineSeparators]) {
                                     let nsInner2 = bodyContent as NSString
                                     if let psMatch = partialSummary.firstMatch(
                                         in: bodyContent,
@@ -899,8 +907,7 @@ enum ToolCallParser {
             // Try to find: content</think> (Qwen no-opener pattern)
             // Match everything from start-of-string (or after last <details> block)
             // up to and including the closing tag
-            if let orphanRegex = try? NSRegularExpression(
-                pattern: "^([\\s\\S]*?)\(escapedClose)",
+            if let orphanRegex = cachedRegex("^([\\s\\S]*?)\(escapedClose)",
                 options: [.dotMatchesLineSeparators, .caseInsensitive]
             ) {
                 let nsResult = result as NSString
@@ -933,8 +940,7 @@ enum ToolCallParser {
 
             // Strip any remaining instances of the closing tag (there may be
             // multiple orphans, or the above only caught the first)
-            if let stripRegex = try? NSRegularExpression(
-                pattern: "\\s*\(escapedClose)\\s*",
+            if let stripRegex = cachedRegex("\\s*\(escapedClose)\\s*",
                 options: [.caseInsensitive]
             ) {
                 result = stripRegex.stringByReplacingMatches(
@@ -959,7 +965,7 @@ enum ToolCallParser {
 
     /// Counts regex occurrences in a string.
     private static func countOccurrences(of pattern: String, in text: String) -> Int {
-        guard let regex = try? NSRegularExpression(pattern: pattern, options: [.dotMatchesLineSeparators]) else { return 0 }
+        guard let regex = cachedRegex(pattern, options: [.dotMatchesLineSeparators]) else { return 0 }
         return regex.numberOfMatches(in: text, range: NSRange(location: 0, length: (text as NSString).length))
     }
 
@@ -972,7 +978,7 @@ enum ToolCallParser {
         ]
 
         for p in patterns {
-            guard let regex = try? NSRegularExpression(pattern: p, options: [.dotMatchesLineSeparators]) else { continue }
+            guard let regex = cachedRegex(p, options: [.dotMatchesLineSeparators]) else { continue }
             let nsHTML = html as NSString
             if let match = regex.firstMatch(in: html, range: NSRange(location: 0, length: nsHTML.length)),
                match.numberOfRanges > 1 {
@@ -1040,7 +1046,7 @@ enum ToolCallParser {
 
             // Strategy 1: Extract file IDs from /api/v1/files/{id}/content URLs
             let urlPattern = #"/api/v1/files/([a-f0-9\-]{36})/content"#
-            if let urlRegex = try? NSRegularExpression(pattern: urlPattern) {
+            if let urlRegex = cachedRegex(urlPattern) {
                 let nsResult = result as NSString
                 let matches = urlRegex.matches(in: result, range: NSRange(location: 0, length: nsResult.length))
                 for match in matches where match.numberOfRanges > 1 {
@@ -1054,7 +1060,7 @@ enum ToolCallParser {
 
             // Strategy 2: Extract from JSON fields like "file_id", "id", "url" containing UUIDs
             let jsonFieldPattern = #"(?:"file_id"|"id"|"url")\s*:\s*"([a-f0-9\-]{36})""#
-            if let jsonRegex = try? NSRegularExpression(pattern: jsonFieldPattern) {
+            if let jsonRegex = cachedRegex(jsonFieldPattern) {
                 let nsResult = result as NSString
                 let matches = jsonRegex.matches(in: result, range: NSRange(location: 0, length: nsResult.length))
                 for match in matches where match.numberOfRanges > 1 {
@@ -1069,7 +1075,7 @@ enum ToolCallParser {
             // Strategy 3: Last resort — look for any bare UUID in the result
             if files.isEmpty {
                 let uuidPattern = #"[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}"#
-                if let uuidRegex = try? NSRegularExpression(pattern: uuidPattern) {
+                if let uuidRegex = cachedRegex(uuidPattern) {
                     let nsResult = result as NSString
                     let matches = uuidRegex.matches(in: result, range: NSRange(location: 0, length: nsResult.length))
                     for match in matches {
@@ -1484,7 +1490,6 @@ private struct RichUIWebView: UIViewRepresentable {
     func updateUIView(_ webView: WKWebView, context: Context) {
         // Only reload if the HTML actually changed (e.g. args updated)
         if context.coordinator.loadedHTML != html {
-            richUILog.debug("updateUIView: HTML changed, reloading (\(html.count) bytes)")
             context.coordinator.loadedHTML = html
             context.coordinator.authToken = authToken
             context.coordinator.serverBaseURL = serverBaseURL
@@ -2538,7 +2543,6 @@ struct AssistantMessageContent: View {
             parseCache.lastResult = result
             // Log segment count and VIZ presence once per parse
             let hasViz = content.contains("@@@VIZ-START")
-            vizLog.debug("AssistantMessageContent parsed: contentLen=\(content.count), hasVIZ=\(hasViz), segments=\(result.segments.count), toolCalls=\(result.allToolCalls.count)")
             if hasViz {
                 let segTypes = result.segments.map { seg -> String in
                     switch seg {
@@ -2629,14 +2633,24 @@ struct AssistantMessageContent: View {
                     case .text(let str):
                         // Only the last text segment gets the streaming cursor
                         let isLastText = index == lastTextIndex && isStreaming
+                        // The inline-visualizer plugin emits an iframe/JS block for the web UI
+                        // between the </details> close and the @@@VIZ-START marker. On iOS this
+                        // block has no purpose — InlineVisualizerView renders from the VIZ markers.
+                        // Strip anything before @@@VIZ-START so it never reaches MarkdownView.
+                        let effectiveStr: String = {
+                            guard str.contains("@@@VIZ-START"),
+                                  let r = str.range(of: "@@@VIZ-START") else { return str }
+                            return String(str[r.lowerBound...])
+                        }()
                         // Extract inline images from markdown ![alt](url) syntax.
                         // MarkdownView renders images as plain text links — we need
                         // to intercept server file URLs and render them as actual images.
-                        let imageSegments = Self.splitInlineImages(str)
+                        let imageSegments = Self.splitInlineImages(effectiveStr)
+                        if !effectiveStr.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                         if imageSegments.count <= 1 {
                             // No inline images — render normally
                             MarkdownWithLoading(
-                                content: str,
+                                content: effectiveStr,
                                 isLoading: isLastText
                             )
                         } else {
@@ -2659,6 +2673,7 @@ struct AssistantMessageContent: View {
                                 }
                             }
                         }
+                        } // end if !effectiveStr.isEmpty
 
                     case .toolCalls(let calls):
                         ToolCallsContainer(
@@ -2770,7 +2785,7 @@ struct AssistantMessageContent: View {
         // Match ![alt text](url) where url contains /api/v1/files/{uuid}/content
         // The URL may be relative (/api/...) or absolute (https://host/api/...)
         let pattern = #"!\[([^\]]*)\]\(((?:https?://[^\s\)]+)?/api/v1/files/([a-f0-9\-]{36})/content)\)"#
-        guard let regex = try? NSRegularExpression(pattern: pattern, options: []) else {
+        guard let regex = ToolCallParser.cachedRegex(pattern, options: []) else {
             return [.text(text)]
         }
 

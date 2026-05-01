@@ -67,8 +67,14 @@ enum VizMarkerParser {
 
             let searchArea = remaining[contentStart...]
             guard let endRange = searchArea.range(of: endMarker) else {
-                // Unclosed block — emit remaining as plain text
-                segments.append(.text(String(remaining[startRange.lowerBound...])))
+                // Unclosed block (stream stopped before @@@VIZ-END arrived).
+                // Emit the partial VIZ payload as .visualization so InlineVisualizerView
+                // handles it — avoids routing raw SVG/HTML through MarkdownView which
+                // would render it as code blocks or literal text.
+                let partialViz = String(remaining[contentStart...])
+                if !partialViz.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    segments.append(.visualization(partialViz))
+                }
                 return segments
             }
 

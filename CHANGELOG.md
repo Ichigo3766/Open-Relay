@@ -1,3 +1,10 @@
+## v3.4.2 — May 1, 2026
+
+### Improvements
+- Dramatically improved app's performance while streaming!
+
+## Previous Builds
+
 ## v3.4.1 — April 30, 2026
 
 ### Bug Fixes

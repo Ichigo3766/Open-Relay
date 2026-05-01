@@ -3394,14 +3394,109 @@ private struct IsolatedAssistantMessage: View {
         if effectiveIsStreaming && rawContent.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             TypingIndicator()
         } else {
-            AssistantMessageContent(
-                content: displayContent,
-                isStreaming: effectiveIsStreaming,
-                messageEmbeds: message.embeds,
-                authToken: authToken,
-                serverBaseURL: serverBaseURL,
-                apiClient: apiClient
-            )
+            // Perf optimisation: when a tool-call block has been fully closed and
+            // the frozen boundary is known, split the content so the heavy tool-call
+            // HTML is never re-parsed after it finishes streaming.
+            //
+            // frozenContent — everything up to & including the last </details> close —
+            // has a stable hashValue between display-link ticks. AssistantMessageContent's
+            // ParseCache hits on every frame (zero re-parse cost).
+            //
+            // liveTextTail — the small prose that the user is currently reading —
+            // is passed to a lightweight standalone StreamingMarkdownView so only
+            // the handful of characters that changed this tick are re-rendered.
+            let frozenBoundary = isActivelyStreaming ? streamingStore.frozenToolBoundaryOffset : 0
+            // Only use the split-render path when the live tail is plain text.
+            // VIZ markers (@@@VIZ-START) and <details blocks require AssistantMessageContent's
+            // full routing (InlineVisualizerView, tool-call renderer, embed injection).
+            // When those are present, fall through to the normal full-content path below.
+            let liveTail = isActivelyStreaming ? streamingStore.liveTextTail : ""
+            let liveTailHasSpecialContent = liveTail.contains("@@@VIZ-START") || liveTail.contains("<details")
+            if frozenBoundary > 0 && !liveTailHasSpecialContent {
+                let dc = streamingStore.displayContent
+                let frozenContent: String = {
+                    guard dc.count >= frozenBoundary else { return dc }
+                    return String(dc[..<dc.index(dc.startIndex, offsetBy: frozenBoundary)])
+                }()
+
+                VStack(alignment: .leading, spacing: 0) {
+                    // Frozen tool-call / reasoning segments — hash is stable, cache always hits.
+                    AssistantMessageContent(
+                        content: frozenContent,
+                        isStreaming: false,
+                        messageEmbeds: message.embeds,
+                        authToken: authToken,
+                        serverBaseURL: serverBaseURL,
+                        apiClient: apiClient
+                    )
+                    // Live tail — split further at the prose freeze boundary if available,
+                    // so post-tool prose also benefits from paragraph-boundary freezing.
+                    if !liveTail.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        let proseBoundaryAbs = streamingStore.frozenProseBoundaryOffset
+                        let relProseBoundary = proseBoundaryAbs > frozenBoundary
+                            ? proseBoundaryAbs - frozenBoundary : 0
+                        if relProseBoundary > 0 && liveTail.count >= relProseBoundary {
+                            let splitIdx = liveTail.index(liveTail.startIndex, offsetBy: relProseBoundary)
+                            let frozenTailProse = String(liveTail[..<splitIdx])
+                            let liveProsTail   = String(liveTail[splitIdx...])
+                            StreamingMarkdownView(content: frozenTailProse, isStreaming: false)
+                            if !liveProsTail.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                                StreamingMarkdownView(content: liveProsTail, isStreaming: true)
+                            }
+                        } else {
+                            StreamingMarkdownView(content: liveTail, isStreaming: true)
+                        }
+                    }
+                }
+                .transaction { $0.animation = nil }
+            } else {
+                // Fix D: paragraph-boundary freezing for pure prose streaming.
+                //
+                // When no tool calls or VIZ markers are present AND the message is long
+                // enough (> 300 chars), split at the last completed paragraph boundary
+                // (\n\n in the safe zone ≥200 chars from the current end).
+                //
+                // frozenProse  — everything up to the last \n\n — is rendered with
+                //   isStreaming=false. Its content only changes when a new paragraph
+                //   completes (~every few seconds) rather than on every display-link tick.
+                //
+                // liveProse    — the current in-progress paragraph, typically 50–200
+                //   chars — is re-rendered every tick, but is tiny so MarkdownView's
+                //   CommonMark parse is negligible (~20-40× cheaper than parsing the
+                //   full multi-KB string at 60fps).
+                //
+                // Safety guards: skip if <details or @@@VIZ-START are present (those
+                // need AssistantMessageContent's full routing), and skip if we are not
+                // actively streaming (no benefit for already-completed messages).
+                let proseFreezeOffset = isActivelyStreaming
+                    ? streamingStore.frozenProseBoundaryOffset
+                    : 0
+
+                if proseFreezeOffset > 0 && displayContent.count >= proseFreezeOffset {
+                    let dc = displayContent
+                    let splitIdx = dc.index(dc.startIndex, offsetBy: proseFreezeOffset)
+                    let frozenProse = String(dc[..<splitIdx])
+                    let liveProse   = String(dc[splitIdx...])
+                    VStack(alignment: .leading, spacing: 0) {
+                        // Frozen paragraphs: hash changes only when boundary advances (~every 400 chars).
+                        StreamingMarkdownView(content: frozenProse, isStreaming: false)
+                        // Live tail: current paragraph only, changes every tick.
+                        if !liveProse.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                            StreamingMarkdownView(content: liveProse, isStreaming: true)
+                        }
+                    }
+                    .transaction { $0.animation = nil }
+                } else {
+                    AssistantMessageContent(
+                        content: displayContent,
+                        isStreaming: effectiveIsStreaming,
+                        messageEmbeds: message.embeds,
+                        authToken: authToken,
+                        serverBaseURL: serverBaseURL,
+                        apiClient: apiClient
+                    )
+                }
+            }
         }
     }
 

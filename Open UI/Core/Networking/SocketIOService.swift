@@ -815,7 +815,6 @@ final class SocketIOService: NSObject, @unchecked Sendable, URLSessionWebSocketD
         let handlers = Array(chatHandlers.values)
         handlerLock.unlock()
 
-        logger.info("📨 [Socket] dispatchChatEvent type=\(eventType, privacy: .public) chatId=\(chatId ?? "nil", privacy: .public) sessionId=\(eventSessionId ?? "nil", privacy: .public) ackId=\(ackId.map(String.init) ?? "nil", privacy: .public) handlers=\(handlers.count, privacy: .public)")
 
         var delivered = 0
         for reg in handlers {

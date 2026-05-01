@@ -39,6 +39,43 @@ final class StreamingContentStore {
     /// The model ID for the streaming message.
     var streamingModelId: String?
 
+    /// Character offset into `displayContent` immediately after the last closed
+    /// `<details type="tool_calls">` block. Once set, this value only increases.
+    ///
+    /// - `0` means no tool call block has been fully closed yet.
+    /// - `> 0` means everything before this offset is frozen tool-call HTML that
+    ///   will never change again. Views can pass only `liveTextTail` to
+    ///   `StreamingMarkdownView` instead of the full (potentially multi-KB) string.
+    private(set) var frozenToolBoundaryOffset: Int = 0
+
+    /// Character offset of the last paragraph boundary (`\n\n`) that is safe to
+    /// freeze during pure-prose streaming (no tool calls, no VIZ markers).
+    ///
+    /// Updated in `drainTick()` with **hysteresis**: only advances when the new
+    /// candidate boundary is ≥ `proseBoundaryHysteresis` chars ahead of the current
+    /// value. This prevents a layout-reflow snap on every single paragraph; instead
+    /// the frozen/live split only shifts once every several hundred characters.
+    ///
+    /// - `0` means the prose is too short to benefit from splitting.
+    /// - Reset to `0` on `beginStreaming()` / `completeCleanup()`.
+    private(set) var frozenProseBoundaryOffset: Int = 0
+
+    /// Minimum number of characters the paragraph boundary must advance before
+    /// `frozenProseBoundaryOffset` is updated. Prevents per-paragraph layout snaps.
+    private static let proseBoundaryHysteresis: Int = 400
+
+    /// The substring of `displayContent` that starts after `frozenToolBoundaryOffset`.
+    /// This is the only part of the message still changing on every display-link tick
+    /// during post-tool prose streaming, so views should pass this (tiny) string to
+    /// `StreamingMarkdownView` rather than the full `displayContent`.
+    var liveTextTail: String {
+        guard frozenToolBoundaryOffset > 0 else { return displayContent }
+        let dc = displayContent
+        guard dc.count > frozenToolBoundaryOffset else { return "" }
+        let idx = dc.index(dc.startIndex, offsetBy: frozenToolBoundaryOffset)
+        return String(dc[idx...])
+    }
+
     // MARK: - Drain State
 
     private var displayLink: CADisplayLink?
@@ -111,6 +148,8 @@ final class StreamingContentStore {
         streamingMessageId = messageId
         streamingContent = ""
         displayContent = ""
+        frozenToolBoundaryOffset = 0
+        frozenProseBoundaryOffset = 0
         streamingStatusHistory = []
         streamingSources = []
         streamingError = nil
@@ -223,6 +262,8 @@ final class StreamingContentStore {
         streamingMessageId = nil
         streamingContent = ""
         displayContent = ""
+        frozenToolBoundaryOffset = 0
+        frozenProseBoundaryOffset = 0
         streamingStatusHistory = []
         streamingSources = []
         streamingError = nil
@@ -405,7 +446,11 @@ final class StreamingContentStore {
                     }
                     displayedCount = lastToolCallCloseEnd
                     buffered = totalCount - displayedCount
-                    drainLog.debug("⏩ [TOOL_CALL] Skipped to lastToolCallEnd=\(lastToolCallCloseEnd) postBuffered=\(buffered) isFinishing=\(self.isFinishing)")
+                    // Record the frozen boundary so views pass only liveTextTail to MarkdownView.
+                    if frozenToolBoundaryOffset != lastToolCallCloseEnd {
+                        frozenToolBoundaryOffset = lastToolCallCloseEnd
+                    }
+                    drainLog.debug("⏩ [TOOL_CALL] Skipped to lastToolCallEnd=\(lastToolCallCloseEnd) postBuffered=\(buffered) frozenBoundary=\(self.frozenToolBoundaryOffset) isFinishing=\(self.isFinishing)")
                     // Reset EMA drain state so post-tool prose starts fresh —
                     // prevents the giant skipped buffer from inflating lastKnownTotal
                     // and making subsequent prose appear as one enormous burst.
@@ -510,8 +555,10 @@ final class StreamingContentStore {
                 charsThisFrame = steadyRate * brakeFactor
             }
         } else {
-            charsThisFrame = max(steadyRate, Double(buffered) / 6.0)
+            charsThisFrame = max(steadyRate, Double(buffered) / burstIntervalEMA)
         }
+        // Hard cap applied globally — both slow-model (EMA) and fast-model (proportional) paths.
+        charsThisFrame = min(charsThisFrame, maxCharsPerFrame)
 
         drainAccumulator += charsThisFrame
         let reveal = min(Int(drainAccumulator), buffered)
@@ -527,6 +574,59 @@ final class StreamingContentStore {
         let endOffset = displayedCount + reveal
         let endIdx = full.index(full.startIndex, offsetBy: endOffset)
         displayContent = String(full[..<endIdx])
+
+        // Prose paragraph-boundary freeze (hysteresis update):
+        // Only update frozenProseBoundaryOffset when there are no VIZ markers.
+        // Works for two cases:
+        //   • Pure prose (frozenToolBoundaryOffset == 0): search the full displayContent.
+        //   • Post-tool prose (frozenToolBoundaryOffset > 0): search only the live tail
+        //     (text after the frozen tool boundary) so we don't re-detect the tool-call
+        //     HTML block's paragraphs. The resulting candidate is converted to an absolute
+        //     offset before being stored.
+        // In both cases only advance when the new candidate is ≥ proseBoundaryHysteresis
+        // chars ahead of the current value to prevent per-paragraph layout snaps.
+        let newDC = displayContent
+        if !newDC.contains("@@@VIZ-START") {
+            if frozenToolBoundaryOffset == 0 && !newDC.contains("<details") {
+                // Pure-prose path: search full displayContent.
+                let candidate = Self.lastParagraphBoundary(in: newDC)
+                if candidate > frozenProseBoundaryOffset + Self.proseBoundaryHysteresis {
+                    frozenProseBoundaryOffset = candidate
+                }
+            } else if frozenToolBoundaryOffset > 0 {
+                // Post-tool-prose path: search only the live tail so we don't re-freeze
+                // inside the already-frozen tool-call HTML. Convert relative→absolute.
+                let tailStartOffset = frozenToolBoundaryOffset
+                guard newDC.count > tailStartOffset else { return }
+                let tailStartIdx = newDC.index(newDC.startIndex, offsetBy: tailStartOffset)
+                let liveTailStr = String(newDC[tailStartIdx...])
+                let relCandidate = Self.lastParagraphBoundary(in: liveTailStr)
+                if relCandidate > 0 {
+                    let absCandidate = tailStartOffset + relCandidate
+                    if absCandidate > frozenProseBoundaryOffset + Self.proseBoundaryHysteresis {
+                        frozenProseBoundaryOffset = absCandidate
+                    }
+                }
+            }
+        } else if newDC.contains("\n@@@VIZ-END") {
+            // Post-VIZ prose: freeze paragraph boundaries in the tail after VIZ-END.
+            // Only search the text after \n@@@VIZ-END so we don't re-detect paragraph
+            // breaks inside the VIZ block itself. Convert relative→absolute offset,
+            // matching the same hysteresis-gated pattern as the post-tool prose branch.
+            let vizEndTag = "\n@@@VIZ-END"
+            if let vizRange = newDC.range(of: vizEndTag, options: .backwards) {
+                let tailStartIdx = vizRange.upperBound
+                let liveTailStr = String(newDC[tailStartIdx...])
+                let relCandidate = Self.lastParagraphBoundary(in: liveTailStr)
+                if relCandidate > 0 {
+                    let tailStartOffset = newDC.distance(from: newDC.startIndex, to: tailStartIdx)
+                    let absCandidate = tailStartOffset + relCandidate
+                    if absCandidate > frozenProseBoundaryOffset + Self.proseBoundaryHysteresis {
+                        frozenProseBoundaryOffset = absCandidate
+                    }
+                }
+            }
+        }
     }
 
     // MARK: - Details Block Detection
@@ -641,29 +741,44 @@ final class StreamingContentStore {
         return content.distance(from: content.startIndex, to: endIdx)
     }
 
-    /// Returns `true` if `content` contains at least one `<details` opening tag
-    /// that does not have a matching `</details>` closing tag.
+    /// Returns the character offset of the end of the last completed paragraph
+    /// (double-newline boundary) that is safe to freeze — i.e., not inside an open
+    /// code fence and at least `minTailLength` characters from the current end.
     ///
-    /// Legacy helper — kept for reference. Active code uses `hasUnclosedToolCallBlock`.
-    private static func hasUnclosedDetailsBlock(_ content: String) -> Bool {
-        guard content.contains("<details") else { return false }
+    /// Returns `0` when the string is too short or no safe boundary is found.
+    ///
+    /// Used by `IsolatedAssistantMessage` to freeze settled prose paragraphs so that
+    /// only the current in-progress paragraph (~100-200 chars) is sent to MarkdownView
+    /// on each display-link tick (60fps). The frozen portion is rendered once per new
+    /// paragraph instead of re-parsing the whole multi-KB string every frame.
+    static func lastParagraphBoundary(in text: String, minTailLength: Int = 200) -> Int {
+        // Only trigger for messages long enough to benefit — short messages are cheap.
+        let minLength = minTailLength + 100
+        guard text.count > minLength else { return 0 }
 
-        var openCount = 0
-        var searchRange = content.startIndex..<content.endIndex
-        let openTag = "<details"
-        while let range = content.range(of: openTag, options: .caseInsensitive, range: searchRange) {
-            openCount += 1
-            searchRange = range.upperBound..<content.endIndex
+        // Restrict the search to the "safe zone": everything except the last
+        // minTailLength characters. This guarantees the live tail is non-empty
+        // after the split, giving the typewriter drain room to work.
+        let safeEndIdx = text.index(text.endIndex, offsetBy: -minTailLength)
+        let searchArea = text[text.startIndex..<safeEndIdx]
+
+        // Find the last paragraph break (double newline) in the safe zone.
+        guard let lastBlankLine = searchArea.range(of: "\n\n", options: .backwards) else { return 0 }
+
+        let boundaryIdx = lastBlankLine.upperBound
+
+        // Safety: never split inside an open code fence.
+        // Count ``` occurrences before the boundary; an odd count means we're inside.
+        let textBefore = text[..<boundaryIdx]
+        var fenceCount = 0
+        var cur = textBefore.startIndex
+        while let r = textBefore.range(of: "```", range: cur..<textBefore.endIndex) {
+            fenceCount += 1
+            cur = r.upperBound
         }
+        guard fenceCount % 2 == 0 else { return 0 }
 
-        var closeCount = 0
-        searchRange = content.startIndex..<content.endIndex
-        let closeTag = "</details>"
-        while let range = content.range(of: closeTag, options: .caseInsensitive, range: searchRange) {
-            closeCount += 1
-            searchRange = range.upperBound..<content.endIndex
-        }
-
-        return openCount > closeCount
+        return text.distance(from: text.startIndex, to: boundaryIdx)
     }
+
 }
