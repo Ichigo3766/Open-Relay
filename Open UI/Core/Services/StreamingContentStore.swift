@@ -57,10 +57,9 @@ final class StreamingContentStore {
     private var lastKnownTotal: Int = 0
 
     /// Exponential moving average of the inter-burst interval in display-link
-    /// frames. Seed at 15 (≈250ms) — fast models often burst every 100-200ms,
-    /// so a lower seed prevents over-slow drain at startup.
+    /// frames. Seed at 25 (≈417ms) — matches the typical 400ms gap at 20 tok/s.
     /// Updated on every burst: EMA = 0.3 × observed + 0.7 × EMA
-    private var burstIntervalEMA: Double = 15
+    private var burstIntervalEMA: Double = 25
 
     /// Frame counter incremented every tick, reset to 0 on each burst arrival.
     /// Used to measure the actual gap between consecutive token bursts.
@@ -75,17 +74,6 @@ final class StreamingContentStore {
     /// keeps running to drain remaining buffer — no new tokens will arrive.
     /// Buffer is NOT instantly flushed; drain continues at the same rate.
     private var isFinishing: Bool = false
-
-    /// Counts frames elapsed since the visible buffer went to zero.
-    /// Used for momentum coasting — the drain keeps moving at steadyRate
-    /// for up to `maxCoastFrames` frames even when the buffer is empty,
-    /// smoothing out the dead zone between irregular token bursts.
-    private var coastFrames: Int = 0
-
-    /// Maximum frames to coast at steadyRate after the buffer empties.
-    /// At 60fps, 10 frames = ~167ms — enough to bridge most inter-burst gaps
-    /// without permanently overshooting when the server really is done.
-    private let maxCoastFrames: Int = 10
 
     /// Hard cap on chars revealed per frame, regardless of server speed.
     /// At 60fps: 6.0 chars/frame = 360 chars/sec — comfortable typewriter pace.
@@ -251,9 +239,8 @@ final class StreamingContentStore {
         drainAccumulator = 0
         steadyRate = 0
         lastKnownTotal = 0
-        burstIntervalEMA = 15
+        burstIntervalEMA = 25
         framesSinceLastBurst = 0
-        coastFrames = 0
         isFirstBurst = true
         vizTransitionPending = false
         let target = DisplayLinkTarget()
@@ -271,26 +258,23 @@ final class StreamingContentStore {
         drainAccumulator = 0
         steadyRate = 0
         lastKnownTotal = 0
-        burstIntervalEMA = 15
+        burstIntervalEMA = 25
         framesSinceLastBurst = 0
-        coastFrames = 0
         isFirstBurst = true
         vizTransitionPending = false
     }
 
     /// Called once per display frame synchronously on the main RunLoop.
     ///
-    /// ## EMA burst-interval adaptive drain with momentum coasting
+    /// ## EMA burst-interval adaptive drain
     ///
-    /// **Slow model (buffer ≤ 60):** EMA-adaptive constant-rate
+    /// **Slow model (buffer ≤ 40):** EMA-adaptive constant-rate
     ///   - On burst: update EMA with observed inter-burst frames, then
-    ///     `steadyRate = max(buffer / burstIntervalEMA, 0.5)`
+    ///     `steadyRate = max(buffer / burstIntervalEMA, 0.3)`
     ///   - Each frame: reveal steadyRate chars (constant, not proportional)
     ///   - Buffer drains in exactly `burstIntervalEMA` frames → zero dead zone
-    ///   - When buffer empties, coast at steadyRate for up to maxCoastFrames
-    ///     to bridge the gap before the next burst arrives
     ///
-    /// **Fast model (buffer > 60):** proportional drain
+    /// **Fast model (buffer > 40):** proportional drain
     ///   - Each frame: max(steadyRate, buffer / 6) — proportional dominates
     ///   - Behaviour identical to original — fast models unaffected
     ///
@@ -374,62 +358,68 @@ final class StreamingContentStore {
             }
         }
 
-        // Tool call / reasoning block fast-forward:
-        // When a <details type="tool_calls"> or <details type="reasoning"> block
-        // is present but not yet closed (i.e., still streaming), bypassing the
-        // typewriter drain prevents the incomplete HTML from leaking into
-        // MarkdownView as raw text — which would cause expensive CommonMark
-        // parsing + syntax highlighting on the entire block on every display-link
-        // tick (60fps). This is especially costly for the Inline Visualizer tool
-        // which embeds thousands of characters of HTML/JS in the arguments attribute.
+        // Tool call block fast-forward:
+        // When a <details type="tool_calls"> block is present but not yet closed
+        // (i.e., still streaming), bypassing the typewriter drain prevents the
+        // incomplete HTML from leaking into MarkdownView as raw text — which would
+        // cause expensive CommonMark parsing + syntax highlighting on the entire
+        // block on every display-link tick (60fps). This is especially costly for
+        // the Inline Visualizer tool which embeds thousands of characters of
+        // HTML/JS in the arguments attribute.
         //
-        // Strategy: if the number of <details opens exceeds the number of
-        // </details> closes, there is at least one unclosed block — flush immediately.
-        // Simple substring counting is O(n) but far cheaper than regex and runs
-        // on the RAW full string before any drain decisions.
-        if Self.hasUnclosedDetailsBlock(full) {
-            // Option C: while an unclosed <details type="tool_calls"> block is
-            // streaming, do NOT update displayContent at all. The ToolCallView
-            // renders tool metadata independently; no visible UI depends on the
-            // incomplete <details> HTML being in displayContent. Suppressing all
-            // updates here eliminates the ~25 KB/tick re-render cost that was
-            // causing lag during Inline Visualizer and other tool responses.
+        // NOTE: <details type="reasoning"> blocks are intentionally excluded here
+        // so that thinking/reasoning content streams character-by-character through
+        // the normal EMA typewriter drain for a smooth reading experience.
+        //
+        // Strategy: if the number of tool_calls <details opens exceeds the number
+        // of </details> closes (adjusted for reasoning blocks), there is at least
+        // one unclosed tool_calls block — suppress displayContent updates.
+        if Self.hasUnclosedToolCallBlock(full) {
+            // While an unclosed <details type="tool_calls"> block is streaming,
+            // do NOT update displayContent at all. The ToolCallView renders tool
+            // metadata independently; no visible UI depends on the incomplete
+            // <details> HTML being in displayContent. Suppressing all updates here
+            // eliminates the ~25 KB/tick re-render cost that was causing lag during
+            // Inline Visualizer and other tool responses.
             if isFinishing { completeCleanup() }
             return
         }
 
-        // Closed <details> fast-forward:
-        // Once all <details> blocks are fully closed (hasUnclosedDetailsBlock passed
-        // above), any tool/reasoning HTML that displayContent hasn't yet revealed is
-        // skipped instantly. Tool output (arguments, results) can be 10–40 KB;
-        // typewriter-draining it at 360 chars/sec would take 30–100+ seconds for
-        // data the user never reads character-by-character. Only the response prose
-        // that appears AFTER the last </details> gets the typewriter effect.
-        if full.contains("</details>"),
-           let lastCloseRange = full.range(of: "</details>", options: .backwards) {
-            let lastDetailsEnd = full.distance(from: full.startIndex, to: lastCloseRange.upperBound)
-            if displayedCount < lastDetailsEnd {
-                // Jump displayContent to the end of the last </details> instantly.
-                let newDisplay = String(full[..<lastCloseRange.upperBound])
-                if displayContent != newDisplay {
-                    displayContent = newDisplay
+        // Closed tool_calls <details> fast-forward:
+        // Once all tool_calls blocks are fully closed, any tool HTML that
+        // displayContent hasn't yet revealed is skipped instantly. Tool output
+        // (arguments, results) can be 10–40 KB; typewriter-draining it would take
+        // 30–100+ seconds for data the user never reads character-by-character.
+        //
+        // Reasoning blocks are NOT skipped here — their content has already been
+        // streamed character-by-character via the normal typewriter drain above.
+        // Only skip up to the end of the last tool_calls </details> close.
+        if Self.hasClosedToolCallBlock(full) {
+            if let lastToolCallCloseEnd = Self.lastToolCallDetailsEnd(in: full) {
+                if displayedCount < lastToolCallCloseEnd {
+                    // Jump displayContent to the end of the last tool_calls </details> instantly.
+                    let endIdx = full.index(full.startIndex, offsetBy: lastToolCallCloseEnd)
+                    let newDisplay = String(full[..<endIdx])
+                    if displayContent != newDisplay {
+                        displayContent = newDisplay
+                    }
+                    displayedCount = lastToolCallCloseEnd
+                    buffered = totalCount - displayedCount
+                    drainLog.debug("⏩ [TOOL_CALL] Skipped to lastToolCallEnd=\(lastToolCallCloseEnd) postBuffered=\(buffered) isFinishing=\(self.isFinishing)")
+                    // Reset EMA drain state so post-tool prose starts fresh —
+                    // prevents the giant skipped buffer from inflating lastKnownTotal
+                    // and making subsequent prose appear as one enormous burst.
+                    lastKnownTotal = totalCount
+                    burstIntervalEMA = 8
+                    framesSinceLastBurst = 0
+                    isFirstBurst = true
+                    drainAccumulator = 0
+                    steadyRate = 0
+                    // Return so the next tick starts a clean typewriter drain for
+                    // whatever prose follows the tool block (buffered > 0), or lets
+                    // the finishing check at the top handle cleanup (buffered == 0).
+                    return
                 }
-                displayedCount = lastDetailsEnd
-                buffered = totalCount - displayedCount
-                drainLog.debug("⏩ [DETAILS] Skipped to lastDetailsEnd=\(lastDetailsEnd) postBuffered=\(buffered) isFinishing=\(self.isFinishing)")
-                // Reset EMA drain state so post-tool prose starts fresh —
-                // prevents the giant skipped buffer from inflating lastKnownTotal
-                // and making subsequent prose appear as one enormous burst.
-                lastKnownTotal = totalCount
-                burstIntervalEMA = 8
-                framesSinceLastBurst = 0
-                isFirstBurst = true
-                drainAccumulator = 0
-                steadyRate = 0
-                // Return so the next tick starts a clean typewriter drain for
-                // whatever prose follows the tool block (buffered > 0), or lets
-                // the finishing check at the top handle cleanup (buffered == 0).
-                return
             }
         }
 
@@ -481,79 +471,46 @@ final class StreamingContentStore {
         lastKnownTotal = totalCount
 
         if newChars > 0 {
-            // Reset coast counter — we have real buffer to drain.
-            coastFrames = 0
-
             if isFirstBurst {
                 // Skip EMA update on the very first burst to prevent the model's
                 // thinking time (potentially seconds = hundreds of frames) from
                 // inflating burstIntervalEMA and making the first drain far too slow.
-                // Use the seeded EMA value (15 frames ≈ 250ms) for the first burst.
+                // Use the seeded EMA value (25 frames ≈ 417ms) for the first burst.
                 isFirstBurst = false
             } else {
                 // Update EMA with the observed inter-burst interval (frames).
-                // Clamp to [3, 60] — real inter-burst gaps are 6-36 frames at
+                // Clamp to [4, 60] — real inter-burst gaps are 12-36 frames at
                 // 20-60 tok/s. Ceiling of 60 (1s) prevents one long gap from
                 // dragging the EMA high and slowing subsequent bursts.
-                // Floor raised to 3 (was 4) for faster responsiveness on fast models.
-                let observed = Double(max(3, min(framesSinceLastBurst, 60)))
+                let observed = Double(max(4, min(framesSinceLastBurst, 60)))
                 burstIntervalEMA = 0.3 * observed + 0.7 * burstIntervalEMA
             }
             framesSinceLastBurst = 0
 
             // Lock in a constant drain rate that spreads the current buffer
-            // across the EMA-estimated inter-burst gap. Floor raised to 0.5
-            // (was 0.3) — 30 chars/sec minimum keeps motion visible even
-            // during sparse token arrivals.
-            steadyRate = max(Double(buffered) / burstIntervalEMA, 0.5)
+            // across the EMA-estimated inter-burst gap. Floor of 0.3 lets
+            // very small bursts over long gaps trickle out gradually.
+            steadyRate = max(Double(buffered) / burstIntervalEMA, 0.3)
             drainLog.debug("⚡️ [BURST] newChars=\(newChars) buffered=\(buffered) steadyRate=\(String(format: "%.2f", self.steadyRate)) ema=\(String(format: "%.1f", self.burstIntervalEMA)) isFinishing=\(self.isFinishing)")
         }
 
         // Threshold-gated dual mode:
-        // ≤ 60 chars → EMA-adaptive constant rate (slow model: zero dead zone)
-        // > 60 chars → proportional drain (fast model: keeps up with throughput)
-        //
-        // Note: No tail-reserve brake. The previous 0-3 char brake was the primary
-        // source of the "snap then pause" hiccup — it slowed drain to near-zero
-        // right when a burst was imminent. Momentum coasting replaces it: when
-        // the buffer runs dry we coast at steadyRate until the next burst.
+        // ≤ 40 chars → EMA-adaptive constant rate (slow model: zero dead zone)
+        // > 40 chars → proportional drain (fast model: keeps up with throughput)
         var charsThisFrame: Double
-        if buffered > 60 {
-            // Fast model: proportional drain dominates.
-            // Dynamic cap: scale the ceiling with buffer depth so post-VIZ catch-up
-            // isn't permanently throttled by the normal 6 char/frame typewriter cap.
-            //   buffer >   60 → cap = 15 chars/frame  (900 chars/sec — snappy, readable)
-            //   buffer >  200 → cap = 30 chars/frame  (1800 chars/sec — fast catch-up)
-            //   buffer > 1000 → cap = 50 chars/frame  (3000 chars/sec — aggressive catch-up)
-            // The previous thresholds (500/2000) left the drain capped at 6 chars/frame for
-            // the entire time buffer stays in the 60–500 range (common during post-VIZ token
-            // trickle-in), making text feel sluggish. Lowering to 60/200/1000 ensures we
-            // always drain noticeably faster than the 6-char/frame slow path.
-            let dynamicCap: Double
-            if buffered > 1000 {
-                dynamicCap = 50.0
-            } else if buffered > 200 {
-                dynamicCap = 30.0
-            } else {
-                dynamicCap = 15.0
+        if buffered <= 40 {
+            charsThisFrame = steadyRate
+
+            // Tail-reserve brake: when only 3 or fewer chars remain AND we are
+            // still actively receiving tokens (not finishing), apply a quadratic
+            // slow-down so the last chars linger until the next burst arrives.
+            // During finishing mode we skip this so the tail drains naturally.
+            if buffered <= 3 && !isFinishing {
+                let brakeFactor = Double(buffered) / 4.0  // 0.25 … 0.75
+                charsThisFrame = steadyRate * brakeFactor
             }
-            charsThisFrame = min(max(steadyRate, Double(buffered) / 6.0), dynamicCap)
-        } else if buffered > 0 {
-            // Slow/medium model: constant EMA rate, capped at maxCharsPerFrame
-            charsThisFrame = min(steadyRate, maxCharsPerFrame)
         } else {
-            // Buffer is empty — momentum coasting:
-            // Continue accumulating at steadyRate for up to maxCoastFrames
-            // so that when the next burst arrives, the accumulator already
-            // has some credit and characters appear immediately.
-            guard !isFinishing && coastFrames < maxCoastFrames && steadyRate > 0 else {
-                return
-            }
-            coastFrames += 1
-            drainAccumulator += steadyRate
-            // Don't reveal any chars — just pre-charge the accumulator.
-            // (The accumulator credit will be consumed when buffered > 0 again.)
-            return
+            charsThisFrame = max(steadyRate, Double(buffered) / 6.0)
         }
 
         drainAccumulator += charsThisFrame
@@ -574,18 +531,123 @@ final class StreamingContentStore {
 
     // MARK: - Details Block Detection
 
+    /// Returns `true` if `content` contains at least one unclosed
+    /// `<details type="tool_calls">` block (open count > close count,
+    /// adjusted for reasoning blocks which are handled separately).
+    ///
+    /// Reasoning blocks (`<details type="reasoning">`) are intentionally
+    /// excluded so their content streams via the normal typewriter drain.
+    ///
+    /// Uses simple substring counting (not regex) — O(n) and cheap enough
+    /// to run on every display-link tick (up to 60fps).
+    private static func hasUnclosedToolCallBlock(_ content: String) -> Bool {
+        guard content.contains("tool_calls") else { return false }
+
+        // Count tool_calls opening tags
+        var toolCallOpenCount = 0
+        var searchRange = content.startIndex..<content.endIndex
+        let toolCallOpenTag = "tool_calls"
+        while let range = content.range(of: toolCallOpenTag, options: .caseInsensitive, range: searchRange) {
+            toolCallOpenCount += 1
+            searchRange = range.upperBound..<content.endIndex
+        }
+
+        // Count ALL closing </details> tags
+        var totalCloseCount = 0
+        searchRange = content.startIndex..<content.endIndex
+        let closeTag = "</details>"
+        while let range = content.range(of: closeTag, options: .caseInsensitive, range: searchRange) {
+            totalCloseCount += 1
+            searchRange = range.upperBound..<content.endIndex
+        }
+
+        // Count reasoning opening tags (these have their own </details> closes)
+        var reasoningOpenCount = 0
+        searchRange = content.startIndex..<content.endIndex
+        let reasoningTag = "type=\"reasoning\""
+        while let range = content.range(of: reasoningTag, options: .caseInsensitive, range: searchRange) {
+            reasoningOpenCount += 1
+            searchRange = range.upperBound..<content.endIndex
+        }
+        // Also check single-quote variant
+        searchRange = content.startIndex..<content.endIndex
+        let reasoningTagSingle = "type='reasoning'"
+        while let range = content.range(of: reasoningTagSingle, options: .caseInsensitive, range: searchRange) {
+            reasoningOpenCount += 1
+            searchRange = range.upperBound..<content.endIndex
+        }
+
+        // Closes available for tool_calls blocks = total closes minus reasoning closes
+        let toolCallCloseCount = max(0, totalCloseCount - reasoningOpenCount)
+        return toolCallOpenCount > toolCallCloseCount
+    }
+
+    /// Returns `true` if `content` contains at least one fully closed
+    /// `<details type="tool_calls">` block.
+    private static func hasClosedToolCallBlock(_ content: String) -> Bool {
+        guard content.contains("tool_calls") && content.contains("</details>") else { return false }
+        return !hasUnclosedToolCallBlock(content)
+    }
+
+    /// Finds the character offset immediately after the last closing `</details>`
+    /// tag that belongs to a `<details type="tool_calls">` block.
+    ///
+    /// Strategy: walk backwards through `</details>` close tags, pairing each
+    /// with the nearest preceding `<details` open tag. Return the offset of the
+    /// last close that pairs with a tool_calls open.
+    ///
+    /// Returns `nil` if no closed tool_calls block is found.
+    private static func lastToolCallDetailsEnd(in content: String) -> Int? {
+        let closeTag = "</details>"
+        guard content.contains("tool_calls"), content.contains(closeTag) else { return nil }
+
+        // Collect all </details> close positions (end offsets) in forward order
+        var closeEnds: [String.Index] = []
+        var searchRange = content.startIndex..<content.endIndex
+        while let range = content.range(of: closeTag, options: .caseInsensitive, range: searchRange) {
+            closeEnds.append(range.upperBound)
+            searchRange = range.upperBound..<content.endIndex
+        }
+
+        // Collect all <details open positions (start offsets) in forward order
+        var openStarts: [String.Index] = []
+        searchRange = content.startIndex..<content.endIndex
+        let openTag = "<details"
+        while let range = content.range(of: openTag, options: .caseInsensitive, range: searchRange) {
+            openStarts.append(range.lowerBound)
+            searchRange = range.upperBound..<content.endIndex
+        }
+
+        guard !closeEnds.isEmpty && !openStarts.isEmpty else { return nil }
+
+        // Match closes to opens using a simple stack approach (forward pass)
+        // Each close at index i matches the open at index i (1:1 nesting order).
+        // Find the last close whose matching open contains "tool_calls".
+        var lastToolCallEnd: String.Index? = nil
+        let pairCount = min(closeEnds.count, openStarts.count)
+        for i in 0..<pairCount {
+            let openIdx = openStarts[i]
+            let closeIdx = closeEnds[i]
+            // Extract the opening tag text to check its type attribute
+            if let tagEnd = content.range(of: ">", range: openIdx..<content.endIndex) {
+                let tagText = String(content[openIdx..<tagEnd.upperBound])
+                if tagText.lowercased().contains("tool_calls") {
+                    lastToolCallEnd = closeIdx
+                }
+            }
+        }
+
+        guard let endIdx = lastToolCallEnd else { return nil }
+        return content.distance(from: content.startIndex, to: endIdx)
+    }
+
     /// Returns `true` if `content` contains at least one `<details` opening tag
     /// that does not have a matching `</details>` closing tag.
     ///
-    /// This is used to fast-forward tool call and reasoning blocks so that the
-    /// incomplete HTML is never passed through MarkdownView character by character.
-    ///
-    /// Uses simple substring counting (not regex) for performance — this runs
-    /// on every display-link tick (up to 60fps) so it must be O(n) and cheap.
+    /// Legacy helper — kept for reference. Active code uses `hasUnclosedToolCallBlock`.
     private static func hasUnclosedDetailsBlock(_ content: String) -> Bool {
         guard content.contains("<details") else { return false }
 
-        // Count opening <details tags (case-insensitive substring count)
         var openCount = 0
         var searchRange = content.startIndex..<content.endIndex
         let openTag = "<details"
@@ -594,7 +656,6 @@ final class StreamingContentStore {
             searchRange = range.upperBound..<content.endIndex
         }
 
-        // Count closing </details> tags
         var closeCount = 0
         searchRange = content.startIndex..<content.endIndex
         let closeTag = "</details>"

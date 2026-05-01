@@ -1,3 +1,11 @@
+## v3.4.1 — April 30, 2026
+
+### Bug Fixes
+- Fixed streaming responses appearing too fast bypassing the typewriter style.
+- Fixed inline visualizer text flickering and disappearing during live visualization streaming.
+
+## Previous Builds
+
 ## v3.4 — April 30, 2026
 
 ### What's New

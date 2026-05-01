@@ -105,36 +105,34 @@ struct StreamingMarkdownView: View {
     /// tree when `isStreaming` flips to `false`.
     ///
     /// ## Performance: VIZ streaming optimisation
-    /// When `@@@VIZ-START` is present, the message content contains a large
-    /// `<details type="tool_calls">` block (~20-30 KB of HTML-entity-encoded
-    /// embed HTML) BEFORE the VIZ markers. Passing this entire string to
-    /// MarkdownView on every display-link tick (60fps) forces a full CommonMark
-    /// parse + CoreText layout on the whole thing every frame — that is the
-    /// primary cause of 104% CPU during VIZ streaming.
+    /// The `<details type="tool_calls">` block that used to appear before VIZ
+    /// markers is now stripped upstream by `ToolCallParser.parseOrdered()` inside
+    /// `AssistantMessageContent` before the text ever reaches `StreamingMarkdownView`.
+    /// By the time we see the content, the pre-VIZ prose is just a short settled
+    /// string (e.g. "Here's a cute little pig for you! 🐷") — safe to pass to
+    /// MarkdownView on every tick with negligible cost.
     ///
-    /// Fix: during streaming, **never pass the pre-VIZ prose to MarkdownView**.
-    /// The `<details>` block is already rendered by `ToolCallView`; MarkdownView
-    /// only needs the post-VIZ text (the prose written AFTER `@@@VIZ-END`).
-    /// We keep an empty `.markdown("")` placeholder at segment index 0 so the
-    /// view tree stays stable (same ForEach identity) when streaming ends and
-    /// the real pre-VIZ prose is restored.
+    /// We therefore pass the real pre-VIZ prose through rather than an empty
+    /// placeholder. This fixes the visible flash where the prose text disappeared
+    /// during VIZ streaming and only reappeared once the stream finished.
     private func resolveSegments() -> [ContentSegment] {
         if isStreaming {
-            // ── VIZ marker path (existing behaviour, unchanged) ──────────────
+            // ── VIZ marker path ───────────────────────────────────────────────
             let vizState = VizMarkerParser.streamingParse(content)
             switch vizState {
             case .noMarkers:
                 break   // fall through to streaming code-block detection below
 
-            case .streaming(_, let vizContent):
-                let _ = vizLog.debug("StreamingMarkdownView: .streaming — passing empty pre-viz prose, vizLen=\(vizContent.count)")
-                return [.markdown(""), .visualization(vizContent)]
+            case .streaming(let proseBeforeMarker, let vizContent):
+                let _ = vizLog.debug("StreamingMarkdownView: .streaming — proseLen=\(proseBeforeMarker.count), vizLen=\(vizContent.count)")
+                return [.markdown(proseBeforeMarker), .visualization(vizContent)]
 
             case .complete:
+                let preViz = extractPreVizText(content)
                 let postViz = extractPostVizText(content)
-                let _ = vizLog.debug("StreamingMarkdownView: .complete during streaming — postVizLen=\(postViz.count)")
+                let _ = vizLog.debug("StreamingMarkdownView: .complete during streaming — preVizLen=\(preViz.count), postVizLen=\(postViz.count)")
                 var result: [ContentSegment] = []
-                result.append(.markdown(""))
+                result.append(.markdown(preViz))
                 let vizContent = extractVizContent(content)
                 result.append(.visualization(vizContent))
                 if !postViz.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -202,6 +200,13 @@ struct StreamingMarkdownView: View {
             return result.isEmpty ? nil : result
         }
         return nil
+    }
+
+    /// Extracts the text that appears before `@@@VIZ-START` in the content.
+    /// Returns the full text if the start marker is not present.
+    private func extractPreVizText(_ text: String) -> String {
+        guard let startRange = text.range(of: "@@@VIZ-START") else { return text }
+        return String(text[text.startIndex..<startRange.lowerBound])
     }
 
     /// Extracts the text that appears after `\n@@@VIZ-END` in the content.

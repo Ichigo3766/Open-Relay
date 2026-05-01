@@ -2553,7 +2553,22 @@ struct AssistantMessageContent: View {
         }()
 
         let groups: [SegmentGroup] = {
-            let base = Self.groupSegments(ordered.segments)
+            let rawBase = Self.groupSegments(ordered.segments)
+
+            // Phase 5: When @@@VIZ-START markers are present, suppress the entire
+            // `render_visualization` tool call row. The native InlineVisualizerView
+            // already renders the visualization — the tool call header and its giant
+            // result/embed payload are redundant and cause lag as the large HTML blob
+            // is parsed and laid out on every streaming tick.
+            let hasVizMarkers = content.contains("@@@VIZ-START")
+            let base: [SegmentGroup] = hasVizMarkers ? rawBase.compactMap { group in
+                if case .toolCalls(let calls) = group {
+                    let filtered = calls.filter { $0.name != "render_visualization" }
+                    return filtered.isEmpty ? nil : .toolCalls(filtered)
+                }
+                return group
+            } : rawBase
+
             // Phase 4: Always suppress data-iv-build embeds on iOS.
             // The inline-visualizer plugin's HTMLResponse embed uses a JS DOM observer
             // that calls parent.document — which is sandboxed/impossible in WKWebView.
