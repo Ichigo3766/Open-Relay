@@ -254,7 +254,7 @@
 				38AA00052FA9B00000SVGDRW /* XCRemoteSwiftPackageReference "SwiftDraw" */,
 				38754A952F845BE60012CD28 /* XCRemoteSwiftPackageReference "ReactionContextMenu" */,
 				38FEA3162FA2A18600A98F25 /* XCRemoteSwiftPackageReference "mlx-audio-swift" */,
-				38B6DED32FA55DDC001924FB /* XCLocalSwiftPackageReference "../MarkdownView" */,
+				38B6DED32FA55DDC001924FB /* XCRemoteSwiftPackageReference "MarkdownView" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 38EB667E2F39CE5A00AED774 /* Products */;
@@ -627,14 +627,15 @@
 		};
 /* End XCConfigurationList section */
 
-/* Begin XCLocalSwiftPackageReference section */
-		38B6DED32FA55DDC001924FB /* XCLocalSwiftPackageReference "../MarkdownView" */ = {
-			isa = XCLocalSwiftPackageReference;
-			relativePath = ../MarkdownView;
-		};
-/* End XCLocalSwiftPackageReference section */
-
 /* Begin XCRemoteSwiftPackageReference section */
+		38B6DED32FA55DDC001924FB /* XCRemoteSwiftPackageReference "MarkdownView" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/Ichigo3766/MarkdownView";
+			requirement = {
+				branch = main;
+				kind = branch;
+			};
+		};
 		38754A952F845BE60012CD28 /* XCRemoteSwiftPackageReference "ReactionContextMenu" */ = {
 			isa = XCRemoteSwiftPackageReference;
 			repositoryURL = "https://github.com/Ichigo3766/ReactionContextMenu";
