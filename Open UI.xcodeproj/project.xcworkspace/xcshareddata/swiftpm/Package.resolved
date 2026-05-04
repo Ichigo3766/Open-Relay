@@ -1,5 +1,5 @@
 {
-  "originHash" : "9e61defeb3e27c36b0706b916e3e75c92d1aabda74ca321d0781250140f161ac",
+  "originHash" : "c59e507b3376127180a90a39fba7aebd670178922422018092feb9fec10756df",
   "pins" : [
     {
       "identity" : "beautiful-mermaid-swift",
@@ -53,6 +53,15 @@
       "state" : {
         "revision" : "cb5b2bd0da83ad29c0bec762d39f41c8ad0eaf3e",
         "version" : "1.2.1"
+      }
+    },
+    {
+      "identity" : "markdownview",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/Ichigo3766/MarkdownView",
+      "state" : {
+        "branch" : "main",
+        "revision" : "6094494d7fa05cd2e80f8d94795e370a4fa75dba"
       }
     },
     {
@@ -112,7 +121,7 @@
     {
       "identity" : "swift-cmark",
       "kind" : "remoteSourceControl",
-      "location" : "https://github.com/swiftlang/swift-cmark",
+      "location" : "https://github.com/swiftlang/swift-cmark.git",
       "state" : {
         "revision" : "5d9bdaa4228b381639fff09403e39a04926e2dbe",
         "version" : "0.7.1"

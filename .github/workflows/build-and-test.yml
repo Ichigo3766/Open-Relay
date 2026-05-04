@@ -1,0 +1,74 @@
+name: Build & Launch Verification
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-verify:
+    name: Build & Verify Launch (iPhone Simulator)
+    runs-on: macos-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Select latest Xcode
+        run: |
+          XCODE_PATH=$(ls -d /Applications/Xcode*.app 2>/dev/null | sort -V | tail -1)
+          echo "Using $XCODE_PATH"
+          sudo xcode-select -s "$XCODE_PATH/Contents/Developer"
+          xcodebuild -version
+          swift --version
+
+      - name: Resolve package dependencies
+        run: |
+          xcodebuild -project "Open UI.xcodeproj" \
+            -scheme "Open UI" \
+            -clonedSourcePackagesDirPath SourcePackages \
+            -resolvePackageDependencies
+
+      - name: Build for iPhone Simulator
+        run: |
+          xcodebuild build \
+            -project "Open UI.xcodeproj" \
+            -scheme "Open UI" \
+            -destination "generic/platform=iOS Simulator" \
+            -configuration Debug \
+            -derivedDataPath build \
+            -clonedSourcePackagesDirPath SourcePackages \
+            CODE_SIGN_IDENTITY="-" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO
+
+      - name: Verify app launches in simulator
+        run: |
+          APP_PATH=$(find build/Build/Products/Debug-iphonesimulator -name "*.app" -type d -maxdepth 1 | head -1)
+          echo "Found app: $APP_PATH"
+
+          BUNDLE_ID=$(/usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" "$APP_PATH/Info.plist")
+          echo "Bundle ID: $BUNDLE_ID"
+
+          RUNTIME=$(xcrun simctl list runtimes available -j \
+            | python3 -c "
+          import json, sys
+          runtimes = json.load(sys.stdin)['runtimes']
+          ios = [r for r in runtimes if r['platform'] == 'iOS' and r['isAvailable']]
+          print(ios[-1]['identifier'])
+          ")
+          echo "Runtime: $RUNTIME"
+
+          DEVICE_UDID=$(xcrun simctl create "CI iPhone" "iPhone 16" "$RUNTIME")
+          xcrun simctl boot "$DEVICE_UDID"
+          xcrun simctl install "$DEVICE_UDID" "$APP_PATH"
+          xcrun simctl launch "$DEVICE_UDID" "$BUNDLE_ID"
+          echo "App launched successfully"
+          xcrun simctl shutdown "$DEVICE_UDID" 2>/dev/null || true
+          xcrun simctl delete "$DEVICE_UDID" 2>/dev/null || true
