@@ -2851,56 +2851,6 @@ final class ChatViewModel {
                         isStreaming: false)
                     self.cleanupStreaming()
                     NotificationCenter.default.post(name: .conversationListNeedsRefresh, object: nil)
-                } else if request.isPipeModel {
-                    // ── PIPE MODEL SSE PATH ──
-                    // Pipe/function models bypass the Redis async-task queue when
-                    // session_id, chat_id, and id are absent. Content streams directly
-                    // from the HTTP response body as standard OpenAI SSE.
-                    self.logger.info("Using pipe model SSE path for \(modelId)")
-                    let acc = ContentAccumulator()
-
-                    do {
-                        let sseStream = try await manager.apiClient.sendMessagePipeSSE(request: request)
-                        for try await event in sseStream {
-                            if Task.isCancelled { break }
-
-                            // Content delta tokens
-                            if let delta = event.contentDelta, !delta.isEmpty {
-                                acc.append(delta)
-                                self.updateAssistantMessage(
-                                    id: assistantMessageId,
-                                    content: acc.content,
-                                    isStreaming: true
-                                )
-                            }
-
-                            // Stream finished
-                            if event.isFinished { break }
-                        }
-                    } catch {
-                        if !Task.isCancelled {
-                            self.updateAssistantMessage(
-                                id: assistantMessageId,
-                                content: acc.content.isEmpty ? "" : acc.content,
-                                isStreaming: false,
-                                error: ChatMessageError(content: error.localizedDescription)
-                            )
-                            self.cleanupStreaming()
-                            return
-                        }
-                    }
-
-                    if Task.isCancelled { return }
-
-                    // Finalize — sync the completed message to server, then do
-                    // metadata refresh to pick up any tool-generated files/sources.
-                    self.finishStreamingSuccessfully(
-                        assistantMessageId: assistantMessageId,
-                        modelId: modelId,
-                        socketSessionId: socketSessionId,
-                        effectiveChatId: effectiveChatId,
-                        acc: acc
-                    )
                 } else {
                     // ── SOCKET PATH (normal) ──
                     // HTTP POST returns immediately; content delivered via socket events
@@ -3161,66 +3111,27 @@ final class ChatViewModel {
                 // Populate all common request fields
                 await self.populateCommonRequestFields(&request)
 
-                if request.isPipeModel {
-                    // ── PIPE MODEL SSE PATH (regeneration) ──
-                    self.logger.info("Regenerate: using pipe model SSE path for \(modelId)")
-                    let acc = ContentAccumulator()
+                let json = try await manager.sendMessageHTTP(request: request)
 
-                    do {
-                        let sseStream = try await manager.apiClient.sendMessagePipeSSE(request: request)
-                        for try await event in sseStream {
-                            if Task.isCancelled { break }
-                            if let delta = event.contentDelta, !delta.isEmpty {
-                                acc.append(delta)
-                                self.updateAssistantMessage(
-                                    id: capturedNewAssistantId, content: acc.content, isStreaming: true)
-                            }
-                            if event.isFinished { break }
-                        }
-                    } catch {
-                        if !Task.isCancelled {
-                            self.updateAssistantMessage(
-                                id: capturedNewAssistantId,
-                                content: acc.content.isEmpty ? "" : acc.content,
-                                isStreaming: false,
-                                error: ChatMessageError(content: error.localizedDescription))
-                            self.cleanupStreaming()
-                            return
-                        }
-                    }
-
-                    if Task.isCancelled { return }
-
-                    self.finishStreamingSuccessfully(
-                        assistantMessageId: capturedNewAssistantId,
-                        modelId: modelId,
-                        socketSessionId: socketSessionId,
-                        effectiveChatId: effectiveChatId,
-                        acc: acc
-                    )
-                } else {
-                    let json = try await manager.sendMessageHTTP(request: request)
-
-                    if let err = json["error"] as? String, !err.isEmpty {
-                        self.updateAssistantMessage(id: capturedNewAssistantId, content: "",
-                                                     isStreaming: false, error: ChatMessageError(content: err))
-                        self.cleanupStreaming()
-                        return
-                    }
-                    if let detail = json["detail"] as? String, !detail.isEmpty, json["choices"] == nil {
-                        self.updateAssistantMessage(id: capturedNewAssistantId, content: "",
-                                                     isStreaming: false, error: ChatMessageError(content: detail))
-                        self.cleanupStreaming()
-                        return
-                    }
-
-                    // Capture the server's task_id for server-side stop
-                    if let taskId = json["task_id"] as? String {
-                        self.activeTaskId = taskId
-                    }
-
-                    self.logger.info("Regenerate HTTP POST done – waiting for socket events")
+                if let err = json["error"] as? String, !err.isEmpty {
+                    self.updateAssistantMessage(id: capturedNewAssistantId, content: "",
+                                                 isStreaming: false, error: ChatMessageError(content: err))
+                    self.cleanupStreaming()
+                    return
                 }
+                if let detail = json["detail"] as? String, !detail.isEmpty, json["choices"] == nil {
+                    self.updateAssistantMessage(id: capturedNewAssistantId, content: "",
+                                                 isStreaming: false, error: ChatMessageError(content: detail))
+                    self.cleanupStreaming()
+                    return
+                }
+
+                // Capture the server's task_id for server-side stop
+                if let taskId = json["task_id"] as? String {
+                    self.activeTaskId = taskId
+                }
+
+                self.logger.info("Regenerate HTTP POST done – waiting for socket events")
             } catch {
                 if !Task.isCancelled {
                     self.updateAssistantMessage(id: capturedNewAssistantId, content: "",
@@ -3582,46 +3493,21 @@ final class ChatViewModel {
                 // system variables, tool IDs, terminal, background tasks, etc.)
                 await self.populateCommonRequestFields(&request)
 
-                if request.isPipeModel {
-                    let acc = ContentAccumulator()
-                    do {
-                        let sseStream = try await manager.apiClient.sendMessagePipeSSE(request: request)
-                        for try await event in sseStream {
-                            if Task.isCancelled { break }
-                            if let delta = event.contentDelta, !delta.isEmpty {
-                                acc.append(delta)
-                                self.updateAssistantMessage(id: assistantMessageId, content: acc.content, isStreaming: true)
-                            }
-                            if event.isFinished { break }
-                        }
-                    } catch {
-                        if !Task.isCancelled {
-                            self.updateAssistantMessage(id: assistantMessageId, content: "", isStreaming: false,
-                                error: ChatMessageError(content: error.localizedDescription))
-                            self.cleanupStreaming()
-                            return
-                        }
-                    }
-                    if Task.isCancelled { return }
-                    self.finishStreamingSuccessfully(assistantMessageId: assistantMessageId, modelId: modelId,
-                        socketSessionId: socketSessionId, effectiveChatId: effectiveChatId, acc: acc)
-                } else {
-                    let json = try await manager.sendMessageHTTP(request: request)
-                    if let err = json["error"] as? String, !err.isEmpty {
-                        self.updateAssistantMessage(id: assistantMessageId, content: "", isStreaming: false,
-                            error: ChatMessageError(content: err))
-                        self.cleanupStreaming()
-                        return
-                    }
-                    if let detail = json["detail"] as? String, !detail.isEmpty, json["choices"] == nil {
-                        self.updateAssistantMessage(id: assistantMessageId, content: "", isStreaming: false,
-                            error: ChatMessageError(content: detail))
-                        self.cleanupStreaming()
-                        return
-                    }
-                    if let taskId = json["task_id"] as? String { self.activeTaskId = taskId }
-                    self.logger.info("Edit-regen HTTP POST done – waiting for socket events")
+                let json = try await manager.sendMessageHTTP(request: request)
+                if let err = json["error"] as? String, !err.isEmpty {
+                    self.updateAssistantMessage(id: assistantMessageId, content: "", isStreaming: false,
+                        error: ChatMessageError(content: err))
+                    self.cleanupStreaming()
+                    return
                 }
+                if let detail = json["detail"] as? String, !detail.isEmpty, json["choices"] == nil {
+                    self.updateAssistantMessage(id: assistantMessageId, content: "", isStreaming: false,
+                        error: ChatMessageError(content: detail))
+                    self.cleanupStreaming()
+                    return
+                }
+                if let taskId = json["task_id"] as? String { self.activeTaskId = taskId }
+                self.logger.info("Edit-regen HTTP POST done – waiting for socket events")
             } catch {
                 if !Task.isCancelled {
                     self.updateAssistantMessage(id: assistantMessageId, content: "", isStreaming: false,
@@ -4884,11 +4770,31 @@ final class ChatViewModel {
     private func populateCommonRequestFields(_ request: inout ChatCompletionRequest) async {
         // Refresh model metadata to pick up live admin changes
         await refreshSelectedModelMetadata()
-        request.modelItem = selectedModel?.rawModelItem
-
-        // Flag pipe/function models so toJSON() omits session_id/chat_id/id
-        if selectedModel?.isPipeModel == true {
-            request.isPipeModel = true
+        if var mi = selectedModel?.rawModelItem {
+            // Ensure owned_by and object are non-null strings for pipe model routing.
+            // The single-model endpoint omits these fields; without them the server's
+            // Python pipe code does `owned_by.startswith(...)` on None and crashes.
+            if mi["owned_by"] == nil || mi["owned_by"] is NSNull { mi["owned_by"] = "openai" }
+            if mi["object"] == nil || mi["object"] is NSNull { mi["object"] = "model" }
+            // Also patch info.base_model_id: OpenWebUI's pipe routing middleware does
+            // `base_model_id.startswith(...)` which crashes with NoneType when null.
+            if var info = mi["info"] as? [String: Any] {
+                if info["base_model_id"] == nil || info["base_model_id"] is NSNull {
+                    info["base_model_id"] = ""
+                }
+                mi["info"] = info
+            } else {
+                // info is absent or NSNull — the server's pipe middleware calls
+                // base_model_id.startswith(...) which crashes on None.
+                // Inject a minimal dict matching what get_function_models() always provides.
+                mi["info"] = ["base_model_id": ""]
+            }
+            request.modelItem = mi
+        } else {
+            if self.selectedModel?.isPipeModel == true {
+                self.logger.warning("[pipe] rawModelItem is nil for pipe model '\(self.selectedModel?.id ?? "?")' — model_item will be omitted from request")
+            }
+            request.modelItem = nil
         }
 
         // Filter IDs from model's server-configured filter list
@@ -4974,6 +4880,13 @@ final class ChatViewModel {
         if isFirst && tagsEnabled { bgTasks["tags_generation"] = true }
         if webSearchEnabled { bgTasks["web_search"] = true }
         if !bgTasks.isEmpty { request.backgroundTasks = bgTasks }
+
+        #if DEBUG
+        if let body = try? JSONSerialization.data(withJSONObject: request.toJSON(), options: .prettyPrinted),
+           let str = String(data: body, encoding: .utf8) {
+            logger.debug("[chat request body]\n\(str)")
+        }
+        #endif
     }
 
     /// Builds chat features by merging user toggles with the model's admin-configured

@@ -878,27 +878,6 @@ final class APIClient: @unchecked Sendable {
         return [:]
     }
 
-    /// Sends a pipe-model chat completion request and streams the SSE response
-    /// directly from the HTTP response body.
-    ///
-    /// Pipe/function models in OpenWebUI bypass the Redis async-task queue when
-    /// `session_id`, `chat_id`, and `id` are absent from the request. Instead,
-    /// they stream their output as standard OpenAI-format SSE in the HTTP response
-    /// body. This method posts the request and returns the live `SSEStream` for
-    /// the caller to iterate over.
-    ///
-    /// - Parameter request: A `ChatCompletionRequest` with `isPipeModel == true`
-    ///   and `stream == true`. The `toJSON()` call omits the three Redis-triggering
-    ///   fields automatically.
-    /// - Returns: An `SSEStream` that yields tokens as they arrive.
-    func sendMessagePipeSSE(request: ChatCompletionRequest) async throws -> SSEStream {
-        try await network.streamRequestBytes(
-            path: "/api/chat/completions",
-            method: .post,
-            body: request.toJSON()
-        )
-    }
-
     func syncConversationMessages(
         id: String,
         messages: [ChatMessage],

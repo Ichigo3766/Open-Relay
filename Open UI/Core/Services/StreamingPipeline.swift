@@ -170,6 +170,9 @@ actor StreamingPipeline {
     }
     private var _toolCallFlagsCache: (contentCount: Int, flags: ToolCallBlockFlags)?
     private var _reasoningFlagsCache: (contentCount: Int, hasClosed: Bool)?
+    /// Cached result of `hasOpenLivePreviewFence`. Keyed by utf8.count so it
+    /// costs O(1) on every tick after the first scan for a given buffer length.
+    private var _livePreviewFenceCache: (contentCount: Int, hasOpen: Bool)?
 
     // MARK: - Drain timer
 
@@ -222,6 +225,7 @@ actor StreamingPipeline {
         frozenProseBoundaryOffset = 0
         _toolCallFlagsCache = nil
         _reasoningFlagsCache = nil
+        _livePreviewFenceCache = nil
         _cachedFrozenContent = (0, "", nil)
         _cachedLiveTailFrozenProse = (0, "", nil)
         _cachedPureFrozenProse = (0, "", nil)
@@ -266,12 +270,14 @@ actor StreamingPipeline {
         }
 
         // ── Tool call fast-forward ────────────────────────────────────────────
+        // While an unclosed tool_calls block is in-flight we hold the drain
+        // cursor so the user never sees partial HTML. When the server finishes
+        // (isFinishing) we fall through to the normal drain so the accumulated
+        // content is still revealed — stopping cold would leave the response
+        // visually empty even though the full text has been received.
         if toolCallFlags(for: full).hasUnclosed {
-            if isFinishing {
-                stopTimer()
-                Task { @MainActor [onSnapshot] in onSnapshot(.idle) }
-            }
-            return
+            if !isFinishing { return }
+            // isFinishing: skip the freeze and let the drain run normally below.
         }
 
         // ── Closed reasoning fast-forward ─────────────────────────────────────
@@ -326,7 +332,12 @@ actor StreamingPipeline {
 
         let latency = isFinishing ? finishingLatencyFrames : targetLatencyFrames
         let rate = Double(effectiveBuffered) / latency
-        let charsThisFrame = min(max(rate, minRatePerFrame), maxRatePerFrame)
+        // Live-preview code fences (html/svg/mermaid/chart) are rendered by a WKWebView
+        // that handles progressive display itself — the typewriter rate cap is irrelevant
+        // and only causes a 36-second delay for a 600-line HTML file. Fast-drain these
+        // blocks at 500 chars/frame so the WebView receives content almost immediately.
+        let effectiveMaxRate = hasOpenLivePreviewFence(in: full) ? 500.0 : maxRatePerFrame
+        let charsThisFrame = min(max(rate, minRatePerFrame), effectiveMaxRate)
 
         drainAccumulator += charsThisFrame
         let reveal = min(Int(drainAccumulator), currentBuffered)
@@ -456,6 +467,37 @@ actor StreamingPipeline {
             isActive: true
         )
         Task { @MainActor [onSnapshot] in onSnapshot(snap) }
+    }
+
+    // MARK: - Live-preview fence detection (all off-main)
+
+    /// Returns `true` when `content` contains an unclosed live-preview code fence
+    /// (` ```html `, ` ```svg `, ` ```mermaid `, ` ```chart* `).
+    ///
+    /// Result is cached by utf8.count — O(1) on repeat calls for the same buffer length.
+    /// O(N) scan only fires when new content has been appended.
+    private func hasOpenLivePreviewFence(in content: String) -> Bool {
+        let count = content.utf8.count
+        if let cached = _livePreviewFenceCache, cached.contentCount == count {
+            return cached.hasOpen
+        }
+        let fences = ["```html\n", "```svg\n", "```mermaid\n",
+                      "```chart\n", "```chartjs\n", "```echarts\n",
+                      "```highcharts\n", "```plotly\n",
+                      "```vega-lite\n", "```vegalite\n"]
+        var result = false
+        // Case-insensitive scan using lowercased copy (avoids repeated ICU calls).
+        let lower = content.lowercased()
+        for fence in fences {
+            guard let openRange = lower.range(of: fence) else { continue }
+            // If no closing fence follows, the block is still open.
+            if lower[openRange.upperBound...].range(of: "\n```") == nil {
+                result = true
+                break
+            }
+        }
+        _livePreviewFenceCache = (count, result)
+        return result
     }
 
     // MARK: - Details block detection (all off-main)

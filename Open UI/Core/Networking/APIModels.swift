@@ -245,11 +245,6 @@ struct ChatCompletionRequest: Sendable {
     var sessionId: String?
     var messageId: String?
     var parentId: String?
-    /// When `true`, this request targets a pipe/function model.
-    /// Pipe models must NOT send `session_id`, `chat_id`, or `id` — their
-    /// presence together triggers the Redis async-task queue (~60s delay).
-    /// Pipe model responses are streamed directly from the HTTP response body.
-    var isPipeModel: Bool = false
     var skillIds: [String]?
     var toolIds: [String]?
     var filterIds: [String]?
@@ -307,14 +302,14 @@ struct ChatCompletionRequest: Sendable {
             "messages": messages
         ]
 
-        // Pipe models must NOT send session_id, chat_id, or id together —
-        // their combined presence triggers the Redis async-task queue (~60s delay).
-        // Pipe responses arrive directly in the HTTP response body as SSE.
-        if !isPipeModel {
-            if let chatId { data["chat_id"] = chatId }
-            if let sessionId { data["session_id"] = sessionId }
-            if let messageId { data["id"] = messageId }
-        }
+        // session_id, id, and chat_id are sent for all models including pipe/function models.
+        // The web client sends all three for pipes. Omitting chat_id causes the backend's
+        // middleware.py to set metadata['chat_id']=None (the key is always inserted via
+        // form_data.pop), and background_tasks_handler() then crashes with:
+        //   'NoneType' object has no attribute 'startswith'
+        if let sessionId { data["session_id"] = sessionId }
+        if let messageId { data["id"] = messageId }
+        if let chatId { data["chat_id"] = chatId }
         if let parentId { data["parent_id"] = parentId }
         if let skillIds, !skillIds.isEmpty { data["skill_ids"] = skillIds }
         if let toolIds, !toolIds.isEmpty { data["tool_ids"] = toolIds }
@@ -364,10 +359,10 @@ struct ChatCompletionRequest: Sendable {
         feat["web_search"] = f.webSearch
         feat["image_generation"] = f.imageGeneration
         feat["code_interpreter"] = f.codeInterpreter
-        // Always send memory explicitly (true/false) so the server never
-        // falls back to model defaults. Matches web client behavior where
-        // memory is sent based purely on the user's account setting.
-        feat["memory"] = f.memory
+        // Only include memory in the payload when it is enabled.
+        // Sending `"memory": false` causes the server to treat it as an
+        // explicit override and can interfere with per-model defaults.
+        if f.memory { feat["memory"] = true }
         feat["voice"] = f.voice
         data["features"] = feat
 

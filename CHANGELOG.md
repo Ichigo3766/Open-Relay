@@ -1,12 +1,20 @@
 # Changelog
 
+## v4.2.2 — May 12, 2026
+
+### Bug Fixes
+- Fixed app not showing the update notification for new versions
+- Fixed pending accounts incorrectly entering the app on relaunch
+- Fixed pipe/function models throwing error due to latest owui changes
+
+## Previous Builds
+
 ## v4.2.1 — May 12, 2026
 
 ### Bug Fixes
 - Fixed update notification popup appearing every time the app launches — once dismissed, it won't reappear for that version; the update icon in the sidebar stays visible so you can tap it anytime.
 - Fixed widgets not rendering properly.
 
-## Previous Builds
 
 ## v4.2 — May 10, 2026
 
@@ -25,7 +33,6 @@
 - Fixed conversation tags not appearing — tags were being read from the wrong field in the server response; now correctly reads from the updated server format.
 - Fixed conversation timestamps (created/updated dates) showing the wrong time after loading a chat — the server sends them as integers which weren't being handled correctly.
 
-## Previous Builds
 
 ## v4.1 — May 8, 2026
 
@@ -49,7 +56,6 @@
 - Fixed typing indicator animation
 - Fixed update notice incorrectly triggering based on GitHub tags instead of the actual App Store version.
 
-## Previous Builds
 
 ## v4.0 — May 5, 2026
 
@@ -67,7 +73,6 @@
 - Fixed citation source icons showing as letter avatars instead of favicons.
 - Known Issue: Inline visualizer plugin is not correctly working with the new re-write and needs a bit more work. Continue using the native visualizer which works perfectly and much better than pluggin. In future, the pluggin support may be dropped as it requires lot of processing since its written for the webui (includes iframe code in the tool block) and causes lag and has no real benifit over the native visualization. 
 
-## Previous Builds
 
 ## v3.5 — May 3, 2026
 
@@ -96,14 +101,12 @@
 - Hidden models (disabled by an admin in OpenWebUI) no longer appear in the model picker or the Default Model setting.
 - Fixed thinking blocks breaking the "Explored N" tool-call grouping on reasoning models — all tool calls now collapse into a single pill as expected.
 
-## Previous Builds
 
 ## v3.4.2 — May 1, 2026
 
 ### Improvements
 - Dramatically improved app's performance while streaming!
 
-## Previous Builds
 
 ## v3.4.1 — April 30, 2026
 
@@ -111,7 +114,6 @@
 - Fixed streaming responses appearing too fast bypassing the typewriter style.
 - Fixed inline visualizer text flickering and disappearing during live visualization streaming.
 
-## Previous Builds
 
 ## v3.4 — April 30, 2026
 
@@ -133,7 +135,6 @@
 - Fixed quick action pills disappearing from the chat input bar after starting a new chat or switching conversations.
 - Fixed built-in tools (web search, image generation, code interpreter) resetting to their model defaults after sending a message, ignoring any toggles the user had changed.
 
-## Previous Builds
 
 ## v3.3.1 — April 24, 2026
 
@@ -144,7 +145,6 @@
 - Fixed server-side filter content not appearing in the chat until navigating away and back.
 - Fixed models not able to see image attachments.
 
-## Previous Builds
 
 ## v3.3 — April 24, 2026
 
@@ -167,7 +167,6 @@
 - Fixed message versioning - completely rebuilt end-to-end to match OpenWebUI's conversation tree
 - Attempting to fix Microsoft (and other OAuth) sign-in staying stuck on the web page after successful login instead of returning to the app.
 
-## Previous Builds
 
 ## v3.2.2 — April 21, 2026
 
@@ -179,7 +178,6 @@
 - Fixed error messages in chat being truncated — full error text now displays without a line limit.
 - Fixed tapping Photo in the attachment menu returning to the + tools sheet after selecting a photo — the sheet now dismisses immediately when a photo is picked.
 
-## Previous Builds
 
 ## v3.2.1 — April 20, 2026
 
@@ -189,7 +187,6 @@
 ### Bug Fixes
 - Fixed GPS location not using the device's actual GPS — location is now always fresh and includes a full reverse-geocoded address. Also fixed the chat hanging intermittently when location sharing is enabled.
 
-## Previous Builds
 
 ## v3.2 — April 18, 2026
 
@@ -204,7 +201,6 @@
 - Fixed tool call status history (web search steps, location resolving, etc.) disappearing when switching chats — status updates now persist correctly when reopening a conversation.
 - Removed further throttling for streaming token by token.
 
-## Previous Builds
 
 ## v3.1 — April 17, 2026
 
@@ -220,14 +216,12 @@
 - Fixed thinking/reasoning block staying expanded after thinking completes — it now collapses automatically once the model finishes reasoning.
 - Fixed profile avatar related issues.
 
-## Previous Builds
 
 ## v3.0.1 — April 15, 2026
 
 ### Bug Fixes
 - Fixed TTS mispronouncing numbers
 
-## Previous Builds
 
 ## v3.0 — April 14, 2026
 
@@ -255,7 +249,6 @@
 - Fixed cloning tools failing due to wrong character in name.
 - Fixed saving workspace items (tools, skills, prompts, models) showing a false "session expired" error.
 
-## Previous Builds
 
 ## v2.6.2 — April 9, 2026
 
@@ -266,7 +259,6 @@
 - Fixed scrolling to bottom when entering chats.
 - Fixed background notifications not reliably delivering
 
-## Previous Builds
 
 ## v2.6.1 — April 9, 2026
 
@@ -286,7 +278,6 @@
 - Fixed switching from a voice call to chat read-aloud causing audio glitches — each session now cleanly resets state before starting.
 
 
-## Previous Builds
 
 ## v2.6 — April 9, 2026
 
@@ -308,7 +299,6 @@
 - Fixed pinning a model in model selector would not update the star immediately. 
 - System prompt is now also sent in request params for better compatibility with server-side prompt handling.
 
-## Previous Builds
 
 ## v2.5 — April 7, 2026
 
@@ -323,7 +313,6 @@
 - Model ID, Prompt command, Skill ID, and Tool ID fields now correctly auto-fill from the name when creating new items in the workspace.
 - Added consistent pill background to the navigation bar model selector chip.
 
-## Previous Builds
 
 ## v2.4.4 — April 7, 2026
 
@@ -336,7 +325,6 @@
 - Fixed "Send on Enter" not working in channels and thread replies — pressing Enter now sends the message as expected when the setting is enabled.
 - Fixed thread replies appearing twice in the thread view when sent
 
-## Previous Builds
 
 ## v2.4.3 — April 5, 2026
 
@@ -378,7 +366,6 @@
 ### Bug Fixes
 - Fixed Shift+Enter not inserting a new line on the first use after app restart on iPad with a hardware keyboard.
 
-## Previous Builds
 
 ## v2.4 — March 31, 2026
 

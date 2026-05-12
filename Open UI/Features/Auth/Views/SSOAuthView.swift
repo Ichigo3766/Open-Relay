@@ -218,6 +218,10 @@ struct SSOWebViewRepresentable: UIViewRepresentable {
         weak var webView: WKWebView?
         private let logger = Logger(subsystem: "com.openui", category: "SSO")
         private var captureAttemptId: Int = 0
+        /// Set to true once the WKWebView has visited `/oauth/{provider}/callback`.
+        /// Used to intercept the subsequent redirect to `/` and capture the session
+        /// cookie rather than loading the full Open WebUI web app inside the webview.
+        private var hasVisitedOAuthCallback: Bool = false
 
         init(
             state: Binding<SSOWebViewState>,
@@ -236,6 +240,9 @@ struct SSOWebViewRepresentable: UIViewRepresentable {
         ///   skipping the OpenWebUI auth page entirely.
         /// - Falls back to `/auth` for generic trusted-header SSO.
         func loadLoginPage() {
+            // Reset OAuth flow state so a retry always starts fresh.
+            hasVisitedOAuthCallback = false
+
             let path: String
             if let provider, !provider.isEmpty {
                 path = "/oauth/\(provider)/login"
@@ -328,20 +335,41 @@ struct SSOWebViewRepresentable: UIViewRepresentable {
                 return
             }
 
-            // Proactively detect when the OAuth callback lands back on our server.
-            // This fires BEFORE didFinish, giving us an early trigger point to start
-            // watching for the token cookie — particularly important for Microsoft which
-            // may set the cookie during the redirect chain rather than after page load.
+            // Track when the OAuth callback path is visited — signals the IdP
+            // has finished and is redirecting back to our server.
+            if isOurServer(url) && url.path.lowercased().contains("/oauth/") {
+                hasVisitedOAuthCallback = true
+                logger.debug("SSO: OAuth callback path visited: \(url.path)")
+            }
+
+            // Once the callback has been visited, intercept the redirect to "/".
+            // All providers (Microsoft, Google, GitHub, OIDC) follow the same pattern:
+            //   /oauth/{provider}/callback  →  redirect to /
+            // Cancelling this navigation prevents the full Open WebUI web app from
+            // loading inside the WKWebView. We then grab the session cookie that the
+            // callback endpoint already set and hand it to the native login flow.
+            if isOurServer(url) && hasVisitedOAuthCallback && !state.tokenCaptured {
+                let path = url.path
+                if path == "/" || path.isEmpty {
+                    logger.debug("SSO: intercepting redirect to / after OAuth callback — capturing token")
+                    decisionHandler(.cancel)
+                    let attemptId = captureAttemptId
+                    Task { @MainActor in
+                        await attemptTokenCaptureWithRetry(attemptId: attemptId)
+                    }
+                    return
+                }
+            }
+
+            // Proactively start watching for the token cookie when the OAuth
+            // callback path is reached — the cookie may be written during the
+            // redirect chain rather than after the final page load.
             if isOurServer(url) && !state.tokenCaptured {
                 let path = url.path.lowercased()
-                // Trigger early capture on the OAuth callback path or the root page
-                // (OpenWebUI redirects to / after a successful OAuth callback).
-                let isCallbackOrRoot = path.contains("/oauth/") || path == "/" || path.isEmpty
-                if isCallbackOrRoot {
+                if path.contains("/oauth/") {
                     let attemptId = captureAttemptId
                     logger.debug("SSO: proactive capture trigger at \(url.path)")
                     Task { @MainActor in
-                        // Brief wait for cookies to be written before trying to read them
                         try? await Task.sleep(nanoseconds: 200_000_000) // 200ms
                         await attemptTokenCaptureWithRetry(attemptId: attemptId)
                     }
@@ -364,22 +392,29 @@ struct SSOWebViewRepresentable: UIViewRepresentable {
                isOurServer(url),
                !state.tokenCaptured {
 
-                // Check Set-Cookie headers from the HTTP response directly
+                // Check Set-Cookie headers from the HTTP response directly.
                 if let allHeaders = httpResponse.allHeaderFields as? [String: String] {
                     let cookieHeaders = HTTPCookie.cookies(
                         withResponseHeaderFields: allHeaders,
                         for: url
                     )
                     for cookie in cookieHeaders {
-                        if isTokenCookie(cookie) && isValidJWT(cookie.value) {
+                        // Accept both raw JWT tokens AND oauth_session_id values.
+                        // OpenWebUI 0.9+ uses oauth_session_id (a session key, not a JWT)
+                        // for all OAuth providers including Microsoft Entra ID.
+                        let isJWT = isValidJWT(cookie.value)
+                        let isSessionId = cookie.name.lowercased() == "oauth_session_id" && !cookie.value.isEmpty
+                        if isTokenCookie(cookie) && (isJWT || isSessionId) {
                             let token = cookie.value
-                            logger.info("SSO: found token in HTTP response Set-Cookie header")
+                            logger.info("SSO: found token in HTTP response Set-Cookie header (name=\(cookie.name))")
                             let attemptId = captureAttemptId
                             Task { @MainActor in
                                 guard !state.tokenCaptured, attemptId == captureAttemptId else { return }
                                 await handleToken(token)
                             }
-                            break
+                            // Cancel the navigation so the full web app doesn't load.
+                            decisionHandler(.cancel)
+                            return
                         }
                     }
                 }

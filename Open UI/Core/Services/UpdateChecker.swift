@@ -56,7 +56,7 @@ final class UpdateChecker {
     // MARK: - Private Constants
 
     private static let appID = "6759630325"
-    private static let lookupURL = URL(string: "https://itunes.apple.com/lookup?id=\(appID)")!
+    private static let lookupURL = URL(string: "https://itunes.apple.com/lookup?id=\(appID)&country=us")!
 
     /// UserDefaults key storing the last app-update version the user has already seen/dismissed.
     private static let seenVersionKey = "openui.appUpdate.seenVersion"

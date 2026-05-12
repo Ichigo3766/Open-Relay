@@ -431,10 +431,16 @@ struct StreamingWebPreview: UIViewRepresentable {
           var _stripScriptPaired = /<script[\\s\\S]*?<\\/script>/gi;
           var _stripScriptOpen   = /<script[\\s\\S]*$/i;
           function reconcileContent(html) {
+            // If a <body> tag is already present, extractBody will strip the <head>
+            // (including all head <script> tags). In that case _stripScriptOpen is not
+            // needed and must NOT run — it would otherwise eat the entire body content
+            // from the first unclosed inline <script> onward, leaving the render blank.
+            var hadBody = /<body[^>]*>/i.test(html);
             html = extractBody(html);
-            var safe = safeCutHTML(
-              html.replace(_stripScriptPaired, '').replace(_stripScriptOpen, '')
-            );
+            var stripped = hadBody
+              ? html.replace(_stripScriptPaired, '')
+              : html.replace(_stripScriptPaired, '').replace(_stripScriptOpen, '');
+            var safe = safeCutHTML(stripped);
             if (!safe) return;
             document.getElementById('render').innerHTML = safe;
             scheduleHeight();

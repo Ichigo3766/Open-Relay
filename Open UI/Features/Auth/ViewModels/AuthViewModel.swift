@@ -237,7 +237,7 @@ final class AuthViewModel {
                let cachedUser = Self.loadCachedUser(forServer: active.url) {
                 // Instant launch — user sees chat immediately
                 currentUser = cachedUser
-                phase = .authenticated
+                phase = cachedUser.role == .pending ? .pendingApproval : .authenticated
                 logger.info("⚡ Optimistic auth: restored cached user '\(cachedUser.displayName)', skipping spinner")
             } else if KeychainService.shared.hasToken(forServer: active.url) {
                 // Have token but no cached user — must validate (first launch after update)
@@ -625,7 +625,13 @@ final class AuthViewModel {
         client.updateAuthToken(token)
 
         do {
-            currentUser = try await client.getCurrentUser()
+            let user = try await client.getCurrentUser()
+            currentUser = user
+            guard user.role != .pending else {
+                phase = .pendingApproval
+                isLoggingIn = false
+                return
+            }
             // Clear cached chat VMs so models are re-fetched for the new account
             dependencies?.activeChatStore.clear()
             connectSocketWithToken()
@@ -672,6 +678,10 @@ final class AuthViewModel {
         for attempt in 1...maxRetries {
             do {
                 currentUser = try await client.getCurrentUser()
+                if currentUser?.role == .pending {
+                    phase = .pendingApproval
+                    return
+                }
                 backendConfig = try? await client.getBackendConfig()
                 connectSocketWithToken()
                 cacheCurrentUser()
@@ -1619,6 +1629,10 @@ final class AuthViewModel {
             let freshUser = try await client.getCurrentUser()
             // Update with fresh data from server
             currentUser = freshUser
+            if freshUser.role == .pending {
+                phase = .pendingApproval
+                return
+            }
             cacheCurrentUser()
             backendConfig = try? await client.getBackendConfig()
             logger.info("✅ Background session validation succeeded for '\(freshUser.displayName)'")
