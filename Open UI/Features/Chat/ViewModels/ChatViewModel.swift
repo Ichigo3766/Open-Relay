@@ -2435,46 +2435,22 @@ final class ChatViewModel {
         syncUIWithModelDefaults()
     }
 
-    /// `true` while `saveTemporaryChat()` is in-flight — used to show a loading state.
-    var isSavingTemporaryChat: Bool = false
-
-    /// Converts a temporary chat into a permanent one using a single
-    /// `POST /api/v1/chats/new` call with the full chat payload (history tree +
-    /// flat messages array), mirroring the web UI "save temp chat" flow exactly.
-    ///
-    /// After success:
-    /// - `conversation.id` is updated to the server-assigned ID in-place
-    /// - `isTemporaryChat` is set to `false`
-    /// - `conversationListNeedsRefresh` is posted so the sidebar picks up the new chat
-    ///
-    /// The view stays in place — no navigation happens — so there is zero visual glitch.
+    /// Converts a temporary chat into a permanent one by saving it to the server.
     func saveTemporaryChat() async {
         guard isTemporaryChat, let conversation, let manager else { return }
-        guard !isSavingTemporaryChat else { return }
-        isSavingTemporaryChat = true
-        defer { isSavingTemporaryChat = false }
-
         let modelId = selectedModelId ?? conversation.model ?? ""
-        // Strip the "local:" prefix to get a plain UUID for the server payload.
-        // The server will assign its own ID, but we pass ours as a hint.
-        let localId = conversation.id.hasPrefix("local:")
-            ? String(conversation.id.dropFirst("local:".count))
-            : conversation.id
-
         do {
-            let created = try await manager.apiClient.createConversationWithHistory(
-                id: localId,
-                title: conversation.title,
-                model: modelId.isEmpty ? nil : modelId,
-                history: conversation.history,
-                messages: conversation.messages,
-                chatParams: conversation.chatParams,
-                folderId: folderContextId
-            )
-            // Swap the local ID for the server-assigned one — in-place, no reload.
+            let created = try await manager.createConversation(
+                title: conversation.title, messages: [], model: modelId,
+                folderId: folderContextId)
+            // Update the conversation ID to the server-assigned one
             self.conversation?.id = created.id
+            // Sync all messages
+            try await manager.syncConversationMessages(
+                id: created.id, messages: conversation.messages, model: modelId,
+                chatParams: conversation.chatParams)
             isTemporaryChat = false
-            logger.info("Temporary chat saved as permanent: \(created.id)")
+            logger.info("Temporary chat saved as \(created.id)")
             NotificationCenter.default.post(name: .conversationListNeedsRefresh, object: nil)
         } catch {
             logger.error("Failed to save temporary chat: \(error.localizedDescription)")

@@ -107,7 +107,7 @@ struct SettingsView: View {
                         SettingsCell(
                             icon: "bubble.left.and.bubble.right",
                             title: "Chat Behavior",
-                            subtitle: "Haptics, titles, suggestions, scrolling",
+                            subtitle: "Haptics, titles, suggestions",
                             showDivider: false,
                             accessory: .chevron
                         ) {
@@ -501,7 +501,6 @@ struct ChatSettingsView: View {
     @AppStorage("suggestionsEnabled") private var suggestionsEnabled = true
     @AppStorage("temporaryChatDefault") private var temporaryChatDefault = false
     @AppStorage("expandThinkingWhileStreaming") private var expandThinkingWhileStreaming = true
-    @AppStorage("streamingAutoScroll") private var streamingAutoScroll = true
     @AppStorage("citationShowDomain") private var citationShowDomain: Bool = true
     @AppStorage("quickPills") private var quickPillsData: String = ""
     @State private var availableTools: [ToolItem] = []
@@ -570,15 +569,6 @@ struct ChatSettingsView: View {
                 Text("Haptic feedback pulses as each token streams in.")
             }
 
-            // Section {
-            //     Toggle("Auto-scroll when response starts", isOn: $streamingAutoScroll)
-            //         .tint(theme.brandPrimary)
-            // } header: {
-            //     Text("Scroll Behavior")
-            // } footer: {
-            //     Text("When enabled, the chat automatically scrolls to the bottom as a response streams in. When disabled, your position is unchanged — scroll to the bottom manually to follow along.")
-            // }
-
             Section {
                 Toggle("Auto-generate chat titles", isOn: $titleGenerationEnabled)
                     .tint(theme.brandPrimary)
@@ -622,6 +612,44 @@ struct ChatSettingsView: View {
             } footer: {
                 Text("When enabled, citation badges show the website domain (e.g. bbc.com). When disabled, the page title is shown instead.")
             }
+
+            Section {
+                Text("Choose which quick actions appear below the message input. Tap to toggle.")
+                    .scaledFont(size: 12, weight: .medium)
+                    .foregroundStyle(theme.textTertiary)
+                    .listRowSeparator(.hidden)
+
+                // Built-in pills
+                quickPillToggle(id: "web", icon: "magnifyingglass", name: "Web Search")
+                quickPillToggle(id: "image", icon: "photo", name: "Image Generation")
+
+                // Server tools
+                if isLoadingTools {
+                    HStack {
+                        ProgressView().controlSize(.small)
+                        Text("Loading tools…")
+                            .scaledFont(size: 12, weight: .medium)
+                            .foregroundStyle(theme.textTertiary)
+                    }
+                } else {
+                    ForEach(availableTools, id: \.id) { tool in
+                        quickPillToggle(id: tool.id, icon: "wrench", name: tool.name)
+                    }
+                }
+
+                if !selectedPillIds.isEmpty {
+                    Button(role: .destructive) {
+                        quickPillsData = ""
+                        Haptics.play(.medium)
+                    } label: {
+                        Label("Clear All Quick Actions", systemImage: "xmark.circle")
+                    }
+                }
+            } header: {
+                Text("Quick Actions")
+            } footer: {
+                Text("\(selectedPillIds.count) action\(selectedPillIds.count == 1 ? "" : "s") selected")
+            }
         }
         .navigationTitle("Chat Settings")
         .navigationBarTitleDisplayMode(.inline)
@@ -631,19 +659,42 @@ struct ChatSettingsView: View {
         }
     }
 
+    private func quickPillToggle(id: String, icon: String, name: String) -> some View {
+        let isSelected = selectedPillIds.contains(id)
+        return Button {
+            withAnimation(.easeOut(duration: 0.15)) {
+                togglePill(id)
+            }
+        } label: {
+            HStack(spacing: Spacing.md) {
+                Image(systemName: icon)
+                    .scaledFont(size: 14, weight: .medium)
+                    .foregroundStyle(isSelected ? theme.brandPrimary : theme.textSecondary)
+                    .frame(width: 28, height: 28)
+                    .background(
+                        (isSelected ? theme.brandPrimary : theme.textSecondary).opacity(0.12)
+                    )
+                    .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+
+                Text(name)
+                    .scaledFont(size: 16)
+                    .foregroundStyle(theme.textPrimary)
+
+                Spacer()
+
+                Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+                    .scaledFont(size: 20)
+                    .foregroundStyle(isSelected ? theme.brandPrimary : theme.textTertiary)
+            }
+        }
+        .buttonStyle(.plain)
+    }
+
     private func loadTools() async {
-        guard let client = dependencies.apiClient else { return }
+        guard let manager = dependencies.conversationManager else { return }
         isLoadingTools = true
         do {
-            let rawTools = try await client.getTools()
-            availableTools = rawTools.compactMap { raw -> ToolItem? in
-                guard let id = raw["id"] as? String else { return nil }
-                let name = raw["name"] as? String ?? id
-                let description = (raw["meta"] as? [String: Any])?["description"] as? String ?? ""
-                let isActive = raw["is_active"] as? Bool ?? true
-                let hasUserValves = raw["has_user_valves"] as? Bool ?? false
-                return ToolItem(id: id, name: name, description: description, isEnabled: isActive, hasUserValves: hasUserValves)
-            }
+            availableTools = try await manager.fetchTools()
         } catch {}
         isLoadingTools = false
     }

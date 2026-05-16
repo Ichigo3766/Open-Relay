@@ -42,22 +42,6 @@ final class APIClient: @unchecked Sendable {
         }
     }
 
-    /// Fast health check with an explicit timeout.
-    /// Used by `ServerConnectionMonitor` to avoid a 30 s stalled request
-    /// blocking the `immediateCheckInFlight` flag and missing real failures.
-    func checkHealthFast(timeout: TimeInterval = 8) async -> Bool {
-        do {
-            let (_, response) = try await network.requestRaw(
-                path: "/health",
-                authenticated: false,
-                timeout: timeout
-            )
-            return response.statusCode == 200
-        } catch {
-            return false
-        }
-    }
-
     /// Checks server health with proxy detection. Also detects HTTP→HTTPS redirects
     /// and returns the final HTTPS URL so the caller can update the stored server URL.
     func checkHealthWithProxyDetection() async -> HealthCheckResult {
@@ -710,81 +694,6 @@ final class APIClient: @unchecked Sendable {
 
     func getConversation(id: String) async throws -> Conversation {
         let (data, _) = try await network.requestRaw(path: "/api/v1/chats/\(id)")
-
-        guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            throw APIError.responseDecoding(
-                underlying: NSError(
-                    domain: "APIError", code: -1,
-                    userInfo: [NSLocalizedDescriptionKey: "Expected chat object"]
-                ),
-                data: data
-            )
-        }
-
-        return parseFullConversation(json)
-    }
-
-    /// Creates a new permanent chat on the server using the full history payload.
-    /// Used to convert a temporary (local-only) chat into a persisted one.
-    /// Sends the existing local chat ID, title, model, history tree, and flat
-    /// messages array in a single `POST /api/v1/chats/new` call — matching the
-    /// web UI's "save temp chat" behaviour exactly.
-    func createConversationWithHistory(
-        id: String,
-        title: String,
-        model: String?,
-        history: MessageHistory,
-        messages: [ChatMessage],
-        chatParams: ChatAdvancedParams? = nil,
-        folderId: String? = nil
-    ) async throws -> Conversation {
-        // Build flat messages array
-        let flatMessages = history.createMessagesList()
-        let messagesArray: [[String: Any]] = flatMessages.map { msg in
-            var dict: [String: Any] = [
-                "id": msg.id,
-                "parentId": (msg.parentId as Any?) ?? NSNull(),
-                "childrenIds": [String](),
-                "role": msg.role.rawValue,
-                "content": msg.content,
-                "timestamp": Int(msg.timestamp.timeIntervalSince1970)
-            ]
-            if msg.role == .assistant {
-                if let m = msg.model { dict["model"] = m; dict["modelName"] = m }
-                dict["modelIdx"] = 0
-                dict["done"] = true
-            }
-            if msg.role == .user, let m = model { dict["models"] = [m] }
-            if let usage = msg.usage, !usage.isEmpty { dict["usage"] = usage }
-            if !msg.followUps.isEmpty { dict["followUps"] = msg.followUps }
-            return dict
-        }
-
-        // Build params dict
-        var paramsDict: [String: Any] = chatParams?.toRequestParams() ?? [:]
-        if let sp = chatParams?.systemPrompt, !sp.trimmingCharacters(in: .whitespaces).isEmpty {
-            paramsDict["system"] = sp
-        }
-
-        let chatData: [String: Any] = [
-            "id": id,
-            "title": title,
-            "models": model.map { [$0] } ?? [],
-            "params": paramsDict,
-            "history": history.toServerDict(),
-            "messages": messagesArray,
-            "tags": [String](),
-            "timestamp": Int(Date().timeIntervalSince1970 * 1000)
-        ]
-
-        var body: [String: Any] = ["chat": chatData]
-        if let folderId { body["folder_id"] = folderId }
-
-        let (data, _) = try await network.requestRaw(
-            path: "/api/v1/chats/new",
-            method: .post,
-            body: try JSONSerialization.data(withJSONObject: body)
-        )
 
         guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             throw APIError.responseDecoding(

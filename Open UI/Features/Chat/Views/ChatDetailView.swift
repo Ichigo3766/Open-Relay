@@ -51,9 +51,6 @@ struct ChatDetailView: View {
     @State private var isUserDriving = false
     /// Rate-limit timestamp for the streaming scroll pump (writes are non-rendering).
     private let _pumpRef = PumpRef()
-    /// Whether streaming responses should automatically scroll the chat to the bottom.
-    /// Enabled by default (matches existing behaviour). Users can disable in Chat Behavior settings.
-    @AppStorage("streamingAutoScroll") private var streamingAutoScroll = true
 
     // MARK: Message pagination (sliding window — memory optimization)
     /// The ending index (exclusive) of the visible message window.
@@ -523,38 +520,6 @@ struct ChatDetailView: View {
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel(viewModel.isTemporaryChat ? "Temporary chat on" : "Temporary chat off")
-            }
-            if viewModel.isTemporaryChat && !viewModel.messages.isEmpty {
-                Button {
-                    Haptics.play(.medium)
-                    Task { await viewModel.saveTemporaryChat() }
-                } label: {
-                    ZStack {
-                        if viewModel.isSavingTemporaryChat {
-                            ProgressView()
-                                .progressViewStyle(.circular)
-                                .scaleEffect(0.7)
-                                .tint(theme.brandPrimary)
-                        } else {
-                            ZStack {
-                                Circle()
-                                    .strokeBorder(
-                                        style: StrokeStyle(lineWidth: 1.5, dash: [3, 2])
-                                    )
-                                    .foregroundStyle(theme.brandPrimary)
-                                    .frame(width: 18, height: 18)
-                                Image(systemName: "checkmark")
-                                    .scaledFont(size: 9, weight: .bold)
-                                    .foregroundStyle(theme.brandPrimary)
-                            }
-                        }
-                    }
-                    .frame(width: 34, height: 34)
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .disabled(viewModel.isSavingTemporaryChat)
-                .accessibilityLabel("Save as permanent chat")
             }
         }
     }
@@ -1040,14 +1005,7 @@ struct ChatDetailView: View {
 
             guard new > old else { return }
 
-            // ── Scroll to bottom when a new message is added ──
-            // When streamingAutoScroll is off, skip the scroll if the newly-added
-            // message is an assistant placeholder (i.e. streaming is about to start).
-            // User-sent messages always scroll so the user sees what they sent.
-            let lastMessage = viewModel.messages.last
-            let isAssistantAddition = lastMessage?.role == .assistant && old > 0
-            guard streamingAutoScroll || !isAssistantAddition else { return }
-
+            // ── ALWAYS scroll to bottom when a new message is added ──
             isScrolledUp = false
             isUserDriving = false
 
@@ -1074,11 +1032,10 @@ struct ChatDetailView: View {
                 }
             }
         }
-        // Streaming start: re-engage auto-scroll only when streamingAutoScroll is enabled.
-        // When disabled, the user stays at their current position and must manually
-        // scroll to the bottom to pick up the streaming pump.
+        // Streaming start: always re-engage auto-scroll. Only a user touch
+        // during the active stream (detected via onScrollPhaseChange) can break it.
         .onChange(of: viewModel.isStreaming) { _, streaming in
-            if streaming && streamingAutoScroll {
+            if streaming {
                 isScrolledUp = false
                 isUserDriving = false
                 scrollPosition.scrollTo(edge: .bottom)
@@ -1136,11 +1093,7 @@ struct ChatDetailView: View {
         // layout reflows, WKWebView resizes, and programmatic scrolls never
         // emit .interacting — they emit .animating or .idle.
         .onScrollPhaseChange { _, newPhase in
-            // Only count actual finger contact as user-driven. Excluding .decelerating
-            // prevents programmatic scrollTo() animations finishing their deceleration
-            // from falsely setting isUserDriving = true, which was racing with the
-            // offset observer to incorrectly flip isScrolledUp = true and kill auto-scroll.
-            isUserDriving = (newPhase == .interacting)
+            isUserDriving = (newPhase == .interacting || newPhase == .decelerating)
         }
         .onScrollGeometryChange(for: CGPoint.self) { geo in
             geo.contentOffset

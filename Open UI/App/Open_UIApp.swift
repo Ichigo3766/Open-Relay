@@ -134,12 +134,6 @@ struct Open_UIApp: App {
                 .themed(with: dependencies.appearanceManager, accessibility: dependencies.accessibilityManager)
                 .onChange(of: scenePhase) { _, newPhase in
                     if newPhase == .active {
-                        // Notify connection monitor that the app is in the foreground.
-                        // This triggers an immediate health check + socket reconnect,
-                        // cancelling any pending backoff timer so recovery is instant.
-                        dependencies.connectionMonitor.markAppForeground()
-                        dependencies.socketService?.resetBackoffAndReconnect()
-
                         // Process pending actions after a short delay so that
                         // MainChatView / iPadMainChatView have time to mount
                         // their .onReceive handlers before we post notifications.
@@ -159,12 +153,6 @@ struct Open_UIApp: App {
                         }
                     }
                     if newPhase == .inactive || newPhase == .background {
-                        // Notify connection monitor + socket that we're backgrounding.
-                        // Suppresses false "server down" overlays caused by the OS
-                        // suspending network activity and cancels reconnect timers
-                        // that would waste battery in the background.
-                        dependencies.connectionMonitor.markAppBackground()
-                        dependencies.socketService?.markAppBackground()
                         // Stop Kokoro TTS and unload model before backgrounding to prevent
                         // Metal GPU crash (kIOGPUCommandBufferCallbackErrorBackgroundExecutionNotPermitted).
                         // .inactive fires before .background, giving us time to release GPU resources.

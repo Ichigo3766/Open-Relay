@@ -240,7 +240,6 @@ final class StreamingContentStore {
         // Fire drain completion AFTER state is clean so the callback's
         // message.isStreaming = false and cleanupStreaming() see a fully
         // idle store and don't re-trigger double cleanup.
-        Haptics.streamingComplete()
         completion?()
     }
 }

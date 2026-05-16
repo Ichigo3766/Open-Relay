@@ -102,14 +102,6 @@ enum Haptics {
         softGenerator.prepare()
     }
 
-    /// Plays a haptic when the response stream fully drains and completes.
-    /// Respects the same `streamingHaptics` user preference as `streamingTick()`.
-    static func streamingComplete() {
-        guard UserDefaults.standard.object(forKey: "streamingHaptics") as? Bool ?? true else { return }
-        lightGenerator.impactOccurred(intensity: 0.8)
-        lightGenerator.prepare()
-    }
-
     // Private throttle state for streaming haptic.
     // @MainActor isolation on the enum ensures thread-safe access.
     private static var _lastStreamingTime: CFAbsoluteTime = 0

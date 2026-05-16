@@ -1,20 +1,5 @@
 # Changelog
 
-## v4.5 — May 15, 2026
-
-### What's New
-- Added a "save as permanent" button to temporary chats
-- Images embedded directly in responses now display inline — tap to view fullscreen with pinch-to-zoom, or hold to save to Photos or share
-
-### Improvements
-- Significantly reduced false "server disconnected" alerts
-- Returning to the app from the background should reconnect instantly
-- Added a subtle haptic when a response finishes streaming
-
-### Bug Fixes
-- Fixed a race condition where streaming auto-scroll would randomly disengage mid-response.
-
-
 ## v4.4 — May 14, 2026
 
 ### What's New

@@ -639,17 +639,6 @@ struct StreamingMarkdownView: View {
         let linkURL: URL?
     }
 
-    /// Returns true for image URLs that can be rendered inline:
-    /// - `http` / `https` remote URLs
-    /// - `data:image/` Base64 data URIs
-    private static func isRenderableImageURL(_ url: URL) -> Bool {
-        switch url.scheme {
-        case "http", "https": return true
-        case "data":          return url.absoluteString.hasPrefix("data:image/")
-        default:              return false
-        }
-    }
-
     /// Scans `text` for markdown image syntax and returns all occurrences with their ranges.
     private func findMarkdownImages(in text: String) -> [ParsedImage] {
         let nsString = text as NSString
@@ -666,7 +655,7 @@ struct StreamingMarkdownView: View {
                       let imgRange = Range(match.range(at: 2), in: text),
                       let linkRange = Range(match.range(at: 3), in: text),
                       let imgURL = URL(string: String(text[imgRange])),
-                      Self.isRenderableImageURL(imgURL)
+                      imgURL.scheme == "http" || imgURL.scheme == "https"
                 else { continue }
 
                 let linkURLStr = String(text[linkRange])
@@ -690,7 +679,7 @@ struct StreamingMarkdownView: View {
                       let altRange = Range(match.range(at: 1), in: text),
                       let imgRange = Range(match.range(at: 2), in: text),
                       let imgURL = URL(string: String(text[imgRange])),
-                      Self.isRenderableImageURL(imgURL)
+                      imgURL.scheme == "http" || imgURL.scheme == "https"
                 else { continue }
 
                 // Skip if this overlaps with any linked image already found
@@ -964,15 +953,6 @@ struct StreamingMarkdownView: View {
 
 /// Renders a markdown image as a native SwiftUI async image with caching.
 /// Supports optional link wrapping — tapping opens the link URL in Safari.
-///
-/// ## Interactions
-/// - **Tap** → fullscreen viewer with pinch-to-zoom
-/// - **Long-press** → context menu with Save to Photos and Share options
-///
-/// ## Data URI support
-/// When the image URL is a `data:image/...;base64,...` URI, the Base64 payload
-/// is decoded directly into a `UIImage` — no network call is made.
-/// Remote `http`/`https` images go through `CachedAsyncImage` as before.
 private struct MarkdownInlineImageView: View {
     let imageURL: URL
     let altText: String
@@ -981,75 +961,7 @@ private struct MarkdownInlineImageView: View {
     @Environment(\.theme) private var theme
     @Environment(\.openURL) private var openURL
 
-    // Fullscreen sheet state (shared by both Base64 and remote paths).
-    @State private var showFullscreen = false
-    // For remote images: cache the downloaded UIImage so we can save/share it.
-    @State private var loadedRemoteImage: UIImage? = nil
-    // Feedback toast for save-to-photos action.
-    @State private var savedToPhotos = false
-
-    /// Attempts to decode a `data:image/...;base64,<payload>` URI into a UIImage.
-    /// Returns `nil` for any other scheme or malformed URI.
-    private static func decodeDataURI(_ url: URL) -> UIImage? {
-        let raw = url.absoluteString
-        guard raw.hasPrefix("data:image/") else { return nil }
-        // Find the comma that separates the header from the payload.
-        guard let commaIdx = raw.firstIndex(of: ",") else { return nil }
-        let header = raw[raw.startIndex..<commaIdx]
-        guard header.hasSuffix(";base64") else { return nil }
-        let base64 = String(raw[raw.index(after: commaIdx)...])
-        // Base64 strings from some models contain whitespace/newlines — strip them.
-        let cleaned = base64.components(separatedBy: .whitespacesAndNewlines).joined()
-        guard let data = Data(base64Encoded: cleaned, options: .ignoreUnknownCharacters) else { return nil }
-        return UIImage(data: data)
-    }
-
     var body: some View {
-        if imageURL.scheme == "data" {
-            // ── Inline Base64 data URI ────────────────────────────────────────
-            if let uiImage = Self.decodeDataURI(imageURL) {
-                base64ImageView(uiImage: uiImage)
-            } else {
-                dataURIErrorPlaceholder
-            }
-        } else {
-            // ── Remote http/https image ───────────────────────────────────────
-            remoteImageView
-        }
-    }
-
-    /// Displays a decoded UIImage (from a data URI) with fullscreen + context menu.
-    @ViewBuilder
-    private func base64ImageView(uiImage: UIImage) -> some View {
-        Image(uiImage: uiImage)
-            .resizable()
-            .aspectRatio(contentMode: .fit)
-            .frame(maxWidth: .infinity, maxHeight: 300, alignment: .leading)
-            .clipShape(RoundedRectangle(cornerRadius: 10))
-            .contentShape(Rectangle())
-            .onTapGesture { showFullscreen = true }
-            .contextMenu { imageContextMenu(for: uiImage) }
-            .accessibilityLabel(altText.isEmpty ? "Image" : altText)
-            .accessibilityAddTraits(.isImage)
-            .sheet(isPresented: $showFullscreen) {
-                FullscreenImageViewer(image: uiImage, altText: altText)
-            }
-    }
-
-    /// Small placeholder shown when a data URI fails to decode.
-    private var dataURIErrorPlaceholder: some View {
-        RoundedRectangle(cornerRadius: 10)
-            .fill(theme.surfaceContainer.opacity(0.5))
-            .frame(height: 80)
-            .overlay {
-                Label("Image could not be decoded", systemImage: "photo")
-                    .scaledFont(size: 12)
-                    .foregroundStyle(theme.textTertiary)
-            }
-    }
-
-    /// Remote-image view via CachedAsyncImage (http / https).
-    private var remoteImageView: some View {
         CachedAsyncImage(url: imageURL) { image in
             image
                 .resizable()
@@ -1073,238 +985,18 @@ private struct MarkdownInlineImageView: View {
                 }
         }
         .contentShape(Rectangle())
-        .onTapGesture { showFullscreen = true }
-        .contextMenu {
-            if let img = loadedRemoteImage {
-                imageContextMenu(for: img)
+        .onTapGesture {
+            // If the image is wrapped in a link, open the link URL.
+            // Otherwise, open the image URL directly.
+            if let linkURL {
+                openURL(linkURL)
+            } else {
+                openURL(imageURL)
             }
         }
         .accessibilityLabel(altText.isEmpty ? "Image" : altText)
         .accessibilityAddTraits(.isImage)
-        .sheet(isPresented: $showFullscreen) {
-            // Use cached UIImage if available, otherwise fall back to URL-based viewer.
-            if let img = loadedRemoteImage {
-                FullscreenImageViewer(image: img, altText: altText)
-            } else {
-                FullscreenImageViewer(imageURL: imageURL, altText: altText)
-            }
-        }
-        .task(id: imageURL) {
-            // Download a UIImage copy in the background so save/share work without
-            // needing to render the SwiftUI Image back to a bitmap.
-            guard loadedRemoteImage == nil else { return }
-            guard let (data, _) = try? await URLSession.shared.data(from: imageURL) else { return }
-            if let img = UIImage(data: data) {
-                await MainActor.run { loadedRemoteImage = img }
-            }
-        }
-    }
-
-    /// Context menu items shared by both image types.
-    @ViewBuilder
-    private func imageContextMenu(for image: UIImage) -> some View {
-        Button {
-            UIImageWriteToSavedPhotosAlbum(image, nil, nil, nil)
-        } label: {
-            Label("Save to Photos", systemImage: "square.and.arrow.down")
-        }
-
-        Button {
-            shareImage(image)
-        } label: {
-            Label("Share", systemImage: "square.and.arrow.up")
-        }
-
-        if let linkURL {
-            Button {
-                openURL(linkURL)
-            } label: {
-                Label("Open Link", systemImage: "link")
-            }
-        }
-    }
-
-    /// Presents a `UIActivityViewController` for sharing the given image.
-    private func shareImage(_ image: UIImage) {
-        guard let windowScene = UIApplication.shared.connectedScenes
-            .first(where: { $0.activationState == .foregroundActive }) as? UIWindowScene,
-              let rootVC = windowScene.windows.first(where: { $0.isKeyWindow })?.rootViewController else { return }
-        let vc = UIActivityViewController(activityItems: [image], applicationActivities: nil)
-        // iPad needs a source view for the popover.
-        vc.popoverPresentationController?.sourceView = rootVC.view
-        vc.popoverPresentationController?.sourceRect = CGRect(
-            x: rootVC.view.bounds.midX, y: rootVC.view.bounds.midY, width: 0, height: 0)
-        vc.popoverPresentationController?.permittedArrowDirections = []
-        rootVC.present(vc, animated: true)
-    }
-}
-
-// MARK: - Fullscreen Image Viewer
-
-/// Full-screen image viewer with pinch-to-zoom, Save, and Share toolbar actions.
-/// Accepts either a pre-decoded `UIImage` (Base64 path) or a remote `URL` (http/https path
-/// where the async download is still in progress).
-private struct FullscreenImageViewer: View {
-
-    // Exactly one of these will be non-nil.
-    var image: UIImage?
-    var imageURL: URL?
-    var altText: String
-
-    @Environment(\.dismiss) private var dismiss
-    @State private var scale: CGFloat = 1.0
-    @State private var lastScale: CGFloat = 1.0
-    @State private var offset: CGSize = .zero
-    @State private var lastOffset: CGSize = .zero
-    @State private var savedConfirmation = false
-
-    init(image: UIImage, altText: String) {
-        self.image = image
-        self.imageURL = nil
-        self.altText = altText
-    }
-
-    init(imageURL: URL, altText: String) {
-        self.image = nil
-        self.imageURL = imageURL
-        self.altText = altText
-    }
-
-    var body: some View {
-        NavigationStack {
-            GeometryReader { geo in
-                ZStack {
-                    Color.black.ignoresSafeArea()
-
-                    if let uiImage = image {
-                        zoomableImage(Image(uiImage: uiImage), size: geo.size)
-                    } else if let url = imageURL {
-                        CachedAsyncImage(url: url) { img in
-                            zoomableImage(img, size: geo.size)
-                        } placeholder: {
-                            ProgressView().tint(.white)
-                        }
-                    }
-
-                    // "Saved!" confirmation toast.
-                    if savedConfirmation {
-                        VStack {
-                            Spacer()
-                            Label("Saved to Photos", systemImage: "checkmark.circle.fill")
-                                .foregroundStyle(.white)
-                                .padding(.horizontal, 16)
-                                .padding(.vertical, 10)
-                                .background(.ultraThinMaterial, in: Capsule())
-                                .padding(.bottom, 32)
-                        }
-                        .transition(.move(edge: .bottom).combined(with: .opacity))
-                    }
-                }
-            }
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
-                    Button("Done") { dismiss() }
-                        .foregroundStyle(.white)
-                        .fontWeight(.semibold)
-                }
-                ToolbarItemGroup(placement: .topBarTrailing) {
-                    if let uiImage = image {
-                        Button {
-                            saveToPhotos(uiImage)
-                        } label: {
-                            Image(systemName: "square.and.arrow.down")
-                        }
-                        .foregroundStyle(.white)
-
-                        Button {
-                            shareImage(uiImage)
-                        } label: {
-                            Image(systemName: "square.and.arrow.up")
-                        }
-                        .foregroundStyle(.white)
-                    }
-                }
-            }
-            .toolbarBackground(.black.opacity(0.6), for: .navigationBar)
-            .toolbarBackground(.visible, for: .navigationBar)
-        }
-        .preferredColorScheme(.dark)
-    }
-
-    @ViewBuilder
-    private func zoomableImage(_ img: Image, size: CGSize) -> some View {
-        img
-            .resizable()
-            .aspectRatio(contentMode: .fit)
-            .frame(width: size.width, height: size.height)
-            .scaleEffect(scale)
-            .offset(offset)
-            .gesture(
-                MagnificationGesture()
-                    .onChanged { value in
-                        scale = max(1.0, min(lastScale * value, 6.0))
-                    }
-                    .onEnded { _ in
-                        lastScale = scale
-                        // Snap back if zoomed out below 1×.
-                        if scale < 1.0 {
-                            withAnimation(.spring()) {
-                                scale = 1.0
-                                offset = .zero
-                            }
-                            lastScale = 1.0
-                            lastOffset = .zero
-                        }
-                    }
-                    .simultaneously(with:
-                        DragGesture()
-                            .onChanged { value in
-                                // Only allow panning when zoomed in.
-                                guard scale > 1.0 else { return }
-                                offset = CGSize(
-                                    width: lastOffset.width + value.translation.width,
-                                    height: lastOffset.height + value.translation.height
-                                )
-                            }
-                            .onEnded { _ in
-                                lastOffset = offset
-                            }
-                    )
-            )
-            .onTapGesture(count: 2) {
-                withAnimation(.spring()) {
-                    if scale > 1.0 {
-                        scale = 1.0
-                        offset = .zero
-                        lastScale = 1.0
-                        lastOffset = .zero
-                    } else {
-                        scale = 2.5
-                        lastScale = 2.5
-                    }
-                }
-            }
-    }
-
-    private func saveToPhotos(_ uiImage: UIImage) {
-        UIImageWriteToSavedPhotosAlbum(uiImage, nil, nil, nil)
-        withAnimation(.spring()) { savedConfirmation = true }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
-            withAnimation { savedConfirmation = false }
-        }
-    }
-
-    private func shareImage(_ uiImage: UIImage) {
-        guard let windowScene = UIApplication.shared.connectedScenes
-            .first(where: { $0.activationState == .foregroundActive }) as? UIWindowScene,
-              let rootVC = windowScene.windows.first(where: { $0.isKeyWindow })?.rootViewController else { return }
-        let vc = UIActivityViewController(activityItems: [uiImage], applicationActivities: nil)
-        vc.popoverPresentationController?.sourceView = rootVC.view
-        vc.popoverPresentationController?.sourceRect = CGRect(
-            x: rootVC.view.bounds.midX, y: rootVC.view.bounds.midY, width: 0, height: 0)
-        vc.popoverPresentationController?.permittedArrowDirections = []
-        rootVC.present(vc, animated: true)
+        .accessibilityAddTraits(.isLink)
     }
 }
 
