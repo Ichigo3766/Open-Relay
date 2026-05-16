@@ -15,11 +15,12 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Select latest Xcode 16
+      - name: Select latest Xcode
         run: |
-          LATEST=$(ls /Applications/ | grep -E 'Xcode_16\.' | sort -V | tail -1)
+          LATEST=$(ls /Applications/ | grep -E 'Xcode_.*\.app' | sort -V | tail -1)
           echo "Using: $LATEST"
           sudo xcode-select -s "/Applications/$LATEST"
+          xcodebuild -version
 
       - name: Resolve Swift Packages
         run: xcodebuild -resolvePackageDependencies -project "Open UI.xcodeproj" -scheme "Open UI"
