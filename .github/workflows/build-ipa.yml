@@ -1,0 +1,112 @@
+name: Build IPA
+
+on:
+  workflow_dispatch:
+    inputs:
+      device_udid:
+        description: "Your iPhone UDID (for provisioning profile)"
+        required: false
+
+jobs:
+  build:
+    runs-on: macos-16
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Select latest Xcode 16
+        run: |
+          LATEST=$(ls /Applications/ | grep -E 'Xcode_16\.' | sort -V | tail -1)
+          echo "Using: $LATEST"
+          sudo xcode-select -s "/Applications/$LATEST"
+
+      - name: Install certificate and provisioning profile
+        run: |
+          # Create keychain
+          security create-keychain -p "" build.keychain
+          security default-keychain -s build.keychain
+          security unlock-keychain -p "" build.keychain
+          security set-keychain-settings -t 3600 -u build.keychain
+
+          # Install .p12 certificate
+          echo "${{ secrets.APPLE_CERT_P12 }}" | base64 -d > certificate.p12
+          security import certificate.p12 -k build.keychain -P "${{ secrets.APPLE_CERT_PASSWORD }}" -T /usr/bin/codesign -T /usr/bin/security
+          rm certificate.p12
+
+          # Install provisioning profile
+          echo "${{ secrets.APPLE_PROVISIONING_PROFILE }}" | base64 -d > embedded.mobileprovision
+          mkdir -p ~/Library/MobileDevice/Provisioning\ Profiles
+          cp embedded.mobileprovision ~/Library/MobileDevice/Provisioning\ Profiles/
+          rm embedded.mobileprovision
+
+          # Allow codesigning tools access
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "" build.keychain
+
+      - name: Resolve Swift Packages
+        run: xcodebuild -resolvePackageDependencies -project "Open UI.xcodeproj" -scheme "Open UI"
+
+      - name: Build Archive
+        run: |
+          xcodebuild archive \
+            -project "Open UI.xcodeproj" \
+            -scheme "Open UI" \
+            -configuration Release \
+            -archivePath "build/OpenUI.xcarchive" \
+            CODE_SIGN_IDENTITY="iPhone Distribution" \
+            DEVELOPMENT_TEAM="${{ secrets.APPLE_DEVELOPMENT_TEAM }}" \
+            PROVISIONING_PROFILE_SPECIFIER="${{ secrets.APPLE_PROVISIONING_PROFILE_NAME }}"
+
+      - name: Export IPA
+        run: |
+          cat > ExportOptions.plist << 'EOF'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+            "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>method</key>
+            <string>ad-hoc</string>
+            <key>uploadBitcode</key>
+            <false/>
+            <key>compileBitcode</key>
+            <false/>
+            <key>uploadSymbols</key>
+            <false/>
+            <key>provisioningProfiles</key>
+            <dict>
+              <key>com.openui.openui</key>
+              <string>${{ secrets.APPLE_PROVISIONING_PROFILE_NAME }}</string>
+              <key>com.openui.openui.OpenUIWidget</key>
+              <string>${{ secrets.APPLE_PROVISIONING_PROFILE_NAME }}</string>
+            </dict>
+          </dict>
+          </plist>
+          EOF
+
+          xcodebuild -exportArchive \
+            -archivePath "build/OpenUI.xcarchive" \
+            -exportPath "build/export" \
+            -exportOptionsPlist ExportOptions.plist
+
+      - name: Upload IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: OpenUI.ipa
+          path: build/export/*.ipa
+          retention-days: 30
+
+      - name: Upload to Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: sideload-${{ github.run_number }}
+          files: build/export/*.ipa
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Cleanup keychain
+        if: always()
+        run: |
+          security delete-keychain build.keychain 2>/dev/null || true
