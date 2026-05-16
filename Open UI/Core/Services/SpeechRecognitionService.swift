@@ -167,9 +167,9 @@ final class SpeechRecognitionService {
         // Include .allowBluetooth (HFP input) alongside .allowBluetoothA2DP (A2DP output)
         // so the car microphone is accessible when CarPlay is connected.
         let audioSession = AVAudioSession.sharedInstance()
-        try audioSession.setCategory(.playAndRecord, mode: .voiceChat,
-                                     options: [.allowBluetoothHFP, .allowBluetoothA2DP])
-        try audioSession.setActive(true, options: .notifyOthersOnDeactivation)
+       try audioSession.setCategory(.playAndRecord, mode: .voiceChat,
+                                      options: [.allowBluetoothHFP, .allowBluetoothA2DP])
+        try audioSession.setActive(true)
 
         // Create recognition request
         let request = SFSpeechAudioBufferRecognitionRequest()

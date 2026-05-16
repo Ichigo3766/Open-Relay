@@ -1,5 +1,6 @@
 import Foundation
 import CallKit
+import MediaPlayer
 import os.log
 
 /// Manages CallKit integration for native iOS call UI during voice calls.

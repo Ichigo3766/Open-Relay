@@ -230,6 +230,9 @@ final class AppDependencyContainer: ServiceContainer {
     /// CallKit manager for native call UI.
     let callKitManager = CallKitManager()
 
+    /// Centralized audio session manager with interruption/route-change handling.
+    let audioSessionManager = AudioSessionManager()
+
     /// Audio recording service for voice notes.
     let audioRecordingService = AudioRecordingService()
 
@@ -294,6 +297,8 @@ final class AppDependencyContainer: ServiceContainer {
         authViewModel.dependencies = self
         // Models load on-demand when first needed — no startup preloading
         startConnectionMonitor()
+        // Start audio session listeners (interruption, route change, volume interception)
+        audioSessionManager.startListening()
     }
 
     /// Rebuilds the API client and socket service for the currently
@@ -421,13 +426,15 @@ final class AppDependencyContainer: ServiceContainer {
             return VoiceCallViewModel(
                 serverSpeechService: serverSpeechRecognitionService,
                 ttsService: textToSpeechService,
-                callKitManager: callKitManager
+                callKitManager: callKitManager,
+                audioSessionManager: audioSessionManager
             )
         } else {
             return VoiceCallViewModel(
                 speechService: speechRecognitionService,
                 ttsService: textToSpeechService,
-                callKitManager: callKitManager
+                callKitManager: callKitManager,
+                audioSessionManager: audioSessionManager
             )
         }
     }

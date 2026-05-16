@@ -77,17 +77,22 @@ final class VoiceCallViewModel {
     /// Cancelled in `endCall()` so TTS stops immediately when the user disconnects.
     private var responseTask: Task<Void, Never>?
 
+    /// Centralized audio session manager for interruption/route-change handling.
+    private let audioSessionManager: AudioSessionManager
+
     // MARK: - Init (Apple on-device STT)
 
     init(
         speechService: SpeechRecognitionService,
         ttsService: TextToSpeechService,
-        callKitManager: CallKitManager
+        callKitManager: CallKitManager,
+        audioSessionManager: AudioSessionManager
     ) {
         self.speechService = speechService
         self.serverSpeechService = nil
         self.ttsService = ttsService
         self.callKitManager = callKitManager
+        self.audioSessionManager = audioSessionManager
 
         setupCallbacks()
     }
@@ -97,12 +102,14 @@ final class VoiceCallViewModel {
     init(
         serverSpeechService: ServerSpeechRecognitionService,
         ttsService: TextToSpeechService,
-        callKitManager: CallKitManager
+        callKitManager: CallKitManager,
+        audioSessionManager: AudioSessionManager
     ) {
         self.speechService = nil
         self.serverSpeechService = serverSpeechService
         self.ttsService = ttsService
         self.callKitManager = callKitManager
+        self.audioSessionManager = audioSessionManager
 
         setupCallbacks()
     }
@@ -150,6 +157,12 @@ final class VoiceCallViewModel {
         // stop working if the device sleeps. Restored in endCall().
         UIApplication.shared.isIdleTimerDisabled = true
 
+        // Signal the audio session manager that a voice call is active.
+        // This prevents .notifyOthersOnDeactivation during TTS between cycles,
+        // which would cause Spotify/music to resume on CarPlay.
+        audioSessionManager.voiceCallStarted()
+        ttsService.audioSessionManager = audioSessionManager
+
         // Start CallKit session
         do {
             try await callKitManager.startCall(displayName: modelName.isEmpty ? "AI Assistant" : modelName)
@@ -189,6 +202,9 @@ final class VoiceCallViewModel {
     /// Ends the current voice call.
     func endCall() async {
         stopActiveSTT()
+        // Signal the audio session manager that the voice call is ending
+        // so it can restore normal deactivation behavior.
+        audioSessionManager.voiceCallEnded()
         // Cancel the response pipeline first so waitForResponseAndSpeak() stops looping
         // and cannot call finishStreamingTTS() or startListening() after we end the call.
         responseTask?.cancel()
@@ -211,11 +227,12 @@ final class VoiceCallViewModel {
 
         // Restore the global baseline audio session so HTML audio and regular TTS
         // continue working after the voice call ends.
-        let session = AVAudioSession.sharedInstance()
-        try? session.setCategory(.playAndRecord, mode: .default,
-                                 options: [.defaultToSpeaker, .allowBluetoothHFP,
-                                           .allowBluetoothA2DP, .mixWithOthers])
-        try? session.setActive(true)
+        audioSessionManager.configureSession { session in
+            try session.setCategory(.playAndRecord, mode: .default,
+                                    options: [.defaultToSpeaker, .allowBluetoothHFP,
+                                              .allowBluetoothA2DP, .mixWithOthers])
+            try session.setActive(true)
+        }
 
         // Reset voice mode flag so normal chat from the same ChatViewModel
         // doesn't continue sending features.voice=true after the call ends.
@@ -486,18 +503,15 @@ final class VoiceCallViewModel {
         // .allowBluetooth enables HFP input (car mic / BT headset mic).
         // .allowBluetoothA2DP enables A2DP output.
         // Without .allowBluetooth the CarPlay / BT mic is not routed and STT hears silence.
-        do {
-            let session = AVAudioSession.sharedInstance()
-            // Do NOT use .defaultToSpeaker here — it overrides overrideOutputAudioPort(.none)
-            // on every cycle and prevents the speaker button from turning off.
-            // Speaker routing is controlled exclusively via applySpeakerOverride().
+        // Do NOT use .defaultToSpeaker here — it overrides overrideOutputAudioPort(.none)
+        // on every cycle and prevents the speaker button from turning off.
+        // Speaker routing is controlled exclusively via applySpeakerOverride().
+        audioSessionManager.configureSession { session in
             try session.setCategory(.playAndRecord, mode: .voiceChat,
                                     options: [.allowBluetoothHFP, .allowBluetoothA2DP])
             try session.setActive(true)
-            applySpeakerOverride()
-        } catch {
-            logger.warning("Audio session reconfig for listening: \(error.localizedDescription)")
         }
+        applySpeakerOverride()
 
         currentTranscript = ""
         callState = .listening
@@ -595,20 +609,12 @@ final class VoiceCallViewModel {
 
         // Pre-configure the audio session before TTS starts.
         // Keep .allowBluetooth so CarPlay / BT HFP stays routed for the full cycle.
-        for attempt in 1...3 {
-            do {
-                let session = AVAudioSession.sharedInstance()
-                // Do NOT use .defaultToSpeaker — see startListening() comment.
-                try session.setCategory(.playAndRecord, mode: .voiceChat,
-                                        options: [.allowBluetoothHFP, .allowBluetoothA2DP])
-                try session.setActive(true)
-                applySpeakerOverride()
-                break
-            } catch {
-                logger.warning("Audio session attempt \(attempt)/3: \(error.localizedDescription)")
-                try? await Task.sleep(for: .milliseconds(200))
-            }
+        audioSessionManager.configureSession { session in
+            try session.setCategory(.playAndRecord, mode: .voiceChat,
+                                    options: [.allowBluetoothHFP, .allowBluetoothA2DP])
+            try session.setActive(true)
         }
+        applySpeakerOverride()
 
         chatViewModel.inputText = transcript
 
