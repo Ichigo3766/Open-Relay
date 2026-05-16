@@ -136,9 +136,9 @@ struct StreamingWebPreview: UIViewRepresentable {
                     coord.pendingReconcileWorkItem?.cancel()
                     coord.pendingReconcileWorkItem = nil
                     let capturedContent = content
-                    Task.detached(priority: .userInitiated) { [weak webView] in
+                    DispatchQueue.global(qos: .userInitiated).async {
                         let escaped = Coordinator.escape(capturedContent)
-                        await MainActor.run {
+                        DispatchQueue.main.async { [weak webView] in
                             webView?.evaluateJavaScript("reconcileContent(`\(escaped)`)", completionHandler: nil)
                         }
                     }
@@ -287,7 +287,7 @@ struct StreamingWebPreview: UIViewRepresentable {
         }
 
         /// Static wrapper so `webView(_:didFinish:)` can call it without capturing `self`.
-        static func escape(_ text: String) -> String {
+        nonisolated static func escape(_ text: String) -> String {
             text
                 .replacingOccurrences(of: "\\", with: "\\\\")
                 .replacingOccurrences(of: "`", with: "\\`")

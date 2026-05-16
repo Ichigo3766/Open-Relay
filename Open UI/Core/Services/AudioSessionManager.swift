@@ -49,9 +49,7 @@ final class AudioSessionManager {
             object: nil,
             queue: .main
         ) { [weak self] notification in
-            Task { @MainActor [weak self] in
-                self?.handleInterruption(notification)
-            }
+            self?.handleInterruption(notification)
         }
 
         // 2. Route change notification (CarPlay connect/disconnect, volume knob)
@@ -60,9 +58,7 @@ final class AudioSessionManager {
             object: nil,
             queue: .main
         ) { [weak self] notification in
-            Task { @MainActor [weak self] in
-                self?.handleRouteChange(notification)
-            }
+            self?.handleRouteChange(notification)
         }
 
         // 3. Media services reset (rare but should be handled)
@@ -72,17 +68,17 @@ final class AudioSessionManager {
             queue: .main
         ) { [weak self] _ in
             self?.logger.info("Media services were reset — reactivating session")
-            Task { @MainActor [weak self] in
-                self?.reactivateSession()
-            }
+            self?.reactivateSession()
         }
 
         // 4. Intercept volume changes from CarPlay / remote controls.
         // Returning .success prevents the system from treating the volume
         // change as an audio interruption that deactivates our session.
         // The actual volume still changes — we just prevent session deactivation.
-        remoteCommandCenter.changePlaybackVolumeCommand.addTarget { [weak self] _ in
-            return .success
+        if #available(iOS 18.1, *) {
+            remoteCommandCenter.changePlaybackVolumeCommand.addTarget { [weak self] _ in
+                return .success
+            }
         }
 
         logger.info("AudioSessionManager: listeners installed")
@@ -103,7 +99,9 @@ final class AudioSessionManager {
         }
 
         // Remove volume command target
-        remoteCommandCenter.changePlaybackVolumeCommand.removeTarget()
+        if #available(iOS 18.1, *) {
+            remoteCommandCenter.changePlaybackVolumeCommand.removeTarget()
+        }
 
         logger.info("AudioSessionManager: listeners removed")
     }
@@ -165,14 +163,14 @@ final class AudioSessionManager {
               let reasonValue = userInfo[AVAudioSessionRouteChangeReasonKey] as? UInt else { return }
 
         let reason = AVAudioSession.RouteChangeReason(rawValue: reasonValue)
-        logger.info("Audio route changed: \(reason?.rawValue ?? "unknown")")
+        logger.info("Audio route changed: \(reason?.rawValue ?? 0)")
 
         switch reason {
-        case .volumeChanged:
+        case AVAudioSession.RouteChangeReason.volumeChanged?:
             // CarPlay volume knob — reactivate to prevent session deactivation
             if isVoiceCallActive {
                 logger.info("Volume changed during voice call — reactivating session")
-                reactivateSession()
+                self.reactivateSession()
             }
 
         case .newDeviceAvailable:
@@ -203,15 +201,17 @@ final class AudioSessionManager {
     /// Re-activates the audio session after an interruption or route change.
     /// Uses the serial queue to avoid racing with other session configuration.
     private func reactivateSession() {
-        sessionQueue.configure { session in
-            // Re-activate with current category (don't change category, just activate)
-            try? session.setActive(true)
-            // Re-apply output override for CarPlay safety
-            let isCarPlayOrHFP = session.currentRoute.outputs.contains { output in
-                output.portType == .carAudio || output.portType == .bluetoothHFP
-            }
-            if !isCarPlayOrHFP {
-                try? session.overrideOutputAudioPort(.speaker)
+        Task.detached {
+            await self.sessionQueue.configure { session in
+                // Re-activate with current category (don't change category, just activate)
+                try? session.setActive(true)
+                // Re-apply output override for CarPlay safety
+                let isCarPlayOrHFP = session.currentRoute.outputs.contains { output in
+                    output.portType == .carAudio || output.portType == .bluetoothHFP
+                }
+                if !isCarPlayOrHFP {
+                    try? session.overrideOutputAudioPort(.speaker)
+                }
             }
         }
     }
@@ -221,7 +221,9 @@ final class AudioSessionManager {
     /// Configures the audio session through the serial queue to prevent races.
     /// Call this instead of calling setCategory/setActive directly from services.
     func configureSession(_ configuration: (AVAudioSession) throws -> Void) {
-        sessionQueue.configure(configuration)
+        Task.detached {
+            await self.sessionQueue.configure(configuration)
+        }
     }
 }
 
