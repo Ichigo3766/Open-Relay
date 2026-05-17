@@ -44,7 +44,9 @@ final class AudioSessionManager {
             object: nil,
             queue: .main
         ) { [weak self] notification in
-            self?.handleInterruption(notification)
+            MainActor.assumeIsolated {
+                self?.handleInterruption(notification)
+            }
         }
 
         // 2. Route change notification (CarPlay connect/disconnect, volume knob)
@@ -53,7 +55,9 @@ final class AudioSessionManager {
             object: nil,
             queue: .main
         ) { [weak self] notification in
-            self?.handleRouteChange(notification)
+            MainActor.assumeIsolated {
+                self?.handleRouteChange(notification)
+            }
         }
 
         // 3. Media services reset (rare but should be handled)
@@ -62,8 +66,10 @@ final class AudioSessionManager {
             object: nil,
             queue: .main
         ) { [weak self] _ in
-            self?.logger.info("Media services were reset — reactivating session")
-            self?.reactivateSession()
+            MainActor.assumeIsolated {
+                self?.logger.info("Media services were reset — reactivating session")
+                self?.reactivateSession()
+            }
         }
 
         logger.info("AudioSessionManager: listeners installed")
@@ -193,7 +199,7 @@ final class AudioSessionManager {
 
     /// Configures the audio session through the serial queue to prevent races.
     /// Call this instead of calling setCategory/setActive directly from services.
-    func configureSession(_ configuration: (AVAudioSession) throws -> Void) {
+    func configureSession(_ configuration: @escaping (AVAudioSession) throws -> Void) {
         Task.detached {
             await self.sessionQueue.configure(configuration)
         }

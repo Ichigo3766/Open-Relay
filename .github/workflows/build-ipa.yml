@@ -15,11 +15,15 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Select latest Xcode
+      - name: Select Xcode 26.3
         run: |
-          LATEST=$(ls /Applications/ | grep -E 'Xcode_.*\.app' | sort -V | tail -1)
-          echo "Using: $LATEST"
-          sudo xcode-select -s "/Applications/$LATEST"
+          XC="/Applications/Xcode_26.3.app"
+          if [ ! -d "$XC" ]; then
+            LATEST=$(ls /Applications/ | grep -E 'Xcode_26\.' | sort -V | tail -1)
+            XC="/Applications/$LATEST"
+            echo "Xcode 26.3 not found, using: $LATEST"
+          fi
+          sudo xcode-select -s "$XC"
           xcodebuild -version
 
       - name: Resolve Swift Packages
