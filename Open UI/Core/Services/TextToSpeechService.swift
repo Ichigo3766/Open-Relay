@@ -579,13 +579,13 @@ final class TextToSpeechService: NSObject {
         // Voice calls use .voiceChat mode for echo cancellation + HFP mic routing.
         // All other TTS (chat read-aloud) uses the global baseline (.playAndRecord .default)
         // so it ignores the silent switch and mixes with other app audio.
-        audioSessionManager?.configureSession { session in
+        audioSessionManager?.configureSession { [self] session in
             if speakerOverride {
                 try session.setCategory(.playAndRecord, mode: .voiceChat,
                                         options: [.allowBluetoothHFP, .allowBluetoothA2DP, .mixWithOthers])
                 try session.setActive(true)
                 // setActive resets overrideOutputAudioPort — re-apply the current routing preference.
-                try session.overrideOutputAudioPort(outputPortOverride)
+                try session.overrideOutputAudioPort(self.outputPortOverride)
             } else {
                 // Global baseline: .playAndRecord ignores silent switch; .defaultToSpeaker routes
                 // to loud speaker; .mixWithOthers doesn't interrupt other app audio.
@@ -768,14 +768,14 @@ final class TextToSpeechService: NSObject {
         utterance.preUtteranceDelay = 0
         utterance.postUtteranceDelay = 0.05
 
-        audioSessionManager?.configureSession { session in
+        audioSessionManager?.configureSession { [self] session in
             if speakerOverrideEnabled {
                 // Voice call — .voiceChat mode enables echo cancellation + HFP mic routing.
                 try session.setCategory(.playAndRecord, mode: .voiceChat,
                                         options: [.allowBluetoothHFP, .allowBluetoothA2DP, .mixWithOthers])
                 try session.setActive(true)
                 // setActive resets overrideOutputAudioPort — re-apply earpiece/speaker preference.
-                try session.overrideOutputAudioPort(outputPortOverride)
+                try session.overrideOutputAudioPort(self.outputPortOverride)
             } else {
                 // Regular read-aloud — use global baseline so silent switch is ignored.
                 try session.setCategory(.playAndRecord, mode: .default,
