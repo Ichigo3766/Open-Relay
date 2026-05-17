@@ -1,18 +1,16 @@
 import Foundation
 import AVFoundation
-import MediaPlayer
 import os.log
 
-/// Centralized AVAudioSession manager with interruption handling, route change
+   /// Centralized AVAudioSession manager with interruption handling, route change
 /// recovery, and CarPlay volume-change interception.
 ///
 /// Problem solved: CarPlay volume knob changes trigger an implicit audio
 /// interruption. Without handling, iOS deactivates our session and resumes
 /// background media (Spotify, Apple Music, etc.). This manager:
 /// 1. Listens for interruptions and reactivates the session when they end
-/// 2. Listens for route changes and re-activates the session on .volumeChanged
-/// 3. Intercepts MPRemoteCommandCenter volume changes to prevent interruption
-/// 4. Provides a serial actor to prevent concurrent setCategory/setActive calls
+/// 2. Listens for route changes and re-activates the session on device change
+/// 3. Provides a serial actor to prevent concurrent setCategory/setActive calls
 @MainActor
 final class AudioSessionManager {
 
@@ -36,9 +34,6 @@ final class AudioSessionManager {
     private var interruptionObserver: Any?
     private var routeChangeObserver: Any?
     private var mediaServicesResetObserver: Any?
-
-    /// MPRemoteCommandCenter for intercepting volume commands.
-    private let remoteCommandCenter = MPRemoteCommandCenter.shared()
 
     // MARK: - Lifecycle
 
@@ -71,16 +66,6 @@ final class AudioSessionManager {
             self?.reactivateSession()
         }
 
-        // 4. Intercept volume changes from CarPlay / remote controls.
-        // Returning .success prevents the system from treating the volume
-        // change as an audio interruption that deactivates our session.
-        // The actual volume still changes — we just prevent session deactivation.
-        if #available(iOS 18.1, *) {
-            remoteCommandCenter.changePlaybackVolumeCommand.addTarget { [weak self] _ in
-                return .success
-            }
-        }
-
         logger.info("AudioSessionManager: listeners installed")
     }
 
@@ -96,11 +81,6 @@ final class AudioSessionManager {
         if let obs = mediaServicesResetObserver {
             NotificationCenter.default.removeObserver(obs)
             mediaServicesResetObserver = nil
-        }
-
-        // Remove volume command target
-        if #available(iOS 18.1, *) {
-            remoteCommandCenter.changePlaybackVolumeCommand.removeTarget()
         }
 
         logger.info("AudioSessionManager: listeners removed")
@@ -166,13 +146,6 @@ final class AudioSessionManager {
         logger.info("Audio route changed: \(reason?.rawValue ?? 0)")
 
         switch reason {
-        case AVAudioSession.RouteChangeReason.volumeChanged?:
-            // CarPlay volume knob — reactivate to prevent session deactivation
-            if isVoiceCallActive {
-                logger.info("Volume changed during voice call — reactivating session")
-                self.reactivateSession()
-            }
-
         case .newDeviceAvailable:
             // New audio device connected (e.g., CarPlay, BT headset)
             onRouteChanged?()
