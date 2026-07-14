@@ -8,18 +8,24 @@ import os.log
 /// authenticated through an upstream auth proxy (Authelia, Authentik, Keycloak,
 /// oauth2-proxy, Pangolin, etc.).
 ///
-/// The view works by:
-/// 1. Loading the server URL — the proxy will redirect to its login portal
-/// 2. The user authenticates through whatever UI the proxy shows
-/// 3. The proxy redirects back to the app's server URL
-/// 4. We detect arrival back on the server domain and immediately capture cookies
-///    (no health polling needed — redirect back = auth complete)
+/// Detection strategy (layered):
+/// 1. Cross-domain proxy (Authelia on a subdomain): `hasLeftServerDomain` → returns to server domain → immediate success
+/// 2. Same-domain proxy (path-based Authentik / oauth2-proxy on same host):
+///    a. Password-field check: if current page still has a password input → still on proxy login, skip
+///    b. DOM/JS check: look for OpenWebUI-specific elements (auth-page id, favicon path, chat div, page title)
+///    c. Path check: `/auth`, `/oauth/`, `/api/v1/auths/` paths → known OpenWebUI routes
+///    d. `/api/config` HTTP probe as final fallback
+/// 3. JWT capture: after proxy auth, if oauth2-proxy uses trusted headers and OpenWebUI
+///    auto-authenticated the user, capture the JWT from document.cookie or localStorage
+///    and return it alongside the cookies for a one-step sign-in.
 struct ProxyAuthWebView: UIViewRepresentable {
     let serverURL: String
-    /// Called with all captured cookies (name→value) and the webView's User-Agent
-    /// once the proxy auth is detected as complete.
-    let onSuccess: ([String: String], String) -> Void
+    /// Called with captured cookies (name→value), WebView User-Agent, and optional JWT token
+    /// once proxy auth is detected as complete.
+    let onSuccess: ([String: String], String, String?) -> Void
     let onFailed: () -> Void
+    /// Called when the user taps the manual "Continue" button — triggers immediate capture.
+    let onManualCapture: (@escaping () -> Void) -> Void
 
     func makeCoordinator() -> Coordinator {
         Coordinator(serverURL: serverURL, onSuccess: onSuccess, onFailed: onFailed)
@@ -41,6 +47,11 @@ struct ProxyAuthWebView: UIViewRepresentable {
 
         context.coordinator.webView = webView
 
+        // Wire up the manual capture callback so the parent View can trigger it
+        onManualCapture {
+            context.coordinator.manualCapture()
+        }
+
         if let url = URL(string: serverURL) {
             webView.load(URLRequest(url: url))
         }
@@ -54,12 +65,16 @@ struct ProxyAuthWebView: UIViewRepresentable {
 
     final class Coordinator: NSObject, WKNavigationDelegate {
         let serverURL: String
-        let onSuccess: ([String: String], String) -> Void
+        let onSuccess: ([String: String], String, String?) -> Void
         let onFailed: () -> Void
         weak var webView: WKWebView?
 
         private var timeoutTimer: Timer?
         private var didSucceed = false
+
+        /// Debounce: prevents firing multiple detection checks in rapid succession
+        /// (e.g. page A redirects to page B on the same domain, triggering two didFinish events).
+        private var detectionTask: Task<Void, Never>?
 
         /// Tracks whether the WebView has navigated away from the server domain
         /// to the auth portal. We only trigger success detection AFTER the user
@@ -70,7 +85,7 @@ struct ProxyAuthWebView: UIViewRepresentable {
 
         init(
             serverURL: String,
-            onSuccess: @escaping ([String: String], String) -> Void,
+            onSuccess: @escaping ([String: String], String, String?) -> Void,
             onFailed: @escaping () -> Void
         ) {
             self.serverURL = serverURL
@@ -80,6 +95,7 @@ struct ProxyAuthWebView: UIViewRepresentable {
 
         deinit {
             timeoutTimer?.invalidate()
+            detectionTask?.cancel()
         }
 
         // MARK: - Navigation Delegate
@@ -89,7 +105,6 @@ struct ProxyAuthWebView: UIViewRepresentable {
             decidePolicyFor navigationAction: WKNavigationAction,
             decisionHandler: @escaping (WKNavigationActionPolicy) -> Void
         ) {
-            // Block all navigation once we've succeeded
             if didSucceed {
                 decisionHandler(.cancel)
                 return
@@ -97,7 +112,6 @@ struct ProxyAuthWebView: UIViewRepresentable {
 
             if let url = navigationAction.request.url {
                 if !isOnServerDomain(url) {
-                    // We're navigating to the auth portal (Authelia, etc.)
                     hasLeftServerDomain = true
                     logger.debug("ProxyAuth: navigating to auth portal: \(url.host ?? url.absoluteString)")
                 }
@@ -112,18 +126,30 @@ struct ProxyAuthWebView: UIViewRepresentable {
 
             logger.debug("ProxyAuth: page finished: \(currentURL.absoluteString)")
 
-            // Success condition: we previously left the server domain (went to auth portal)
-            // and have now returned to the server domain. The proxy has set auth cookies.
+            // Primary success condition: left server domain (cross-domain proxy) and returned.
             if hasLeftServerDomain && isOnServerDomain(currentURL) {
                 logger.info("ProxyAuth: returned to server domain after auth portal — capturing cookies immediately")
                 captureSessionAndSucceed()
+                return
+            }
+
+            // Secondary success condition: same-domain proxy.
+            // Debounce: cancel any in-flight check before starting a new one.
+            if isOnServerDomain(currentURL) {
+                detectionTask?.cancel()
+                detectionTask = Task { [weak self] in
+                    guard let self else { return }
+                    // Small debounce to let the page settle and JS to run
+                    try? await Task.sleep(nanoseconds: 300_000_000) // 0.3s
+                    guard !Task.isCancelled, !self.didSucceed else { return }
+                    await self.runSameDomainDetection(url: currentURL)
+                }
             }
         }
 
         func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
             guard !didSucceed else { return }
 
-            // Start the 3-minute timeout on the very first navigation
             if timeoutTimer == nil {
                 timeoutTimer = Timer.scheduledTimer(withTimeInterval: 180, repeats: false) { [weak self] _ in
                     guard let self, !self.didSucceed else { return }
@@ -132,9 +158,7 @@ struct ProxyAuthWebView: UIViewRepresentable {
                 }
             }
 
-            // Also check on provisional navigation starts — this catches redirects
-            // back to the server domain before the page fully loads, enabling
-            // even faster dismissal.
+            // Fast path for cross-domain proxy redirect-back
             if let url = webView.url, hasLeftServerDomain && isOnServerDomain(url) {
                 logger.info("ProxyAuth: server domain detected on provisional navigation — capturing cookies")
                 captureSessionAndSucceed()
@@ -146,9 +170,6 @@ struct ProxyAuthWebView: UIViewRepresentable {
             didReceiveServerRedirectForProvisionalNavigation navigation: WKNavigation!
         ) {
             guard !didSucceed else { return }
-
-            // This fires when the server sends a redirect header.
-            // If we're being redirected back to the server domain, grab cookies now.
             if let url = webView.url, hasLeftServerDomain && isOnServerDomain(url) {
                 logger.info("ProxyAuth: server redirect back to server domain — capturing cookies")
                 captureSessionAndSucceed()
@@ -165,41 +186,259 @@ struct ProxyAuthWebView: UIViewRepresentable {
             logger.warning("ProxyAuth: navigation failed: \(error.localizedDescription)")
         }
 
+        // MARK: - Manual Capture (Continue button)
+
+        /// Called by the parent View when the user taps "Continue".
+        /// Bypasses all detection logic and captures immediately.
+        func manualCapture() {
+            guard !didSucceed else { return }
+            logger.info("ProxyAuth: manual capture triggered by user")
+            detectionTask?.cancel()
+            captureSessionAndSucceed()
+        }
+
+        // MARK: - Same-Domain Detection Pipeline
+
+        /// Runs the layered detection pipeline for same-domain proxies.
+        /// Tries up to 3 times with 250ms between attempts to handle JS timing.
+        @MainActor
+        private func runSameDomainDetection(url: URL) async {
+            let path = url.path.lowercased()
+
+            // Check 1: Is this a known OpenWebUI-owned path?
+            // These paths confirm we're past the proxy → capture immediately.
+            if isKnownOpenWebUIPath(path) {
+                logger.info("ProxyAuth: known OpenWebUI path '\(path)' on server domain — checking for JWT then capturing")
+                captureSessionAndSucceed()
+                return
+            }
+
+            // Check 2: Password field — if present, still on proxy login page. Skip.
+            guard let webView else { return }
+            let hasPassword = await evaluatePasswordFieldPresent(in: webView)
+            if hasPassword {
+                logger.debug("ProxyAuth: page has password field — still on proxy login, waiting")
+                return
+            }
+
+            // Check 3: DOM-based OpenWebUI detection (3 attempts × 250ms)
+            for attempt in 0..<3 {
+                guard !Task.isCancelled, !didSucceed else { return }
+
+                let looksLikeOpenWebUI = await evaluateOpenWebUIPresent(in: webView)
+                if looksLikeOpenWebUI {
+                    logger.info("ProxyAuth: DOM check confirms OpenWebUI on server domain (attempt \(attempt + 1)) — capturing")
+                    captureSessionAndSucceed()
+                    return
+                }
+
+                if attempt < 2 {
+                    try? await Task.sleep(nanoseconds: 250_000_000)
+                }
+            }
+
+            guard !Task.isCancelled, !didSucceed else { return }
+
+            // Check 4: /api/config HTTP probe as final fallback
+            if await checkAPIConfigReachable() {
+                logger.info("ProxyAuth: /api/config probe returned 200 on server domain — capturing")
+                captureSessionAndSucceed()
+            }
+        }
+
+        /// Returns true if the URL path is an OpenWebUI-owned auth route,
+        /// meaning we're already past the proxy login.
+        private func isKnownOpenWebUIPath(_ path: String) -> Bool {
+            if path.contains("/oauth/") { return true }
+            if path == "/auth" || path.hasPrefix("/auth/") { return true }
+            if path.contains("/api/v1/auths/") { return true }
+            return false
+        }
+
+        // MARK: - JavaScript Evaluations
+
+        /// Returns true if the page still has a password input — meaning we're still on a proxy login page.
+        private func evaluatePasswordFieldPresent(in webView: WKWebView) async -> Bool {
+            let js = """
+            (function() {
+                return document.querySelector(
+                    'input[type="password"], input[name="password"], #password'
+                ) !== null ? "true" : "false";
+            })()
+            """
+            guard let result = try? await webView.evaluateJavaScript(js) else { return false }
+            return (result as? String) == "true"
+        }
+
+        /// Returns true if the page looks like an OpenWebUI page (has known DOM markers).
+        private func evaluateOpenWebUIPresent(in webView: WKWebView) async -> Bool {
+            let js = """
+            (function() {
+                var title = (document.title || "").toLowerCase();
+                var hasKnownIds =
+                    document.getElementById("auth-page") !== null ||
+                    document.getElementById("auth-container") !== null;
+                var hasBrandMarkers =
+                    document.querySelector('link[rel*="icon"][href*="/static/favicon"]') !== null;
+                var hasUiMarkers =
+                    document.querySelector('div[class*="chat"]') !== null ||
+                    document.querySelector('[data-testid]') !== null;
+                var hasTitleMarker =
+                    title.includes("open webui") || title.includes("chat");
+                return (hasKnownIds || hasBrandMarkers || hasUiMarkers || hasTitleMarker)
+                    ? "true" : "false";
+            })()
+            """
+            guard let result = try? await webView.evaluateJavaScript(js) else { return false }
+            return (result as? String) == "true"
+        }
+
+        // MARK: - JWT Capture
+
+        /// Tries to capture a JWT token from the WebView's cookie or localStorage.
+        /// Used when oauth2-proxy with trusted headers auto-authenticates the user in OpenWebUI.
+        /// Returns the JWT string if found, nil otherwise.
+        private func captureJWTFromWebView() async -> String? {
+            guard let webView else { return nil }
+
+            // Strategy 1: document.cookie token=...
+            let cookieJS = """
+            (function() {
+                var cookies = document.cookie.split(";");
+                for (var i = 0; i < cookies.length; i++) {
+                    var c = cookies[i].trim();
+                    if (c.startsWith("token=")) { return c.substring(6); }
+                }
+                return "";
+            })()
+            """
+            if let result = try? await webView.evaluateJavaScript(cookieJS),
+               let raw = result as? String {
+                let cleaned = cleanJSString(raw)
+                if isValidJWT(cleaned) {
+                    logger.info("ProxyAuth: JWT captured from document.cookie")
+                    return cleaned
+                }
+            }
+
+            // Strategy 2: localStorage
+            if let result = try? await webView.evaluateJavaScript("localStorage.getItem('token')"),
+               let raw = result as? String {
+                let cleaned = cleanJSString(raw)
+                if isValidJWT(cleaned) {
+                    logger.info("ProxyAuth: JWT captured from localStorage")
+                    return cleaned
+                }
+            }
+
+            logger.debug("ProxyAuth: no JWT found in WebView (proxy may not use trusted headers)")
+            return nil
+        }
+
+        private func cleanJSString(_ value: String) -> String {
+            var s = value
+            if s.hasPrefix("\"") && s.hasSuffix("\"") {
+                s = String(s.dropFirst().dropLast())
+            }
+            return s.trimmingCharacters(in: .whitespaces)
+        }
+
+        /// Basic JWT format validation: 3 dot-separated segments, minimum 50 chars.
+        private func isValidJWT(_ value: String) -> Bool {
+            guard !value.isEmpty else { return false }
+            let bad = ["null", "undefined", "false", "true", ""]
+            guard !bad.contains(value) else { return false }
+            let segments = value.split(separator: ".", omittingEmptySubsequences: false)
+            return segments.count == 3 && value.count >= 50
+        }
+
+        // MARK: - /api/config HTTP Probe (fallback)
+
+        /// Probes `GET {serverURL}/api/config` using cookies from HTTPCookieStorage.shared.
+        /// Returns true if the endpoint responds with HTTP 200 and valid JSON.
+        private func checkAPIConfigReachable() async -> Bool {
+            guard let baseURL = URL(string: serverURL) else { return false }
+            let configURL = baseURL.appendingPathComponent("api/config")
+
+            var request = URLRequest(url: configURL)
+            request.timeoutInterval = 8
+            request.setValue("application/json", forHTTPHeaderField: "Accept")
+
+            let sessionConfig = URLSessionConfiguration.default
+            sessionConfig.httpCookieStorage = HTTPCookieStorage.shared
+            sessionConfig.httpCookieAcceptPolicy = .always
+            sessionConfig.httpShouldSetCookies = true
+            sessionConfig.timeoutIntervalForRequest = 8
+            let session = URLSession(configuration: sessionConfig)
+
+            do {
+                let (data, response) = try await session.data(for: request)
+                guard let http = response as? HTTPURLResponse else { return false }
+                guard http.statusCode == 200 else {
+                    logger.debug("ProxyAuth /api/config probe: status \(http.statusCode) — not authenticated yet")
+                    return false
+                }
+                guard (try? JSONSerialization.jsonObject(with: data)) != nil else {
+                    logger.debug("ProxyAuth /api/config probe: 200 but body is not JSON — still proxied")
+                    return false
+                }
+                return true
+            } catch {
+                logger.debug("ProxyAuth /api/config probe failed: \(error.localizedDescription)")
+                return false
+            }
+        }
+
         // MARK: - Domain Check
 
         private func isOnServerDomain(_ url: URL) -> Bool {
             guard let serverHost = URL(string: serverURL)?.host?.lowercased(),
                   let currentHost = url.host?.lowercased() else { return false }
-            // Match exact host or same base domain (e.g. sub.example.com vs example.com)
             return currentHost == serverHost || currentHost.hasSuffix(".\(serverHost)")
         }
 
-        // MARK: - Cookie Capture
+        // MARK: - Cookie + JWT Capture
 
-        private func captureSessionAndSucceed() {
+        /// Captures all WKWebView cookies, attempts JWT capture, then fires onSuccess.
+        func captureSessionAndSucceed() {
             guard !didSucceed, let webView else { return }
             didSucceed = true
             timeoutTimer?.invalidate()
             timeoutTimer = nil
+            detectionTask?.cancel()
 
-            logger.info("ProxyAuth: capturing cookies and completing auth")
+            logger.info("ProxyAuth: capturing session")
 
             WKWebsiteDataStore.default().httpCookieStore.getAllCookies { [weak self, weak webView] cookies in
                 guard let self else { return }
 
-                // Build name→value dictionary of ALL cookies
                 var cookieDict: [String: String] = [:]
                 for cookie in cookies {
                     cookieDict[cookie.name] = cookie.value
                 }
-
                 self.logger.info("ProxyAuth: captured \(cookieDict.count) cookies")
 
-                // Get the WebView User-Agent
-                webView?.evaluateJavaScript("navigator.userAgent") { [weak self] ua, _ in
+                // Get the WebView User-Agent, then try to capture JWT
+                webView?.evaluateJavaScript("navigator.userAgent") { [weak self, weak webView] ua, _ in
+                    guard let self else { return }
                     let userAgent = (ua as? String) ?? ""
-                    DispatchQueue.main.async {
-                        self?.onSuccess(cookieDict, userAgent)
+
+                    // Attempt JWT capture (for oauth2-proxy trusted-header setups)
+                    Task { @MainActor [weak self, weak webView] in
+                        guard let self else { return }
+                        var jwtToken: String? = nil
+                        if let wv = webView {
+                            // Try up to 3 times with 250ms delay (JS may not have run yet)
+                            for _ in 0..<3 {
+                                jwtToken = await self.captureJWTFromWebView()
+                                if jwtToken != nil { break }
+                                try? await Task.sleep(nanoseconds: 250_000_000)
+                            }
+                        }
+                        if let jwt = jwtToken {
+                            self.logger.info("ProxyAuth: JWT token captured — user will skip second sign-in")
+                        }
+                        self.onSuccess(cookieDict, userAgent, jwtToken)
                     }
                 }
             }
@@ -212,15 +451,16 @@ struct ProxyAuthWebView: UIViewRepresentable {
 /// Full-screen sheet shown when the server is behind an authentication proxy.
 /// Presents a WKWebView so the user can log in through the proxy portal
 /// (Authelia, Authentik, Keycloak, etc.), then captures the session cookies
-/// and resumes the connection automatically.
+/// (and optionally a JWT for trusted-header setups) and resumes automatically.
 struct ProxyAuthView: View {
     let serverURL: String
-    /// Called with all captured cookies and the webView's User-Agent on success.
-    let onSuccess: ([String: String], String) -> Void
+    /// Called with captured cookies, WebView User-Agent, and optional JWT token on success.
+    let onSuccess: ([String: String], String, String?) -> Void
     let onDismiss: () -> Void
 
     @State private var isWaiting = true
     @State private var didFail = false
+    @State private var manualCapture: (() -> Void)? = nil
     @Environment(\.theme) private var theme
 
     var body: some View {
@@ -228,23 +468,27 @@ struct ProxyAuthView: View {
             ZStack(alignment: .top) {
                 ProxyAuthWebView(
                     serverURL: serverURL,
-                    onSuccess: { cookies, userAgent in
+                    onSuccess: { cookies, userAgent, jwtToken in
                         isWaiting = false
-                        onSuccess(cookies, userAgent)
+                        onSuccess(cookies, userAgent, jwtToken)
                     },
                     onFailed: {
                         isWaiting = false
                         didFail = true
+                    },
+                    onManualCapture: { captureAction in
+                        manualCapture = captureAction
                     }
                 )
                 .ignoresSafeArea(edges: .bottom)
 
+                // Top status banner (spinner while waiting)
                 if isWaiting {
                     VStack(spacing: Spacing.sm) {
                         HStack(spacing: Spacing.sm) {
                             ProgressView()
                                 .tint(theme.brandPrimary)
-                            Text("Sign in to continue — your login will be detected automatically.")
+                            Text("Sign in through your proxy — authentication will be detected automatically.")
                                 .scaledFont(size: 12, weight: .medium)
                                 .foregroundStyle(theme.textSecondary)
                         }
@@ -255,6 +499,43 @@ struct ProxyAuthView: View {
                         .padding(.top, Spacing.sm)
                     }
                     .transition(.move(edge: .top).combined(with: .opacity))
+                }
+            }
+            .safeAreaInset(edge: .bottom) {
+                // Persistent bottom banner with manual "Continue" escape hatch.
+                // Always visible so the user is never stuck regardless of proxy setup.
+                if isWaiting {
+                    VStack(spacing: Spacing.xs) {
+                        HStack(spacing: Spacing.xs) {
+                            Image(systemName: "info.circle")
+                                .font(.system(size: 13))
+                                .foregroundStyle(theme.textTertiary)
+                            Text("Tap Continue if you have signed in and the screen hasn't advanced.")
+                                .scaledFont(size: 12)
+                                .foregroundStyle(theme.textTertiary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+
+                        Button {
+                            manualCapture?()
+                        } label: {
+                            HStack(spacing: Spacing.xs) {
+                                Text("Continue")
+                                    .scaledFont(size: 15, weight: .semibold)
+                                Image(systemName: "arrow.right")
+                                    .font(.system(size: 13, weight: .semibold))
+                            }
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 12)
+                            .background(theme.brandPrimary)
+                            .foregroundStyle(.white)
+                            .clipShape(RoundedRectangle(cornerRadius: CornerRadius.md))
+                        }
+                        .padding(.horizontal, Spacing.md)
+                    }
+                    .padding(.horizontal, Spacing.md)
+                    .padding(.vertical, Spacing.sm)
+                    .background(.ultraThinMaterial)
                 }
             }
             .navigationTitle("Sign in")

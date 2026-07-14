@@ -1,5 +1,10 @@
 # Changelog
 
+## v4.15.3 — July 14, 2026
+
+### Bug Fixes
+- Improved proxy auth login reliability
+
 ## v4.15.2 — July 14, 2026
 
 ### Bug Fixes

@@ -404,8 +404,8 @@ struct ServerConnectionView: View {
         .fullScreenCover(isPresented: $viewModel.showProxyAuthChallenge) {
             ProxyAuthView(
                 serverURL: viewModel.serverURL,
-                onSuccess: { cookies, userAgent in
-                    viewModel.resumeAfterProxyAuth(cookies, userAgent: userAgent)
+                onSuccess: { cookies, userAgent, jwtToken in
+                    viewModel.resumeAfterProxyAuth(cookies, userAgent: userAgent, jwtToken: jwtToken)
                 },
                 onDismiss: {
                     viewModel.dismissProxyAuthChallenge()

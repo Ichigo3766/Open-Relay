@@ -1108,7 +1108,14 @@ final class AuthViewModel {
 
     /// Called by `ProxyAuthView` when the user has authenticated through the upstream
     /// proxy portal and we've captured the resulting session cookies.
-    func resumeAfterProxyAuth(_ cookies: [String: String], userAgent: String) {
+    ///
+    /// - Parameters:
+    ///   - cookies: Session cookies captured from the proxy WebView.
+    ///   - userAgent: The WebView's User-Agent string (needed for UA-bound proxies).
+    ///   - jwtToken: Optional JWT token captured from OpenWebUI's cookie/localStorage.
+    ///     Present when the proxy uses trusted headers and OpenWebUI auto-authenticated
+    ///     the user — allows skipping the second sign-in step entirely.
+    func resumeAfterProxyAuth(_ cookies: [String: String], userAgent: String, jwtToken: String? = nil) {
         showProxyAuthChallenge = false
         guard let urlString = pendingProxyAuthURL else {
             errorMessage = "Could not resume connection after proxy sign-in."
@@ -1140,6 +1147,14 @@ final class AuthViewModel {
 
         serverURL = urlString
         pendingProxyAuthURL = nil
+
+        // JWT fast-path: if the proxy WebView captured a valid JWT token, skip the
+        // full connect flow and use it directly (oauth2-proxy trusted-header setups).
+        if let token = jwtToken {
+            logger.info("🔑 [resumeAfterProxyAuth] JWT captured — fast-path login via SSO token")
+            Task { await loginWithSSOToken(token) }
+            return
+        }
 
         Task { await connectSkippingProxyCheck(normalizedURL: urlString, proxyAuthCookies: cookies, userAgent: userAgent) }
     }
