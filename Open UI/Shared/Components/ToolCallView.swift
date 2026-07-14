@@ -1502,26 +1502,20 @@ private struct RichUIWebView: UIViewRepresentable {
         webView.backgroundColor = .clear
 
         // ── Scroll / gesture setup ────────────────────────────────────────────
-        // Disable the scroll view entirely so it has NO gesture recognizers that
-        // compete with HTML interactive elements.
+        // Enable native scroll so 1-finger drag works inside the embed when its
+        // content is taller than the capped frame height (maxHeight = 600pt).
+        // When the content fits within the frame SwiftUI sizes the webview to its
+        // exact content height, so there is nothing to scroll and the gesture falls
+        // through naturally to the parent chat ScrollView — identical behaviour to
+        // StreamingWebPreview (HTML code block previews) which uses the same pattern.
         //
-        // Background: WKWebView's internal scroll view owns a UIScrollViewPanGestureRecognizer
-        // that has higher UIKit priority than WebKit's touch-handling. When the user
-        // drags an <input type="range"> slider, the pan recognizer fires first and
-        // claims the touch sequence — the slider thumb never moves.
-        //
-        // Setting isScrollEnabled = false removes the pan recognizer from the
-        // responder chain, giving touches directly to WebKit. The SwiftUI .frame()
-        // already constrains the webview height to content size (via postMessage /
-        // scrollHeight fallback), so vertical scrolling inside the webview is not
-        // needed — the parent chat ScrollView handles page-level scroll.
-        webView.scrollView.isScrollEnabled = false
-        webView.scrollView.bounces = false
-        webView.scrollView.showsVerticalScrollIndicator = false
+        // cancelsTouchesInView = false is kept so any pan recognizer still in the
+        // tree doesn't swallow horizontal drags (e.g. sliders inside embeds).
+        webView.scrollView.isScrollEnabled = true
+        webView.scrollView.bounces = true
+        webView.scrollView.showsVerticalScrollIndicator = true
         webView.scrollView.showsHorizontalScrollIndicator = false
         webView.scrollView.delaysContentTouches = false
-        // Belt-and-suspenders: also set cancelsTouchesInView = false so any
-        // residual recognizer still in the tree doesn't swallow horizontal drags.
         webView.scrollView.panGestureRecognizer.cancelsTouchesInView = false
 
         webView.navigationDelegate = context.coordinator

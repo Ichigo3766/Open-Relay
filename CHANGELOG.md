@@ -1,5 +1,10 @@
 # Changelog
 
+## v4.15.2 — July 14, 2026
+
+### Bug Fixes
+- Fixed Rich UI embed webviews (weather cards, dashboards, music players, etc.) not appearing after 0.10+ update
+
 ## v4.15.1 — July 9, 2026
 
 ### Bug Fixes

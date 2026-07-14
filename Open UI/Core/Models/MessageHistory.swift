@@ -420,8 +420,10 @@ struct MessageHistory: Sendable {
     ///
     /// Returns `nil` if the output array is empty or has no usable content.
     static func reconstructContentFromOutput(_ outputArr: [[String: Any]]) -> String? {
-        // First pass: build a map of call_id → result text from function_call_output items
+        // First pass: build a map of call_id → result text AND call_id → embeds
+        // from function_call_output items.
         var outputByCallId: [String: String] = [:]
+        var embedsByCallId: [String: [String]] = [:]
         for item in outputArr {
             guard (item["type"] as? String) == "function_call_output",
                   let callId = item["call_id"] as? String else { continue }
@@ -433,6 +435,14 @@ struct MessageHistory: Sendable {
                 }
                 if !texts.isEmpty {
                     outputByCallId[callId] = texts.joined(separator: "\n")
+                }
+            }
+            // Extract embeds — new server format stores Rich UI HTML here directly
+            // as a [String] array on the function_call_output item itself.
+            if let embeds = item["embeds"] as? [String] {
+                let filtered = embeds.filter { !$0.isEmpty && !$0.contains("data-iv-build") }
+                if !filtered.isEmpty {
+                    embedsByCallId[callId] = filtered
                 }
             }
         }
@@ -472,18 +482,37 @@ struct MessageHistory: Sendable {
                 let encodedResult = htmlEntityEncode(resultText)
 
                 let doneAttr = isDone ? "true" : "false"
+
+                // Build embeds attribute if this call produced Rich UI HTML embeds.
+                // The new server format stores them on the matching function_call_output
+                // item. We JSON-encode the array and HTML-entity-encode it so that
+                // parseEmbedsAttribute() in ToolCallParser can decode it unchanged.
+                let embedsAttr: String = {
+                    guard let embeds = embedsByCallId[callId], !embeds.isEmpty else { return "" }
+                    // JSON-encode the array: ["<html>...", ...]
+                    guard let jsonData = try? JSONSerialization.data(withJSONObject: embeds),
+                          let jsonStr = String(data: jsonData, encoding: .utf8) else { return "" }
+                    // HTML-entity encode for safe embedding as an attribute value
+                    let encoded = jsonStr
+                        .replacingOccurrences(of: "&", with: "&amp;")
+                        .replacingOccurrences(of: "\"", with: "&quot;")
+                        .replacingOccurrences(of: "<", with: "&lt;")
+                        .replacingOccurrences(of: ">", with: "&gt;")
+                    return " embeds=\"\(encoded)\""
+                }()
+
                 // Build the details block matching ToolCallParser expectations
                 // Result goes both as `result` attribute (fast path) and as body (fallback)
                 let block: String
                 if resultText.isEmpty {
                     block = """
-                    <details type="tool_calls" id="\(itemId)" name="\(name)" done="\(doneAttr)" arguments="\(encodedArgs)">
+                    <details type="tool_calls" id="\(itemId)" name="\(name)" done="\(doneAttr)" arguments="\(encodedArgs)"\(embedsAttr)>
                     <summary>Tool Executed</summary>
                     </details>
                     """
                 } else {
                     block = """
-                    <details type="tool_calls" id="\(itemId)" name="\(name)" done="\(doneAttr)" arguments="\(encodedArgs)" result="\(encodedResult)">
+                    <details type="tool_calls" id="\(itemId)" name="\(name)" done="\(doneAttr)" arguments="\(encodedArgs)" result="\(encodedResult)"\(embedsAttr)>
                     <summary>Tool Executed</summary>
                     \(resultText)
                     </details>
