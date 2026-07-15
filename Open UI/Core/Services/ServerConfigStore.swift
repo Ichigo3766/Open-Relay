@@ -24,14 +24,37 @@ final class ServerConfigStore {
     /// Adds or updates a server configuration.
     ///
     /// If a server with the same URL already exists, it is updated in place
-    /// (preserving its `id` and accumulated metadata). Otherwise the new
-    /// config is appended.  If this is the first server, it is made active.
+    /// (preserving its `id`, `savedAccounts`, `activeAccountId`, and all
+    /// accumulated metadata). Otherwise the new config is appended.
+    /// If this is the first server, it is made active.
     func addServer(_ config: ServerConfig) {
         if let index = servers.firstIndex(where: { $0.url.normalizedServerURL == config.url.normalizedServerURL }) {
-            // Preserve accumulated metadata when updating
-            var updated = config
-            updated = updated.preservingMetadata(from: servers[index])
-            if servers.isEmpty { updated.isActive = true }
+            // Start from the EXISTING config so we never lose the stable id,
+            // savedAccounts, or activeAccountId — then overlay the new
+            // connection settings from the incoming config.
+            var updated = servers[index]
+            updated.name = config.name
+            // Only replace customHeaders if the new config actually supplies some
+            if !config.customHeaders.isEmpty {
+                updated.customHeaders = config.customHeaders
+            }
+            updated.allowSelfSignedCertificates = config.allowSelfSignedCertificates
+            // Overlay CF data if the new config has it
+            if config.cfClearanceValue != nil {
+                updated.cfClearanceValue = config.cfClearanceValue
+                updated.cfClearanceExpiry = config.cfClearanceExpiry
+                updated.cfUserAgent = config.cfUserAgent
+                updated.isCloudflareBotProtected = config.isCloudflareBotProtected
+            }
+            // Overlay proxy auth data if the new config has it
+            if config.proxyAuthCookies != nil {
+                updated.proxyAuthCookies = config.proxyAuthCookies
+                updated.isAuthProxyProtected = config.isAuthProxyProtected
+                updated.proxyAuthPortalURL = config.proxyAuthPortalURL
+            }
+            // Overlay optional fields if supplied
+            if config.apiKey != nil { updated.apiKey = config.apiKey }
+            if config.switchStatusURL != nil { updated.switchStatusURL = config.switchStatusURL }
             servers[index] = updated
         } else {
             var newConfig = config

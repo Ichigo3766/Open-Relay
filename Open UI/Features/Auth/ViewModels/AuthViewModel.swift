@@ -804,6 +804,10 @@ final class AuthViewModel {
         // restore a signed-out user.
         clearCachedUser()
 
+        // Clear the active account pointer so the signed-out account appears
+        // as selectable (not greyed-out) in the account picker on return.
+        serverConfigStore.clearActiveAccountOnActiveServer()
+
         // SECURITY FIX: Clear SSO/OAuth cookies so the next user can't
         // auto-authenticate with the previous user's SSO session.
         clearSSOCookies()

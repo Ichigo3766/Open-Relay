@@ -117,7 +117,22 @@ final class APIClient: @unchecked Sendable {
             let statusCode = httpResponse.statusCode
 
             if [302, 307, 308].contains(statusCode) {
-                return (.proxyAuthRequired, nil)
+                // Only treat as proxy auth if the redirect goes to a DIFFERENT domain.
+                // Same-domain redirects (e.g. nginx redirecting /health → /health/) are
+                // normal HTTP behaviour and must NOT trigger the proxy auth WebView.
+                let location = httpResponse.value(forHTTPHeaderField: "Location") ?? ""
+                let serverHost = URL(string: network.serverConfig.url)?.host?.lowercased() ?? ""
+                if let locationURL = URL(string: location),
+                   let locationHost = locationURL.host?.lowercased(),
+                   !locationHost.isEmpty,
+                   locationHost != serverHost,
+                   !locationHost.hasSuffix(".\(serverHost)"),
+                   !serverHost.hasSuffix(".\(locationHost)") {
+                    // Cross-domain redirect → genuine auth proxy
+                    return (.proxyAuthRequired, nil)
+                }
+                // Same-domain or relative redirect → treat as healthy; URLSession follows it
+                return (.healthy, finalURL)
             }
 
             if [401, 403].contains(statusCode) {

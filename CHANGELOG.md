@@ -1,5 +1,12 @@
 # Changelog
 
+## v4.15.4 — July 15, 2026
+
+### Bug Fixes
+- Fixed false positive proxy detection bug.
+- Fixed adding a server with the same URL as an existing one wiping all saved accounts on that server.
+- Fixed signed-out account appearing greyed out in the account picker, preventing re-login without switching accounts first.
+
 ## v4.15.3 — July 14, 2026
 
 ### Bug Fixes

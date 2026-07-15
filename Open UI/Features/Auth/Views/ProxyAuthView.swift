@@ -246,12 +246,13 @@ struct ProxyAuthWebView: UIViewRepresentable {
             }
         }
 
-        /// Returns true if the URL path is an OpenWebUI-owned auth route,
-        /// meaning we're already past the proxy login.
+        /// Returns true if the URL path is an OpenWebUI-owned post-auth route,
+        /// meaning the proxy login is complete and OpenWebUI has taken over.
+        /// NOTE: `/auth` is intentionally NOT here — it's the OpenWebUI login page,
+        /// not a post-auth indicator. We'd immediately capture empty cookies and fail.
         private func isKnownOpenWebUIPath(_ path: String) -> Bool {
-            if path.contains("/oauth/") { return true }
-            if path == "/auth" || path.hasPrefix("/auth/") { return true }
-            if path.contains("/api/v1/auths/") { return true }
+            if path.contains("/oauth/") { return true }      // OAuth callback — post-proxy
+            if path.contains("/api/v1/auths/") { return true } // API auth call — post-proxy
             return false
         }
 
