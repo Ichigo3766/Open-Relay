@@ -280,6 +280,34 @@ final class AuthViewModel {
             normalizedURL = String(normalizedURL.dropLast())
         }
 
+        // Strip known OpenWebUI frontend route path segments that users sometimes
+        // accidentally paste into the server URL field.
+        // e.g. "https://server.com/auth"     → "https://server.com"
+        //      "https://server.com/chat/new"  → "https://server.com"
+        //      "https://server.com/s/xyz"     → "https://server.com"
+        // These are SPA routes, not the server root — sending health checks to
+        // "https://server.com/auth/health" returns HTML (the login page) which
+        // incorrectly triggers the proxy-auth WebView detection.
+        if let tempURL = URL(string: normalizedURL.hasPrefix("http") ? normalizedURL : "https://\(normalizedURL)"),
+           let host = tempURL.host {
+            let knownFrontendPaths = ["/auth", "/chat", "/s/", "/d/"]
+            let path = tempURL.path
+            let matchesFrontendRoute = knownFrontendPaths.contains(where: {
+                path == $0 || path.hasPrefix($0 + "/") || ($0.hasSuffix("/") && path.hasPrefix($0))
+            })
+            if matchesFrontendRoute {
+                let scheme = tempURL.scheme ?? "https"
+                var stripped = "\(scheme)://\(host)"
+                if let port = tempURL.port,
+                   !((scheme == "https" && port == 443) || (scheme == "http" && port == 80)) {
+                    stripped += ":\(port)"
+                }
+                logger.info("🔌 [connect] Stripping frontend route path '\(path)' from URL: \(normalizedURL) → \(stripped)")
+                normalizedURL = stripped
+                serverURL = stripped
+            }
+        }
+
         // Ensure scheme — only allow http/https for security (reject file://, javascript://, etc.)
         if !normalizedURL.hasPrefix("http://") && !normalizedURL.hasPrefix("https://") {
             normalizedURL = "https://\(normalizedURL)"
