@@ -101,7 +101,7 @@ struct ChatDetailView: View {
     /// Guard to prevent rapid-fire pagination triggers.
     @State private var isLoadingMoreMessages = false
     /// Maximum messages rendered at once (the sliding-window cap).
-    private let maxWindowSize = 20
+    private let maxWindowSize = 12
 
 
     // MARK: UI state
@@ -1768,7 +1768,11 @@ struct ChatDetailView: View {
                     isScrolledUp = false
                     userMessageJumpIndex = nil
                     windowEnd = nil
-                    windowSize = min(maxWindowSize, viewModel.messages.count)
+                    // Do NOT expand windowSize here — mounting the full maxWindowSize
+                    // worth of Litext/MarkdownView rows synchronously in one frame
+                    // causes a 2-second hang. Keep the window at its current size;
+                    // the sliding-window pagination handler will grow it naturally
+                    // if the user scrolls up after returning to the bottom.
                     if viewModel.isStreaming {
                         // During streaming, DON'T use a spring animation.
                         // A 0.45s spring fights the per-token linear pump (which fires
@@ -3511,6 +3515,44 @@ struct ChatDetailView: View {
                 var stableTickCount = 0
                 let requiredStableTicks = 2  // 2 consecutive unchanged heights = settled
                 let tickInterval: UInt64 = 80_000_000 // 80 ms per tick
+
+                // ── Part B: Pre-warm parse cache for the initial window ──────
+                // While behind the blur curtain, kick off background parsing for
+                // every assistant message in the initial window. By the time the
+                // curtain lifts, AssistantMessageContent gets a global cache hit
+                // on the very first render — zero main-thread parse work at open.
+                // This runs off-main inside the actor, piggybacking on idle time
+                // while we're already waiting for layout to settle.
+                let messages = viewModel.messages
+                let windowStart = max(0, messages.count - windowSize)
+                let windowMessages = Array(messages[windowStart...])
+                let serverBase = viewModel.serverBaseURL
+                Task(priority: .background) {
+                    // Delay warmBatch by 300 ms so the initial Litext/MarkdownView
+                    // layout burst (mounting the first window of rows) can complete
+                    // before we consume any cooperative thread-pool slots. Without
+                    // this delay, warmBatch competes with the main thread's first
+                    // layout pass and makes early scrolling feel sluggish.
+                    try? await Task.sleep(nanoseconds: 300_000_000)
+                    let contentsToParse: [String] = windowMessages.compactMap { msg -> String? in
+                        guard msg.role == .assistant else { return nil }
+                        // Replicate the same content resolution IsolatedAssistantMessage uses
+                        // (non-streaming path: resolveRelativeURLs + preprocessCitations).
+                        // Sources are empty at pre-warm time — that's fine, the cache key
+                        // includes the full resolved string, and citations are stable once
+                        // the message is loaded.
+                        let raw = msg.content
+                        guard !raw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+                        let resolved = IsolatedAssistantMessage.resolveRelativeURLs(raw, baseURL: serverBase)
+                        // Skip citation preprocessing here — sources may be empty and the
+                        // resolved-only string is a different cache key than the cited version.
+                        // The first real render will do a fast async miss→store for the cited
+                        // variant, which is still off-main. The pre-warm covers the common
+                        // case (messages without citations / no sources).
+                        return resolved
+                    }
+                    await MessageParseCache.shared.warmBatch(contentsToParse)
+                }
 
                 // Initial snap — fires before the first layout pass so
                 // .defaultScrollAnchor(.bottom) always has a partner snap.

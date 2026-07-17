@@ -54,6 +54,14 @@ struct ProfileView: View {
 
     private let genderOptions = ["Prefer not to say", "Male", "Female", "Custom"]
 
+    // MARK: - Cached Formatters
+
+    private static let dobFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "MM/dd/yyyy"
+        return f
+    }()
+
     enum ProfileImageAction {
         case keep, remove, initials, newImage(Data)
     }
@@ -533,9 +541,7 @@ struct ProfileView: View {
                 }
 
                 if let dob = user.dateOfBirth, !dob.isEmpty {
-                    let formatter = DateFormatter()
-                    formatter.dateFormat = "MM/dd/yyyy"
-                    editBirthDate = formatter.date(from: dob)
+                    editBirthDate = ProfileView.dobFormatter.date(from: dob)
                 } else {
                     editBirthDate = nil
                 }
@@ -651,13 +657,7 @@ struct ProfileView: View {
 
             let dobValue: String?
             if editBirthDate != originalBirthDate {
-                if let date = editBirthDate {
-                    let formatter = DateFormatter()
-                    formatter.dateFormat = "MM/dd/yyyy"
-                    dobValue = formatter.string(from: date)
-                } else {
-                    dobValue = nil
-                }
+                dobValue = editBirthDate.map { ProfileView.dobFormatter.string(from: $0) }
             } else {
                 dobValue = viewModel.currentUser?.dateOfBirth
             }

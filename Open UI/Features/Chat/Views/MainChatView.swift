@@ -61,6 +61,12 @@ struct MainChatView: View {
 
     /// The conversation currently being viewed. `nil` = new chat.
     @State private var activeConversationId: String?
+    /// Tracks the conversation the user last tapped so deferred navigation tasks can
+    /// guard against being superseded by a subsequent tap before they fire.
+    @State private var pendingNavigationId: String?
+    /// Extra blur applied to the content pane during a chat-switch transition.
+    /// Ramps up on tap (hiding the stale chat) and fades out once the new chat loads.
+    @State private var contentTransitionBlur: CGFloat = 0
 
     /// The channel currently being viewed. When set, replaces main content with ChannelDetailView.
     @State private var activeChannelId: String?
@@ -281,8 +287,8 @@ struct MainChatView: View {
             .offset(x: combinedContentOffset)
             .scaleEffect(combinedContentScale, anchor: .center)
             .clipShape(RoundedRectangle(cornerRadius: combinedContentCornerRadius, style: .continuous))
-            // Blur the main content as panels open
-            .blur(radius: maxPanelFraction * 8)
+            // Blur the main content as panels open, plus extra blur during chat-switch transitions
+            .blur(radius: maxPanelFraction * 8 + contentTransitionBlur)
             // Shadow on the active edge: left when drawer open, right when file browser open
             .shadow(color: .black.opacity(0.18 * drawerFraction), radius: 20, x: -4)
             .shadow(color: .black.opacity(0.18 * fileBrowserFraction), radius: 20, x: 4)
@@ -1475,8 +1481,12 @@ struct MainChatView: View {
                         .padding(.vertical, Spacing.sm)
 
                     // ── CHATS SECTION (entire section is a drop zone) ─
-                    let hasAnyChats = !listViewModel.pinnedConversations.isEmpty
-                        || !listViewModel.groupedConversations.isEmpty
+                    // Compute once — groupedConversations is O(n) + DateFormatter usage;
+                    // evaluating it multiple times per render frame wastes CPU during
+                    // drawer open/close animations.
+                    let groupedChats = listViewModel.groupedConversations
+                    let pinnedChats = listViewModel.pinnedConversations
+                    let hasAnyChats = !pinnedChats.isEmpty || !groupedChats.isEmpty
 
                     if hasAnyChats || !folderVM.folders.isEmpty {
                         VStack(alignment: .leading, spacing: 0) {
@@ -1524,13 +1534,13 @@ struct MainChatView: View {
                                 // so they don't prevent lazy row creation.
                                 LazyVStack(alignment: .leading, spacing: 0, pinnedViews: []) {
                                     // ── Pinned sub-section ────────────────────
-                                    if !listViewModel.pinnedConversations.isEmpty {
+                                    if !pinnedChats.isEmpty {
                                         // Section header
                                         drawerSubSectionHeader(title: "Pinned", sectionKey: "Pinned")
 
                                         // Rows — only rendered when section is expanded
                                         if !collapsedSections.contains("Pinned") {
-                                            ForEach(listViewModel.pinnedConversations) { conversation in
+                                            ForEach(pinnedChats) { conversation in
                                                 drawerConversationRow(conversation)
                                                     .frame(minHeight: 36)
                                             }
@@ -1538,7 +1548,7 @@ struct MainChatView: View {
                                     }
 
                                     // ── Time-grouped sub-sections ─────────────
-                                    ForEach(listViewModel.groupedConversations, id: \.0) { group in
+                                    ForEach(groupedChats, id: \.0) { group in
                                         let sectionKey = group.0
                                         let isCollapsed = collapsedSections.contains(sectionKey)
 
@@ -2026,7 +2036,7 @@ struct MainChatView: View {
                 }
             }
         }
-        .animation(.easeInOut(duration: AnimDuration.medium), value: folderVM.folders.map(\.id))
+        .animation(.easeInOut(duration: AnimDuration.medium), value: folderVM.folders.count)
     }
 
     // MARK: - Drawer Shared Folders Section
@@ -2074,7 +2084,7 @@ struct MainChatView: View {
                 }
             }
         }
-        .animation(.easeInOut(duration: AnimDuration.medium), value: folderVM.sharedFolders.map(\.id))
+        .animation(.easeInOut(duration: AnimDuration.medium), value: folderVM.sharedFolders.count)
     }
 
     /// A single shared folder row — shows folder name with a shared badge.
@@ -2351,22 +2361,46 @@ struct MainChatView: View {
                 .buttonStyle(.plain)
             } else {
                 Button {
-                    // Prewarm the target VM so ChatDetailView's load() and
-                    // .defaultScrollAnchor(.bottom) are already in flight before
-                    // the view appears. ChatDetailView's isContentReady blur+opacity
-                    // curtain will mask the chat pane until messages are loaded
-                    // and positioned at the bottom — no visible scroll, no mid-chat reveal.
                     let targetId = conversation.id
                     guard targetId != activeConversationId else { return }
-                    dependencies.activeChatStore.prewarm(conversationId: targetId, using: dependencies)
-                    activeConversationId = targetId
-                    activeChannelId = nil
-                    activeFolderWorkspaceId = nil
-                    SharedDataService.shared.saveLastActiveConversationId(targetId)
-                    // Close the drawer with a smooth spring so the sidebar slides away
-                    // while the chat pane is still masked by the blur curtain.
+
+                    // ① Blur the content pane so the old chat softens out instead of
+                    //   showing raw stale content behind the closing drawer.
+                    //   We keep activeConversationId unchanged here — the blur hides
+                    //   the old chat visually while the drawer spring runs.
+                    withAnimation(.easeOut(duration: 0.15)) {
+                        contentTransitionBlur = 10
+                    }
+
+                    // ② Close the drawer and fire haptics so the spring owns the
+                    //   frame with zero contention.
+                    pendingNavigationId = targetId
                     closeDrawerAnimated()
                     Haptics.play(.light)
+
+                    // ③ Defer the heavy work (ChatViewModel.configure + view-tree
+                    //   rebuild for ChatDetailView) until after the spring is
+                    //   well underway (~0.26 s ≈ response: 0.32 × 0.8).
+                    //   We capture targetId and guard against a superseding tap
+                    //   so a second tap before the delay expires wins cleanly.
+                    //   The blur then fades out as the new chat renders in — a
+                    //   smooth frosted-glass reveal instead of a hard swap.
+                    let deps = dependencies
+                    Task { @MainActor in
+                        try? await Task.sleep(for: .seconds(0.26))
+                        guard pendingNavigationId == targetId else {
+                            withAnimation(.easeIn(duration: 0.2)) { contentTransitionBlur = 0 }
+                            return
+                        }
+                        deps.activeChatStore.prewarm(conversationId: targetId, using: deps)
+                        activeConversationId = targetId
+                        activeChannelId = nil
+                        activeFolderWorkspaceId = nil
+                        SharedDataService.shared.saveLastActiveConversationId(targetId)
+                        pendingNavigationId = nil
+                        // Fade blur out — the new chat renders in behind the clearing fog
+                        withAnimation(.easeIn(duration: 0.22)) { contentTransitionBlur = 0 }
+                    }
                 } label: {
                     HStack {
                         Text(conversation.title)

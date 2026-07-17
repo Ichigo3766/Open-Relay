@@ -223,21 +223,33 @@ private struct CalendarContentView: View {
             guard let first = days.first, let last = days.last else { return "Calendar" }
             let firstComps = cal.dateComponents([.year, .month], from: first)
             let lastComps  = cal.dateComponents([.year, .month], from: last)
-            let fmt = DateFormatter()
             if firstComps.month == lastComps.month {
-                fmt.dateFormat = "MMMM yyyy"
-                return fmt.string(from: first)
+                return CalendarContentView.weekSameMonthFormatter.string(from: first)
             } else {
-                let m1 = DateFormatter(); m1.dateFormat = "MMM"
-                let m2 = DateFormatter(); m2.dateFormat = "MMM yyyy"
-                return "\(m1.string(from: first)) – \(m2.string(from: last))"
+                return "\(CalendarContentView.weekMonthAbbrevFormatter.string(from: first)) – \(CalendarContentView.weekMonthYearFormatter.string(from: last))"
             }
         case .day:
-            let fmt = DateFormatter()
-            fmt.dateFormat = "EEEE, MMMM d"
-            return fmt.string(from: vm.selectedDate)
+            return CalendarContentView.dayTitleFormatter.string(from: vm.selectedDate)
         }
     }
+
+    // MARK: - Cached Formatters
+
+    private static let weekSameMonthFormatter: DateFormatter = {
+        let f = DateFormatter(); f.dateFormat = "MMMM yyyy"; return f
+    }()
+
+    private static let weekMonthAbbrevFormatter: DateFormatter = {
+        let f = DateFormatter(); f.dateFormat = "MMM"; return f
+    }()
+
+    private static let weekMonthYearFormatter: DateFormatter = {
+        let f = DateFormatter(); f.dateFormat = "MMM yyyy"; return f
+    }()
+
+    private static let dayTitleFormatter: DateFormatter = {
+        let f = DateFormatter(); f.dateFormat = "EEEE, MMMM d"; return f
+    }()
 }
 
 // MARK: - Year View
@@ -347,10 +359,12 @@ private struct MiniMonthView: View {
     }
 
     private var monthName: String {
-        let fmt = DateFormatter()
-        fmt.dateFormat = "MMM"
-        return fmt.string(from: month)
+        MiniMonthView.monthAbbrevFormatter.string(from: month)
     }
+
+    private static let monthAbbrevFormatter: DateFormatter = {
+        let f = DateFormatter(); f.dateFormat = "MMM"; return f
+    }()
 
     private let weekLabels = ["S", "M", "T", "W", "T", "F", "S"]
 
@@ -452,13 +466,14 @@ private struct MonthView: View {
         }
     }
 
-    private var dayEventSection: some View {
-        let fmt = DateFormatter()
-        fmt.dateFormat = "EEEE, MMMM d"
+    private static let selectedDayFormatter: DateFormatter = {
+        let f = DateFormatter(); f.dateFormat = "EEEE, MMMM d"; return f
+    }()
 
+    private var dayEventSection: some View {
         return VStack(spacing: 0) {
             HStack {
-                Text(fmt.string(from: vm.selectedDate))
+                Text(MonthView.selectedDayFormatter.string(from: vm.selectedDate))
                     .font(.subheadline.weight(.semibold))
                     .foregroundStyle(theme.textSecondary)
                 Spacer()
@@ -768,11 +783,20 @@ private struct WeekView: View {
         await vm.loadEvents(from: start, to: end)
     }
 
+    // MARK: Cached Formatters
+
+    private static let weekdayAbbrevFormatter: DateFormatter = {
+        let f = DateFormatter(); f.dateFormat = "EEE"; return f
+    }()
+
+    private static let shortTimeFormatter: DateFormatter = {
+        let f = DateFormatter(); f.dateFormat = "h:mm"; return f
+    }()
+
     // MARK: Helpers
 
     private func weekdayAbbrev(_ date: Date) -> String {
-        let f = DateFormatter(); f.dateFormat = "EEE"
-        return f.string(from: date).uppercased()
+        WeekView.weekdayAbbrevFormatter.string(from: date).uppercased()
     }
 
     private func minutesFromMidnight(_ date: Date) -> Int {
@@ -781,8 +805,7 @@ private struct WeekView: View {
     }
 
     private func shortTime(_ date: Date) -> String {
-        let fmt = DateFormatter(); fmt.dateFormat = "h:mm"
-        return fmt.string(from: date)
+        WeekView.shortTimeFormatter.string(from: date)
     }
 
     private func hourLabel(_ hour: Int) -> String {
@@ -920,15 +943,12 @@ private struct DayView: View {
                     let dc = cal.dateComponents([.year, .month, .day], from: day)
                     let isToday = dc.year == todayComps.year && dc.month == todayComps.month && dc.day == todayComps.day
                     let isSelected = cal.isDate(day, inSameDayAs: vm.selectedDate)
-                    let wdFmt: DateFormatter = {
-                        let f = DateFormatter(); f.dateFormat = "EEE"; return f
-                    }()
                     Button {
                         vm.selectedDate = day
                         Task { await loadDayEvents() }
                     } label: {
                         VStack(spacing: 3) {
-                            Text(wdFmt.string(from: day).uppercased())
+                            Text(DayView.stripWeekdayFormatter.string(from: day).uppercased())
                                 .font(.system(size: 10, weight: .medium))
                                 .foregroundStyle(isToday ? theme.brandPrimary : theme.textTertiary)
                             ZStack {
@@ -1079,10 +1099,16 @@ private struct DayView: View {
         return cal.component(.hour, from: date) * 60 + cal.component(.minute, from: date)
     }
 
+    private static let stripWeekdayFormatter: DateFormatter = {
+        let f = DateFormatter(); f.dateFormat = "EEE"; return f
+    }()
+
+    private static let shortTimeFormatter: DateFormatter = {
+        let f = DateFormatter(); f.dateFormat = "h:mm a"; return f
+    }()
+
     private func shortTime(_ date: Date) -> String {
-        let fmt = DateFormatter()
-        fmt.dateFormat = "h:mm a"
-        return fmt.string(from: date)
+        DayView.shortTimeFormatter.string(from: date)
     }
 
     private func hourLabel(_ hour: Int) -> String {
@@ -1258,10 +1284,13 @@ struct CalendarEventRow: View {
     let vm: CalendarViewModel
     @Environment(\.theme) private var theme
 
+    private static let eventTimeFormatter: DateFormatter = {
+        let f = DateFormatter(); f.dateFormat = "h:mm a"; return f
+    }()
+
     private var timeString: String {
         if event.allDay { return "All day" }
-        let fmt = DateFormatter()
-        fmt.dateFormat = "h:mm a"
+        let fmt = CalendarEventRow.eventTimeFormatter
         if let end = event.endAt {
             return "\(fmt.string(from: event.startAt)) – \(fmt.string(from: end))"
         }

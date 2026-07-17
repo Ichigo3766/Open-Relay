@@ -308,6 +308,7 @@ struct AdminUsersListView: View {
             UserChatsSheet(
                 viewModel: viewModel,
                 serverBaseURL: dependencies.apiClient?.baseURL ?? "",
+                apiClient: dependencies.apiClient,
                 onClone: { clonedConversation in
                     showChatsSheet = false
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {

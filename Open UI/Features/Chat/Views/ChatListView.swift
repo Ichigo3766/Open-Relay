@@ -356,8 +356,8 @@ struct ChatListView: View {
             }
         }
         .listStyle(.insetGrouped)
-        .animation(.easeInOut(duration: AnimDuration.medium), value: viewModel.conversations.map(\.id))
-        .animation(.easeInOut(duration: AnimDuration.medium), value: folderVM.folders.map(\.id))
+        .animation(.easeInOut(duration: AnimDuration.medium), value: viewModel.conversations.count)
+        .animation(.easeInOut(duration: AnimDuration.medium), value: folderVM.folders.count)
         .environment(\.editMode, .constant(viewModel.isSelectionMode ? .active : .inactive))
     }
 

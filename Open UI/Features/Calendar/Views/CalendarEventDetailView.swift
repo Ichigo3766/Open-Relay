@@ -8,6 +8,21 @@ struct CalendarEventDetailView: View {
 
     @State private var showDeleteConfirm = false
 
+    // MARK: - Cached Formatters
+
+    private static let dateTimeFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateStyle = .medium
+        f.timeStyle = .short
+        return f
+    }()
+
+    private static let timeOnlyFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "h:mm a"
+        return f
+    }()
+
     private var calendarName: String {
         vm.calendars.first(where: { $0.id == event.calendarId })?.name ?? "Calendar"
     }
@@ -18,17 +33,13 @@ struct CalendarEventDetailView: View {
 
     private var timeString: String {
         if event.allDay { return "All day" }
-        let fmt = DateFormatter()
-        fmt.dateStyle = .medium
-        fmt.timeStyle = .short
+        let fmt = CalendarEventDetailView.dateTimeFormatter
         if let end = event.endAt {
             let startStr = fmt.string(from: event.startAt)
             // Same day: just show times
             let cal = Calendar.current
             if cal.isDate(event.startAt, inSameDayAs: end) {
-                let timeFmt = DateFormatter()
-                timeFmt.dateFormat = "h:mm a"
-                return "\(startStr) – \(timeFmt.string(from: end))"
+                return "\(startStr) – \(CalendarEventDetailView.timeOnlyFormatter.string(from: end))"
             }
             return "\(startStr) – \(fmt.string(from: end))"
         }

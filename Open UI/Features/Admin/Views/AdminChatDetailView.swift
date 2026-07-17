@@ -8,6 +8,8 @@ struct AdminChatDetailView: View {
     @Bindable var viewModel: AdminViewModel
     let chatItem: AdminChatItem
     let serverBaseURL: String
+    /// APIClient for loading authenticated images (user uploads + tool-generated images).
+    let apiClient: APIClient?
 
     /// Called when a clone succeeds — parent should dismiss the sheet and navigate.
     var onClone: ((Conversation) -> Void)?
@@ -17,6 +19,25 @@ struct AdminChatDetailView: View {
     @State private var showDeleteConfirmation = false
     @State private var showCloneConfirmation = false
     @State private var showCopiedToast = false
+
+    // MARK: - Scroll State
+
+    @State private var scrollPosition: ScrollPosition = .init()
+    /// True when the user has scrolled more than 80pt away from the bottom.
+    @State private var isScrolledAway = false
+
+    // MARK: - Sliding Window (pagination)
+
+    /// The ending index (exclusive) of the visible message window.
+    /// `nil` = pinned to latest (always shows the newest messages).
+    @State private var windowEnd: Int? = nil
+    /// Number of messages currently in the rendered window.
+    @State private var windowSize: Int = 20
+    /// Guard to prevent rapid-fire pagination triggers while expanding the window.
+    @State private var isLoadingMore: Bool = false
+    /// Cached distance-from-bottom, updated by the first onScrollGeometryChange observer
+    /// and consumed by the second (offset-based) observer for re-pin logic.
+    @State private var _cachedDistFromBottom: CGFloat = 0
 
     var body: some View {
         VStack(spacing: 0) {
@@ -117,18 +138,105 @@ struct AdminChatDetailView: View {
     // MARK: - Chat Content
 
     private func chatContent(_ conversation: Conversation) -> some View {
-        ScrollView {
-            LazyVStack(spacing: 0) {
-                // Chat info header
-                chatInfoHeader(conversation)
+        // ── Sliding window: compute the visible slice ──
+        let allMessages = conversation.messages
+        let total = allMessages.count
+        let effectiveEnd = windowEnd ?? total
+        let effectiveStart = max(0, effectiveEnd - windowSize)
+        let clampedEnd = min(effectiveEnd, total)
+        let visibleMessages = Array(allMessages[effectiveStart..<clampedEnd])
+        let hasMoreAbove = effectiveStart > 0
 
-                // Messages
-                ForEach(conversation.messages) { message in
-                    messageRow(message: message, conversation: conversation)
+        return ZStack(alignment: .bottomTrailing) {
+            ScrollView {
+                LazyVStack(spacing: 0) {
+                    // "Loading older messages" indicator at top of window
+                    if hasMoreAbove {
+                        ProgressView()
+                            .padding(.vertical, Spacing.md)
+                    }
+
+                    // Chat info header
+                    chatInfoHeader(conversation)
+
+                    // Windowed messages
+                    ForEach(visibleMessages) { message in
+                        messageRow(message: message, conversation: conversation)
+                    }
+                }
+                .padding(.bottom, Spacing.lg)
+            }
+            .scrollPosition($scrollPosition)
+            .defaultScrollAnchor(.bottom)
+            .scrollIndicators(.hidden)
+            .onScrollGeometryChange(for: CGFloat.self) { geo in
+                max(0, geo.contentSize.height - geo.contentOffset.y - geo.containerSize.height)
+            } action: { _, dist in
+                _cachedDistFromBottom = dist
+                // FAB visibility
+                let shouldBeAway = dist > 80
+                if shouldBeAway != isScrolledAway {
+                    withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
+                        isScrolledAway = shouldBeAway
+                    }
+                }
+                // Re-pin to latest when scrolled back near the bottom
+                let capturedTotal = total
+                if let wEnd = windowEnd, dist < 200, wEnd < capturedTotal {
+                    let slideBy = min(5, capturedTotal - wEnd)
+                    windowEnd = wEnd + slideBy
+                    if windowEnd! >= capturedTotal { windowEnd = nil }
                 }
             }
-            .padding(.bottom, Spacing.lg)
+            .onScrollGeometryChange(for: CGFloat.self) { geo in
+                geo.contentOffset.y
+            } action: { _, offsetY in
+                // Sliding window: load older messages when approaching the top
+                let capturedTotal = total
+                let capturedEffectiveStart = effectiveStart
+                if offsetY < 600, capturedEffectiveStart > 0, !isLoadingMore {
+                    isLoadingMore = true
+                    let slideBy = min(10, capturedEffectiveStart)
+                    let newStart = capturedEffectiveStart - slideBy
+                    windowSize = min(windowSize + slideBy, capturedTotal)
+                    windowEnd = min(newStart + windowSize, capturedTotal)
+                    if windowEnd! >= capturedTotal { windowEnd = nil }
+                    isLoadingMore = false
+                }
+            }
+            .onAppear {
+                windowSize = min(20, total)
+                scrollPosition.scrollTo(edge: .bottom)
+            }
+
+            // Scroll-to-bottom FAB
+            if isScrolledAway {
+                Button {
+                    withAnimation(.spring(response: 0.4, dampingFraction: 0.85)) {
+                        scrollPosition.scrollTo(edge: .bottom)
+                    }
+                    windowEnd = nil
+                    Haptics.play(.light)
+                } label: {
+                    Image(systemName: "arrow.down")
+                        .scaledFont(size: 14, weight: .semibold)
+                        .foregroundStyle(theme.textInverse)
+                        .frame(width: 36, height: 36)
+                        .background(theme.textPrimary.opacity(0.8), in: Circle())
+                        .shadow(color: .black.opacity(0.15), radius: 4, x: 0, y: 2)
+                }
+                .buttonStyle(.plain)
+                .padding(.trailing, Spacing.screenPadding)
+                .padding(.bottom, Spacing.lg)
+                .transition(.scale(scale: 0.8).combined(with: .opacity))
+                .animation(.spring(response: 0.3, dampingFraction: 0.7), value: isScrolledAway)
+            }
         }
+    }
+
+    /// Helper to compute distance from bottom from a ScrollGeometry value.
+    private func distFromBottom(_ geo: ScrollGeometry) -> CGFloat {
+        max(0, geo.contentSize.height - geo.contentOffset.y - geo.containerSize.height)
     }
 
     // MARK: - Chat Info Header
@@ -330,35 +438,127 @@ struct AdminChatDetailView: View {
 
     // MARK: - User Attachment Files
 
+    /// Returns true when a file should be rendered as an image.
+    private func isImageFile(_ file: ChatMessageFile) -> Bool {
+        if file.type == "image" { return true }
+        if file.type == "file", let ct = file.contentType, ct.hasPrefix("image/") { return true }
+        return false
+    }
+
     @ViewBuilder
     private func userAttachmentFiles(for message: ChatMessage) -> some View {
-        let imageFiles = message.files.filter { $0.type == "image" }
-        let nonImageFiles = message.files.filter { $0.type != "image" }
+        let imageFiles = message.files.filter { isImageFile($0) }
+        let nonImageFiles = message.files.filter { !isImageFile($0) }
 
         VStack(alignment: .trailing, spacing: Spacing.xs) {
             if !imageFiles.isEmpty {
-                HStack(spacing: Spacing.sm) {
-                    Spacer()
-                    ForEach(Array(imageFiles.prefix(4).enumerated()), id: \.offset) { _, file in
-                        if let fileId = file.url, !fileId.isEmpty {
-                            // Show a placeholder for images (no auth context in admin view)
-                            RoundedRectangle(cornerRadius: CornerRadius.md, style: .continuous)
-                                .fill(theme.surfaceContainer)
-                                .frame(width: 80, height: 80)
-                                .overlay {
-                                    Image(systemName: "photo")
-                                        .scaledFont(size: 20)
-                                        .foregroundStyle(theme.textTertiary)
-                                }
-                        }
-                    }
-                }
+                userImageMosaicGrid(imageFiles: imageFiles)
             }
             if !nonImageFiles.isEmpty {
                 HStack(spacing: Spacing.sm) {
                     Spacer()
                     ForEach(Array(nonImageFiles.enumerated()), id: \.offset) { _, file in
                         fileChip(file: file)
+                    }
+                }
+            }
+        }
+    }
+
+    /// Mosaic grid layout matching the real chat experience.
+    @ViewBuilder
+    private func userImageMosaicGrid(imageFiles: [ChatMessageFile]) -> some View {
+        let shown = Array(imageFiles.prefix(4))
+        let overflow = imageFiles.count - 4
+        let cornerRadius = CornerRadius.md
+
+        HStack {
+            Spacer()
+            Group {
+                switch shown.count {
+                case 1:
+                    // Single image: full-width up to 260pt
+                    if let fileId = shown[0].url, !fileId.isEmpty {
+                        AuthenticatedImageView(fileId: fileId, apiClient: apiClient)
+                            .scaledToFit()
+                            .frame(maxWidth: 260, maxHeight: 300)
+                            .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+                    }
+                case 2:
+                    // Two images side by side
+                    HStack(spacing: 2) {
+                        ForEach(Array(shown.enumerated()), id: \.offset) { _, file in
+                            if let fileId = file.url, !fileId.isEmpty {
+                                AuthenticatedImageView(fileId: fileId, apiClient: apiClient)
+                                    .scaledToFill()
+                                    .frame(width: 120, height: 160)
+                                    .clipped()
+                                    .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+                            }
+                        }
+                    }
+                case 3:
+                    // One on top, two on the bottom
+                    VStack(spacing: 2) {
+                        if let fileId = shown[0].url, !fileId.isEmpty {
+                            AuthenticatedImageView(fileId: fileId, apiClient: apiClient)
+                                .scaledToFill()
+                                .frame(width: 242, height: 160)
+                                .clipped()
+                                .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+                        }
+                        HStack(spacing: 2) {
+                            ForEach(1..<3, id: \.self) { idx in
+                                if let fileId = shown[idx].url, !fileId.isEmpty {
+                                    AuthenticatedImageView(fileId: fileId, apiClient: apiClient)
+                                        .scaledToFill()
+                                        .frame(width: 120, height: 120)
+                                        .clipped()
+                                        .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+                                }
+                            }
+                        }
+                    }
+                default:
+                    // 4 images in a 2×2 grid, with overflow badge on the last
+                    VStack(spacing: 2) {
+                        HStack(spacing: 2) {
+                            ForEach(0..<2, id: \.self) { idx in
+                                if let fileId = shown[idx].url, !fileId.isEmpty {
+                                    AuthenticatedImageView(fileId: fileId, apiClient: apiClient)
+                                        .scaledToFill()
+                                        .frame(width: 120, height: 120)
+                                        .clipped()
+                                        .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+                                }
+                            }
+                        }
+                        HStack(spacing: 2) {
+                            if let fileId = shown[2].url, !fileId.isEmpty {
+                                AuthenticatedImageView(fileId: fileId, apiClient: apiClient)
+                                    .scaledToFill()
+                                    .frame(width: 120, height: 120)
+                                    .clipped()
+                                    .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+                            }
+                            ZStack {
+                                if let fileId = shown[3].url, !fileId.isEmpty {
+                                    AuthenticatedImageView(fileId: fileId, apiClient: apiClient)
+                                        .scaledToFill()
+                                        .frame(width: 120, height: 120)
+                                        .clipped()
+                                        .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+                                }
+                                if overflow > 0 {
+                                    RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                                        .fill(.black.opacity(0.5))
+                                        .frame(width: 120, height: 120)
+                                    Text("+\(overflow)")
+                                        .scaledFont(size: 20, weight: .bold)
+                                        .foregroundStyle(.white)
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -395,16 +595,35 @@ struct AdminChatDetailView: View {
     private func messageFilesView(files: [ChatMessageFile]) -> some View {
         let imageFiles = files.filter { $0.type == "image" || ($0.contentType ?? "").hasPrefix("image/") }
         if !imageFiles.isEmpty {
-            HStack(spacing: Spacing.sm) {
-                ForEach(Array(imageFiles.prefix(4).enumerated()), id: \.offset) { _, _ in
-                    RoundedRectangle(cornerRadius: CornerRadius.md, style: .continuous)
-                        .fill(theme.surfaceContainer)
-                        .frame(height: 100)
-                        .overlay {
-                            Image(systemName: "photo")
-                                .scaledFont(size: 24)
-                                .foregroundStyle(theme.textTertiary)
-                        }
+            let columns = imageFiles.count == 1
+                ? [GridItem(.flexible())]
+                : [GridItem(.flexible()), GridItem(.flexible())]
+            LazyVGrid(columns: columns, spacing: Spacing.sm) {
+                ForEach(Array(imageFiles.enumerated()), id: \.offset) { _, file in
+                    if let fileUrl = file.url, !fileUrl.isEmpty {
+                        // Extract file ID from path (e.g. /api/v1/files/<id>/content)
+                        let fileId: String = {
+                            if !fileUrl.contains("/") { return fileUrl }
+                            let parts = fileUrl.split(separator: "/")
+                            if let idx = parts.firstIndex(of: "files"), idx + 1 < parts.count {
+                                return String(parts[idx + 1])
+                            }
+                            return fileUrl
+                        }()
+                        AuthenticatedImageView(fileId: fileId, apiClient: apiClient)
+                            .frame(maxWidth: .infinity)
+                            .aspectRatio(imageFiles.count == 1 ? nil : 1, contentMode: .fill)
+                            .clipShape(RoundedRectangle(cornerRadius: CornerRadius.md, style: .continuous))
+                    } else {
+                        RoundedRectangle(cornerRadius: CornerRadius.md, style: .continuous)
+                            .fill(theme.surfaceContainer)
+                            .frame(height: 100)
+                            .overlay {
+                                Image(systemName: "photo")
+                                    .scaledFont(size: 24)
+                                    .foregroundStyle(theme.textTertiary)
+                            }
+                    }
                 }
             }
         }

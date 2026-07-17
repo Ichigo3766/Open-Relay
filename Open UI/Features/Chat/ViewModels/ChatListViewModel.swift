@@ -89,6 +89,17 @@ final class ChatListViewModel {
     /// Number of pages to fetch in parallel per batch.
     private let batchSize = 5
 
+    // MARK: - Cached Formatters
+
+    /// Cached month-name formatter — allocated once, reused across all `groupedConversations` calls.
+    /// `DateFormatter` is one of Foundation's most expensive objects; allocating it per-call
+    /// during active drawer-open/close animations causes measurable frame drops.
+    private static let monthNameFormatter: DateFormatter = {
+        let fmt = DateFormatter()
+        fmt.dateFormat = "LLLL"  // Full month name e.g. "February"
+        return fmt
+    }()
+
     // MARK: - Computed Properties
 
     /// Pinned conversations, shown in a dedicated section.
@@ -211,8 +222,7 @@ final class ChatListViewModel {
 
         // Previous months in the current year — sorted newest month first
         let sortedMonthKeys = monthBuckets.keys.sorted().reversed()
-        let monthFormatter = DateFormatter()
-        monthFormatter.dateFormat = "LLLL"  // Full month name e.g. "February"
+        let monthFormatter = ChatListViewModel.monthNameFormatter
 
         for key in sortedMonthKeys {
             guard let convs = monthBuckets[key], !convs.isEmpty else { continue }

@@ -1,5 +1,11 @@
 # Changelog
 
+## v4.15.5 — July 17, 2026
+
+### Improvements
+- Improved drawer opening/closing and general smoothness
+- Minor performance updates
+
 ## v4.15.4 — July 15, 2026
 
 ### Bug Fixes

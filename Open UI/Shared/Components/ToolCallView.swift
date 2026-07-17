@@ -6,6 +6,137 @@ import MarkdownView
 
 private let vizLog = Logger(subsystem: "com.openui", category: "VizPipeline")
 
+// MARK: - Global Off-Main Parse Cache
+
+/// Process-lifetime, content-keyed cache for `ToolCallParser.parseOrdered` results.
+///
+/// ## Why global instead of per-instance @State
+/// Each `AssistantMessageContent` view instance carries its own `@State parseCache`
+/// which is destroyed when the sliding window recycles the row. Re-visiting a
+/// scrolled-away row forces a full re-parse on the main thread (the hot path for
+/// 80k-token chats). This actor replaces that per-instance cache with a single
+/// process-wide store keyed by a content hash, so the parse result is available
+/// instantly even after the row has been recycled and re-mounted.
+///
+/// ## Thread safety
+/// All writes and reads happen on a dedicated background executor (actor isolation).
+/// `AssistantMessageContent.body` reads the cache synchronously via a nonisolated
+/// helper that checks an `NSCache` (itself thread-safe), then fires an async Task on
+/// a background priority queue for cache misses.
+///
+/// ## Memory
+/// `NSCache` automatically evicts entries under memory pressure, so we never need
+/// to size this manually. Each entry is ~few KB (the parsed segment graph).
+actor MessageParseCache {
+    static let shared = MessageParseCache()
+
+    /// Lightweight value cached per content string.
+    struct Entry {
+        let result: ToolCallParser.OrderedParseResult
+        /// utf8 byte count of the content that produced this entry — used
+        /// as a fast pre-check before an O(N) equality test.
+        let byteCount: Int
+        /// The exact content string so we can detect hash collisions.
+        let content: String
+    }
+
+    // NSCache is thread-safe and auto-evicts under memory pressure.
+    // We wrap it in the actor so all mutations go through the actor's executor,
+    // but the *read* path below (via `lookup`) is also actor-isolated.
+    private let cache = NSCache<NSString, NSObject>()
+
+    init() {
+        // Allow ~200 entries (typical chat has far fewer assistant messages).
+        cache.countLimit = 200
+    }
+
+    // MARK: - Actor-isolated interface
+
+    /// Returns a cached entry for `content` if present, otherwise `nil`.
+    func lookup(content: String) -> ToolCallParser.OrderedParseResult? {
+        let key = cacheKey(content)
+        guard let obj = cache.object(forKey: key as NSString) as? EntryBox else { return nil }
+        // Guard against hash collisions: verify exact content match.
+        guard obj.entry.content == content else { return nil }
+        return obj.entry.result
+    }
+
+    // MARK: - Nonisolated synchronous read (for SwiftUI body)
+
+    /// Synchronous, non-actor-isolated cache lookup for use inside SwiftUI `body`.
+    ///
+    /// `NSCache` is internally thread-safe, so we can read it from any context
+    /// without hopping to the actor's executor. This avoids the `await` that
+    /// would be required for an actor-isolated call, which cannot be used in a
+    /// synchronous `body` function.
+    ///
+    /// The trade-off: we bypass actor isolation for the *read* path only.
+    /// Writes still go through `parseAndStore` (actor-isolated) which serialises
+    /// all mutations. A concurrent read of a partially-written entry is impossible
+    /// because `NSCache.setObject` is atomic and `EntryBox` is immutable after
+    /// construction — once visible, it is fully formed.
+    nonisolated func lookupSync(_ content: String) -> ToolCallParser.OrderedParseResult? {
+        let byteCount = content.utf8.count
+        let prefix = content.prefix(64)
+        let key = "\(byteCount)-\(prefix.hashValue)"
+        guard let obj = cache.object(forKey: key as NSString) as? EntryBox else { return nil }
+        guard obj.entry.content == content else { return nil }
+        return obj.entry.result
+    }
+
+    /// Parses `content` (off the main thread, inside the actor) and stores the result.
+    /// Returns the result so callers can chain without a second lookup.
+    @discardableResult
+    func parseAndStore(content: String) -> ToolCallParser.OrderedParseResult {
+        // Check again — another Task may have already done this.
+        let key = cacheKey(content)
+        if let existing = cache.object(forKey: key as NSString) as? EntryBox,
+           existing.entry.content == content {
+            return existing.entry.result
+        }
+        let result = ToolCallParser.parseOrdered(content)
+        let entry = Entry(result: result, byteCount: content.utf8.count, content: content)
+        cache.setObject(EntryBox(entry), forKey: key as NSString)
+        return result
+    }
+
+    /// Warms the cache for all provided content strings concurrently.
+    /// Safe to call from background tasks — actor isolation handles serialisation.
+    func warmBatch(_ contents: [String]) async {
+        for (i, content) in contents.enumerated() {
+            // Skip already-cached entries to avoid re-work.
+            let key = cacheKey(content)
+            if let existing = cache.object(forKey: key as NSString) as? EntryBox,
+               existing.entry.content == content {
+                continue
+            }
+            let result = ToolCallParser.parseOrdered(content)
+            let entry = Entry(result: result, byteCount: content.utf8.count, content: content)
+            cache.setObject(EntryBox(entry), forKey: key as NSString)
+            // Yield to the cooperative thread pool every 4 items so the actor
+            // doesn't monopolise a thread and starve the main-thread render loop.
+            if i % 4 == 3 { await Task.yield() }
+        }
+    }
+
+    // MARK: - Helpers
+
+    /// Fast O(1) cache key: use the content's utf8 count XORed with the prefix
+    /// hash as a cheap discriminator. Collision probability over 200 entries is
+    /// negligible; the full-content guard in `lookup`/`parseAndStore` handles it.
+    private func cacheKey(_ content: String) -> String {
+        let byteCount = content.utf8.count
+        let prefix = content.prefix(64)
+        return "\(byteCount)-\(prefix.hashValue)"
+    }
+
+    /// NSCache requires AnyObject values.
+    private final class EntryBox: NSObject {
+        let entry: Entry
+        init(_ entry: Entry) { self.entry = entry }
+    }
+}
+
 // MARK: - Tool Call Data
 
 /// Represents a parsed tool call extracted from `<details>` HTML blocks
@@ -2601,45 +2732,86 @@ struct AssistantMessageContent: View {
     /// APIClient for rendering inline images via AuthenticatedImageView.
     var apiClient: APIClient? = nil
 
-    @State private var parseCache = ParseCache()
-
-    /// Reference-type cache for ToolCallParser results. Mutating a class
-    /// property during body evaluation is safe because SwiftUI only tracks
-    /// `@State`/`@Observable` value changes, not internal class mutations.
-    private final class ParseCache {
-        /// utf8.count of the last cached content (O(1) — Swift caches this internally).
-        /// We use utf8.count rather than hashValue because hashValue is O(N)
-        /// (walks all grapheme clusters), which is the main source of per-frame CPU cost.
-        /// When the count matches, we also do a fast pointer/identity check via
-        /// `lastContent` before falling back to `==` to handle the rare case where
-        /// the byte count is stable but content changed (e.g. streaming attribute edits).
-        var lastByteCount: Int = -1
-        /// Cached content string for identity-level equality guard.
-        var lastContent: String = ""
-        var lastResult: ToolCallParser.OrderedParseResult?
-    }
+    /// Holds the result currently being displayed. On a global-cache hit the result
+    /// is injected synchronously from `body`; on a cache miss it starts as `nil`
+    /// (showing a plain-text placeholder for one frame) and is populated by an
+    /// async `Task` that runs `parseOrdered` off the main thread.
+    @State private var resolvedResult: ToolCallParser.OrderedParseResult? = nil
+    /// Tracks which content string `resolvedResult` was computed for so we don't
+    /// re-trigger async work when `body` re-evaluates with the same content.
+    @State private var resolvedContent: String = ""
+    /// Guards against duplicate `Task(priority: .userInitiated)` spawns when
+    /// SwiftUI re-evaluates `body` multiple times before the async parse settles.
+    /// Without this, rapid body re-evaluations during streaming can queue many
+    /// identical background parses, spiking CPU to 180%+.
+    @State private var parseInFlight: Bool = false
 
     var body: some View {
-        // Cache key: utf8.count is O(1) (Swift caches it on the String's internal
-        // storage). When count matches we do a fast String == check to guard against
-        // the rare case where byte count is identical but content differs (e.g.
-        // done="false" → done="true" with equal byte count). Because the string is
-        // the same object during a cache-hit frame the == fast-paths to pointer equality
-        // in most cases, costing essentially zero.
-        let byteCount = content.utf8.count
+        // ── Global cache lookup (synchronous, O(1) path) ──────────────────────
+        // MessageParseCache is an actor so we cannot call it synchronously from
+        // body. Instead the cache stores its NSCache directly — we access it
+        // via the actor's nonisolated helper to stay off the actor's executor.
         let ordered: ToolCallParser.OrderedParseResult = {
-            if byteCount == parseCache.lastByteCount && content == parseCache.lastContent,
-               let cached = parseCache.lastResult {
+            // Check if the in-view state already has the result for this exact content.
+            if resolvedContent == content, let cached = resolvedResult {
                 return cached
             }
-            let result = ToolCallParser.parseOrdered(content)
-            parseCache.lastByteCount = byteCount
-            parseCache.lastContent = content
-            parseCache.lastResult = result
-            // Log segment count and VIZ presence once per parse
+            // Ask the global cache (actor-internal NSCache, thread-safe read).
+            // We do a best-effort synchronous lookup via a nonisolated wrapper.
+            if let globalHit = MessageParseCache.shared.lookupSync(content) {
+                // Sync the result into @State so subsequent renders are free.
+                // This mutation is from within body — we defer it to the next runloop
+                // tick via a no-animation transaction to avoid "state modified during
+                // body evaluation" warnings while keeping the UI update immediate.
+                if resolvedContent != content {
+                    DispatchQueue.main.async {
+                        resolvedResult = globalHit
+                        resolvedContent = content
+                    }
+                }
+                return globalHit
+            }
+            // Cache miss — kick off background parse if not already in flight.
+            // `parseInFlight` prevents duplicate Task spawns when SwiftUI
+            // re-evaluates body multiple times before the async parse settles
+            // (common during streaming — without this guard, each re-evaluation
+            // queues another `.userInitiated` Task, spiking CPU to 180%+).
+            if resolvedContent != content && !parseInFlight {
+                parseInFlight = true
+                let contentToparse = content
+                Task(priority: .userInitiated) {
+                    let result = await MessageParseCache.shared.parseAndStore(content: contentToparse)
+                    await MainActor.run {
+                        // Only apply if content hasn't changed by the time we return.
+                        guard contentToparse == content else {
+                            parseInFlight = false
+                            return
+                        }
+                        resolvedResult = result
+                        resolvedContent = contentToparse
+                        parseInFlight = false
+                    }
+                }
+            }
+            // Return a minimal placeholder: a single text segment with the raw content.
+            // This renders as plain unformatted text for at most one frame before the
+            // async parse completes and SwiftUI swaps in the fully formatted result.
+            if let stale = resolvedResult {
+                // If we have a stale result from a prior content version (e.g. during
+                // streaming), show it rather than a raw dump — it looks better.
+                return stale
+            }
+            return ToolCallParser.OrderedParseResult(
+                segments: [.text(content)],
+                allToolCalls: []
+            )
+        }()
+
+        // Log VIZ presence once per parse (preserved from original).
+        let _ = {
             let hasViz = content.contains("@@@VIZ-START")
-            if hasViz {
-                let segTypes = result.segments.map { seg -> String in
+            if hasViz, resolvedContent == content {
+                let segTypes = ordered.segments.map { seg -> String in
                     switch seg {
                     case .text(let s): return "text(\(s.count))"
                     case .toolCall(let tc): return "toolCall(\(tc.name))"
@@ -2648,7 +2820,6 @@ struct AssistantMessageContent: View {
                 }.joined(separator: ", ")
                 vizLog.debug("AssistantMessageContent VIZ segments: \(segTypes)")
             }
-            return result
         }()
 
         let groups: [SegmentGroup] = {

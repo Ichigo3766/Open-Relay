@@ -300,15 +300,11 @@ final class CalendarViewModel {
     }
 
     var monthTitle: String {
-        let fmt = DateFormatter()
-        fmt.dateFormat = "MMMM yyyy"
-        return fmt.string(from: displayedMonth)
+        CalendarViewModel.monthTitleFormatter.string(from: displayedMonth)
     }
 
     var yearTitle: String {
-        let fmt = DateFormatter()
-        fmt.dateFormat = "yyyy"
-        return fmt.string(from: displayedMonth)
+        CalendarViewModel.yearTitleFormatter.string(from: displayedMonth)
     }
 
     var defaultCalendarId: String? {
@@ -319,6 +315,20 @@ final class CalendarViewModel {
     var editableCalendars: [OWCalendar] {
         calendars.filter { !$0.isSystem }
     }
+
+    // MARK: - Cached Formatters
+
+    private static let monthTitleFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "MMMM yyyy"
+        return f
+    }()
+
+    private static let yearTitleFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "yyyy"
+        return f
+    }()
 
     // MARK: - Private
 

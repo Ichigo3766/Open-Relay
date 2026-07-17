@@ -6,6 +6,8 @@ import SwiftUI
 struct UserChatsSheet: View {
     @Bindable var viewModel: AdminViewModel
     let serverBaseURL: String
+    /// APIClient for loading authenticated images in the chat detail view.
+    let apiClient: APIClient?
 
     /// Called when a chat is cloned — parent should dismiss and navigate to it.
     var onClone: ((Conversation) -> Void)?
@@ -57,6 +59,7 @@ struct UserChatsSheet: View {
                     viewModel: viewModel,
                     chatItem: chat,
                     serverBaseURL: serverBaseURL,
+                    apiClient: apiClient,
                     onClone: { clonedConversation in
                         onClone?(clonedConversation)
                     }

@@ -249,7 +249,9 @@ struct FolderRow: View {
                 }
             }
             .padding(.leading, Spacing.lg + Spacing.sm) // Indent under folder
-            .transition(.opacity.combined(with: .move(edge: .top)))
+            // Single animation source: AnimatedPresence handles height interpolation.
+            // The inner .move transition was a redundant second animation on the same
+            // expand gesture, causing occasional janky expansion on folders with many rows.
         }
     }
 }
