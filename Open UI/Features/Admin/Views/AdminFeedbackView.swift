@@ -359,7 +359,7 @@ private struct AdminFeedbackDetailSheet: View {
             detailSectionHeader("Conversation")
 
             if let prompt = item.promptMessage {
-                messageBlock(role: "User", content: prompt.content ?? "", color: theme.brandPrimary)
+                messageBlock(role: "User", content: prompt.content, color: theme.brandPrimary)
             }
 
             if let response = item.ratedMessage {
@@ -562,7 +562,6 @@ private struct FlowLayout: Layout {
     }
 
     func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
-        let containerWidth = bounds.width
         var x: CGFloat = bounds.minX
         var y: CGFloat = bounds.minY
         var rowHeight: CGFloat = 0

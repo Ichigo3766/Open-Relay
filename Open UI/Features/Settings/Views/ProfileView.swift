@@ -56,11 +56,37 @@ struct ProfileView: View {
 
     // MARK: - Cached Formatters
 
-    private static let dobFormatter: DateFormatter = {
+    /// ISO 8601 date formatter used to parse and serialise the birth date (YYYY-MM-DD).
+    /// Locale is fixed to en_US_POSIX so the format is never locale-sensitive.
+    /// No explicit timezone — uses the device's local timezone so that "1999-12-29"
+    /// parses as midnight local time and displays correctly in the UI.
+    private static let dobAPIFormatter: DateFormatter = {
         let f = DateFormatter()
-        f.dateFormat = "MM/dd/yyyy"
+        f.dateFormat = "yyyy-MM-dd"
+        f.locale = Locale(identifier: "en_US_POSIX")
         return f
     }()
+
+    /// Parse a date string returned by the server.
+    /// Handles multiple formats the server may return:
+    ///   "1999-12-28"               (pure date)
+    ///   "1999-12-28T00:00:00"      (datetime, no timezone)
+    ///   "1999-12-28T00:00:00Z"     (datetime UTC)
+    private static func parseDOB(_ string: String) -> Date? {
+        // Fast path: plain date string
+        if let d = dobAPIFormatter.date(from: string) {
+            print("[DOB] parseDOB('\(string)') → plain parse succeeded → \(d)")
+            return d
+        }
+        // Fallback: datetime string — strip time component and parse date part
+        let datePart = String(string.prefix(10))
+        if let d = dobAPIFormatter.date(from: datePart) {
+            print("[DOB] parseDOB('\(string)') → fallback datePart '\(datePart)' → \(d)")
+            return d
+        }
+        print("[DOB] parseDOB('\(string)') → ALL formats FAILED, returning nil")
+        return nil
+    }
 
     enum ProfileImageAction {
         case keep, remove, initials, newImage(Data)
@@ -519,15 +545,21 @@ struct ProfileView: View {
             defer { isLoadingSettings = false }
 
             // 1. Fetch fresh user data from server
+            // IMPORTANT: capture freshUser locally so we populate the form from the
+            // live network response — not from viewModel.currentUser which may still
+            // hold the old cached value at the point the guard runs.
+            var userToLoad: User?
             do {
                 let freshUser = try await api.getCurrentUser()
                 await MainActor.run { viewModel.currentUser = freshUser }
                 viewModel.cacheCurrentUser()
+                userToLoad = freshUser
             } catch {
                 // Fall back to cached user if server fetch fails
+                userToLoad = viewModel.currentUser
             }
 
-            guard let user = viewModel.currentUser else { return }
+            guard let user = userToLoad else { return }
 
             await MainActor.run {
                 // 2. Populate form fields from (fresh) user
@@ -540,9 +572,13 @@ struct ProfileView: View {
                     editGender = "Prefer not to say"
                 }
 
+                print("[DOB] user.dateOfBirth from server = '\(user.dateOfBirth ?? "nil")'")
                 if let dob = user.dateOfBirth, !dob.isEmpty {
-                    editBirthDate = ProfileView.dobFormatter.date(from: dob)
+                    let parsed = ProfileView.parseDOB(dob)
+                    print("[DOB] editBirthDate set to: \(parsed?.description ?? "nil")")
+                    editBirthDate = parsed
                 } else {
+                    print("[DOB] dateOfBirth is nil or empty — setting editBirthDate = nil")
                     editBirthDate = nil
                 }
 
@@ -657,7 +693,7 @@ struct ProfileView: View {
 
             let dobValue: String?
             if editBirthDate != originalBirthDate {
-                dobValue = editBirthDate.map { ProfileView.dobFormatter.string(from: $0) }
+                dobValue = editBirthDate.map { ProfileView.dobAPIFormatter.string(from: $0) }
             } else {
                 dobValue = viewModel.currentUser?.dateOfBirth
             }

@@ -375,7 +375,21 @@ final class APIClient: @unchecked Sendable {
     }
 
     func getCurrentUser() async throws -> User {
-        try await network.request(User.self, path: "/api/v1/auths/")
+        // Use requestRaw + plain JSONDecoder (no .convertFromSnakeCase) so that
+        // User's explicit CodingKeys (which use snake_case raw values like "date_of_birth",
+        // "is_active", "profile_image_url") match the JSON keys exactly.
+        // NetworkManager.request() sets keyDecodingStrategy = .convertFromSnakeCase, which
+        // pre-transforms "date_of_birth" → "dateOfBirth" before matching CodingKeys — but
+        // User.CodingKeys declares the raw value as "date_of_birth", so the key is never
+        // found and dateOfBirth decodes as nil even when the server sends it correctly.
+        let (data, _) = try await network.requestRaw(path: "/api/v1/auths/")
+        do {
+            let decoder = JSONDecoder()
+            // No keyDecodingStrategy — User has explicit CodingKeys with snake_case raw values
+            return try decoder.decode(User.self, from: data)
+        } catch {
+            throw APIError.responseDecoding(underlying: error, data: data)
+        }
     }
 
     func updateAuthToken(_ token: String?) {

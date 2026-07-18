@@ -428,7 +428,7 @@ struct ProxyAuthWebView: UIViewRepresentable {
                     Task { @MainActor [weak self, weak webView] in
                         guard let self else { return }
                         var jwtToken: String? = nil
-                        if let wv = webView {
+                        if webView != nil {
                             // Try up to 3 times with 250ms delay (JS may not have run yet)
                             for _ in 0..<3 {
                                 jwtToken = await self.captureJWTFromWebView()
@@ -436,7 +436,7 @@ struct ProxyAuthWebView: UIViewRepresentable {
                                 try? await Task.sleep(nanoseconds: 250_000_000)
                             }
                         }
-                        if let jwt = jwtToken {
+                        if jwtToken != nil {
                             self.logger.info("ProxyAuth: JWT token captured — user will skip second sign-in")
                         }
                         self.onSuccess(cookieDict, userAgent, jwtToken)

@@ -6310,7 +6310,7 @@ final class ChatViewModel {
             if let model = m.model { msg["modelName"] = model }
             msg["modelIdx"] = 0
             if let annotation = m.annotation {
-                var ann: [String: Any] = ["rating": annotation.rating]
+                var ann: [String: Any] = ["rating": annotation.rating as Any]
                 if !annotation.tags.isEmpty { ann["tags"] = annotation.tags }
                 if let reason = annotation.reason { ann["reason"] = reason }
                 if let comment = annotation.comment { ann["comment"] = comment }

@@ -14,12 +14,12 @@ struct AppUpdateInfo: Identifiable, Sendable {
 
 // MARK: - iTunes Lookup Response Models
 
-private struct ITunesLookupResponse: Decodable {
+private struct ITunesLookupResponse: Decodable, Sendable {
     let resultCount: Int
     let results: [ITunesAppResult]
 }
 
-private struct ITunesAppResult: Decodable {
+private struct ITunesAppResult: Decodable, Sendable {
     let version: String
     let releaseNotes: String?
     let trackViewUrl: String

@@ -43,7 +43,10 @@ actor MessageParseCache {
     // NSCache is thread-safe and auto-evicts under memory pressure.
     // We wrap it in the actor so all mutations go through the actor's executor,
     // but the *read* path below (via `lookup`) is also actor-isolated.
-    private let cache = NSCache<NSString, NSObject>()
+    // `nonisolated(unsafe)` lets the synchronous `lookupSync` helper read
+    // this property without hopping to the actor executor — safe because
+    // NSCache's own locking guarantees atomicity for object reads/writes.
+    nonisolated(unsafe) private let cache = NSCache<NSString, NSObject>()
 
     init() {
         // Allow ~200 entries (typical chat has far fewer assistant messages).
