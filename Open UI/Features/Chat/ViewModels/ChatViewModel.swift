@@ -271,6 +271,10 @@ final class ChatViewModel {
     /// functionCallingMode — prevents the race where the user selects
     /// a model and immediately sends before the config fetch completes.
     private var modelConfigTask: Task<Void, Never>?
+    /// Tracks the most recent user-default-params fetch so `populateCommonRequestFields`
+    /// can await it before building a request — prevents the race where params are read
+    /// before the async fetch completes (which caused the system prompt to be ignored).
+    private var userDefaultParamsTask: Task<Void, Never>?
     private var chatSubscription: SocketSubscription?
     private var channelSubscription: SocketSubscription?
     /// Persistent passive socket listener that observes events for this chat
@@ -1386,6 +1390,10 @@ final class ChatViewModel {
                     // avoids triggering on quick app-switcher glances which
                     // would cause scroll position loss and a flicker).
                     await self.syncWithServer()
+                    // Re-fetch user default params so any system prompt or inference
+                    // param changes made on another device or the web UI are picked
+                    // up immediately for the next chat request.
+                    await self.fetchUserDefaultParamsFromServer()
                 } else {
                     self.logger.debug("Foreground sync skipped — background duration \(bgDuration)s < 10s")
                 }
@@ -5170,7 +5178,10 @@ final class ChatViewModel {
         // value is cached for when a capable model is selected later.
         Task { await fetchMemorySettingFromServer() }
         Task { await fetchMessageQueueSettingFromServer() }
-        Task { await fetchUserDefaultParamsFromServer() }
+        // Store the task so populateCommonRequestFields can await it before
+        // building a request — prevents the race where params are read before
+        // the fetch completes (which caused the system prompt to be ignored).
+        userDefaultParamsTask = Task { await fetchUserDefaultParamsFromServer() }
 
         // Reset and re-populate tool selections for this model.
         // Clear first so tools from a previous model don't persist.
@@ -5275,14 +5286,11 @@ final class ChatViewModel {
     // MARK: - User Default Params
 
     /// Fetches the user's default params (`ui.system` + `ui.params`) from the server.
-    /// Uses session-level cache so the GET is called at most once per session.
-    /// These are stored by `UserSettingsView` and applied server-side; the client
-    /// does NOT inject them into chat requests — the server handles that automatically.
+    /// Always re-fetches so changes made on other devices or the web UI are picked
+    /// up immediately — no stale system prompt or param override is ever injected.
+    /// The result is stored in `activeChatStore?.cachedUserDefaultParams` for use
+    /// by the current request; previous value is replaced on each successful fetch.
     func fetchUserDefaultParamsFromServer() async {
-        if activeChatStore?.cachedUserDefaultParams != nil {
-            // Already cached — nothing to do
-            return
-        }
         guard let apiClient = manager?.apiClient else { return }
         do {
             let params = try await apiClient.fetchUserDefaultParams()
@@ -5397,6 +5405,10 @@ final class ChatViewModel {
 
         // Await any pending model config fetch (ensures functionCallingMode is populated)
         await modelConfigTask?.value
+        // Await any pending user default params fetch (ensures system prompt and params
+        // are populated before building the request — prevents the race where params are
+        // read as nil when the user sends immediately after opening a new chat).
+        await userDefaultParamsTask?.value
 
         // Build request params: chat-level overrides + system prompt + function_calling
         // Priority: per-chat params > user My Defaults params

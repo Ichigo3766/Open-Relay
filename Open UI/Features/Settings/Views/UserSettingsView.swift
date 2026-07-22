@@ -80,11 +80,8 @@ struct UserSettingsView: View {
     // MARK: - Load / Save
 
     private func loadIfNeeded() async {
-        // Use cached value if available
-        if let cached = dependencies.activeChatStore.cachedUserDefaultParams {
-            draft = cached
-            return
-        }
+        // Always fetch from server so the sheet shows the current value,
+        // not a stale cached value from a previous session or another device.
         isLoading = true
         defer { isLoading = false }
         do {

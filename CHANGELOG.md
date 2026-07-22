@@ -1,5 +1,14 @@
 # Changelog
 
+## v4.15.6 — July 22, 2026
+
+### Bug Fixes
+- Fixed connection stalling immediately after login in some cases.
+- Fixed Settings → Server connection check getting permanently stuck on "Checking" with a gray dot instead of resolving to green or red.
+- Fixed default system prompt and inference parameters going stale — the app now re-fetches your settings from the server when returning from background and when starting a new chat, so changes made on the web UI or another device are picked up immediately.
+
+## Previous Builds
+
 ## v4.15.5 — July 17, 2026
 
 ### Improvements

@@ -219,21 +219,52 @@ struct ServerManagementView: View {
     private func checkHealth() async {
         guard let config = activeServer else { return }
         isCheckingHealth = true
+        // Reset so the dot shows "checking" (gray) rather than a stale prior result
+        serverHealthy = nil
+
         let client = APIClient(serverConfig: config)
         // Re-use the existing auth token so the request is authenticated
         if let token = dependencies.apiClient?.network.authToken {
             client.updateAuthToken(token)
         }
-        async let healthTask = client.checkHealth()
-        async let configTask: BackendConfig? = try? await client.getBackendConfig()
-        let (healthy, freshConfig) = await (healthTask, configTask)
-        serverHealthy = healthy
-        if let fresh = freshConfig {
-            refreshedConfig = fresh
-            // Keep the view model in sync too
-            viewModel.backendConfig = fresh
+
+        // Use checkHealthFast(timeout: 8) instead of checkHealth() so the request
+        // carries an explicit per-request timeout.  NetworkManager sets
+        // waitsForConnectivity = true on the URLSession, which suppresses the
+        // session-level timeoutIntervalForRequest (30 s) when iOS momentarily reports
+        // the network path as unsatisfied — leaving plain checkHealth() stalled forever.
+        // A per-request timeout is honoured regardless of waitsForConnectivity.
+        //
+        // A hard 12 s outer deadline guarantees isCheckingHealth resets even if
+        // both requests somehow hang (e.g. TCP black-hole with no RST).
+        await withTaskGroup(of: Void.self) { group in
+            group.addTask {
+                async let healthTask = client.checkHealthFast(timeout: 8)
+                async let configTask: BackendConfig? = try? await client.getBackendConfig()
+                let (healthy, freshConfig) = await (healthTask, configTask)
+                await MainActor.run {
+                    self.serverHealthy = healthy
+                    if let fresh = freshConfig {
+                        self.refreshedConfig = fresh
+                        // Keep the view model in sync too
+                        self.viewModel.backendConfig = fresh
+                    }
+                    self.isCheckingHealth = false
+                }
+            }
+            // Hard deadline — if the tasks haven't resolved in 12 s, mark as failed.
+            group.addTask {
+                try? await Task.sleep(for: .seconds(12))
+                await MainActor.run {
+                    guard self.isCheckingHealth else { return }
+                    self.serverHealthy = false
+                    self.isCheckingHealth = false
+                }
+            }
+            // Let whichever task wins cancel the other
+            _ = await group.next()
+            group.cancelAll()
         }
-        isCheckingHealth = false
     }
 
     // MARK: - Accounts Section

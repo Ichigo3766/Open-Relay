@@ -25,7 +25,15 @@ final class NetworkManager: NSObject, Sendable {
         let configuration = URLSessionConfiguration.default
         configuration.timeoutIntervalForRequest = 30
         configuration.timeoutIntervalForResource = 300
-        configuration.waitsForConnectivity = true
+        // Do NOT set waitsForConnectivity = true here.
+        // When true, iOS silently suppresses timeoutIntervalForRequest whenever the
+        // network path is momentarily "unsatisfied" (which happens briefly after a
+        // burst of login traffic as the radio settles). This causes all API calls —
+        // getBackendConfig, getCurrentUser, loadModels, etc. — to hang indefinitely
+        // rather than failing fast and allowing the connection monitor to recover.
+        // Per-request timeouts (used by checkHealthFast and health checks) bypass this
+        // behaviour, but regular API calls have no such override and will stall forever.
+        // Removing this flag restores the expected 30s timeout behaviour on all calls.
 
         // Disable URLSession HTTP caching — the app is API-driven with its own
         // ImageCacheService, and the default URLCache causes unbounded disk growth.
