@@ -35,6 +35,13 @@ struct HistoryNode: Sendable {
     var annotation: MessageAnnotation?
     /// Server-assigned feedback record ID.
     var feedbackId: String?
+    /// Raw `output` array from the server (v0.7+). Stored as-is and re-emitted
+    /// verbatim on every sync so the server's canonical format is never corrupted.
+    /// Content is reconstructed from this array during parsing but the original
+    /// array must survive the round-trip so that `files`, `images`, and other
+    /// server-derived metadata (e.g. from `function_call_output`) are preserved
+    /// even when the node is on an inactive branch.
+    var output: [[String: Any]]
 
     init(
         id: String = UUID().uuidString,
@@ -54,7 +61,8 @@ struct HistoryNode: Sendable {
         embeds: [String] = [],
         models: [String] = [],
         annotation: MessageAnnotation? = nil,
-        feedbackId: String? = nil
+        feedbackId: String? = nil,
+        output: [[String: Any]] = []
     ) {
         self.id = id
         self.parentId = parentId
@@ -74,6 +82,7 @@ struct HistoryNode: Sendable {
         self.models = models
         self.annotation = annotation
         self.feedbackId = feedbackId
+        self.output = output
     }
 
     // MARK: - Serialization
@@ -176,6 +185,14 @@ struct HistoryNode: Sendable {
                 return d
             }
             dict["statusHistory"] = statusArray
+        }
+
+        // Re-emit the raw output array verbatim so the server's v0.7+ format is
+        // preserved across every sync. Without this, the server loses the `output`
+        // array and falls back to `content` only — which strips `files` and breaks
+        // image rendering when switching between regenerated versions.
+        if !output.isEmpty {
+            dict["output"] = output
         }
 
         return dict
@@ -735,6 +752,11 @@ struct MessageHistory: Sendable {
         // Parse feedbackId
         let feedbackId = msg["feedbackId"] as? String
 
+        // Preserve the raw output array (v0.7+) so it can be re-emitted verbatim
+        // on every sync. This prevents the server's canonical format from being
+        // corrupted when the app re-serializes a node it loaded from the server.
+        let rawOutput = msg["output"] as? [[String: Any]] ?? []
+
         return HistoryNode(
             id: id,
             parentId: parentId,
@@ -753,7 +775,8 @@ struct MessageHistory: Sendable {
             embeds: embeds,
             models: models,
             annotation: annotation,
-            feedbackId: feedbackId
+            feedbackId: feedbackId,
+            output: rawOutput
         )
     }
 }

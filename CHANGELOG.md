@@ -1,5 +1,18 @@
 # Changelog
 
+## v4.15.7 — July 23, 2026
+
+### Improvements
+- Smoother animation when switching between message versions
+
+### Bug Fixes
+- Fixed connection stalling and "Server Unreachable" overlay appearing immediately after login when using a local/LAN-only server.
+- Fixed deleted message versions reappearing after regenerating a response in the same session.
+- Fixed tool-generated attachments not being saved to the server, causing them to disappear when switching versions in the app.
+- Fixed editing a message with attachments — the edit bar now shows existing attachments as chips with a × button to remove them before resending.
+
+## Previous Builds
+
 ## v4.15.6 — July 22, 2026
 
 ### Bug Fixes

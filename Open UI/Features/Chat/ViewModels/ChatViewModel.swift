@@ -295,6 +295,10 @@ final class ChatViewModel {
     private(set) var sessionId: String = UUID().uuidString
     private let logger = Logger(subsystem: "com.openui", category: "ChatViewModel")
     private var hasFinishedStreaming = false
+    /// IDs of nodes explicitly deleted by the user this session.
+    /// Prevents `adoptServerMessages` from re-adding them if the server
+    /// still returns them (e.g. in chatCompleted after a delete+regenerate).
+    private var deletedMessageIds: Set<String> = []
     /// Monotonically incrementing counter identifying the current streaming session.
     /// Incremented every time a new stream starts. Captured by the `onDrained` callback
     /// so it can detect when a new stream has started (e.g., via queue drain) and
@@ -948,6 +952,8 @@ final class ChatViewModel {
             // Versions are now stored as sibling messages on the server,
             // so server-fetched data already contains them.
             conversation = fetched
+            // Clear the deleted-node blacklist — fresh load from server is the source of truth
+            deletedMessageIds = []
             // Populate tasks from the server conversation
             tasks = fetched.tasks
             // Always adopt the last-used model for existing chats.
@@ -1168,8 +1174,10 @@ final class ChatViewModel {
                         conversation?.history.nodes[id] = updated
                     }
                 } else {
-                    // New node from server — add directly
-                    conversation?.history.nodes[id] = serverNode
+                    // New node from server — add only if not explicitly deleted this session
+                    if !deletedMessageIds.contains(id) {
+                        conversation?.history.nodes[id] = serverNode
+                    }
                 }
             }
             // Update currentId from server unless we're actively streaming
@@ -3524,7 +3532,10 @@ final class ChatViewModel {
     /// - AI version indicators only show on their own branch's assistant
     /// - WebUI can navigate branches (each branch has unique assistant IDs)
     /// - Switching back to an old branch restores all downstream messages
-    func editMessage(id: String, newContent: String) async {
+    /// Edits a user message. If `files` is provided, the new node uses those
+    /// files (allowing attachment removal); otherwise it inherits the original
+    /// node's files unchanged.
+    func editMessage(id: String, newContent: String, files: [ChatMessageFile]? = nil) async {
         guard !isStreaming || isExternallyStreaming else { return }
         guard conversation != nil else { return }
 
@@ -3541,6 +3552,8 @@ final class ChatViewModel {
 
         // 3. Create a NEW user node (new UUID) with the edited content.
         //    This is a sibling of the old user node under the same parent.
+        //    Use caller-provided files if given (e.g. after removing an attachment),
+        //    otherwise inherit from the original node.
         let newUserId = UUID().uuidString
         let newUserNode = HistoryNode(
             id: newUserId,
@@ -3549,9 +3562,10 @@ final class ChatViewModel {
             role: .user,
             content: newContent,
             timestamp: .now,
-            files: oldNode.files,
+            files: files ?? oldNode.files,
             models: oldNode.models
         )
+
         conversation!.history.nodes[newUserId] = newUserNode
 
         // 4. Add the new user node as a child of the parent (if parent exists).
@@ -3664,8 +3678,11 @@ final class ChatViewModel {
         let leaf = conversation!.history.deepestLeaf(from: targetAssistantId)
         conversation!.history.currentId = leaf
 
-        // Re-derive the flat message list from the new active branch.
-        conversation!.rederiveMessages()
+        // Re-derive the flat message list from the new active branch, animated so
+        // SwiftUI cross-fades the changed rows instead of abruptly swapping them.
+        withAnimation(.easeInOut(duration: 0.2)) {
+            conversation!.rederiveMessages()
+        }
 
         // Navigation-only: use syncCurrentIdToServer to avoid corrupting tree order.
         Task { await syncCurrentIdToServer() }
@@ -3693,8 +3710,18 @@ final class ChatViewModel {
         let leaf = conversation!.history.deepestLeaf(from: targetSiblingId)
         conversation!.history.currentId = leaf
 
-        // Re-derive the flat message list from the new active branch.
-        conversation!.rederiveMessages()
+        // Re-derive the flat message list from the new active branch, animated so
+        // SwiftUI cross-fades the changed rows instead of abruptly swapping them.
+        withAnimation(.easeInOut(duration: 0.2)) {
+            conversation!.rederiveMessages()
+            // Re-extract image/file URLs from tool-call blocks in the switched message's
+            // content. These URLs live inside <details type="tool_calls"> and are not stored
+            // in node.files on the server, so they must be re-parsed after every version switch.
+            populateFilesFromToolResults(messageId: targetSiblingId)
+            if leaf != targetSiblingId {
+                populateFilesFromToolResults(messageId: leaf)
+            }
+        }
 
         // Sync ONLY currentId to server — do NOT call syncFlatMessagesToTreeNodes()
         // first. Version switching is navigation-only: no content changed, so copying
@@ -3719,7 +3746,18 @@ final class ChatViewModel {
 
         let leaf = conversation!.history.deepestLeaf(from: targetSiblingId)
         conversation!.history.currentId = leaf
-        conversation!.rederiveMessages()
+        withAnimation(.easeInOut(duration: 0.2)) {
+            conversation!.rederiveMessages()
+
+            // Re-extract image/file URLs from tool-call blocks for all assistant messages
+            // on the newly active branch. When switching user versions, the assistant
+            // messages that follow may not have files stored in node.files (they live
+            // inside <details type="tool_calls"> in the content), so we re-parse them
+            // to ensure images render correctly after a user version switch.
+            for msg in conversation!.messages where msg.role == .assistant {
+                populateFilesFromToolResults(messageId: msg.id)
+            }
+        }
 
         // Same as restoreAssistantVersionById — navigation only, skip flat→tree copy.
         Task { await syncCurrentIdToServer() }
@@ -3936,6 +3974,20 @@ final class ChatViewModel {
 
         guard conversation!.history.nodes[id] != nil else { return }
         let parentId = conversation!.history.nodes[id]!.parentId
+
+        // Collect all subtree IDs before removal so we can blacklist them.
+        // This prevents adoptServerMessages from re-adding them if the server
+        // still returns these nodes (e.g. in chatCompleted after delete+regenerate).
+        var subtreeIds: [String] = []
+        var queue = [id]
+        while !queue.isEmpty {
+            let current = queue.removeFirst()
+            subtreeIds.append(current)
+            if let children = conversation!.history.nodes[current]?.childrenIds {
+                queue.append(contentsOf: children)
+            }
+        }
+        deletedMessageIds.formUnion(subtreeIds)
 
         // Remove the node and its entire subtree (also cleans up parent's childrenIds)
         conversation!.history.removeSubtree(rootId: id)
@@ -4423,6 +4475,10 @@ final class ChatViewModel {
                     // This handles the case where the server metadata doesn't include
                     // files but the tool response clearly references generated images.
                     self.populateFilesFromToolResults(messageId: assistantMessageId)
+                    // Re-sync to server so the extracted files array is persisted.
+                    // Without this, the tree node has files but the server still shows
+                    // files:[] and WebUI can't render images when switching versions.
+                    await self.syncToServerViaTree()
                 } else {
                     // Files already present — just wait for follow-ups/title
                     try? await Task.sleep(nanoseconds: 5_000_000_000)
@@ -4501,6 +4557,10 @@ final class ChatViewModel {
 
         // Last resort: extract file IDs from tool call results in content
         populateFilesFromToolResults(messageId: assistantMessageId)
+        // Re-sync to server so the extracted files array is persisted.
+        // Without this, the tree node has files but the server still shows
+        // files:[] and WebUI can't render images when switching versions.
+        await syncToServerViaTree()
 
         // NOTE: Do NOT call saveConversationToServer() here — same reason
         // as finishStreamingSuccessfully. The server's chatCompleted has the
@@ -5572,12 +5632,16 @@ final class ChatViewModel {
     private func collectHistoryFileRefs(excludingId: String?) async -> [[String: Any]] {
         guard let conv = conversation else { return [] }
 
-        // Gather files from all user nodes in the tree (preferred) or flat messages.
+        // Gather files only from user messages on the ACTIVE branch (flat list).
+        // Using all tree nodes would include sibling/version nodes from inactive
+        // branches — e.g. the old user node after an edit with an attachment
+        // removed — causing the removed file to be re-added to the request.
         var allStoredFiles: [ChatMessageFile] = []
+        let activeMsgIds = Set(conv.messages.map { $0.id })
         let userNodes: [HistoryNode]
         if conv.history.isPopulated {
             userNodes = conv.history.nodes.values
-                .filter { $0.role == .user && $0.id != excludingId }
+                .filter { $0.role == .user && $0.id != excludingId && activeMsgIds.contains($0.id) }
                 .sorted { $0.timestamp < $1.timestamp }
         } else {
             // Fallback: use flat messages array
@@ -6265,7 +6329,16 @@ final class ChatViewModel {
         if !extractedFiles.isEmpty {
             logger.info("Extracted \(extractedFiles.count) file(s) from tool results for message \(messageId)")
             conversation?.messages[index].files = extractedFiles
+            // Also update the history tree node so syncToServerViaTree() persists the
+            // files array — without this the server receives files:[] and WebUI can't
+            // render the image when switching between versions.
+            conversation?.history.updateNode(id: messageId) { node in
+                if node.files.isEmpty {
+                    node.files = extractedFiles
+                }
+            }
         }
+
     }
 
     private func appendSources(id: String, sources: [ChatSourceReference]) {

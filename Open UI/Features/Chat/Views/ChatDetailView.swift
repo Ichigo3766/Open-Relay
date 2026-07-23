@@ -136,6 +136,7 @@ struct ChatDetailView: View {
     // MARK: Inline edit
     @State private var editingMessageId: String?
     @State private var editingMessageText = ""
+    @State private var editingMessageFiles: [ChatMessageFile] = []
     @FocusState private var isEditFieldFocused: Bool
 
     // MARK: User message version navigation
@@ -1903,7 +1904,9 @@ struct ChatDetailView: View {
                 let index = indexMap[message.id] ?? 0
                 messageRow(message: message, index: index)
                     .id(message.id)
+                    .transition(.opacity)
             }
+            .animation(.easeInOut(duration: 0.2), value: messages.prefix(splitAt).map(\.id))
 
             // ── Last turn (user msg + assistant reply) with minHeight ──
             if splitAt < messages.count {
@@ -1912,6 +1915,7 @@ struct ChatDetailView: View {
                         let index = indexMap[message.id] ?? 0
                         messageRow(message: message, index: index)
                             .id(message.id)
+                            .transition(.opacity)
                     }
                 }
                 .frame(minHeight: windowIncludesEnd ? max(viewState_containerHeight, 0) : nil,
@@ -2241,62 +2245,82 @@ struct ChatDetailView: View {
     /// Lives in the safeAreaInset bottom slot — exactly where the normal
     /// ChatInputField sits — so iOS keyboard avoidance just works.
     private var editInputBar: some View {
-        HStack(spacing: 10) {
-            // Cancel button
-            Button {
-                cancelInlineEdit()
-            } label: {
-                ZStack {
-                    Circle()
-                        .fill(theme.surfaceContainer)
-                        .frame(width: 34, height: 34)
-                    Image(systemName: "xmark")
-                        .scaledFont(size: 13, weight: .semibold)
-                        .foregroundStyle(theme.textSecondary)
+        VStack(spacing: 0) {
+            // ── Attachment strip — shown when the message had files ───────────
+            if !editingMessageFiles.isEmpty {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 8) {
+                        ForEach(Array(editingMessageFiles.enumerated()), id: \.offset) { idx, file in
+                            editFileChip(file: file) {
+                                var updated = editingMessageFiles
+                                updated.remove(at: idx)
+                                editingMessageFiles = updated
+                            }
+                        }
+                    }
+                    .padding(.horizontal, Spacing.md)
+                    .padding(.vertical, 8)
                 }
+                .background(theme.surfaceContainer.opacity(0.5))
             }
-            .buttonStyle(.plain)
-            .accessibilityLabel("Cancel edit")
 
-            // Text field — fills remaining space, grows vertically up to 6 lines
-            TextField("Edit message…", text: $editingMessageText, axis: .vertical)
-                .scaledFont(size: 16)
-                .foregroundStyle(theme.textPrimary)
-                .tint(theme.brandPrimary)
-                .lineLimit(1...6)
-                .focused($isEditFieldFocused)
-                .submitLabel(.done)
-                .onSubmit {
-                    if !editingMessageText.contains("\n") { submitInlineEdit() }
+            HStack(spacing: 10) {
+                // Cancel button
+                Button {
+                    cancelInlineEdit()
+                } label: {
+                    ZStack {
+                        Circle()
+                            .fill(theme.surfaceContainer)
+                            .frame(width: 34, height: 34)
+                        Image(systemName: "xmark")
+                            .scaledFont(size: 13, weight: .semibold)
+                            .foregroundStyle(theme.textSecondary)
+                    }
                 }
-                .padding(.horizontal, 14)
-                .padding(.vertical, 10)
-                .background(theme.surfaceContainer)
-                .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+                .buttonStyle(.plain)
+                .accessibilityLabel("Cancel edit")
 
-            // Send / confirm button
-            Button {
-                submitInlineEdit()
-            } label: {
-                ZStack {
-                    Circle()
-                        .fill(editingMessageText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                              ? theme.textTertiary.opacity(0.3)
-                              : theme.brandPrimary)
-                        .frame(width: 34, height: 34)
-                    Image(systemName: "arrow.up")
-                        .scaledFont(size: 14, weight: .bold)
-                        .foregroundStyle(.white)
+                // Text field — fills remaining space, grows vertically up to 6 lines
+                TextField("Edit message…", text: $editingMessageText, axis: .vertical)
+                    .scaledFont(size: 16)
+                    .foregroundStyle(theme.textPrimary)
+                    .tint(theme.brandPrimary)
+                    .lineLimit(1...6)
+                    .focused($isEditFieldFocused)
+                    .submitLabel(.done)
+                    .onSubmit {
+                        if !editingMessageText.contains("\n") { submitInlineEdit() }
+                    }
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 10)
+                    .background(theme.surfaceContainer)
+                    .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+
+                // Send / confirm button
+                Button {
+                    submitInlineEdit()
+                } label: {
+                    ZStack {
+                        Circle()
+                            .fill(editingMessageText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                                  ? theme.textTertiary.opacity(0.3)
+                                  : theme.brandPrimary)
+                            .frame(width: 34, height: 34)
+                        Image(systemName: "arrow.up")
+                            .scaledFont(size: 14, weight: .bold)
+                            .foregroundStyle(.white)
+                    }
                 }
+                .buttonStyle(.plain)
+                .disabled(editingMessageText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                .accessibilityLabel("Save and resend")
             }
-            .buttonStyle(.plain)
-            .disabled(editingMessageText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-            .accessibilityLabel("Save and resend")
+            .padding(.horizontal, Spacing.md)
+            .padding(.top, 10)
+            .padding(.bottom, 10)
+            .background(theme.background)
         }
-        .padding(.horizontal, Spacing.md)
-        .padding(.top, 10)
-        .padding(.bottom, 10)
-        .background(theme.background)
         .overlay(alignment: .top) {
             Divider().opacity(0.5)
         }
@@ -2305,9 +2329,61 @@ struct ChatDetailView: View {
         }
     }
 
+    /// A chip shown in the edit attachment strip for one file.
+    /// Shows an image thumbnail (if image) or a file-name pill (otherwise),
+    /// with a × button to remove the attachment from the edit.
+    @ViewBuilder
+    private func editFileChip(file: ChatMessageFile, onRemove: @escaping () -> Void) -> some View {
+        let isImage = isImageFile(file)
+        ZStack(alignment: .topTrailing) {
+            if isImage, let fileId = file.url, !fileId.isEmpty {
+                AuthenticatedImageView(fileId: fileId, apiClient: dependencies.apiClient)
+                    .scaledToFill()
+                    .frame(width: 56, height: 56)
+                    .clipped()
+                    .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+            } else {
+                HStack(spacing: 5) {
+                    Image(systemName: fileIconName(for: (file.name ?? "").components(separatedBy: ".").last?.lowercased() ?? ""))
+                        .scaledFont(size: 14, weight: .medium)
+                        .foregroundStyle(theme.brandPrimary)
+                    Text(file.name ?? "File")
+                        .scaledFont(size: 12, weight: .medium)
+                        .foregroundStyle(theme.textPrimary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .frame(maxWidth: 100)
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 8)
+                .background(theme.surfaceContainer)
+                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .strokeBorder(theme.cardBorder.opacity(0.4), lineWidth: 0.5)
+                )
+            }
+
+            // Remove button
+            Button(action: onRemove) {
+                ZStack {
+                    Circle()
+                        .fill(theme.textPrimary)
+                        .frame(width: 18, height: 18)
+                    Image(systemName: "xmark")
+                        .scaledFont(size: 8, weight: .bold)
+                        .foregroundStyle(theme.background)
+                }
+            }
+            .buttonStyle(.plain)
+            .offset(x: 4, y: -4)
+        }
+    }
+
     private func beginInlineEdit(message: ChatMessage) {
         editingMessageId = message.id
         editingMessageText = message.content
+        editingMessageFiles = message.files
         // Focus immediately — no delay needed since we're not fighting scroll layout
         isEditFieldFocused = true
         Haptics.play(.light)
@@ -2318,6 +2394,7 @@ struct ChatDetailView: View {
         withAnimation(.easeInOut(duration: 0.18)) {
             editingMessageId = nil
             editingMessageText = ""
+            editingMessageFiles = []
         }
     }
 
@@ -2326,11 +2403,13 @@ struct ChatDetailView: View {
         let trimmed = editingMessageText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
         isEditFieldFocused = false
+        let filesToSend = editingMessageFiles
         withAnimation(.easeInOut(duration: 0.18)) {
             editingMessageId = nil
         }
         editingMessageText = ""
-        Task { await viewModel.editMessage(id: id, newContent: trimmed) }
+        editingMessageFiles = []
+        Task { await viewModel.editMessage(id: id, newContent: trimmed, files: filesToSend) }
         Haptics.play(.medium)
     }
 
@@ -2682,6 +2761,11 @@ struct ChatDetailView: View {
                             // restoreAssistantVersionById() calls rederiveMessages() which
                             // replaces the message object entirely. After that, the target
                             // sibling IS the main message and all state is correct.
+                            // Clear stale activeVersionIndex/assistantContentOverride so the
+                            // new main message renders its own files and content — not whatever
+                            // the old activeVersionIndex was pointing to.
+                            activeVersionIndex.removeValue(forKey: message.id)
+                            assistantContentOverride.removeValue(forKey: message.id)
                             viewModel.restoreAssistantVersionById(targetSiblingId: targetId)
                             Haptics.play(.light)
                         }
@@ -2703,9 +2787,13 @@ struct ChatDetailView: View {
                         let targetPos = currentPos + 1
                         if targetPos < allSiblings.count {
                             let targetId = allSiblings[targetPos].id
+                            // Same cleanup as the ← button above.
+                            activeVersionIndex.removeValue(forKey: message.id)
+                            assistantContentOverride.removeValue(forKey: message.id)
                             viewModel.restoreAssistantVersionById(targetSiblingId: targetId)
                             Haptics.play(.light)
                         }
+
                     } label: {
                         compactActionIcon(icon: "chevron.right", isActive: false, size: 10)
                     }
