@@ -1,5 +1,12 @@
 # Changelog
 
+## v4.15.8 — July 25, 2026
+
+### Bug Fixes
+- Fixed Custom Headers editor missing from the "Add Server" sheet
+
+## Previous Builds
+
 ## v4.15.7 — July 23, 2026
 
 ### Improvements

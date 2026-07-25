@@ -228,42 +228,52 @@ struct ServerManagementView: View {
             client.updateAuthToken(token)
         }
 
-        // Use checkHealthFast(timeout: 8) instead of checkHealth() so the request
-        // carries an explicit per-request timeout.  NetworkManager sets
-        // waitsForConnectivity = true on the URLSession, which suppresses the
-        // session-level timeoutIntervalForRequest (30 s) when iOS momentarily reports
-        // the network path as unsatisfied — leaving plain checkHealth() stalled forever.
-        // A per-request timeout is honoured regardless of waitsForConnectivity.
+        // The health dot and the config fetch run concurrently but are fully
+        // decoupled:
         //
-        // A hard 12 s outer deadline guarantees isCheckingHealth resets even if
-        // both requests somehow hang (e.g. TCP black-hole with no RST).
+        // • Task 1 (/health, 8 s timeout) — resolves `serverHealthy` and clears
+        //   `isCheckingHealth` as soon as the endpoint responds.  It does NOT
+        //   wait for /api/config.  This is the critical change: previously both
+        //   requests were awaited together, so a slow /api/config (30 s default
+        //   timeout) would block the health dot until the outer 12 s hard deadline
+        //   fired and set serverHealthy = false — showing a false "Connection Issue"
+        //   even though /health was reachable.
+        //
+        // • Task 2 (/api/config, 10 s timeout) — updates version info if it arrives.
+        //   Runs as a best-effort background task; does not affect the health dot.
+        //
+        // • Task 3 (hard deadline) — safety net: if /health somehow never responds
+        //   (TCP black-hole, etc.) this fires at 12 s and marks the check as failed.
         await withTaskGroup(of: Void.self) { group in
+            // Task 1: health check — resolves the dot independently
             group.addTask {
-                async let healthTask = client.checkHealthFast(timeout: 8)
-                async let configTask: BackendConfig? = try? await client.getBackendConfig()
-                let (healthy, freshConfig) = await (healthTask, configTask)
+                let healthy = await client.checkHealthFast(timeout: 8)
                 await MainActor.run {
                     self.serverHealthy = healthy
-                    if let fresh = freshConfig {
-                        self.refreshedConfig = fresh
-                        // Keep the view model in sync too
-                        self.viewModel.backendConfig = fresh
-                    }
                     self.isCheckingHealth = false
                 }
             }
-            // Hard deadline — if the tasks haven't resolved in 12 s, mark as failed.
+            // Task 2: config fetch — best-effort, does not block the health dot
+            group.addTask {
+                let freshConfig = try? await client.getBackendConfig()
+                await MainActor.run {
+                    if let fresh = freshConfig {
+                        self.refreshedConfig = fresh
+                        self.viewModel.backendConfig = fresh
+                    }
+                }
+            }
+            // Task 3: hard deadline — ensures the spinner always clears
             group.addTask {
                 try? await Task.sleep(for: .seconds(12))
                 await MainActor.run {
                     guard self.isCheckingHealth else { return }
-                    self.serverHealthy = false
+                    self.serverHealthy = self.serverHealthy ?? false
                     self.isCheckingHealth = false
                 }
             }
-            // Let whichever task wins cancel the other
-            _ = await group.next()
-            group.cancelAll()
+            // Wait for all tasks (config fetch may still complete after the dot resolves)
+            for await _ in group { }
         }
     }
 

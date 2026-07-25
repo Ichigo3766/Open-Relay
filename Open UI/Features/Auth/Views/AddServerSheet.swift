@@ -19,6 +19,7 @@ struct AddServerSheet: View {
     @State private var url: String = ""
     @State private var apiKey: String = ""
     @State private var allowSelfSigned: Bool = false
+    @State private var customHeaderEntries: [CustomHeaderEntry] = []
     @State private var showAdvanced = false
 
     /// The URL the user was connected to before opening this sheet.
@@ -26,6 +27,7 @@ struct AddServerSheet: View {
     @State private var previousURL: String = ""
     @State private var previousApiKey: String = ""
     @State private var previousAllowSelfSigned: Bool = false
+    @State private var previousCustomHeaderEntries: [CustomHeaderEntry] = []
 
     var body: some View {
         NavigationStack {
@@ -80,6 +82,9 @@ struct AddServerSheet: View {
                                         .labelsHidden()
                                         .tint(theme.brandPrimary)
                                 }
+
+                                // Custom Headers
+                                CustomHeadersEditor(entries: $customHeaderEntries)
                             }
                             .padding(.top, Spacing.md)
                         } label: {
@@ -178,6 +183,11 @@ struct AddServerSheet: View {
             previousURL = viewModel.serverURL
             previousApiKey = viewModel.apiKey
             previousAllowSelfSigned = viewModel.allowSelfSignedCerts
+            previousCustomHeaderEntries = viewModel.customHeaderEntries
+            // Reset custom headers — don't let stale headers from the current server
+            // silently carry over to the new server being added.
+            customHeaderEntries = []
+            viewModel.customHeaderEntries = []
             // Clear error from any previous attempt
             viewModel.errorMessage = nil
         }
@@ -193,6 +203,7 @@ struct AddServerSheet: View {
         viewModel.serverURL = url
         viewModel.apiKey = apiKey
         viewModel.allowSelfSignedCerts = allowSelfSigned
+        viewModel.customHeaderEntries = customHeaderEntries
         viewModel.errorMessage = nil
         Task { await viewModel.connect() }
     }
@@ -205,6 +216,7 @@ struct AddServerSheet: View {
         viewModel.serverURL = previousURL
         viewModel.apiKey = previousApiKey
         viewModel.allowSelfSignedCerts = previousAllowSelfSigned
+        viewModel.customHeaderEntries = previousCustomHeaderEntries
         onDismiss()
     }
 }
