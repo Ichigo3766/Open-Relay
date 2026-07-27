@@ -1,5 +1,12 @@
 # Changelog
 
+## v4.15.9 — July 26, 2026
+
+### Bug Fixes
+- Fixed saving Admin → Settings → Interface failing with an error due to missing fields in the request.
+- Fixed clearing the system prompt in My Defaults not persisting after saving.
+
+
 ## v4.15.8 — July 25, 2026
 
 ### Bug Fixes

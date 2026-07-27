@@ -570,6 +570,7 @@ struct AdminTaskConfig: Codable, Sendable {
     var enableTagsGeneration: Bool
     var enableAutocompleteGeneration: Bool
     var autocompleteGenerationInputMaxLength: Int
+    var autocompleteGenerationPromptTemplate: String
     var enableSearchQueryGeneration: Bool
     var enableRetrievalQueryGeneration: Bool
     var titleGenerationPromptTemplate: String
@@ -578,6 +579,7 @@ struct AdminTaskConfig: Codable, Sendable {
     var queryGenerationPromptTemplate: String
     var imagePromptGenerationPromptTemplate: String
     var toolsFunctionCallingPromptTemplate: String
+    var enableVoiceModePrompt: Bool
     var voiceModePromptTemplate: String
 
     enum CodingKeys: String, CodingKey {
@@ -588,6 +590,7 @@ struct AdminTaskConfig: Codable, Sendable {
         case enableTagsGeneration = "ENABLE_TAGS_GENERATION"
         case enableAutocompleteGeneration = "ENABLE_AUTOCOMPLETE_GENERATION"
         case autocompleteGenerationInputMaxLength = "AUTOCOMPLETE_GENERATION_INPUT_MAX_LENGTH"
+        case autocompleteGenerationPromptTemplate = "AUTOCOMPLETE_GENERATION_PROMPT_TEMPLATE"
         case enableSearchQueryGeneration = "ENABLE_SEARCH_QUERY_GENERATION"
         case enableRetrievalQueryGeneration = "ENABLE_RETRIEVAL_QUERY_GENERATION"
         case titleGenerationPromptTemplate = "TITLE_GENERATION_PROMPT_TEMPLATE"
@@ -596,6 +599,7 @@ struct AdminTaskConfig: Codable, Sendable {
         case queryGenerationPromptTemplate = "QUERY_GENERATION_PROMPT_TEMPLATE"
         case imagePromptGenerationPromptTemplate = "IMAGE_PROMPT_GENERATION_PROMPT_TEMPLATE"
         case toolsFunctionCallingPromptTemplate = "TOOLS_FUNCTION_CALLING_PROMPT_TEMPLATE"
+        case enableVoiceModePrompt = "ENABLE_VOICE_MODE_PROMPT"
         case voiceModePromptTemplate = "VOICE_MODE_PROMPT_TEMPLATE"
     }
 
@@ -607,6 +611,7 @@ struct AdminTaskConfig: Codable, Sendable {
         enableTagsGeneration = true
         enableAutocompleteGeneration = false
         autocompleteGenerationInputMaxLength = 256
+        autocompleteGenerationPromptTemplate = ""
         enableSearchQueryGeneration = true
         enableRetrievalQueryGeneration = true
         titleGenerationPromptTemplate = ""
@@ -615,6 +620,7 @@ struct AdminTaskConfig: Codable, Sendable {
         queryGenerationPromptTemplate = ""
         imagePromptGenerationPromptTemplate = ""
         toolsFunctionCallingPromptTemplate = ""
+        enableVoiceModePrompt = true
         voiceModePromptTemplate = ""
     }
 }

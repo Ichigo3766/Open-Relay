@@ -218,10 +218,9 @@ struct UserDefaultParams: Codable, Sendable, Equatable {
 
         if let sp = systemPrompt, !sp.trimmingCharacters(in: .whitespaces).isEmpty {
             ui["system"] = sp
-        }
-        // Explicitly nil out system if empty so server removes it
-        // (omitting the key leaves server value unchanged, sending null clears it)
-        if systemPrompt?.trimmingCharacters(in: .whitespaces).isEmpty == true {
+        } else {
+            // systemPrompt is nil or blank — signal the caller to remove the key entirely.
+            // The server ignores JSON null; we must omit the key, so NSNull is the sentinel.
             ui["system"] = NSNull()
         }
 

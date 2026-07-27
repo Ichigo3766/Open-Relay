@@ -173,10 +173,19 @@ struct AdminInterfaceView: View {
             sectionHeader(icon: "waveform", title: "Voice Mode Custom Prompt")
 
             SettingsSection {
-                promptEditorRow(
+                inlineToggleRow(
                     title: "Voice Mode Prompt",
-                    text: $viewModel.config.voiceModePromptTemplate
+                    isOn: $viewModel.config.enableVoiceModePrompt
                 )
+
+                if viewModel.config.enableVoiceModePrompt {
+                    Divider().padding(.horizontal, Spacing.md)
+
+                    promptEditorRow(
+                        title: "Voice Mode Prompt",
+                        text: $viewModel.config.voiceModePromptTemplate
+                    )
+                }
             }
         }
         .padding(.horizontal, Spacing.screenPadding)

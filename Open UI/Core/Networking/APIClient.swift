@@ -1205,7 +1205,13 @@ final class APIClient: @unchecked Sendable {
         var existingUI = (current["ui"] as? [String: Any]) ?? [:]
         let updates = params.toUISaveDict()
         for (key, value) in updates {
-            existingUI[key] = value
+            if value is NSNull {
+                // NSNull signals "remove this key" — e.g. clearing the system prompt.
+                // Sending null in JSON leaves the server value unchanged; we must omit the key.
+                existingUI.removeValue(forKey: key)
+            } else {
+                existingUI[key] = value
+            }
         }
         try await updateUserSettings(["ui": existingUI])
     }

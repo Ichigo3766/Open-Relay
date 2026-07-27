@@ -82,6 +82,8 @@ struct UserSettingsView: View {
     private func loadIfNeeded() async {
         // Always fetch from server so the sheet shows the current value,
         // not a stale cached value from a previous session or another device.
+        // Reset draft immediately so stale text is never shown while loading.
+        draft = UserDefaultParams()
         isLoading = true
         defer { isLoading = false }
         do {
