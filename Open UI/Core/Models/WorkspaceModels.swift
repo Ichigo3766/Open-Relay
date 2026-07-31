@@ -1192,10 +1192,13 @@ struct ModelDetail: Identifiable, Sendable {
     var builtinChats: Bool
     var builtinNotes: Bool
     var builtinKnowledge: Bool
+    var builtinFiles: Bool
     var builtinChannels: Bool
+    var builtinNotifications: Bool
     var builtinTaskManagement: Bool
     var builtinAutomations: Bool
     var builtinCalendar: Bool
+    var builtinSubagents: Bool
     var builtinWebSearch: Bool
     var builtinImageGen: Bool
     var builtinCodeInterpreter: Bool
@@ -1272,8 +1275,10 @@ struct ModelDetail: Identifiable, Sendable {
          defaultFeatureWebSearch: Bool = true, defaultFeatureImageGen: Bool = false,
          defaultFeatureCodeInterpreter: Bool = false,
          builtinTime: Bool = true, builtinMemory: Bool = true, builtinChats: Bool = true,
-         builtinNotes: Bool = true, builtinKnowledge: Bool = true, builtinChannels: Bool = true,
+         builtinNotes: Bool = true, builtinKnowledge: Bool = true, builtinFiles: Bool = true,
+         builtinChannels: Bool = true, builtinNotifications: Bool = true,
          builtinTaskManagement: Bool = true, builtinAutomations: Bool = true, builtinCalendar: Bool = true,
+         builtinSubagents: Bool = true,
          builtinWebSearch: Bool = true, builtinImageGen: Bool = true, builtinCodeInterpreter: Bool = true,
          knowledgeItems: [ModelKnowledgeEntry] = [], suggestionPrompts: [SuggestionPrompt] = [],
          ttsVoice: String = "") {
@@ -1291,9 +1296,10 @@ struct ModelDetail: Identifiable, Sendable {
         self.defaultFeatureCodeInterpreter = defaultFeatureCodeInterpreter
         self.builtinTime = builtinTime; self.builtinMemory = builtinMemory; self.builtinChats = builtinChats
         self.builtinNotes = builtinNotes; self.builtinKnowledge = builtinKnowledge
-        self.builtinChannels = builtinChannels
+        self.builtinFiles = builtinFiles; self.builtinChannels = builtinChannels
+        self.builtinNotifications = builtinNotifications
         self.builtinTaskManagement = builtinTaskManagement; self.builtinAutomations = builtinAutomations
-        self.builtinCalendar = builtinCalendar
+        self.builtinCalendar = builtinCalendar; self.builtinSubagents = builtinSubagents
         self.builtinWebSearch = builtinWebSearch
         self.builtinImageGen = builtinImageGen; self.builtinCodeInterpreter = builtinCodeInterpreter
         self.knowledgeItems = knowledgeItems; self.suggestionPrompts = suggestionPrompts
@@ -1386,10 +1392,14 @@ struct ModelDetail: Identifiable, Sendable {
         self.builtinChats = bt["chats"] as? Bool ?? true
         self.builtinNotes = bt["notes"] as? Bool ?? true
         self.builtinKnowledge = bt["knowledge"] as? Bool ?? true
+        self.builtinFiles = bt["files"] as? Bool ?? true
         self.builtinChannels = bt["channels"] as? Bool ?? true
-        self.builtinTaskManagement = bt["task_management"] as? Bool ?? true
+        self.builtinNotifications = bt["notifications"] as? Bool ?? true
+        // Web UI uses "tasks" as the key (not "task_management")
+        self.builtinTaskManagement = bt["tasks"] as? Bool ?? bt["task_management"] as? Bool ?? true
         self.builtinAutomations = bt["automations"] as? Bool ?? true
         self.builtinCalendar = bt["calendar"] as? Bool ?? true
+        self.builtinSubagents = bt["subagents"] as? Bool ?? true
         self.builtinWebSearch = bt["web_search"] as? Bool ?? true
         self.builtinImageGen = bt["image_generation"] as? Bool ?? true
         self.builtinCodeInterpreter = bt["code_interpreter"] as? Bool ?? true
@@ -1517,9 +1527,11 @@ struct ModelDetail: Identifiable, Sendable {
         meta["defaultFeatureIds"] = defF
         meta["builtinTools"] = [
             "time": builtinTime, "memory": builtinMemory, "chats": builtinChats,
-            "notes": builtinNotes, "knowledge": builtinKnowledge, "channels": builtinChannels,
-            "task_management": builtinTaskManagement, "automations": builtinAutomations,
-            "calendar": builtinCalendar,
+            "notes": builtinNotes, "knowledge": builtinKnowledge, "files": builtinFiles,
+            "channels": builtinChannels, "notifications": builtinNotifications,
+            // Web UI key is "tasks" (not "task_management")
+            "tasks": builtinTaskManagement, "automations": builtinAutomations,
+            "calendar": builtinCalendar, "subagents": builtinSubagents,
             "web_search": builtinWebSearch, "image_generation": builtinImageGen,
             "code_interpreter": builtinCodeInterpreter
         ]

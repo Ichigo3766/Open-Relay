@@ -93,6 +93,32 @@ final class StreamingContentStore {
         Task { await p.begin() }
     }
 
+    /// Starts a streaming session for a **continue** response.
+    ///
+    /// Pre-seeds the pipeline buffer with `existingContent` and sets the drain
+    /// cursor to `existingContent.count` so the typewriter starts at the END of the
+    /// already-displayed content. Only new tokens the server appends will trickle in —
+    /// the old content is never re-streamed.
+    func beginStreamingForContinue(messageId: String, modelId: String?, existingContent: String) {
+        streamingMessageId = messageId
+        streamingModelId = modelId
+        resetSnapshotFields()
+        // Pre-seed displayContent so there's no flash of empty content.
+        displayContent = existingContent
+        streamingStatusHistory = []
+        streamingSources = []
+        streamingError = nil
+        isActive = true
+        rawServerContent = existingContent
+
+        let p = StreamingPipeline { [weak self] snapshot in
+            guard let self else { return }
+            self.applySnapshot(snapshot)
+        }
+        pipeline = p
+        Task { await p.beginWithPrefix(existingContent) }
+    }
+
     /// Updates the raw server content (called per token batch).
     func updateContent(_ content: String) {
         rawServerContent = content

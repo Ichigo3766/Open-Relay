@@ -116,6 +116,8 @@ struct AdminSettingsTab: View {
         switch selectedSection {
         case .general:
             AdminGeneralSettingsView()
+        case .authentication:
+            AdminAuthenticationView()
         case .connections:
             AdminConnectionsView()
         case .models:
@@ -134,6 +136,12 @@ struct AdminSettingsTab: View {
             AdminAudioView()
         case .images:
             AdminImagesView()
+        case .subagents:
+            AdminSubagentsView()
+        case .pipelines:
+            AdminPipelinesView()
+        case .database:
+            AdminDatabaseView()
         }
     }
 }

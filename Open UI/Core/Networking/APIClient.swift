@@ -934,6 +934,30 @@ final class APIClient: @unchecked Sendable {
         return parseFullConversation(json)
     }
 
+    /// Forks a conversation at a specific message using POST /api/v1/chats/{id}/fork.
+    /// The server creates a new chat containing only messages up to and including `messageId`.
+    /// Matches open-webui's `forkChatById` behaviour exactly.
+    func forkConversation(id: String, messageId: String) async throws -> Conversation {
+        let body = try JSONSerialization.data(withJSONObject: ["message_id": messageId])
+        let (data, _) = try await network.requestRaw(
+            path: "/api/v1/chats/\(id)/fork",
+            method: .post,
+            body: body
+        )
+
+        guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw APIError.responseDecoding(
+                underlying: NSError(
+                    domain: "APIError", code: -1,
+                    userInfo: [NSLocalizedDescriptionKey: "Expected chat object"]
+                ),
+                data: data
+            )
+        }
+
+        return parseFullConversation(json)
+    }
+
     func searchConversations(query: String) async throws -> [Conversation] {
         let (data, _) = try await network.requestRaw(
             path: "/api/v1/chats/search",
@@ -5477,6 +5501,48 @@ final class APIClient: @unchecked Sendable {
     }
 
     /// GET `/api/v1/auths/admin/config/ldap` — fetch LDAP enable toggle.
+    /// GET `/api/v1/auths/admin/config/oauth` — fetch OAuth/OIDC configuration.
+    func getAdminOAuthConfig() async throws -> AdminOAuthConfig {
+        let (data, _) = try await network.requestRaw(path: "/api/v1/auths/admin/config/oauth")
+        let decoder = JSONDecoder()
+        return try decoder.decode(AdminOAuthConfig.self, from: data)
+    }
+
+    /// POST `/api/v1/auths/admin/config/oauth` — update OAuth/OIDC configuration.
+    @discardableResult
+    func updateAdminOAuthConfig(_ config: AdminOAuthConfig) async throws -> AdminOAuthConfig {
+        let bodyData = try JSONEncoder().encode(config)
+        let (data, _) = try await network.requestRaw(
+            path: "/api/v1/auths/admin/config/oauth",
+            method: .post,
+            body: bodyData,
+            contentType: "application/json"
+        )
+        let decoder = JSONDecoder()
+        return try decoder.decode(AdminOAuthConfig.self, from: data)
+    }
+
+    /// GET `/api/v1/chats/config` — fetch chat config (context compaction, etc.)
+    func getAdminChatConfig() async throws -> AdminChatConfig {
+        let (data, _) = try await network.requestRaw(path: "/api/v1/chats/config")
+        let decoder = JSONDecoder()
+        return try decoder.decode(AdminChatConfig.self, from: data)
+    }
+
+    /// POST `/api/v1/chats/config` — update chat config.
+    @discardableResult
+    func updateAdminChatConfig(_ config: AdminChatConfig) async throws -> AdminChatConfig {
+        let bodyData = try JSONEncoder().encode(config)
+        let (data, _) = try await network.requestRaw(
+            path: "/api/v1/chats/config",
+            method: .post,
+            body: bodyData,
+            contentType: "application/json"
+        )
+        let decoder = JSONDecoder()
+        return try decoder.decode(AdminChatConfig.self, from: data)
+    }
+
     func getAdminLdapConfig() async throws -> AdminLdapConfig {
         try await network.request(AdminLdapConfig.self, path: "/api/v1/auths/admin/config/ldap")
     }
@@ -6108,6 +6174,245 @@ final class APIClient: @unchecked Sendable {
         if let json = try? JSONSerialization.jsonObject(with: responseData) as? [String: Any],
            let tags = json["tags"] as? [String] { return tags }
         return []
+    }
+
+    // MARK: - Notification Targets (v0.11.0)
+
+    /// GET /api/v1/notifications/events — list supported notification event types.
+    func getNotificationEvents() async throws -> [NotificationEvent] {
+        try await network.request([NotificationEvent].self, path: "/api/v1/notifications/events")
+    }
+
+    /// GET /api/v1/notifications/targets — list all notification targets.
+    func getNotificationTargets() async throws -> [NotificationTarget] {
+        try await network.request([NotificationTarget].self, path: "/api/v1/notifications/targets")
+    }
+
+    /// POST /api/v1/notifications/targets — create a new notification target.
+    func createNotificationTarget(_ form: NotificationTargetForm) async throws -> NotificationTarget {
+        let body = try JSONEncoder().encode(form)
+        let (data, _) = try await network.requestRaw(path: "/api/v1/notifications/targets", method: .post, body: body)
+        let decoder = JSONDecoder(); decoder.keyDecodingStrategy = .convertFromSnakeCase
+        return try decoder.decode(NotificationTarget.self, from: data)
+    }
+
+    /// PUT /api/v1/notifications/targets/{id} — update an existing notification target.
+    func updateNotificationTarget(id: String, form: NotificationTargetForm) async throws -> NotificationTarget {
+        let body = try JSONEncoder().encode(form)
+        let (data, _) = try await network.requestRaw(path: "/api/v1/notifications/targets/\(id)", method: .put, body: body)
+        let decoder = JSONDecoder(); decoder.keyDecodingStrategy = .convertFromSnakeCase
+        return try decoder.decode(NotificationTarget.self, from: data)
+    }
+
+    /// DELETE /api/v1/notifications/targets/{id} — delete a notification target.
+    func deleteNotificationTarget(id: String) async throws {
+        _ = try await network.requestRaw(
+            path: "/api/v1/notifications/targets/\(id)",
+            method: .delete)
+    }
+
+    /// PUT /api/v1/notifications/targets/{id}/default — set a target as default.
+    func setDefaultNotificationTarget(id: String) async throws -> NotificationTarget {
+        try await network.requestVoidJSON(path: "/api/v1/notifications/targets/\(id)/default", method: .put, body: nil)
+        return try await network.request(NotificationTarget.self, path: "/api/v1/notifications/targets/\(id)")
+    }
+
+    /// POST /api/v1/notifications/targets/{id}/test — send a test notification.
+    func testNotificationTarget(id: String) async throws {
+        _ = try await network.requestRaw(
+            path: "/api/v1/notifications/targets/\(id)/test",
+            method: .post)
+    }
+
+    // MARK: - Sub-agents Config (v0.11.0)
+
+    /// GET /api/v1/configs/subagents — retrieve sub-agents configuration.
+    /// Uses a plain JSONDecoder (no .convertFromSnakeCase) so SCREAMING_SNAKE_CASE CodingKeys
+    /// like "ENABLE_SUBAGENTS" are matched verbatim against the server response.
+    func getSubagentsConfig() async throws -> SubagentsConfig {
+        let (data, _) = try await network.requestRaw(path: "/api/v1/configs/subagents")
+        return (try? JSONDecoder().decode(SubagentsConfig.self, from: data)) ?? SubagentsConfig()
+    }
+
+    /// POST /api/v1/configs/subagents — save sub-agents configuration.
+    /// Decodes the POST response directly with a plain JSONDecoder to match SCREAMING_SNAKE_CASE keys.
+    func setSubagentsConfig(_ config: SubagentsConfig) async throws -> SubagentsConfig {
+        let body = try JSONEncoder().encode(config)
+        let (data, _) = try await network.requestRaw(path: "/api/v1/configs/subagents", method: .post, body: body)
+        return (try? JSONDecoder().decode(SubagentsConfig.self, from: data)) ?? config
+    }
+
+    // MARK: - Database / Config Import-Export
+
+    /// GET /api/v1/configs/export — download the full admin config as JSON.
+    func exportAdminConfig() async throws -> Data {
+        let (data, _) = try await network.requestRaw(path: "/api/v1/configs/export")
+        return data
+    }
+
+    /// POST /api/v1/configs/import — restore admin config from JSON.
+    func importAdminConfig(_ data: Data) async throws {
+        _ = try await network.requestRaw(path: "/api/v1/configs/import", method: .post, body: data)
+    }
+
+    /// GET /api/v1/chats/stats/export — download all user chats as JSON.
+    func exportAllChats() async throws -> Data {
+        let (data, _) = try await network.requestRaw(path: "/api/v1/chats/stats/export")
+        return data
+    }
+
+    // MARK: - Pipelines
+
+    /// GET /api/v1/pipelines/list — returns array of {idx, url} pipeline server entries.
+    func getPipelinesList() async throws -> [[String: Any]] {
+        let (data, _) = try await network.requestRaw(path: "/api/v1/pipelines/list")
+        guard let arr = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else { return [] }
+        return arr
+    }
+
+    /// GET /api/v1/pipelines/?url_idx=N — returns pipelines installed on a specific server.
+    func getPipelines(urlIdx: Int) async throws -> [[String: Any]] {
+        let (data, _) = try await network.requestRaw(path: "/api/v1/pipelines/?url_idx=\(urlIdx)")
+        guard let arr = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else { return [] }
+        return arr
+    }
+
+    /// POST /api/v1/pipelines/add — install a pipeline from a GitHub raw URL.
+    func downloadPipeline(url: String, urlIdx: Int) async throws {
+        let body = try JSONSerialization.data(withJSONObject: ["url": url, "url_idx": urlIdx])
+        _ = try await network.requestRaw(path: "/api/v1/pipelines/add", method: .post, body: body)
+    }
+
+    /// DELETE /api/v1/pipelines/delete — remove an installed pipeline.
+    func deletePipeline(id: String, urlIdx: Int) async throws {
+        let body = try JSONSerialization.data(withJSONObject: ["id": id, "url_idx": urlIdx])
+        _ = try await network.requestRaw(path: "/api/v1/pipelines/delete", method: .delete, body: body)
+    }
+
+    /// GET /api/v1/pipelines/{id}/valves?url_idx=N
+    func getPipelineValves(id: String, urlIdx: Int) async throws -> [String: Any] {
+        let (data, _) = try await network.requestRaw(path: "/api/v1/pipelines/\(id)/valves?url_idx=\(urlIdx)")
+        return (try? JSONSerialization.jsonObject(with: data) as? [String: Any]) ?? [:]
+    }
+
+    /// GET /api/v1/pipelines/{id}/valves/spec?url_idx=N
+    func getPipelineValvesSpec(id: String, urlIdx: Int) async throws -> [String: Any] {
+        let (data, _) = try await network.requestRaw(path: "/api/v1/pipelines/\(id)/valves/spec?url_idx=\(urlIdx)")
+        return (try? JSONSerialization.jsonObject(with: data) as? [String: Any]) ?? [:]
+    }
+
+    /// POST /api/v1/pipelines/{id}/valves/update
+    func updatePipelineValves(id: String, urlIdx: Int, valves: [String: Any]) async throws {
+        var payload = valves
+        payload["url_idx"] = urlIdx
+        let body = try JSONSerialization.data(withJSONObject: payload)
+        _ = try await network.requestRaw(path: "/api/v1/pipelines/\(id)/valves/update", method: .post, body: body)
+    }
+
+    // MARK: - Event Webhooks
+
+    /// GET /api/events — returns list of available event catalog items.
+    func getEventCatalog() async throws -> [[String: Any]] {
+        let (data, _) = try await network.requestRaw(path: "/api/events")
+        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let events = json["events"] as? [[String: Any]] else { return [] }
+        return events
+    }
+
+    /// GET /api/events/webhooks — returns list of event webhooks.
+    func getEventWebhooks() async throws -> [[String: Any]] {
+        let (data, _) = try await network.requestRaw(path: "/api/events/webhooks")
+        guard let arr = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else { return [] }
+        return arr
+    }
+
+    /// POST /api/events/webhooks — create a new event webhook.
+    func createEventWebhook(_ payload: [String: Any]) async throws -> [String: Any] {
+        let body = try JSONSerialization.data(withJSONObject: payload)
+        let (data, _) = try await network.requestRaw(path: "/api/events/webhooks", method: .post, body: body)
+        return (try? JSONSerialization.jsonObject(with: data) as? [String: Any]) ?? [:]
+    }
+
+    /// PUT /api/events/webhooks/{id} — update an existing event webhook.
+    func updateEventWebhook(id: String, _ payload: [String: Any]) async throws -> [String: Any] {
+        let body = try JSONSerialization.data(withJSONObject: payload)
+        let (data, _) = try await network.requestRaw(path: "/api/events/webhooks/\(id)", method: .put, body: body)
+        return (try? JSONSerialization.jsonObject(with: data) as? [String: Any]) ?? [:]
+    }
+
+    /// DELETE /api/events/webhooks/{id} — delete an event webhook.
+    func deleteEventWebhook(id: String) async throws {
+        _ = try await network.requestRaw(path: "/api/events/webhooks/\(id)", method: .delete)
+    }
+
+    // MARK: - External Knowledge Connections
+
+    /// GET /api/v1/knowledge/external/connections
+    func getExternalKnowledgeConnections() async throws -> [[String: Any]] {
+        let (data, _) = try await network.requestRaw(path: "/api/v1/knowledge/external/connections")
+        // Response: {"items": [...]}
+        if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           let items = json["items"] as? [[String: Any]] { return items }
+        return (try? JSONSerialization.jsonObject(with: data) as? [[String: Any]]) ?? []
+    }
+
+    /// PATCH /api/v1/knowledge/external/connections/{id} — toggle enabled state.
+    func updateExternalKnowledgeConnection(id: String, _ payload: [String: Any]) async throws {
+        let body = try JSONSerialization.data(withJSONObject: payload)
+        _ = try await network.requestRaw(path: "/api/v1/knowledge/external/connections/\(id)", method: .patch, body: body)
+    }
+
+    /// DELETE /api/v1/knowledge/external/connections/{id}
+    func deleteExternalKnowledgeConnection(id: String) async throws {
+        _ = try await network.requestRaw(path: "/api/v1/knowledge/external/connections/\(id)", method: .delete)
+    }
+
+    /// POST /api/v1/knowledge/external/source/test — test connection before creating.
+    func testExternalKnowledgeSource(_ payload: [String: Any]) async throws -> [String: Any] {
+        let body = try JSONSerialization.data(withJSONObject: payload)
+        let (data, _) = try await network.requestRaw(path: "/api/v1/knowledge/external/source/test", method: .post, body: body)
+        return (try? JSONSerialization.jsonObject(with: data) as? [String: Any]) ?? [:]
+    }
+
+    /// POST /api/v1/knowledge/external/source/create — create external knowledge source.
+    func createExternalKnowledgeSource(_ payload: [String: Any]) async throws -> [String: Any] {
+        let body = try JSONSerialization.data(withJSONObject: payload)
+        let (data, _) = try await network.requestRaw(path: "/api/v1/knowledge/external/source/create", method: .post, body: body)
+        return (try? JSONSerialization.jsonObject(with: data) as? [String: Any]) ?? [:]
+    }
+
+    /// PATCH /api/v1/knowledge/external/source/{id} — update external knowledge source.
+    func updateExternalKnowledgeSource(id: String, _ payload: [String: Any]) async throws -> [String: Any] {
+        let body = try JSONSerialization.data(withJSONObject: payload)
+        let (data, _) = try await network.requestRaw(path: "/api/v1/knowledge/external/source/\(id)", method: .patch, body: body)
+        return (try? JSONSerialization.jsonObject(with: data) as? [String: Any]) ?? [:]
+    }
+
+    /// GET /api/v1/knowledge/search?source=external — fetch external knowledge items.
+    /// Uses the search endpoint with source=external filter, matching the web UI's
+    /// `searchKnowledgeBases(token, null, null, 1, 'external')` call.
+    func getExternalKnowledgeItems() async throws -> [[String: Any]] {
+        let (data, _) = try await network.requestRaw(
+            path: "/api/v1/knowledge/search",
+            queryItems: [URLQueryItem(name: "source", value: "external")]
+        )
+        if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           let items = json["items"] as? [[String: Any]] { return items }
+        return (try? JSONSerialization.jsonObject(with: data) as? [[String: Any]]) ?? []
+    }
+
+    // MARK: - User Chat Variables (v0.11.0)
+
+    /// GET /api/v1/users/user/variables — fetch the current user's chat variables.
+    func getUserVariables() async throws -> UserVariables {
+        (try? await network.request(UserVariables.self, path: "/api/v1/users/user/variables")) ?? UserVariables()
+    }
+
+    /// POST /api/v1/users/user/variables/update — save the current user's chat variables.
+    func updateUserVariables(_ variables: [String: String]) async throws -> UserVariables {
+        let bodyData = try JSONSerialization.data(withJSONObject: variables)
+        _ = try await network.requestRaw(path: "/api/v1/users/user/variables/update", method: .post, body: bodyData)
+        return (try? await network.request(UserVariables.self, path: "/api/v1/users/user/variables")) ?? UserVariables(variables: variables)
     }
 }
 

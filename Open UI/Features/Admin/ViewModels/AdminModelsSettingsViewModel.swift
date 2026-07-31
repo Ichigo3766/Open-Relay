@@ -62,6 +62,9 @@ final class AdminModelsSettingsViewModel {
     var btTaskManagement = true
     var btAutomations = true
     var btCalendar = true
+    var btFiles = true
+    var btNotifications = true
+    var btSubagents = true
 
     // Model Params (nil = Default)
     var streamChat: Bool? = nil
@@ -275,16 +278,19 @@ final class AdminModelsSettingsViewModel {
         let builtinTools: [String: Any] = [
             "time": btTime,
             "memory": btMemory,
-            "chat_history": btChats,
+            "chats": btChats,
             "notes": btNotes,
-            "knowledge_base": btKnowledge,
+            "knowledge": btKnowledge,
+            "files": btFiles,
             "channels": btChannels,
+            "notifications": btNotifications,
             "web_search": btWebSearch,
             "image_generation": btImageGeneration,
             "code_interpreter": btCodeInterpreter,
-            "task_management": btTaskManagement,
+            "tasks": btTaskManagement,
             "automations": btAutomations,
-            "calendar": btCalendar
+            "calendar": btCalendar,
+            "subagents": btSubagents
         ]
 
         // Build params dict — only include non-nil values
@@ -402,9 +408,12 @@ final class AdminModelsSettingsViewModel {
                 btWebSearch = bt["web_search"] as? Bool ?? true
                 btImageGeneration = bt["image_generation"] as? Bool ?? true
                 btCodeInterpreter = bt["code_interpreter"] as? Bool ?? true
-                btTaskManagement = bt["task_management"] as? Bool ?? true
+                btTaskManagement = bt["tasks"] as? Bool ?? bt["task_management"] as? Bool ?? true
                 btAutomations = bt["automations"] as? Bool ?? true
                 btCalendar = bt["calendar"] as? Bool ?? true
+                btFiles = bt["files"] as? Bool ?? true
+                btNotifications = bt["notifications"] as? Bool ?? true
+                btSubagents = bt["subagents"] as? Bool ?? true
             }
         }
 

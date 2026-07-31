@@ -15,6 +15,14 @@ struct ProfileView: View {
     @State private var showBirthDatePicker = false
     @State private var editWebhookURL = ""
 
+    // MARK: - Chat Variables (v0.11.0)
+    @State private var chatVariables: [String: String] = [:]
+    @State private var showAddVariableSheet = false
+    @State private var editingVariableKey: String? = nil
+    @State private var newVarKey = ""
+    @State private var newVarValue = ""
+    @State private var variableKeyError: String? = nil
+
     // MARK: - Profile Image
     @State private var selectedPhotoItem: PhotosPickerItem?
     @State private var profileImageData: Data?
@@ -104,6 +112,9 @@ struct ProfileView: View {
 
                 // Notifications
                 notificationsSection
+
+                // Chat Variables (v0.11.0)
+                chatVariablesSection
 
                 // Security
                 securitySection
@@ -298,6 +309,181 @@ struct ProfileView: View {
             .background(theme.surfaceContainer)
             .clipShape(RoundedRectangle(cornerRadius: CornerRadius.lg, style: .continuous))
         }
+    }
+
+    // MARK: - Chat Variables Section (v0.11.0)
+
+    private var chatVariablesSection: some View {
+        VStack(alignment: .leading, spacing: Spacing.xs) {
+            HStack {
+                sectionHeader("CHAT VARIABLES")
+                Spacer()
+                Button {
+                    newVarKey = ""
+                    newVarValue = ""
+                    editingVariableKey = nil
+                    variableKeyError = nil
+                    showAddVariableSheet = true
+                } label: {
+                    Image(systemName: "plus.circle.fill")
+                        .scaledFont(size: 20)
+                        .foregroundStyle(theme.brandPrimary)
+                }
+                .buttonStyle(.plain)
+                .padding(.trailing, Spacing.md)
+            }
+
+            if chatVariables.isEmpty {
+                VStack(spacing: Spacing.sm) {
+                    Image(systemName: "curlybraces")
+                        .scaledFont(size: 28)
+                        .foregroundStyle(theme.textTertiary)
+                    Text("No variables yet")
+                        .scaledFont(size: 14)
+                        .foregroundStyle(theme.textTertiary)
+                    Text("Use {{VAR_NAME}} in any chat message to insert the variable's value.")
+                        .scaledFont(size: 12)
+                        .foregroundStyle(theme.textTertiary)
+                        .multilineTextAlignment(.center)
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, Spacing.lg)
+                .background(theme.surfaceContainer)
+                .clipShape(RoundedRectangle(cornerRadius: CornerRadius.lg, style: .continuous))
+            } else {
+                VStack(spacing: 0) {
+                    ForEach(Array(chatVariables.keys.sorted().enumerated()), id: \.element) { index, key in
+                        let value = chatVariables[key] ?? ""
+                        let isLast = index == chatVariables.count - 1
+
+                        VStack(spacing: 0) {
+                            HStack(spacing: Spacing.sm) {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text("{{\(key)}}")
+                                        .scaledFont(size: 13, weight: .semibold)
+                                        .foregroundStyle(theme.brandPrimary)
+                                        .fontDesign(.monospaced)
+                                    Text(value.isEmpty ? "(empty)" : value)
+                                        .scaledFont(size: 14)
+                                        .foregroundStyle(value.isEmpty ? theme.textTertiary : theme.textPrimary)
+                                        .lineLimit(2)
+                                }
+                                Spacer()
+                                Button {
+                                    newVarKey = key
+                                    newVarValue = value
+                                    editingVariableKey = key
+                                    variableKeyError = nil
+                                    showAddVariableSheet = true
+                                } label: {
+                                    Image(systemName: "pencil")
+                                        .scaledFont(size: 13)
+                                        .foregroundStyle(theme.textTertiary)
+                                        .frame(width: 28, height: 28)
+                                }
+                                .buttonStyle(.plain)
+
+                                Button {
+                                    withAnimation { chatVariables.removeValue(forKey: key) }
+                                    Task { await saveVariables() }
+                                } label: {
+                                    Image(systemName: "trash")
+                                        .scaledFont(size: 13)
+                                        .foregroundStyle(theme.error)
+                                        .frame(width: 28, height: 28)
+                                }
+                                .buttonStyle(.plain)
+                            }
+                            .padding(.horizontal, Spacing.md)
+                            .padding(.vertical, 12)
+
+                            if !isLast {
+                                Divider().padding(.leading, Spacing.md)
+                            }
+                        }
+                    }
+                }
+                .background(theme.surfaceContainer)
+                .clipShape(RoundedRectangle(cornerRadius: CornerRadius.lg, style: .continuous))
+            }
+        }
+        .sheet(isPresented: $showAddVariableSheet) {
+            chatVariableSheet
+        }
+    }
+
+    private var chatVariableSheet: some View {
+        NavigationStack {
+            Form {
+                Section(footer: Text("Variable names must be letters, numbers, and underscores only. Use {{VARIABLE_NAME}} in chat messages.")) {
+                    HStack {
+                        Text("{{")
+                            .scaledFont(size: 15, weight: .semibold)
+                            .foregroundStyle(theme.brandPrimary)
+                            .fontDesign(.monospaced)
+                        TextField("VARIABLE_NAME", text: $newVarKey)
+                            .textInputAutocapitalization(.characters)
+                            .autocorrectionDisabled()
+                            .onChange(of: newVarKey) { _, v in
+                                // Only allow valid identifier chars
+                                let filtered = v.filter { $0.isLetter || $0.isNumber || $0 == "_" }
+                                if filtered != v { newVarKey = filtered }
+                                variableKeyError = nil
+                            }
+                            .disabled(editingVariableKey != nil)
+                        Text("}}")
+                            .scaledFont(size: 15, weight: .semibold)
+                            .foregroundStyle(theme.brandPrimary)
+                            .fontDesign(.monospaced)
+                    }
+
+                    TextField("Value", text: $newVarValue, axis: .vertical)
+                        .lineLimit(1...4)
+                        .autocorrectionDisabled()
+                }
+
+                if let error = variableKeyError {
+                    Section {
+                        Text(error)
+                            .foregroundStyle(theme.error)
+                            .scaledFont(size: 13)
+                    }
+                }
+            }
+            .navigationTitle(editingVariableKey == nil ? "New Variable" : "Edit Variable")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { showAddVariableSheet = false }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Save") {
+                        let trimmedKey = newVarKey.trimmingCharacters(in: .whitespaces).uppercased()
+                        guard !trimmedKey.isEmpty else {
+                            variableKeyError = "Variable name cannot be empty."
+                            return
+                        }
+                        // If adding new, check for duplicate
+                        if editingVariableKey == nil && chatVariables[trimmedKey] != nil {
+                            variableKeyError = "A variable with this name already exists."
+                            return
+                        }
+                        if let old = editingVariableKey, old != trimmedKey {
+                            chatVariables.removeValue(forKey: old)
+                        }
+                        chatVariables[trimmedKey] = newVarValue
+                        showAddVariableSheet = false
+                        editingVariableKey = nil
+                        Task { await saveVariables() }
+                    }
+                    .fontWeight(.semibold)
+                    .disabled(newVarKey.trimmingCharacters(in: .whitespaces).isEmpty)
+                }
+            }
+        }
+        .presentationDetents([.medium])
+        .presentationDragIndicator(.visible)
+        .presentationCornerRadius(24)
     }
 
     // MARK: - Security Section
@@ -619,6 +805,16 @@ struct ProfileView: View {
             } catch {
                 // Silently fail — webhook is optional
             }
+
+            // 6. Load chat variables
+            do {
+                let vars = try await api.getUserVariables()
+                await MainActor.run {
+                    chatVariables = vars.variables
+                }
+            } catch {
+                // Silently fail — variables are optional
+            }
         }
     }
 
@@ -761,6 +957,17 @@ struct ProfileView: View {
         } catch {
             saveError = APIError.from(error).errorDescription ?? "Failed to update profile."
             isSaving = false
+        }
+    }
+
+    // MARK: - Save Variables
+
+    private func saveVariables() async {
+        guard let api = dependencies.apiClient else { return }
+        do {
+            _ = try await api.updateUserVariables(chatVariables)
+        } catch {
+            // Silently fail — variables save is non-critical
         }
     }
 

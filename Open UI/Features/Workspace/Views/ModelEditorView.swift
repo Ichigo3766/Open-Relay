@@ -16,6 +16,8 @@ struct ModelEditorView: View {
     // MARK: - Input
 
     var existingModel: ModelDetail?
+    /// When set, pre-fills the editor with this model's data in "create new" mode (clone flow).
+    var cloneSource: ModelDetail? = nil
     var onSave: ((ModelDetail) -> Void)?
 
     // MARK: - Basic Info
@@ -74,10 +76,13 @@ struct ModelEditorView: View {
     @State private var builtinChats = true
     @State private var builtinNotes = true
     @State private var builtinKnowledge = true
+    @State private var builtinFiles = true
     @State private var builtinChannels = true
+    @State private var builtinNotifications = true
     @State private var builtinTaskManagement = true
     @State private var builtinAutomations = true
     @State private var builtinCalendar = true
+    @State private var builtinSubagents = true
     @State private var builtinWebSearch = true
     @State private var builtinImageGen = true
     @State private var builtinCodeInterpreter = true
@@ -318,8 +323,10 @@ struct ModelEditorView: View {
                         defaultCodeInterpreter: $defaultCodeInterpreter,
                         builtinTime: $builtinTime, builtinMemory: $builtinMemory,
                         builtinChats: $builtinChats, builtinNotes: $builtinNotes,
-                        builtinKnowledge: $builtinKnowledge, builtinChannels: $builtinChannels,
+                        builtinKnowledge: $builtinKnowledge, builtinFiles: $builtinFiles,
+                        builtinChannels: $builtinChannels, builtinNotifications: $builtinNotifications,
                         builtinTaskManagement: $builtinTaskManagement, builtinAutomations: $builtinAutomations, builtinCalendar: $builtinCalendar,
+                        builtinSubagents: $builtinSubagents,
                         builtinWebSearch: $builtinWebSearch, builtinImageGen: $builtinImageGen,
                         builtinCodeInterpreter: $builtinCodeInterpreter
                     )
@@ -1297,10 +1304,34 @@ struct ModelEditorView: View {
     // MARK: - Populate
 
     private func populateIfEditing() {
-        guard let model = existingModel else { return }
-        logger.info("[Populate] Loading existing model: id='\(model.id)' name='\(model.name)'")
-        name = model.name
-        modelId = model.id
+        // Support both edit mode (existingModel) and clone mode (cloneSource).
+        // In clone mode the editor behaves like "new model" — id is editable, isEditing == false.
+        let model: ModelDetail
+        let isCloneMode: Bool
+        if let existing = existingModel {
+            model = existing
+            isCloneMode = false
+        } else if let source = cloneSource {
+            model = source
+            isCloneMode = true
+        } else {
+            return
+        }
+
+        logger.info("[Populate] Loading model: id='\(model.id)' name='\(model.name)' cloneMode=\(isCloneMode)")
+
+        if isCloneMode {
+            // Clone: append "(Clone)" to name, "-clone" to id, editable id
+            name = model.name + " (Clone)"
+            let cloneId = model.id + "-clone"
+            modelId = cloneId
+            idManuallyEdited = true // prevent auto-slug from overriding
+        } else {
+            name = model.name
+            modelId = model.id
+            idManuallyEdited = true
+        }
+
         baseModelId = model.baseModelId ?? ""
         baseModelDisplayName = "" // will be resolved from available models after fetch
         description = model.description ?? ""
@@ -1312,7 +1343,7 @@ struct ModelEditorView: View {
         suggestionPrompts = model.suggestionPrompts
         useCustomPrompts = !model.suggestionPrompts.isEmpty
         knowledgeItems = model.knowledgeItems
-        profileImageURL = model.profileImageURL
+        profileImageURL = isCloneMode ? nil : model.profileImageURL // don't copy profile image on clone
 
         capVision = model.capVision; capFileUpload = model.capFileUpload
         capFileContext = model.capFileContext; capWebSearch = model.capWebSearch
@@ -1327,10 +1358,11 @@ struct ModelEditorView: View {
 
         builtinTime = model.builtinTime; builtinMemory = model.builtinMemory
         builtinChats = model.builtinChats; builtinNotes = model.builtinNotes
-        builtinKnowledge = model.builtinKnowledge; builtinChannels = model.builtinChannels
+        builtinKnowledge = model.builtinKnowledge; builtinFiles = model.builtinFiles
+        builtinChannels = model.builtinChannels; builtinNotifications = model.builtinNotifications
         builtinTaskManagement = model.builtinTaskManagement
         builtinAutomations = model.builtinAutomations
-        builtinCalendar = model.builtinCalendar
+        builtinCalendar = model.builtinCalendar; builtinSubagents = model.builtinSubagents
         builtinWebSearch = model.builtinWebSearch; builtinImageGen = model.builtinImageGen
         builtinCodeInterpreter = model.builtinCodeInterpreter
 
@@ -1369,16 +1401,16 @@ struct ModelEditorView: View {
         advKeepAlive = model.advKeepAlive
         customParams = model.customParams
 
-        let hasWildcard = model.accessGrants.contains { $0.userId == "*" }
-        localAccessGrants = model.accessGrants.filter { $0.userId != "*" }
-        // Tools, Skills, Filters
+        if !isCloneMode {
+            let hasWildcard = model.accessGrants.contains { $0.userId == "*" }
+            localAccessGrants = model.accessGrants.filter { $0.userId != "*" }
+            isPrivate = !hasWildcard
+        }
+        // Tools, Skills, Filters — copy for both edit and clone
         selectedToolIds = Set(model.toolIds)
         selectedFilterIds = Set(model.filterIds)
         defaultFilterIds = Set(model.defaultFilterIds)
         selectedActionIds = Set(model.actionIds)
-
-        isPrivate = !hasWildcard
-        idManuallyEdited = true
 
         logger.info("[Populate] Done. baseModelId='\(model.baseModelId ?? "none")' knowledgeItems=\(model.knowledgeItems.count) toolIds=\(model.toolIds.count) filterIds=\(model.filterIds.count) actionIds=\(model.actionIds.count)")
     }
@@ -1534,8 +1566,10 @@ struct ModelEditorView: View {
             capUsage: capUsage, capCitations: capCitations, capStatusUpdates: capStatusUpdates, capBuiltinTools: capBuiltinTools,
             defaultFeatureWebSearch: defaultWebSearch, defaultFeatureImageGen: defaultImageGen, defaultFeatureCodeInterpreter: defaultCodeInterpreter,
             builtinTime: builtinTime, builtinMemory: builtinMemory, builtinChats: builtinChats,
-            builtinNotes: builtinNotes, builtinKnowledge: builtinKnowledge, builtinChannels: builtinChannels,
+            builtinNotes: builtinNotes, builtinKnowledge: builtinKnowledge, builtinFiles: builtinFiles,
+            builtinChannels: builtinChannels, builtinNotifications: builtinNotifications,
             builtinTaskManagement: builtinTaskManagement, builtinAutomations: builtinAutomations, builtinCalendar: builtinCalendar,
+            builtinSubagents: builtinSubagents,
             builtinWebSearch: builtinWebSearch, builtinImageGen: builtinImageGen, builtinCodeInterpreter: builtinCodeInterpreter,
             knowledgeItems: knowledgeItems,
             suggestionPrompts: suggestionPrompts,
@@ -2547,10 +2581,13 @@ struct ModelToolsAndCapabilitiesSection: View {
     @Binding var builtinChats: Bool
     @Binding var builtinNotes: Bool
     @Binding var builtinKnowledge: Bool
+    @Binding var builtinFiles: Bool
     @Binding var builtinChannels: Bool
+    @Binding var builtinNotifications: Bool
     @Binding var builtinTaskManagement: Bool
     @Binding var builtinAutomations: Bool
     @Binding var builtinCalendar: Bool
+    @Binding var builtinSubagents: Bool
     @Binding var builtinWebSearch: Bool
     @Binding var builtinImageGen: Bool
     @Binding var builtinCodeInterpreter: Bool
@@ -2811,10 +2848,13 @@ struct ModelToolsAndCapabilitiesSection: View {
                     capCheckbox("Chat History", value: $builtinChats)
                     capCheckbox("Notes", value: $builtinNotes)
                     capCheckbox("Knowledge Base", value: $builtinKnowledge)
+                    capCheckbox("Files", value: $builtinFiles)
                     capCheckbox("Channels", value: $builtinChannels)
+                    capCheckbox("Notifications", value: $builtinNotifications)
                     capCheckbox("Task Management", value: $builtinTaskManagement)
                     capCheckbox("Automations", value: $builtinAutomations)
                     capCheckbox("Calendar", value: $builtinCalendar)
+                    capCheckbox("Sub-agents", value: $builtinSubagents)
                     capCheckbox("Web Search", value: $builtinWebSearch)
                     capCheckbox("Image Generation", value: $builtinImageGen)
                     capCheckbox("Code Interpreter", value: $builtinCodeInterpreter)

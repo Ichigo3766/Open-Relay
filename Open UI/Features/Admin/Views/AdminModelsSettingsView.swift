@@ -985,13 +985,16 @@ struct AdminModelsGlobalSettingsSheet: View {
             ("Chat History", $viewModel.btChats),
             ("Notes", $viewModel.btNotes),
             ("Knowledge Base", $viewModel.btKnowledge),
+            ("Files", $viewModel.btFiles),
             ("Channels", $viewModel.btChannels),
+            ("Notifications", $viewModel.btNotifications),
             ("Web Search", $viewModel.btWebSearch),
             ("Image Generation", $viewModel.btImageGeneration),
             ("Code Interpreter", $viewModel.btCodeInterpreter),
             ("Task Management", $viewModel.btTaskManagement),
             ("Automations", $viewModel.btAutomations),
-            ("Calendar", $viewModel.btCalendar)
+            ("Calendar", $viewModel.btCalendar),
+            ("Sub-agents", $viewModel.btSubagents)
         ]
         return capCheckboxGrid(items: items)
     }

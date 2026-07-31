@@ -263,6 +263,10 @@ struct AdminAudioView: View {
                     EmptyView()
                 }
 
+                // Noise Suppression
+                Divider().padding(.leading, Spacing.md)
+                inlineToggleRow(title: "Noise Suppression", subtitle: "Apply noise suppression to audio before processing.", isOn: $viewModel.config.stt.noiseSuppression)
+
                 // STT Model
                 Divider().padding(.leading, Spacing.md)
                 inlineTextFieldRow(title: "STT Model", placeholder: "whisper-1", text: $viewModel.config.stt.model)

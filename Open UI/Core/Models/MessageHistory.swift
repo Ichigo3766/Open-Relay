@@ -35,6 +35,10 @@ struct HistoryNode: Sendable {
     var annotation: MessageAnnotation?
     /// Server-assigned feedback record ID.
     var feedbackId: String?
+    /// True when meta.internal == true on this node (e.g. background sub-agent completion).
+    var isInternalMessage: Bool
+    /// Delegation ID from meta.delegation_id (background sub-agent completion notices).
+    var subagentDelegationId: String?
     /// Raw `output` array from the server (v0.7+). Stored as-is and re-emitted
     /// verbatim on every sync so the server's canonical format is never corrupted.
     /// Content is reconstructed from this array during parsing but the original
@@ -62,6 +66,8 @@ struct HistoryNode: Sendable {
         models: [String] = [],
         annotation: MessageAnnotation? = nil,
         feedbackId: String? = nil,
+        isInternalMessage: Bool = false,
+        subagentDelegationId: String? = nil,
         output: [[String: Any]] = []
     ) {
         self.id = id
@@ -82,6 +88,8 @@ struct HistoryNode: Sendable {
         self.models = models
         self.annotation = annotation
         self.feedbackId = feedbackId
+        self.isInternalMessage = isInternalMessage
+        self.subagentDelegationId = subagentDelegationId
         self.output = output
     }
 
@@ -291,7 +299,9 @@ struct MessageHistory: Sendable {
                 usage: node.usage,
                 embeds: node.embeds,
                 annotation: node.annotation,
-                feedbackId: node.feedbackId
+                feedbackId: node.feedbackId,
+                isInternalMessage: node.isInternalMessage,
+                subagentDelegationId: node.subagentDelegationId
             )
         }
     }
@@ -752,6 +762,17 @@ struct MessageHistory: Sendable {
         // Parse feedbackId
         let feedbackId = msg["feedbackId"] as? String
 
+        // Parse meta — used for internal sub-agent messages
+        // e.g. { "internal": true, "type": "subagent", "delegation_id": "deleg_..." }
+        var isInternalMessage = false
+        var subagentDelegationId: String?
+        if let metaDict = msg["meta"] as? [String: Any] {
+            isInternalMessage = metaDict["internal"] as? Bool ?? false
+            if isInternalMessage {
+                subagentDelegationId = metaDict["delegation_id"] as? String
+            }
+        }
+
         // Preserve the raw output array (v0.7+) so it can be re-emitted verbatim
         // on every sync. This prevents the server's canonical format from being
         // corrupted when the app re-serializes a node it loaded from the server.
@@ -776,6 +797,8 @@ struct MessageHistory: Sendable {
             models: models,
             annotation: annotation,
             feedbackId: feedbackId,
+            isInternalMessage: isInternalMessage,
+            subagentDelegationId: subagentDelegationId,
             output: rawOutput
         )
     }

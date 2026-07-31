@@ -61,7 +61,8 @@ struct GroupPermissionsEditor: View {
 
     private var accessGrantsSection: some View {
         PermissionsSection(header: "Access Grants") {
-            permToggle("Allow Users", isOn: $permissions.accessGrants.allowUsers, isLast: true)
+            permToggle("Allow Users",  isOn: $permissions.accessGrants.allowUsers)
+            permToggle("Allow Groups", isOn: $permissions.accessGrants.allowGroups, isLast: true)
         }
     }
 

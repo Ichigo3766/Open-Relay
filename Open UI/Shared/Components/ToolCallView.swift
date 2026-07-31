@@ -113,7 +113,7 @@ actor MessageParseCache {
                existing.entry.content == content {
                 continue
             }
-            let result = ToolCallParser.parseOrdered(content)
+            let result = await ToolCallParser.parseOrdered(content)
             let entry = Entry(result: result, byteCount: content.utf8.count, content: content)
             cache.setObject(EntryBox(entry), forKey: key as NSString)
             // Yield to the cooperative thread pool every 4 items so the actor

@@ -1,5 +1,37 @@
 # Changelog
 
+## v5.0 — July 31, 2026
+
+### What's New
+- Added Continue button to the assistant action bar — tap to append new content to an incomplete or truncated response.
+- Added Fork Chat button to the assistant action bar — clone any conversation and jump straight to the fork.
+- Added Notification Targets — configure push/webhook notification destinations in Profile settings (requires OpenWebUI v0.11.0+).
+- Added Sub-agents support — enable and configure sub-agents from Admin Console; background subagent mode works in chat.
+- Added Chat Variables — define and save personal variables from your profile that can be referenced in chats (requires OpenWebUI v0.11.0+).
+- Added LDAP Group Sync and Allow Groups permission controls in Admin → General → Auth (requires OpenWebUI v0.11.0+).
+- Added Files, Notifications, and Sub-agents tool toggles to the model editor.
+- Added new Admin Console → Settings tabs: Database (import/export config, export chats), Pipelines (manage pipeline valves), Events (webhooks with per-event filtering), and Authentication (LDAP, OAuth/OIDC, access defaults).
+- Added External Knowledge Sources in Admin → Settings → Integrations.
+- Added Memory System Context and Channel Model Response Mode toggles to Admin → General → Features.
+- Added Context Compaction section to Admin → Interface for summarising long chat histories.
+
+### Improvements
+- Editing an AI response now saves in-place without triggering a new reply — matching the web UI behavior.
+- Admin permissions now correctly gate dictation, voice call, read-aloud, regenerate, edit, and ratings in chat.
+- "Attach Notes" in the tools sheet is hidden when the server has Notes disabled.
+- Admin → Interface now saves chat config (context compaction) alongside task config in a single Save action.
+- All Admin Console text fields are now always-visible multiline boxes — no swipe gesture required.
+- Chat composer now expands into a large writing area when you swipe up — swipe down to collapse.
+
+### Bug Fixes
+- Fixed jittery scroll, layout jumps, and nav bar flickering at the bottom of chats.
+- Fixed Admin → General settings save failing with a validation error.
+- Fixed cloning a workspace model failing with "session expired" — now opens a pre-filled editor to review before saving.
+- Fixed workspace model list showing a sparkles icon instead of the model's avatar.
+
+
+## Previous Builds
+
 ## v4.15.9 — July 26, 2026
 
 ### Bug Fixes

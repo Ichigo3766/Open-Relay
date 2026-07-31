@@ -115,6 +115,10 @@ final class ConversationManager: @unchecked Sendable {
         try await apiClient.cloneConversation(id: id)
     }
 
+    func forkConversation(id: String, messageId: String) async throws -> Conversation {
+        try await apiClient.forkConversation(id: id, messageId: messageId)
+    }
+
     // MARK: - Archive / Shared Chat Browsing
 
     func fetchArchivedChats(page: Int = 1, query: String? = nil) async throws -> [Conversation] {

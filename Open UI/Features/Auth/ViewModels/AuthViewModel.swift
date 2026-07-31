@@ -136,6 +136,13 @@ final class AuthViewModel {
         return currentUser?.permissions?.features ?? .allEnabled
     }
 
+    /// The resolved chat permissions for the current user from `/api/v1/auths/`.
+    /// Admins always get full access. `nil` permissions (older server) defaults to full access.
+    var chatPermissions: GroupChatPermissions {
+        guard currentUser?.role != .admin else { return GroupChatPermissions() }
+        return currentUser?.permissions?.chat ?? GroupChatPermissions()
+    }
+
     /// Whether the current user can access ANY workspace tab.
     var hasAnyWorkspaceAccess: Bool {
         let wp = workspacePermissions

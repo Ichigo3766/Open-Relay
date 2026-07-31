@@ -179,6 +179,16 @@ struct ChatInputField: View {
     @State private var showToolsSheet = false
     @State private var previewingAttachmentId: AttachmentID? = nil
 
+    // MARK: - Expand-to-compose state (Slack-style swipe-up)
+    @State private var composerIsExpanded = false
+    @State private var composerExpandDrag: CGFloat = 0
+    private let composerExpandedHeight: CGFloat = 220
+    private let composerCollapsedHeight: CGFloat = 44  // approx natural height
+    private var composerCurrentHeight: CGFloat? {
+        guard composerIsExpanded else { return nil }
+        return max(120, composerExpandedHeight + composerExpandDrag)
+    }
+
     /// Quick pills preference from UserDefaults
     @AppStorage("quickPills") private var quickPillsData: String = ""
 
@@ -322,6 +332,40 @@ struct ChatInputField: View {
         }
     }
 
+    // MARK: - Expand gesture for composer
+    private var composerExpandGesture: some Gesture {
+        DragGesture(minimumDistance: 10)
+            .onChanged { value in
+                let dy = value.translation.height  // negative = upward
+                if composerIsExpanded {
+                    // Dragging down → shrink live
+                    composerExpandDrag = max(-composerExpandedHeight + 80, -dy)
+                } else {
+                    // Dragging up → peek
+                    if dy < 0 { composerExpandDrag = dy }
+                }
+            }
+            .onEnded { value in
+                let dy = value.translation.height
+                withAnimation(.spring(response: 0.35, dampingFraction: 0.78)) {
+                    if composerIsExpanded {
+                        let newH = composerExpandedHeight - dy
+                        if newH < 100 {
+                            composerIsExpanded = false
+                            Haptics.play(.light)
+                        }
+                    } else {
+                        if dy < -50 {
+                            composerIsExpanded = true
+                            isFocused = true
+                            Haptics.play(.light)
+                        }
+                    }
+                    composerExpandDrag = 0
+                }
+            }
+    }
+
     // MARK: - Composer Shell
 
     private var composerShell: some View {
@@ -385,15 +429,19 @@ struct ChatInputField: View {
             // The trailing buttons are grouped into a single fixed-size HStack
             // so SwiftUI treats them as one atomic block and allocates their
             // space first; the text field fills whatever remains.
-            HStack(alignment: .center, spacing: 8) {
+            HStack(alignment: composerIsExpanded ? .top : .center, spacing: 8) {
                 inlinePlusButton
+                    .padding(.top, composerIsExpanded ? 6 : 0)
                 textField
+                    .frame(height: composerIsExpanded ? composerCurrentHeight : nil, alignment: .top)
+                    .fixedSize(horizontal: false, vertical: !composerIsExpanded)
                 HStack(spacing: 8) {
                     inlineTerminalButton
                     inlineDictationButton
                     trailingButton
                 }
                 .fixedSize(horizontal: true, vertical: false)
+                .padding(.top, composerIsExpanded ? 6 : 0)
             }
             .padding(.horizontal, 12)
             .padding(.top, (selectedKnowledgeItems.isEmpty && selectedReferenceChats.isEmpty && selectedNotes.isEmpty && mentionedModel == nil) ? 10 : 6)
@@ -421,6 +469,9 @@ struct ChatInputField: View {
             x: 0,
             y: 2
         )
+        .gesture(composerExpandGesture)
+        .animation(.spring(response: 0.35, dampingFraction: 0.78), value: composerIsExpanded)
+        .animation(.interactiveSpring(), value: composerExpandDrag)
     }
 
     private var composerCornerRadius: CGFloat {
@@ -504,7 +555,13 @@ struct ChatInputField: View {
                 Haptics.play(.light)
             },
             onSubmit: {
-                if sendOnEnter && canSend { onSend() }
+                if sendOnEnter && canSend {
+                    withAnimation(.spring(response: 0.35, dampingFraction: 0.78)) {
+                        composerIsExpanded = false
+                        composerExpandDrag = 0
+                    }
+                    onSend()
+                }
             },
             onHashTrigger: onHashTrigger,
             onHashDismiss: onHashDismiss,
@@ -679,6 +736,10 @@ struct ChatInputField: View {
                 // Send message
                 Button {
                     Haptics.play(.light)
+                    withAnimation(.spring(response: 0.35, dampingFraction: 0.78)) {
+                        composerIsExpanded = false
+                        composerExpandDrag = 0
+                    }
                     onSend()
                 } label: {
                     Circle()

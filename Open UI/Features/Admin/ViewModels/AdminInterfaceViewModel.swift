@@ -1,13 +1,15 @@
 import Foundation
 import os.log
 
-/// ViewModel for the Admin Interface settings screen (task configuration).
+/// ViewModel for the Admin Interface settings screen.
+/// Manages task config (generation toggles + prompts) and chat config (context compaction).
 @Observable
 final class AdminInterfaceViewModel {
 
     // MARK: - State
 
     var config = AdminTaskConfig()
+    var chatConfig = AdminChatConfig()
     var models: [(id: String, name: String)] = []
     var isLoading = false
     var isSaving = false
@@ -37,14 +39,19 @@ final class AdminInterfaceViewModel {
         error = nil
         do {
             async let configTask = api.getAdminTaskConfig()
+            async let chatConfigTask: AdminChatConfig = {
+                do { return try await api.getAdminChatConfig() }
+                catch { return AdminChatConfig() }
+            }()
             async let modelsTask: [AIModel] = {
                 do { return try await api.getModels() }
                 catch { return [] }
             }()
             config = try await configTask
+            chatConfig = await chatConfigTask
             rawModels = await modelsTask
             models = rawModels.map { (id: $0.id, name: $0.name) }
-            logger.info("Loaded task config + \(self.models.count) models")
+            logger.info("Loaded task config + chat config + \(self.models.count) models")
         } catch {
             let apiError = APIError.from(error)
             self.error = apiError.errorDescription ?? "Failed to load task configuration."
@@ -61,9 +68,15 @@ final class AdminInterfaceViewModel {
         error = nil
         success = false
         do {
-            config = try await api.updateTaskConfig(config)
+            async let taskSave = api.updateTaskConfig(config)
+            async let chatSave: AdminChatConfig = {
+                do { return try await api.updateAdminChatConfig(self.chatConfig) }
+                catch { return self.chatConfig }
+            }()
+            config = try await taskSave
+            chatConfig = await chatSave
             success = true
-            logger.info("Saved task config")
+            logger.info("Saved task config + chat config")
             Task {
                 try? await Task.sleep(nanoseconds: 3_000_000_000)
                 success = false
@@ -116,6 +129,36 @@ final class AdminInterfaceViewModel {
         set {
             if let val = Int(newValue) {
                 config.autocompleteGenerationInputMaxLength = val
+            }
+        }
+    }
+
+    /// Context compaction token threshold as a string for text field binding.
+    var contextCompactionTokenThresholdString: String {
+        get { "\(chatConfig.contextCompactionTokenThreshold)" }
+        set {
+            if let val = Int(newValue) {
+                chatConfig.contextCompactionTokenThreshold = val
+            }
+        }
+    }
+
+    /// Context compaction token cap as a string for text field binding.
+    var contextCompactionTokenCapString: String {
+        get { "\(chatConfig.contextCompactionTokenCap)" }
+        set {
+            if let val = Int(newValue) {
+                chatConfig.contextCompactionTokenCap = val
+            }
+        }
+    }
+
+    /// Context compaction retention percentage as a string for text field binding.
+    var contextCompactionRetentionPercentageString: String {
+        get { "\(chatConfig.contextCompactionRetentionPercentage)" }
+        set {
+            if let val = Int(newValue) {
+                chatConfig.contextCompactionRetentionPercentage = max(10, min(50, val))
             }
         }
     }

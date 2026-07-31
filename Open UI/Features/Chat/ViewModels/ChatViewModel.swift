@@ -77,6 +77,8 @@ final class ChatViewModel {
             }
         }
     }
+    /// True while a fork (clone) request is in-flight. Drives the spinner in the action bar.
+    var isForkingChat = false
     /// Continuation fulfilled the first time `isStreaming` becomes `true` after
     /// `waitForStreamingToStart()` is called. Cleared immediately after signalling
     /// to avoid retaining a stale continuation across calls.
@@ -284,6 +286,11 @@ final class ChatViewModel {
     /// True when this VM initiated the current streaming session (sendMessage/regenerate).
     /// The passive listener skips processing when this is true to avoid conflicts.
     private var selfInitiatedStream: Bool = false
+    /// The message ID of the most recently completed self-initiated stream.
+    /// Used by handlePassiveEvent to block replayed socket events (from the server
+    /// re-delivering events to a freshly re-subscribed passive listener) for a message
+    /// this VM just finished streaming. Cleared when a new self-initiated stream begins.
+    private var lastCompletedSelfInitiatedMessageId: String?
     /// Guards against flooding syncForExternalStream with duplicate fetch tasks
     /// when many socket tokens arrive before the first fetch completes.
     private var isSyncingExternalStream: Bool = false
@@ -974,6 +981,19 @@ final class ChatViewModel {
             logger.error("Failed to load conversation: \(error.localizedDescription)")
             errorMessage = error.localizedDescription
         }
+        // Re-derive flat messages from the history tree when the tree has more nodes
+        // than the flat messages array. This handles background sub-agent messages which
+        // the server appends only to the history tree — `chat.messages` stays at 2 entries
+        // while the tree has 4. After re-deriving, push the updated currentId to the
+        // server so WebUI also navigates to the full branch.
+        if conversation?.history.isPopulated == true {
+            let treeMessages = conversation!.history.createMessagesList()
+            if treeMessages.count > (conversation?.messages.count ?? 0) {
+                conversation!.rederiveMessages()
+                logger.info("loadConversation: re-derived \(treeMessages.count) messages from tree (was \(self.conversation?.messages.count ?? 0) from flat array)")
+                Task { await self.syncCurrentIdToServer() }
+            }
+        }
         // Clear stale override tracking so the model's server defaults apply cleanly
         // when the user opens an existing chat. We don't persist per-chat feature state,
         // so starting fresh here is the correct behaviour (Bug 2 fix).
@@ -1180,9 +1200,14 @@ final class ChatViewModel {
                     }
                 }
             }
-            // Update currentId from server unless we're actively streaming
+            // Update currentId from server unless we're actively streaming.
+            // Walk to the deepest leaf — the server's currentId may be stale
+            // (e.g. when a background sub-agent appends new nodes after the
+            // original assistant response). deepestLeaf() follows the last-child
+            // chain to the tip of the active branch, matching WebUI's loadChat().
             if !isStreaming, let serverCurrentId = serverConversation.history.currentId {
-                conversation?.history.currentId = serverCurrentId
+                let leaf = serverConversation.history.deepestLeaf(from: serverCurrentId)
+                conversation?.history.currentId = leaf
             }
         }
 
@@ -1328,6 +1353,31 @@ final class ChatViewModel {
         if !serverConversation.tasks.isEmpty || !tasks.isEmpty {
             tasks = serverConversation.tasks
             conversation?.tasks = serverConversation.tasks
+        }
+
+        // Phase 5: Re-derive flat messages from the history tree when the tree
+        // has more nodes on the active branch than the flat messages list reflects.
+        //
+        // This handles the background sub-agent case: the server appends new nodes
+        // (an internal user message + final assistant message) to the history TREE
+        // only — the server's `chat.messages` flat array is NOT updated. After Phase
+        // 1-3 sync the flat array from server's messages (missing the new nodes),
+        // the tree already has all 4 nodes and currentId is at the deepest leaf.
+        // Calling rederiveMessages() here rebuilds the flat list from the tree,
+        // making the sub-agent response visible without requiring a full reload.
+        //
+        // After rederiving, push the updated currentId back to the server so WebUI
+        // also navigates to the full branch (WebUI uses currentId to walk the tree).
+        //
+        // Guard: only when not actively streaming (never interrupt a live stream).
+        if !isStreaming, conversation?.history.isPopulated == true {
+            let treeMessages = conversation!.history.createMessagesList()
+            if treeMessages.count > (conversation?.messages.count ?? 0) {
+                conversation!.rederiveMessages()
+                logger.info("adoptServerMessages: re-derived \(treeMessages.count) messages from tree (was \(self.conversation?.messages.count ?? 0) from flat array)")
+                // Push the updated currentId to server so WebUI also shows the full branch.
+                Task { await self.syncCurrentIdToServer() }
+            }
         }
     }
 
@@ -2192,6 +2242,9 @@ final class ChatViewModel {
         let messageId = event["message_id"] as? String
         let chatId = conversationId ?? conversation?.id
 
+        // 🔍 DIAGNOSTIC: log every event arriving at the passive listener
+        logger.info("👁️ [Passive] type=\(type ?? "nil", privacy: .public) msgId=\(messageId ?? "nil", privacy: .public) selfInitiated=\(self.selfInitiatedStream, privacy: .public) isStreaming=\(self.isStreaming, privacy: .public) isExternal=\(self.isExternallyStreaming, privacy: .public) isSyncing=\(self.isSyncingExternalStream, privacy: .public)")
+
         // --- Metadata events: ALWAYS process (title, tags, follow-ups) ---
         switch type {
         case "chat:title":
@@ -2242,8 +2295,125 @@ final class ChatViewModel {
             break
         }
 
-        // --- Content/streaming events: only process when NOT self-initiated ---
-        guard !selfInitiatedStream else { return }
+        // --- Handle chat:reload ---
+        // The server fires chat:reload when a new message node is added to the history tree
+        // (e.g. when a background sub-agent's assistant response starts streaming). This is
+        // the CRITICAL signal that a new message ID is about to receive chat:completion tokens.
+        // We must fetch immediately so the message exists locally before tokens arrive —
+        // otherwise all completion tokens buffer and get lost when chat:active{active:false}
+        // clears the accumulator before syncOnceForExternalStream can replay them.
+        if type == "chat:reload" {
+            if !selfInitiatedStream, !isSyncingExternalStream, let chatId, let manager {
+                // Set the sync flag immediately to block duplicate fetches from concurrent tokens
+                isSyncingExternalStream = true
+                isExternallyStreaming = true
+                isStreaming = true
+                hasFinishedStreaming = false
+                // A new external stream is beginning — clear the replay-block so it can't
+                // accidentally suppress tokens for the new message ID.
+                lastCompletedSelfInitiatedMessageId = nil
+                let reloadMsgId = messageId
+                Task {
+                    if let serverConv = try? await manager.fetchConversation(id: chatId) {
+                        self.adoptServerMessages(serverConversation: serverConv)
+                        // If we know the message ID, begin the streaming pipeline now
+                        // so tokens that arrive immediately can flow through it.
+                        if let msgId = reloadMsgId,
+                           let msg = self.conversation?.messages.first(where: { $0.id == msgId }) {
+                            let modelId = msg.model ?? self.selectedModelId
+                            if !self.streamingStore.isActive {
+                                self.streamingStore.beginStreaming(messageId: msgId, modelId: modelId)
+                                self.externalStreamAccumulatedContent = ""
+                                self.logger.info("chat:reload: pre-started streaming pipeline for \(msgId)")
+                            }
+                        }
+                    }
+                    self.isSyncingExternalStream = false
+                }
+            }
+            return
+        }
+
+        // --- Handle chat:list ---
+        // Background sub-agents complete on their own chat ID (not the parent's).
+        // The only signal the parent chat receives when a background sub-agent finishes
+        // is chat:list — the server fires it when it appends new nodes to the parent tree.
+        // We reload unless we're already mid-sync for an external stream (which would
+        // be a duplicate fetch). adoptServerMessages has its own guards to avoid
+        // corrupting a live stream (isCurrentlyInPipeline check in Phase 2).
+        if type == "chat:list" {
+            if !selfInitiatedStream, !isSyncingExternalStream, let chatId, let manager {
+                Task {
+                    if let serverConv = try? await manager.fetchConversation(id: chatId) {
+                        self.adoptServerMessages(serverConversation: serverConv)
+                    }
+                    NotificationCenter.default.post(name: .conversationListNeedsRefresh, object: nil)
+                }
+            }
+            return
+        }
+
+        // --- Handle chat:active — fires when a background sub-agent task finishes ---
+        // WebUI's chatEventHandler (Chat.svelte): when active=false AND hasPendingAssistantLeaf()
+        // → calls loadChat(). Importantly WebUI does NOT clear any streaming state here —
+        // chat:active{active:false} fires after the task scheduler finishes, which may be
+        // BEFORE the summary response finishes streaming (the LLM tokens follow after).
+        // We must NOT wipe isExternallyStreaming/externalStreamAccumulatedContent here or we
+        // corrupt an in-progress external stream. Just reload the conversation tree.
+        if type == "chat:active" {
+            let activePayload = data["data"] as? [String: Any]
+            let isActive = activePayload?["active"] as? Bool ?? true
+            if !isActive, let chatId, let manager {
+                // Do NOT clear isExternallyStreaming / isSyncingExternalStream /
+                // externalStreamAccumulatedContent here — those are managed by the
+                // content-token and done handlers. Clearing them here would corrupt an
+                // in-progress external stream whose tokens arrive after this event.
+                Task {
+                    if let serverConv = try? await manager.fetchConversation(id: chatId) {
+                        self.adoptServerMessages(serverConversation: serverConv)
+                    }
+                    NotificationCenter.default.post(name: .conversationListNeedsRefresh, object: nil)
+                }
+            }
+            return
+        }
+
+        // --- Block replayed events for the just-completed self-initiated stream --------
+        // When startPassiveSocketListener() re-subscribes after a stream finishes, the
+        // OpenWebUI socket server re-delivers recent events to the newly-subscribed client.
+        // These replayed events would re-route the completed response through the external
+        // streaming path (handlePassiveEvent), causing the typewriter to replay the whole
+        // response from the beginning. Block them by checking the top-level event message_id
+        // against lastCompletedSelfInitiatedMessageId (set in cleanupStreaming()).
+        //
+        // IMPORTANT: Only use the top-level event["message_id"] — do NOT fall back to
+        // payload?["message_id"] (which is from data.data and may hold a different message's
+        // context ID). Using the payload fallback would cause subagent summary tokens to be
+        // incorrectly blocked when the server embeds context message IDs in the payload.
+        if let recentId = lastCompletedSelfInitiatedMessageId,
+           let incomingMsgId = messageId,   // ONLY top-level event["message_id"], never payload fallback
+           incomingMsgId == recentId {
+            logger.debug("👁️ [Passive] Blocked replay event for just-completed message \(recentId)")
+            return
+        }
+
+        // --- Content/streaming events: skip only if this event is for the message we're
+        //     actively streaming ourselves. Allow through if it's a different message ID
+        //     (e.g. a background subagent completing and spawning a new response).
+        //     CRITICAL: Only apply this guard while we're actually streaming (isStreaming==true).
+        //     After our own stream completes, selfInitiatedStream stays true until cleanupStreaming()
+        //     but streamingStore.streamingMessageId becomes nil — causing activeId==nil which drops
+        //     ALL subsequent passive events (including subagent completion tokens). Adding &&isStreaming
+        //     ensures we only skip echo events during our active stream window, never after. ---
+        if selfInitiatedStream && isStreaming {
+            let incomingMsgId = event["message_id"] as? String
+            let activeId = streamingStore.streamingMessageId
+            // If both IDs are known and they differ → this is an external stream, let it through.
+            // If either is nil or they match → this is our own stream echo, skip it.
+            if incomingMsgId == nil || activeId == nil || incomingMsgId == activeId {
+                return
+            }
+        }
 
         // Extract content from events. Handle both message AND chat:completion
         // event types, using replace-if-longer to prevent duplication.
@@ -2285,18 +2455,27 @@ final class ChatViewModel {
         if let contentDelta, !contentDelta.isEmpty {
             guard let msgId = messageId else { return }
 
-            // If message doesn't exist locally, do ONE sync (guarded by flag)
+            // If message doesn't exist locally, we need to sync first.
+            // Buffer the token content NOW so it isn't lost while the async
+            // fetch is in-flight (tokens arriving during sync are accumulated
+            // here and replayed by syncOnceForExternalStream once it finishes).
             if conversation?.messages.first(where: { $0.id == msgId }) == nil {
-                guard !isSyncingExternalStream else { return }
-                isSyncingExternalStream = true
-                isExternallyStreaming = true
-                isStreaming = true
-                // Reset hasFinishedStreaming so self-initiated cleanup guards
-                // don't interfere with this new external stream
-                hasFinishedStreaming = false
-                Task {
-                    await self.syncOnceForExternalStream(messageId: msgId)
-                    self.isSyncingExternalStream = false
+                // Always accumulate the token, even if a sync is already running.
+                if isReplace {
+                    externalStreamAccumulatedContent = contentDelta
+                } else {
+                    externalStreamAccumulatedContent += contentDelta
+                }
+                // Only start ONE sync — subsequent tokens just accumulate above.
+                if !isSyncingExternalStream {
+                    isSyncingExternalStream = true
+                    isExternallyStreaming = true
+                    isStreaming = true
+                    hasFinishedStreaming = false
+                    Task {
+                        await self.syncOnceForExternalStream(messageId: msgId)
+                        self.isSyncingExternalStream = false
+                    }
                 }
                 return
             }
@@ -2309,11 +2488,19 @@ final class ChatViewModel {
                 // Reset hasFinishedStreaming for each new external stream session
                 hasFinishedStreaming = false
                 externalStreamAccumulatedContent = ""
+                // Clear the replay-block — a new external stream is beginning for this message.
+                lastCompletedSelfInitiatedMessageId = nil
                 // Begin the streaming store for this message (activates drain pipeline).
-                let modelId = conversation?.messages.first(where: { $0.id == msgId })?.model
-                    ?? selectedModelId
-                streamingStore.beginStreaming(messageId: msgId, modelId: modelId)
-                logger.info("External stream: first token for message \(msgId), routing via StreamingContentStore")
+                // Guard against double-start: chat:reload may have already called beginStreaming
+                // for this msgId. Starting it again would reset the pipeline mid-stream.
+                if !streamingStore.isActive {
+                    let modelId = conversation?.messages.first(where: { $0.id == msgId })?.model
+                        ?? selectedModelId
+                    streamingStore.beginStreaming(messageId: msgId, modelId: modelId)
+                    logger.info("External stream: first token for message \(msgId), routing via StreamingContentStore")
+                } else {
+                    logger.info("External stream: first token for message \(msgId), pipeline already active (pre-started by chat:reload)")
+                }
             }
 
             // Accumulate content (delta or replace) then push full accumulated
@@ -2406,14 +2593,54 @@ final class ChatViewModel {
             adoptServerMessages(serverConversation: serverConversation)
 
             // After syncing, begin routing tokens through the StreamingContentStore pipeline
-            if conversation?.messages.first(where: { $0.id == messageId }) != nil {
+            guard let msg = conversation?.messages.first(where: { $0.id == messageId }) else { return }
+            let modelId = msg.model ?? selectedModelId
+
+            // Check if tokens arrived while the sync was in-flight.
+            // externalStreamAccumulatedContent is written by handlePassiveEvent while
+            // isSyncingExternalStream is true — those tokens were buffered rather than dropped.
+            let bufferedContent = externalStreamAccumulatedContent
+            let serverContent = msg.content.trimmingCharacters(in: .whitespacesAndNewlines)
+
+            // Pick the best starting content:
+            //   - bufferedContent: tokens that arrived while we were fetching (live stream)
+            //   - serverContent: what the server already has (might be a finished response)
+            // Prefer buffered tokens if they exist (they represent the live stream);
+            // fall back to server content if no tokens arrived during sync.
+            let startContent = bufferedContent.isEmpty ? serverContent : bufferedContent
+
+            // Begin the streaming pipeline with the buffered content as the initial state.
+            streamingStore.beginStreaming(messageId: messageId, modelId: modelId)
+
+            if startContent.isEmpty {
+                // No content yet from either source — just wait for incoming tokens.
                 externalStreamAccumulatedContent = ""
-                let modelId = conversation?.messages.first(where: { $0.id == messageId })?.model ?? selectedModelId
-                streamingStore.beginStreaming(messageId: messageId, modelId: modelId)
+                logger.info("External stream: synced messages, now tracking \(messageId) via pipeline (empty content)")
+            } else if !bufferedContent.isEmpty {
+                // We have live token data buffered — pump it into the pipeline for
+                // character-by-character typewriter streaming.
+                streamingStore.updateContent(bufferedContent)
+                updateAssistantMessage(id: messageId, content: bufferedContent, isStreaming: true)
+                logger.info("External stream: replaying \(bufferedContent.count) buffered chars into pipeline for \(messageId)")
+                // Do NOT mark as done here — more tokens will continue to arrive
+                // via handlePassiveEvent which will call updateAssistantMessage(isStreaming:true)
+                // and eventually updateAssistantMessage(isStreaming:false) when done:true fires.
+            } else {
+                // Server already has the complete response (no live tokens buffered).
+                // Animate it through the typewriter pipeline.
+                externalStreamAccumulatedContent = serverContent
+                streamingStore.updateContent(serverContent)
+                updateAssistantMessage(id: messageId, content: serverContent, isStreaming: false)
+                isExternallyStreaming = false
+                isSyncingExternalStream = false
+                externalStreamAccumulatedContent = ""
+                logger.info("External stream: synced complete message \(messageId), animating \(serverContent.count) chars via typewriter")
             }
-            logger.info("External stream: synced messages, now tracking \(messageId) via pipeline")
         } catch {
             logger.warning("External stream sync failed: \(error.localizedDescription)")
+            isExternallyStreaming = false
+            isSyncingExternalStream = false
+            externalStreamAccumulatedContent = ""
         }
     }
 
@@ -2945,6 +3172,11 @@ final class ChatViewModel {
         socketHasReceivedContent = false
         selfInitiatedStream = true
         streamingSessionId += 1
+        // Clear the replay-block for the previous completed message — a new
+        // stream is starting, so the old ID is no longer relevant and we don't
+        // want to accidentally block events for future messages that might
+        // reuse this ID (extremely unlikely but defensive).
+        lastCompletedSelfInitiatedMessageId = nil
 
         // Start model-switch polling if a switchStatusURL is configured.
         // Stopped automatically when the first SSE token arrives or streaming ends.
@@ -3271,6 +3503,169 @@ final class ChatViewModel {
     func regenerateLastResponse() async {
         guard let lastAssistant = conversation?.messages.last(where: { $0.role == .assistant }) else { return }
         await regenerateResponse(messageId: lastAssistant.id)
+    }
+
+    /// Forks (clones) the current conversation by calling POST /api/v1/chats/{id}/clone,
+    /// then navigates to the newly created chat via the .adminClonedChat notification.
+    /// Matches open-webui's fork behaviour exactly.
+    func forkChat(messageId: String) async {
+        guard let chatId = conversationId ?? conversation?.id,
+              let manager else { return }
+        isForkingChat = true
+        defer { Task { @MainActor in self.isForkingChat = false } }
+        do {
+            let cloned = try await manager.forkConversation(id: chatId, messageId: messageId)
+            let clonedId = cloned.id
+            NotificationCenter.default.post(
+                name: .adminClonedChat,
+                object: clonedId
+            )
+        } catch {
+            // silent failure — forking is non-destructive; user can retry
+        }
+    }
+
+    /// Continues the last assistant response by appending new tokens to the existing content.
+    ///
+    /// Mirrors OpenWebUI's `continueResponse()` — it reuses the **same message ID**, does
+    /// NOT create a new history node, and passes `assistant_message_id` in the request so
+    /// the server knows to prefix its output with the existing message content.
+    ///
+    /// The streaming pipeline is pre-seeded with the existing content so the typewriter
+    /// starts at the END of what's already displayed — old content is never re-streamed.
+    func continueLastResponse() async {
+        guard !isStreaming || isExternallyStreaming else { return }
+        guard let lastAssistant = conversation?.messages.last(where: { $0.role == .assistant }) else { return }
+        let assistantId = lastAssistant.id
+        let existingContent = lastAssistant.content
+
+        let modelId = lastAssistant.model ?? selectedModelId ?? conversation?.model ?? ""
+        guard let lastUser = conversation?.messages.last(where: { $0.role == .user }) else { return }
+
+        let apiMessages = await buildAPIMessagesAsync()
+        let parentId = lastUser.id
+        let effectiveChatId = conversationId ?? conversation?.id
+
+        // Cancel any background completion task from the previous message's streaming.
+        // Without this, the delayed metadata refreshes (1.5s + 2/3/5s file polls)
+        // from the just-finished response will call updateAssistantMessage(isStreaming:false)
+        // on the same message ID during the continue — triggering endStreaming() mid-continue
+        // and replacing the content with only the new server tokens.
+        completionTask?.cancel()
+        completionTask = nil
+
+        isStreaming = true
+        hasFinishedStreaming = false
+        selfInitiatedStream = true
+        regenerateScrollToken = UUID()
+
+        // Mark message as streaming and keep existing content visible.
+        if let idx = conversation?.messages.firstIndex(where: { $0.id == assistantId }) {
+            conversation?.messages[idx].isStreaming = true
+        }
+
+        // Pre-seed the pipeline so the typewriter starts AFTER the existing content.
+        // Only new tokens from the server will be revealed — old content is not re-streamed.
+        streamingStore.beginStreamingForContinue(
+            messageId: assistantId,
+            modelId: modelId,
+            existingContent: existingContent
+        )
+
+        chatSubscription?.dispose()
+        chatSubscription = nil
+        channelSubscription?.dispose()
+        channelSubscription = nil
+        recoveryTimer?.invalidate()
+        recoveryTimer = nil
+
+        guard let socket = socketService else {
+            updateAssistantMessage(id: assistantId, content: existingContent,
+                                   isStreaming: false, error: ChatMessageError(content: "No connection available."))
+            isStreaming = false
+            return
+        }
+        if !socket.isConnected {
+            let ok = await socket.ensureConnected(timeout: 10.0)
+            if !ok {
+                updateAssistantMessage(id: assistantId, content: existingContent,
+                    isStreaming: false, error: ChatMessageError(content: "Connection failed"))
+                isStreaming = false
+                return
+            }
+        }
+
+        sessionId = UUID().uuidString
+        let socketSessionId = socket.sid ?? sessionId
+
+        await syncToServerViaTree()
+
+        registerSocketHandlers(
+            socket: socket, assistantMessageId: assistantId,
+            modelId: modelId, socketSessionId: socketSessionId,
+            effectiveChatId: effectiveChatId,
+            continuePrefix: existingContent)
+
+        streamingTask = Task { [weak self] in
+            guard let self, let manager = self.manager else { return }
+            do {
+                var request = ChatCompletionRequest(
+                    model: modelId, messages: apiMessages, stream: true,
+                    chatId: effectiveChatId, sessionId: socketSessionId,
+                    messageId: assistantId, parentId: parentId)
+
+                // Tell the server to continue from the existing message content.
+                request.assistantMessageId = assistantId
+
+                // Build user_message node.
+                let userNodeParentId: String? = {
+                    guard let idx = self.conversation?.messages.firstIndex(where: { $0.id == lastUser.id }),
+                          idx > 0 else { return nil }
+                    return self.conversation?.messages[idx - 1].id
+                }()
+                let allChildIds = self.conversation?.history.nodes[parentId]?.childrenIds ?? [assistantId]
+                let userMsgDict: [String: Any] = [
+                    "id": parentId,
+                    "parentId": (userNodeParentId as Any?) ?? NSNull(),
+                    "childrenIds": allChildIds,
+                    "role": "user",
+                    "content": lastUser.content,
+                    "timestamp": Int(lastUser.timestamp.timeIntervalSince1970),
+                    "models": [modelId]
+                ]
+                request.userMessage = userMsgDict
+
+                await self.populateCommonRequestFields(&request)
+
+                let json = try await manager.sendMessageHTTP(request: request)
+
+                if let err = json["error"] as? String, !err.isEmpty {
+                    self.updateAssistantMessage(id: assistantId, content: existingContent,
+                                                isStreaming: false, error: ChatMessageError(content: err))
+                    self.cleanupStreaming()
+                    return
+                }
+                if let detail = json["detail"] as? String, !detail.isEmpty, json["choices"] == nil {
+                    self.updateAssistantMessage(id: assistantId, content: existingContent,
+                                                isStreaming: false, error: ChatMessageError(content: detail))
+                    self.cleanupStreaming()
+                    return
+                }
+
+                if let taskId = json["task_id"] as? String {
+                    self.activeTaskId = taskId
+                }
+
+                self.logger.info("Continue HTTP POST done – waiting for socket events")
+            } catch {
+                if !Task.isCancelled {
+                    self.updateAssistantMessage(id: assistantId, content: existingContent,
+                                                isStreaming: false,
+                                                error: ChatMessageError(content: error.localizedDescription))
+                    self.cleanupStreaming()
+                }
+            }
+        }
     }
 
     /// Regenerates a specific assistant response by its message ID.
@@ -3612,6 +4007,54 @@ final class ChatViewModel {
 
         // 10. Stream the AI response into the new assistant placeholder.
         await regenerateIntoExistingMessage(assistantMessageId: newAssistantId)
+    }
+
+    /// Saves an edited assistant message content **in-place** — no new branch, no regeneration.
+    ///
+    /// Mirrors the WebUI `editMessage(id, { content }, false)` call used when the user
+    /// edits an assistant response and saves without regenerating (the third argument `false`
+    /// means "don't create a new message pair, just update the content in the tree").
+    ///
+    /// Flow:
+    /// 1. Update the message content in the flat messages array (immediate UI update).
+    /// 2. Update the history tree node so `syncToServerViaTree()` gets the correct content.
+    /// 3. Sync to the server via `syncToServerViaTree()` → `PUT /api/v1/chats/{id}`.
+    /// Saves an edited assistant message content **in-place** — no new branch, no regeneration.
+    ///
+    /// Mirrors the WebUI `editMessage(id, { content }, false)` call used when the user
+    /// edits an assistant response and saves without regenerating (the third argument `false`
+    /// means "don't create a new message pair, just update the content in the tree").
+    ///
+    /// Flow:
+    /// 1. Update the message content in the flat messages array (immediate UI update).
+    /// 2. Update the history tree node so the sync carries the correct content.
+    /// 3. Persist via `saveConversationToServer()` — this sends the full chat payload
+    ///    (history tree + flat messages) to `PUT /api/v1/chats/{id}`, matching exactly
+    ///    what the WebUI does: it sends the complete `chat` object including both
+    ///    `history.messages` (tree) and `messages` (flat array) in a single PUT call.
+    func saveAssistantMessageContent(id: String, newContent: String) async {
+        guard conversation != nil else { return }
+
+        // 1. Update in the flat messages array for immediate UI refresh.
+        if let idx = conversation!.messages.firstIndex(where: { $0.id == id }) {
+            conversation!.messages[idx].content = newContent
+        }
+
+        // 2. Ensure tree is populated, then update the node content directly.
+        //    WebUI writes: history.messages[id].content = messageContent into its store.
+        if !conversation!.history.isPopulated {
+            conversation!.history = APIClient.buildHistoryFromFlatMessages(conversation!.messages)
+        }
+        if conversation!.history.nodes[id] != nil {
+            conversation!.history.nodes[id]!.content = newContent
+            conversation!.history.nodes[id]!.done = true
+        }
+
+        // 3. Persist the full chat to the server.
+        //    saveConversationToServer() calls manager.saveConversation(conversation)
+        //    which sends the complete payload — both history tree and flat messages —
+        //    to PUT /api/v1/chats/{id}, matching WebUI's updateChatById() call exactly.
+        await saveConversationToServer()
     }
 
     /// Restores an old user message branch by switching `history.currentId` to the
@@ -4023,11 +4466,22 @@ final class ChatViewModel {
         assistantMessageId: String,
         modelId: String,
         socketSessionId: String,
-        effectiveChatId: String?
+        effectiveChatId: String?,
+        continuePrefix: String? = nil
     ) {
         chatSubscription?.dispose()
         channelSubscription?.dispose()
         let acc = ContentAccumulator()
+
+        // For continue responses: pre-seed the accumulator with the existing message
+        // content so that delta tokens are appended to the correct base.
+        // Without this, chat:message:delta events call acc.append(newToken) giving
+        // acc.content = "" + newToken (tiny). When pipeline.append(tinyString) is
+        // called, buffer = tinyString but displayedCount = existingContent.count (large),
+        // so currentBuffered < 0 — nothing drains and the continuation is invisible.
+        if let prefix = continuePrefix, !prefix.isEmpty {
+            acc.replace(prefix)
+        }
 
         // Wire up the immediate UI update callback.
         // The accumulator coalesces concurrent token arrivals into a single
@@ -4385,6 +4839,14 @@ final class ChatViewModel {
         updateAssistantMessage(id: assistantMessageId, content: acc.content, isStreaming: false)
         hasFinishedStreaming = true
         isStreaming = false
+
+        // Register the passive listener now that the conversation has a real server ID.
+        // For new chats, startPassiveSocketListener() is skipped in load() because no
+        // conversationId exists yet. After the first stream completes the conversation is
+        // created on the server and conversation.id is populated — this is the first safe
+        // moment to register, and it must happen here before hasFinishedStreaming=true
+        // blocks cleanupStreaming() from ever reaching the call at the bottom.
+        startPassiveSocketListener()
 
         // Drain the message queue: if there are queued messages, combine them
         // with "\n\n" and send as a single message after streaming finishes.
@@ -4814,6 +5276,15 @@ final class ChatViewModel {
         hasFinishedStreaming = true
         isStreaming = false
         isExternallyStreaming = false
+        // Record the just-completed message ID BEFORE clearing selfInitiatedStream.
+        // handlePassiveEvent uses this to block replayed socket events for the message
+        // this VM just streamed (re-subscription to the passive listener causes the server
+        // to re-deliver recent events, which would otherwise replay the whole response).
+        if let completedId = streamingStore.streamingMessageId ?? {
+            conversation?.messages.last(where: { $0.role == .assistant && !$0.isStreaming })?.id
+        }() {
+            lastCompletedSelfInitiatedMessageId = completedId
+        }
         selfInitiatedStream = false
         activeTaskId = nil
         lastTaskExtractionLength = 0
@@ -4904,6 +5375,17 @@ final class ChatViewModel {
                 await self?.sendMessage(directText: combined)
             }
         }
+
+        // CRITICAL: Re-register the passive socket listener after each stream completes.
+        //
+        // For new chats (conversationId == nil at VM init), `startPassiveSocketListener()`
+        // is intentionally skipped in `load()` because the conversation doesn't exist yet.
+        // After the first response finishes, the conversation has a real server ID but the
+        // passive listener has never been set up — so subsequent background subagent events
+        // are never delivered to `handlePassiveEvent`. Re-registering here ensures the passive
+        // listener is always alive after any streaming session completes, regardless of whether
+        // the VM was created for a new chat or an existing one.
+        startPassiveSocketListener()
 
     }
 

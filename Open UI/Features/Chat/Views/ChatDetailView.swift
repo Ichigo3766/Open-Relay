@@ -7,6 +7,20 @@ import MarkdownView
 import Litext
 import os.log
 
+// MARK: - Scroll Geometry Snapshot
+//
+// A single atomic snapshot of the scroll view's geometry, captured inside
+// onScrollGeometryChange so that contentOffset, contentSize, and containerSize
+// are ALWAYS from the same render pass.  Using three separate @State variables
+// (the old approach) meant they could be stale by 1-2 frames relative to each
+// other, which caused isBouncing to mis-fire during bottom-edge rubber-banding
+// and triggered the nav-bar / FAB jitter the user reported.
+private struct ScrollSnapshot: Equatable {
+    var offset: CGPoint
+    var contentSize: CGSize
+    var containerSize: CGSize
+}
+
 // MARK: - Pump Rate-Limiter
 
 /// A reference-type box that holds the last programmatic scroll timestamp
@@ -78,10 +92,15 @@ struct ChatDetailView: View {
     // causing the entire view body to re-evaluate, causing low-FPS scrolling. They are read
     // at button tap-time from _pumpRef where needed.
     /// True while a user gesture (finger touch or inertia deceleration) is driving
-    /// the scroll view. This is the ONLY condition under which auto-scroll can be
-    /// disengaged — layout reflows, WKWebView resizes, and programmatic scrolls
-    /// never set this flag because they emit .animating/.idle phases, not .interacting.
+    /// the scroll view. Used by the streaming pump to yield to the user's finger/inertia.
+    /// Layout reflows, WKWebView resizes, and programmatic scrolls never set this flag
+    /// because they emit .animating/.idle phases, not .interacting or .decelerating.
     @State private var isUserDriving = false
+    /// True ONLY while the user's finger is physically on the screen (.interacting phase).
+    /// Used exclusively for nav-bar hide/show and isScrolledUp trip so that inertia
+    /// deceleration + bounce recovery (which is .decelerating, NOT .interacting) can
+    /// never trigger jittery nav-bar show/hide at the bottom edge.
+    @State private var isFingerDriving = false
     /// Rate-limit timestamp for the streaming scroll pump (writes are non-rendering).
     private let _pumpRef = PumpRef()
     /// Whether the navigation bar is currently hidden.
@@ -126,6 +145,7 @@ struct ChatDetailView: View {
     @State private var usagePopoverMessageId: String?
     @State private var sourcesSheetMessage: ChatMessage?
     @State private var feedbackDetailMessage: ChatMessage? = nil
+    @State private var subagentDetailMessage: ChatMessage? = nil
     @State private var randomPrompts: [SuggestedPrompt] = []
 
     // MARK: Model mention (@ trigger)
@@ -133,11 +153,16 @@ struct ChatDetailView: View {
     @State private var modelPickerQuery = ""
     @State private var mentionedModel: AIModel? = nil
 
-    // MARK: Inline edit
+    // MARK: Inline edit (user messages)
     @State private var editingMessageId: String?
     @State private var editingMessageText = ""
     @State private var editingMessageFiles: [ChatMessageFile] = []
     @FocusState private var isEditFieldFocused: Bool
+
+    // MARK: Inline edit (assistant messages — in-place content save, no regeneration)
+    @State private var editingAssistantMessageId: String?
+    @State private var editingAssistantText = ""
+    @FocusState private var isAssistantEditFocused: Bool
 
     // MARK: User message version navigation
     /// Tracks the active version index for user messages (edit history).
@@ -272,16 +297,23 @@ struct ChatDetailView: View {
             messageListArea
         }
         // Custom top bar replaces the system navigation bar entirely.
-        // Using safeAreaInset reserves the correct amount of layout space so
-        // the scroll content is never hidden underneath the bar.  When
-        // navBarHidden is true the bar slides up via offset() and the reserved
-        // height collapses to 0 — both in a single coordinated animation so
-        // the two layers (background + icons) always move as one unit.
+        //
+        // CRITICAL: The safeAreaInset height must NEVER change — it is the source
+        // of viewState_containerHeight (via the scroll geometry callback). If the
+        // inset collapses when navBarHidden flips true, containerHeight changes,
+        // which changes the minHeight VStack, which causes the content to jump
+        // (the jitter seen at the bottom edge).
+        //
+        // Solution: always reserve the full bar height in the safeAreaInset.
+        // Hide the bar purely visually using offset + opacity — the layout
+        // footprint stays constant at all times so the scroll view geometry
+        // never changes when the bar hides or shows.
         .safeAreaInset(edge: .top, spacing: 0) {
             customTopBar
-                .frame(height: navBarHidden ? 0 : nil)
+                .opacity(navBarHidden ? 0 : 1)
                 .offset(y: navBarHidden ? -56 : 0)
-                .clipped()
+                // DO NOT use .frame(height:) here — that would collapse the
+                // reserved safeAreaInset space and change containerHeight.
                 .animation(.easeInOut(duration: 0.22), value: navBarHidden)
         }
         .safeAreaInset(edge: .bottom, spacing: 0) {
@@ -431,6 +463,25 @@ struct ChatDetailView: View {
         }
         .sheet(item: $feedbackDetailMessage) { msg in
             FeedbackDetailSheet(message: msg, viewModel: viewModel)
+        }
+        .sheet(item: $subagentDetailMessage) { msg in
+            SubagentResultSheet(message: msg)
+        }
+        // Assistant inline edit sheet — shown when the user taps the pencil icon
+        // on an assistant message. Allows editing content in-place (no regeneration).
+        .sheet(isPresented: Binding(
+            get: { editingAssistantMessageId != nil },
+            set: { if !$0 { cancelAssistantEdit() } }
+        )) {
+            AssistantEditSheet(
+                text: $editingAssistantText,
+                isFocused: $isAssistantEditFocused,
+                onSave: { submitAssistantEdit() },
+                onCancel: { cancelAssistantEdit() }
+            )
+            .themed()
+            .presentationDetents([.medium, .large])
+            .presentationDragIndicator(.visible)
         }
         // Prompt variable input sheet — shown when a selected prompt has {{variables}}
         .sheet(isPresented: Binding<Bool>(
@@ -1069,7 +1120,8 @@ struct ChatDetailView: View {
                 onPhotoAttachment: { showPhotosPicker = true },
                 onCameraCapture: { showCameraPicker = true },
                 onWebAttachment: { showWebURLAlert = true },
-                onVoiceInput: { toggleVoiceInput() },
+                // Voice call — gated by permissions.chat.call
+                onVoiceInput: dependencies.authViewModel.chatPermissions.call ? { toggleVoiceInput() } : nil,
                 apiClient: dependencies.apiClient,
                 notesManager: dependencies.notesManager,
                 conversationManager: dependencies.conversationManager,
@@ -1079,7 +1131,8 @@ struct ChatDetailView: View {
                 skills: viewModel.availableSkills,
                 selectedSkillIds: $viewModel.selectedSkillIds,
                 isLoadingSkills: viewModel.isLoadingSkills,
-                onDictationStart: { startDictation() },
+                // Dictation — gated by permissions.chat.stt
+                onDictationStart: dependencies.authViewModel.chatPermissions.stt ? { startDictation() } : nil,
                 onDictationStop: { stopDictation() },
                 onDictationCancel: { cancelDictation() },
                 isDictating: isDictating,
@@ -1415,7 +1468,14 @@ struct ChatDetailView: View {
         .scrollDismissesKeyboard(editingMessageId != nil ? .never : (viewModel.isStreaming ? .immediately : .interactively))
         .scrollPosition($scrollPosition)
         .onScrollPhaseChange { _, newPhase in
+            // isUserDriving: yield the streaming pump to BOTH finger touch AND inertia/deceleration.
+            // This prevents the pump from fighting the user during a flick-scroll.
             isUserDriving = (newPhase == .interacting || newPhase == .decelerating)
+            // isFingerDriving: ONLY set while the finger is physically on screen (.interacting).
+            // The nav-bar and isScrolledUp upward-delta logic use this flag, NOT isUserDriving,
+            // so that inertia deceleration + bottom-bounce recovery never trigger jittery
+            // nav-bar hide/show or false isScrolledUp trips at the bottom edge.
+            isFingerDriving = (newPhase == .interacting)
         }
         // ── Direct finger break-out ──────────────────────────────────────────
         // When the glide animation is running the scroll phase is `.animating`,
@@ -1440,29 +1500,69 @@ struct ChatDetailView: View {
                     }
                 }
         )
-        .onScrollGeometryChange(for: CGPoint.self) { geo in
-            geo.contentOffset
-        } action: { oldOffset, newOffset in
+        // ── UNIFIED SCROLL GEOMETRY CALLBACK ─────────────────────────────────────────
+        //
+        // CRITICAL: This replaces the previous two separate callbacks (one for CGPoint
+        // offset, one for CGSize content/container). The old design had a race condition:
+        // the offset callback used @State viewState_contentHeight / viewState_containerHeight
+        // which could be 1-2 frames stale relative to the current offset. This caused
+        // isBouncing to compute incorrectly during rubber-band overscroll — it would
+        // return false during a real bounce, letting nav-bar and FAB logic fire at 120Hz
+        // on oscillating offsets, producing the violent jitter at the bottom edge.
+        //
+        // The fix: capture contentSize and containerSize in the SAME geometry snapshot
+        // as contentOffset, so all three values are atomically consistent. isBouncing is
+        // computed from the live snapshot, never from stale @State.
+        //
+        // Additionally, nav-bar hide/show and the upward-delta isScrolledUp trip now use
+        // `isFingerDriving` (finger physically on screen) instead of `isUserDriving`
+        // (finger OR inertia). This prevents bottom-bounce deceleration — which is
+        // .decelerating phase, NOT .interacting — from triggering nav-bar jitter.
+        .onScrollGeometryChange(for: ScrollSnapshot.self) { geo in
+            ScrollSnapshot(
+                offset: geo.contentOffset,
+                contentSize: geo.contentSize,
+                containerSize: geo.containerSize
+            )
+        } action: { oldSnap, snap in
+            let newOffset = snap.offset
+            let oldOffset = oldSnap.offset
+            let contentHeight = snap.contentSize.height
+            let containerHeight = snap.containerSize.height
+
+            // ── Update @State size caches (used by messagesList minHeight, FAB reference) ──
+            // These writes cause a SwiftUI re-eval, but only when the height actually changes
+            // (the >1pt dead-band eliminates sub-pixel noise). They are still needed because
+            // messagesList.frame(minHeight:) and the FAB reference height use @State.
+            if abs(contentHeight - viewState_contentHeight) > 1 {
+                viewState_contentHeight = contentHeight
+            }
+            if abs(containerHeight - viewState_containerHeight) > 1 {
+                viewState_containerHeight = containerHeight
+            }
+
             // Track raw offset for the ↑ FAB "find current question" logic.
             // Written to _pumpRef (not @State) so this 120Hz write never causes a body re-eval.
             _pumpRef.currentScrollOffsetY = newOffset.y
 
-            let distanceFromBottom = max(0,
-                viewState_contentHeight - newOffset.y - viewState_containerHeight)
-            let maxScrollOffset = max(0, viewState_contentHeight - viewState_containerHeight)
-            let isBouncing = newOffset.y < 0 || (maxScrollOffset > 0 && newOffset.y > maxScrollOffset)
+            // ── isBouncing: computed from the LIVE snapshot — never stale @State ──
+            // maxScrollOffset is the furthest the content can scroll before rubber-banding.
+            // isBouncing is true when the offset is past either edge (top overscroll < 0,
+            // bottom overscroll > maxScrollOffset). A 1pt tolerance prevents floating-point
+            // at-exact-bottom from being treated as a bounce.
+            let maxScrollOffset = max(0, contentHeight - containerHeight)
+            let isBouncing = newOffset.y < 0 || (maxScrollOffset > 0 && newOffset.y > maxScrollOffset + 1)
+
+            let distanceFromBottom = max(0, contentHeight - newOffset.y - containerHeight)
 
             // Arm the programmatic-scroll suppression flag once so all logic below shares it.
             let programmaticActive = Date() < _pumpRef.programmaticScrollUntil
 
-            if distanceFromBottom <= 80 && !isBouncing && !programmaticActive && !viewModel.isStreaming {
-                // Scrolled to within 80pt of the bottom — re-engage auto-scroll and hide FABs.
-                // !isBouncing guard: during a bottom bounce newOffset.y overshoots maxScrollOffset,
-                // which clamps distanceFromBottom to 0 — without this guard it fires isScrolledUp=false
-                // which triggers scrollTo(edge:.bottom) via onChange and causes the "fighting" sensation.
-                // !programmaticActive guard: when the up-FAB shrinks windowEnd the content height
-                // drops momentarily, making distanceFromBottom look ≤ 80 even though we're still
-                // scrolled well into the conversation — suppression prevents the false reset.
+            // ── Near-bottom reset: re-engage auto-scroll when finger scrolls back down ──
+            // Threshold tightened to 40pt (was 80pt) so this only fires when clearly at
+            // the bottom and NOT during bounce recovery. The isBouncing guard is the primary
+            // protection; 40pt provides an additional safety margin.
+            if distanceFromBottom <= 40 && !isBouncing && !programmaticActive && !viewModel.isStreaming {
                 if isScrolledUp {
                     isScrolledUp = false
                     userMessageJumpIndex = nil
@@ -1470,10 +1570,6 @@ struct ChatDetailView: View {
             } else if isUserDriving && !isBouncing {
                 // User's finger (or inertia) is actively driving the scroll view —
                 // the ONLY condition under which auto-scroll is allowed to disengage.
-                // !isBouncing already covers the rubber-band over-scroll zones (top/bottom),
-                // so no distance gate is needed — any genuine upward drag breaks auto-scroll
-                // instantly, even a tiny one. This makes the breakout feel immediate rather
-                // than requiring the user to fight/scroll >80pt against the streaming pump.
                 // Require a small delta (>2pt) so sub-pixel layout reflow/settling noise
                 // never falsely trips the breakout.
                 let upwardDelta = oldOffset.y - newOffset.y
@@ -1482,45 +1578,31 @@ struct ChatDetailView: View {
             // All other cases (layout reflows, programmatic scrolls, WKWebView resizes)
             // emit .animating/.idle → isUserDriving is false → no state change.
 
-
             // ── Nav bar direction-based hide/show ──
-            // HIDE: genuine downward finger/inertia scroll, more than 80pt from the bottom.
-            // SHOW: genuine upward finger/inertia scroll.
+            // Uses isFingerDriving (NOT isUserDriving) so that:
+            //   • Inertia deceleration and bounce recovery (.decelerating phase) NEVER
+            //     trigger nav-bar changes — that was the primary source of bottom-edge jitter.
+            //   • Only actual finger-contact scrolls (.interacting phase) hide/show the bar.
             //
-            // "Genuine" = isUserDriving AND not in a programmatic-scroll suppression window.
-            // The suppression window is armed before every scrollTo() call so that FAB taps,
-            // streaming auto-scroll, stream-start re-engagement, and AnimatedPresence reflow
-            // never trigger the nav bar. Without suppression those events all emit offset
-            // changes that hit the navDelta > 1 hide path and the old unconditional
-            // "near-bottom → show" path, causing the visible pop/flash.
-            //
-            // Nav-bar baseline and delta are only updated when NOT bouncing.
-            // During a bottom overscroll the offset oscillates rapidly around
-            // maxScrollOffset — updating lastNavBarOffsetY on every frame produces
-            // large spurious deltas that flicker the nav bar at 120 Hz (the
-            // "fighting / jittery" sensation when pushing past the bottom edge).
-            // Skipping the update while bouncing keeps the baseline frozen at the
-            // last stable in-bounds position, so the first post-bounce frame sees a
-            // near-zero delta and the nav bar stays completely still during overscroll.
+            // Nav-bar baseline is only updated when NOT bouncing.
+            // During a bottom overscroll the offset oscillates around maxScrollOffset —
+            // freezing the baseline during bounce keeps the delta near zero, so the
+            // nav bar stays completely still during overscroll recovery.
             if !isBouncing {
                 let navSuppressed = Date() < _pumpRef.programmaticScrollUntil
                 let navDelta = newOffset.y - _pumpRef.lastNavBarOffsetY
                 _pumpRef.lastNavBarOffsetY = newOffset.y
 
-                // Freeze nav bar during streaming — every streaming auto-scroll fires offset
-                // changes that would otherwise toggle the nav bar, causing the visible
-                // pop-in/pop-out the user reported. Only respond to genuine user drags.
-                if !navSuppressed && isUserDriving && !viewModel.isStreaming {
+                // Only respond to genuine finger-contact drags, not inertia or streaming pump.
+                if !navSuppressed && isFingerDriving && !viewModel.isStreaming {
                     if distanceFromBottom > 80 {
                         if navDelta > 1 && !navBarHidden {
-                            // Scrolling down (away from bottom) — hide
                             withAnimation(.easeInOut(duration: 0.2)) { navBarHidden = true }
                         } else if navDelta < -1 && navBarHidden {
-                            // Scrolling up (back toward top) — show
                             withAnimation(.easeInOut(duration: 0.2)) { navBarHidden = false }
                         }
                     } else {
-                        // Near/at the bottom with real user scroll upward — show
+                        // Near/at bottom with finger scrolling upward — show bar
                         if navDelta < -1 && navBarHidden {
                             withAnimation(.easeInOut(duration: 0.2)) { navBarHidden = false }
                         }
@@ -1533,28 +1615,16 @@ struct ChatDetailView: View {
             if atTop != isAtTop { isAtTop = atTop }
 
             // ── Track topmost visible message for layout-stable scroll restore ──
-            // Estimate which message ID is currently at the top of the viewport
-            // using a linear fraction of the scroll offset. This is updated
-            // continuously so we always have a fresh ID ready when streaming ends.
             if isScrolledUp {
                 let allMsgs = viewModel.messages
-                if !allMsgs.isEmpty && viewState_contentHeight > 0 {
-                    let fraction = max(0, min(1, newOffset.y / viewState_contentHeight))
+                if !allMsgs.isEmpty && contentHeight > 0 {
+                    let fraction = max(0, min(1, newOffset.y / contentHeight))
                     let estimatedIdx = min(Int(fraction * CGFloat(allMsgs.count)), allMsgs.count - 1)
-                    let newTopId = allMsgs[estimatedIdx].id
-                    _pumpRef.topmostVisibleMessageId = newTopId
+                    _pumpRef.topmostVisibleMessageId = allMsgs[estimatedIdx].id
                 }
             }
 
             // ── Sliding window: preload older messages when approaching the top ──
-            // Threshold raised to 600pt so the next batch mounts *before* the user
-            // reaches the edge — avoids the mid-momentum mount stutter.
-            // The window slide runs in a Task so the scroll-geometry callback returns
-            // immediately and never blocks scroll momentum.
-            // We deliberately do NOT re-anchor (scrollTo) after sliding — the window
-            // grows upward by prepending new rows, and the existing anchor row stays
-            // at the same logical position in the VStack, so the scroll offset is
-            // naturally preserved. A re-anchor mid-momentum would interrupt inertia.
             let total = viewModel.messages.count
             let effectiveEnd = windowEnd ?? total
             let effectiveStart = max(0, effectiveEnd - windowSize)
@@ -1564,27 +1634,16 @@ struct ChatDetailView: View {
                !programmaticActive,
                effectiveStart > 0,
                !viewModel.isLoadingConversation {
-                // Set the guard synchronously so rapid geometry callbacks don't
-                // schedule multiple concurrent slides.
                 isLoadingMoreMessages = true
-
-                // Capture everything needed before the async hop.
                 let capturedTotal = total
                 let capturedEffectiveStart = effectiveStart
 
                 Task { @MainActor in
                     let slideBy = min(5, capturedEffectiveStart)
-
-                    // Detach from "pinned to latest" on first upward scroll
                     if windowEnd == nil { windowEnd = capturedTotal }
-
-                    // Slide window backwards: grow size up to cap, shift windowEnd
                     windowSize = min(windowSize + slideBy, maxWindowSize)
                     let newStart = max(0, capturedEffectiveStart - slideBy)
                     windowEnd = min(newStart + windowSize, capturedTotal)
-
-                    // No re-anchor: rows are prepended at the top; the current
-                    // scroll offset already points past them, so no jump occurs.
                     isLoadingMoreMessages = false
                 }
             }
@@ -1599,8 +1658,6 @@ struct ChatDetailView: View {
                 let anchorId = viewModel.messages[min(wEnd - 1, total - 1)].id
                 let slideBy = min(5, total - wEnd)
                 windowEnd = wEnd + slideBy
-
-                // Re-pin to latest when we've scrolled all the way back down
                 if windowEnd! >= total { windowEnd = nil }
 
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
@@ -1608,53 +1665,17 @@ struct ChatDetailView: View {
                     isLoadingMoreMessages = false
                 }
             }
-        }
-        .onScrollGeometryChange(for: CGSize.self) { geo in
-            CGSize(width: geo.contentSize.height, height: geo.containerSize.height)
-        } action: { oldSize, newSize in
-            if abs(newSize.width - viewState_contentHeight) > 1 {
-                viewState_contentHeight = newSize.width
-            }
-            if abs(newSize.height - viewState_containerHeight) > 1 {
-                viewState_containerHeight = newSize.height
-            }
-            // Streaming auto-follow:
-            // When a line wraps, the content height jumps by a full line (~20pt) in one
-            // layout pass. An instant snap turns every wrap into a hard step → "stutter".
-            // A single long animation re-introduces the old stacking problem.
-            //
-            // Solution: rate-limited animated glide.
-            //   • Only issue one new scroll per 0.14 s (the glide duration).  Bursts of
-            //     line-advances inside that window are absorbed — the next allowed tick
-            //     animates straight to the newest bottom, so rapid wraps feel like one
-            //     continuous glide rather than 6 fighting animations.
-            //   • Use .easeOut(duration: 0.14) — long enough to look fluid, short enough
-            //     that the viewport never lags more than a fraction of a line behind.
-            //
-            // Guards:
-            //  - !isUserDriving: the instant a finger touches, following yields completely.
-            //  - !isScrolledUp: user already broke out manually.
-            //  - !isLoadingMoreMessages: don't fight the pagination anchor scroll.
-            //
-            // A 4pt dead-band prevents sub-pixel noise while keeping the follow glued.
-            let contentHeight = newSize.width
-            let containerHeight = newSize.height
-            let distFromBottom = max(0, contentHeight - containerHeight - _pumpRef.currentScrollOffsetY)
+
+            // ── Streaming auto-follow pump ──
+            // Rate-limited instant snap — keeps viewport glued to the live tail during streaming.
+            // Guards: not user-driving, not manually scrolled up, not paginating.
+            let distFromBottom = max(0, contentHeight - containerHeight - newOffset.y)
             let driftedFar = distFromBottom > 4
             if driftedFar && viewModel.isStreaming && !isUserDriving && !isScrolledUp && !isLoadingMoreMessages {
                 let now = Date()
-                // Rate-limit: only issue one scroll per 16ms to match the drain timer cadence.
-                // Use a fixed 0.016s interval — no animation duration needed since we snap instantly.
                 guard now.timeIntervalSince(_pumpRef.lastScrollTime) >= 0.016 else { return }
                 _pumpRef.lastScrollTime = now
-                // Suppress nav-bar / breakout logic for a brief window so this instant
-                // offset change doesn't falsely trip the direction-based hide/show logic.
-                // 0.06s is enough for one geometry callback to fire and settle.
                 _pumpRef.programmaticScrollUntil = now.addingTimeInterval(0.06)
-                // Instant snap — no withAnimation. The typewriter drain (60Hz character reveal)
-                // already provides all the visual smoothness needed. An animated scroll on top
-                // creates a competing Core Animation that fights the user's finger when they
-                // try to scroll up during streaming.
                 scrollPosition.scrollTo(edge: .bottom)
             }
         }
@@ -1935,8 +1956,60 @@ struct ChatDetailView: View {
 
     // MARK: - Message Row
 
+    // MARK: - Background Sub-agent Completion Banner
+
+    @ViewBuilder
+    private func subagentCompletionBanner(message: ChatMessage) -> some View {
+        let delegationId = message.subagentDelegationId ?? ""
+        let shortId = delegationId.hasPrefix("deleg_") ? String(delegationId.dropFirst(6).prefix(8)) : String(delegationId.prefix(8))
+
+        Button {
+            subagentDetailMessage = message
+            Haptics.play(.light)
+        } label: {
+            HStack(spacing: 8) {
+                Image(systemName: "sparkles")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(.secondary)
+                Text("Background sub-agent finished")
+                    .font(.subheadline)
+                    .foregroundStyle(.primary)
+                Spacer()
+                if !shortId.isEmpty {
+                    Text(shortId)
+                        .font(.caption2.monospaced())
+                        .foregroundStyle(.tertiary)
+                }
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(.tertiary)
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
+            .overlay(
+                RoundedRectangle(cornerRadius: 12)
+                    .strokeBorder(Color.secondary.opacity(0.2), lineWidth: 0.5)
+            )
+        }
+        .buttonStyle(.plain)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 4)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
     @ViewBuilder
     private func messageRow(message: ChatMessage, index: Int) -> some View {
+        // Internal sub-agent completion messages get a compact banner, not a full bubble.
+        // The isInternalMessage flag is set from meta.internal on the server node, but as a
+        // safety net we also check the content prefix — OpenWebUI always injects these with
+        // "[ASYNC SUBAGENT COMPLETE" so we can identify them even if meta is missing/absent.
+        let isSubagentCompletion = (message.isInternalMessage || message.content.hasPrefix("[ASYNC SUBAGENT COMPLETE"))
+            && message.role == .user
+        if isSubagentCompletion {
+            subagentCompletionBanner(message: message)
+        } else {
+
         let isLastAssistant = message.role == .assistant && index == viewModel.messages.count - 1
 
         VStack(alignment: message.role == .user ? .trailing : .leading, spacing: 0) {
@@ -2074,6 +2147,7 @@ struct ChatDetailView: View {
         .clipped()
         .accessibilityElement(children: .combine)
         .accessibilityLabel(Text("\(message.role == .user ? "You" : "Assistant"): \(message.content.prefix(200))"))
+        } // end else (not internal message)
     }
 
     // MARK: - Assistant Header
@@ -2703,6 +2777,10 @@ struct ChatDetailView: View {
     // MARK: - Assistant Action Bar
 
     private func assistantActionBar(for message: ChatMessage) -> some View {
+        // Resolve chat permissions once for all guards in this bar.
+        // Admins always get full access (GroupChatPermissions() defaults all to true).
+        let chatPerms = dependencies.authViewModel.chatPermissions
+
         // Build a timestamp-sorted list of ALL sibling IDs (current main + versions).
         // This is the single source of truth for position — it never gets stale
         // because it is derived fresh from the message object on every render.
@@ -2721,33 +2799,49 @@ struct ChatDetailView: View {
         let displayIndex: Int = (allSiblings.firstIndex(where: { $0.id == message.id }) ?? 0) + 1
 
         return HStack(spacing: 6) {
-            // Speak
-            Button {
-                toggleSpeech(for: message)
-                Haptics.play(.light)
-            } label: {
-                if ttsGeneratingMessageId == message.id {
-                    ProgressView()
-                        .progressViewStyle(.circular)
-                        .scaleEffect(0.65)
-                        .frame(width: 28, height: 28)
-                        .tint(theme.brandPrimary)
-                } else {
-                    compactActionIcon(
-                        icon: speakingMessageId == message.id ? "stop.fill" : "speaker.wave.2",
-                        isActive: speakingMessageId == message.id
-                    )
+            // Speak — gated by permissions.chat.tts
+            if chatPerms.tts {
+                Button {
+                    toggleSpeech(for: message)
+                    Haptics.play(.light)
+                } label: {
+                    if ttsGeneratingMessageId == message.id {
+                        ProgressView()
+                            .progressViewStyle(.circular)
+                            .scaleEffect(0.65)
+                            .frame(width: 28, height: 28)
+                            .tint(theme.brandPrimary)
+                    } else {
+                        compactActionIcon(
+                            icon: speakingMessageId == message.id ? "stop.fill" : "speaker.wave.2",
+                            isActive: speakingMessageId == message.id
+                        )
+                    }
                 }
+                .buttonStyle(.plain)
+                .accessibilityLabel(speakingMessageId == message.id ? "Stop speaking" : "Speak")
             }
-            .buttonStyle(.plain)
-            .accessibilityLabel(speakingMessageId == message.id ? "Stop speaking" : "Speak")
 
-            // Copy
+            // Copy (always available — no permission gate in WebUI either)
             Button { copyMessage(message) } label: {
                 compactActionIcon(icon: "doc.on.doc", isActive: false)
             }
             .buttonStyle(.plain)
             .accessibilityLabel("Copy")
+
+            // Edit assistant message — gated by permissions.chat.edit
+            // Mirrors WebUI's editMessage(id, { content }, false): updates content
+            // in-place without creating a new branch or triggering regeneration.
+            if chatPerms.edit && !viewModel.isStreaming {
+                Button {
+                    beginAssistantEdit(message: message)
+                    Haptics.play(.light)
+                } label: {
+                    compactActionIcon(icon: "pencil", isActive: false)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Edit response")
+            }
 
             // Version switcher (only when siblings exist and not overriding with a user edit version)
             if totalVersions > 1 && !viewModel.isStreaming && assistantContentOverride[message.id] == nil {
@@ -2803,8 +2897,8 @@ struct ChatDetailView: View {
                 }
             }
 
-            // Regenerate
-            if !viewModel.isStreaming {
+            // Regenerate — gated by permissions.chat.regenerate_response
+            if !viewModel.isStreaming && chatPerms.regenerateResponse {
                 Button {
                     Task { await viewModel.regenerateResponse(messageId: message.id) }
                     Haptics.play(.light)
@@ -2815,8 +2909,46 @@ struct ChatDetailView: View {
                 .accessibilityLabel("Regenerate")
             }
 
-            // Delete (only shown when there are multiple versions / regeneration history)
-            if !viewModel.isStreaming && totalVersions > 1 {
+            // Continue — gated by permissions.chat.continue_response.
+            // Only shown on the LAST assistant message so the user can append
+            // more content to an incomplete or truncated response.
+            let isLastAssistantMsg = viewModel.messages.last(where: { $0.role == .assistant })?.id == message.id
+            if !viewModel.isStreaming && chatPerms.continueResponse && isLastAssistantMsg {
+                Button {
+                    Task { await viewModel.continueLastResponse() }
+                    Haptics.play(.light)
+                } label: {
+                    compactActionIcon(icon: "play.fill", isActive: false)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Continue response")
+            }
+
+            // Fork chat — clones the entire conversation and navigates to the fork.
+            // Matches open-webui's fork behaviour: POST /api/v1/chats/{id}/clone,
+            // then navigate to the newly created chat.
+            // Only shown when a saved conversation exists (not on brand-new chats).
+            if !viewModel.isStreaming && viewModel.conversation != nil {
+                Button {
+                    Task { await viewModel.forkChat(messageId: message.id) }
+                    Haptics.play(.light)
+                } label: {
+                    if viewModel.isForkingChat {
+                        ProgressView()
+                            .progressViewStyle(.circular)
+                            .scaleEffect(0.65)
+                            .frame(width: 28, height: 28)
+                            .tint(theme.brandPrimary)
+                    } else {
+                        compactActionIcon(icon: "arrow.branch", isActive: false)
+                    }
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Fork chat")
+            }
+
+            // Delete — gated by permissions.chat.delete_message (only when siblings exist)
+            if !viewModel.isStreaming && totalVersions > 1 && chatPerms.deleteMessage {
                 Button {
                     Task { await viewModel.deleteMessage(id: message.id) }
                     // After deletion, rederiveMessages() replaces the message list —
@@ -2849,8 +2981,11 @@ struct ChatDetailView: View {
                 .accessibilityLabel("Token usage")
             }
 
-            // Thumbs up / down (message rating — gated on server feature flag)
-            if viewModel.messageRatingEnabled && !viewModel.isStreaming {
+            // Thumbs up / down — gated by server enable_message_rating flag AND
+            // permissions.chat.rate_response. Also hidden during temporary chats
+            // (WebUI: !temporaryChatEnabled check).
+            if viewModel.messageRatingEnabled && !viewModel.isStreaming
+                && !viewModel.isTemporaryChat && chatPerms.rateResponse {
                 let currentRating = message.annotation?.rating
                 Button {
                     Task {
@@ -2907,6 +3042,37 @@ struct ChatDetailView: View {
 
             Spacer()
         }
+    }
+
+    // MARK: - Assistant Inline Edit (in-place save, no regeneration)
+
+    /// Opens an inline edit sheet for an assistant message.
+    /// Unlike user message editing (which creates a new branch + regenerates),
+    /// this mirrors WebUI's `editMessage(id, { content }, false)` — it saves
+    /// the edited content in-place to the history tree and syncs to the server
+    /// without triggering a new AI response.
+    private func beginAssistantEdit(message: ChatMessage) {
+        editingAssistantMessageId = message.id
+        editingAssistantText = message.content
+        Haptics.play(.light)
+    }
+
+    private func cancelAssistantEdit() {
+        isAssistantEditFocused = false
+        editingAssistantMessageId = nil
+        editingAssistantText = ""
+    }
+
+    private func submitAssistantEdit() {
+        guard let id = editingAssistantMessageId else { return }
+        let trimmed = editingAssistantText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        isAssistantEditFocused = false
+        editingAssistantMessageId = nil
+        let savedText = editingAssistantText
+        editingAssistantText = ""
+        Task { await viewModel.saveAssistantMessageContent(id: id, newContent: savedText) }
+        Haptics.play(.medium)
     }
 
     /// Compact action icon for the always-visible action bar.
@@ -5587,6 +5753,125 @@ struct ActionConfirmRequest: Identifiable {
     let id = UUID()
     let title: String
     let message: String
+}
+
+// MARK: - SubagentResultSheet
+
+/// A sheet that shows the full content of a background sub-agent completion message.
+/// Presented when the user taps the "Background sub-agent finished" banner in the chat.
+struct SubagentResultSheet: View {
+    let message: ChatMessage
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    // Delegation ID badge
+                    if let delegId = message.subagentDelegationId, !delegId.isEmpty {
+                        Text(delegId)
+                            .font(.caption.monospaced())
+                            .foregroundStyle(.secondary)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 5)
+                            .background(Color(.secondarySystemBackground))
+                            .clipShape(RoundedRectangle(cornerRadius: 8))
+                    }
+
+                    // Full content rendered as markdown
+                    AssistantMessageContent(
+                        content: message.content,
+                        isStreaming: false,
+                        messageEmbeds: message.embeds,
+                        authToken: nil,
+                        serverBaseURL: "",
+                        apiClient: nil
+                    )
+                }
+                .padding(.horizontal, 20)
+                .padding(.vertical, 16)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .navigationTitle("Sub-agent Result")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") { dismiss() }
+                }
+            }
+        }
+    }
+}
+
+// MARK: - AssistantEditSheet
+
+/// A bottom sheet for editing an assistant message content in-place.
+/// Mirrors WebUI's `editMessage(id, { content }, false)` — saves the edited
+/// text directly to the history tree + server without creating a new branch
+/// or triggering AI regeneration.
+struct AssistantEditSheet: View {
+    @Binding var text: String
+    @FocusState.Binding var isFocused: Bool
+    let onSave: () -> Void
+    let onCancel: () -> Void
+
+    @Environment(\.theme) private var theme
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            // Header
+            HStack {
+                Button(action: onCancel) {
+                    Text("Cancel")
+                        .scaledFont(size: 16)
+                        .foregroundStyle(theme.textSecondary)
+                }
+                .buttonStyle(.plain)
+
+                Spacer()
+
+                Text("Edit Response")
+                    .scaledFont(size: 17, weight: .semibold)
+                    .foregroundStyle(theme.textPrimary)
+
+                Spacer()
+
+                Button(action: onSave) {
+                    Text("Save")
+                        .scaledFont(size: 16, weight: .semibold)
+                        .foregroundStyle(
+                            text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                                ? theme.textTertiary
+                                : theme.brandPrimary
+                        )
+                }
+                .buttonStyle(.plain)
+                .disabled(text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+            .padding(.horizontal, Spacing.md)
+            .padding(.vertical, 14)
+            .overlay(alignment: .bottom) { Divider().opacity(0.5) }
+
+            // Text editor
+            TextEditor(text: $text)
+                .scaledFont(size: 15)
+                .foregroundStyle(theme.textPrimary)
+                .tint(theme.brandPrimary)
+                .focused($isFocused)
+                .scrollContentBackground(.hidden)
+                .background(theme.background)
+                .padding(.horizontal, Spacing.md)
+                .padding(.vertical, Spacing.sm)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+        .background(theme.background.ignoresSafeArea())
+        .onAppear {
+            // Auto-focus the editor when the sheet opens
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                isFocused = true
+            }
+        }
+    }
 }
 
 // MARK: - ActionInputSheet

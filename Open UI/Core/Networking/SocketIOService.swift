@@ -832,6 +832,14 @@ final class SocketIOService: NSObject, @unchecked Sendable, URLSessionWebSocketD
             payload = [:]
         }
 
+        // 🔍 DIAGNOSTIC: log every socket event name + nested type
+        let nestedType = (payload["data"] as? [String: Any])?["type"] as? String
+            ?? payload["type"] as? String
+            ?? "?"
+        let chatId = payload["chat_id"] as? String ?? "nil"
+        let msgId = payload["message_id"] as? String ?? "nil"
+        logger.info("🔌 [Socket] event=\(eventName, privacy: .public) type=\(nestedType, privacy: .public) chat_id=\(chatId, privacy: .public) msg_id=\(msgId, privacy: .public)")
+
         switch eventName {
         case "events", "chat-events":
             dispatchChatEvent(payload, ackId: ackId)

@@ -200,6 +200,19 @@ actor StreamingPipeline {
         startTimer()
     }
 
+    /// Begin a streaming session for a **continue** response.
+    ///
+    /// Pre-seeds the buffer with `prefix` (the already-displayed content) and sets
+    /// `displayedCount = prefix.count` so the typewriter drain cursor starts at the
+    /// END of the existing content. Only new tokens appended beyond the prefix will
+    /// be revealed — the old content is never re-streamed.
+    func beginWithPrefix(_ prefix: String) {
+        resetState()
+        buffer = prefix
+        displayedCount = prefix.count
+        startTimer()
+    }
+
     /// Append new server content. Content is always the full accumulated string.
     func append(_ content: String) {
         guard !isFinishing else { return }

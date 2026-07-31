@@ -14,10 +14,19 @@ struct AdminInterfaceView: View {
         ZStack(alignment: .bottomTrailing) {
             ScrollView {
                 VStack(spacing: Spacing.lg) {
+                    Color.clear.frame(height: 0)
+                        .toolbar {
+                            ToolbarItemGroup(placement: .keyboard) {
+                                Spacer()
+                                Button("Done") { UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil) }
+                                    .fontWeight(.semibold)
+                            }
+                        }
                     if viewModel.isLoading {
                         sectionLoadingView()
                     } else {
                         taskModelSection
+                        contextCompactionSection
                         titleGenerationSection
                         voiceModeSection
                         followUpSection
@@ -136,6 +145,67 @@ struct AdminInterfaceView: View {
                     text: $viewModel.config.taskModelExternal,
                     availableItems: viewModel.models
                 )
+            }
+        }
+        .padding(.horizontal, Spacing.screenPadding)
+    }
+
+    // MARK: - Context Compaction (Chat section)
+
+    private var contextCompactionSection: some View {
+        VStack(spacing: Spacing.sm) {
+            sectionHeader(icon: "arrow.triangle.2.circlepath", title: "Chat")
+
+            SettingsSection {
+                inlineToggleRow(
+                    title: "Context Compaction",
+                    subtitle: "Summarize older chat history when the conversation context grows large.",
+                    isOn: $viewModel.chatConfig.enableContextCompaction
+                )
+
+                if viewModel.chatConfig.enableContextCompaction {
+                    Divider().padding(.horizontal, Spacing.md)
+
+                    modelFieldRow(
+                        title: "Context Compaction Model",
+                        text: $viewModel.chatConfig.contextCompactionModel,
+                        availableItems: viewModel.models
+                    )
+
+                    Divider().padding(.horizontal, Spacing.md)
+
+                    inlineTextFieldRow(
+                        title: "Token Threshold",
+                        placeholder: "80000",
+                        text: $viewModel.contextCompactionTokenThresholdString,
+                        keyboardType: .numberPad
+                    )
+
+                    Divider().padding(.horizontal, Spacing.md)
+
+                    inlineTextFieldRow(
+                        title: "Token Cap",
+                        placeholder: "80000",
+                        text: $viewModel.contextCompactionTokenCapString,
+                        keyboardType: .numberPad
+                    )
+
+                    Divider().padding(.horizontal, Spacing.md)
+
+                    inlineTextFieldRow(
+                        title: "Retained Messages %",
+                        placeholder: "40 (10-50)",
+                        text: $viewModel.contextCompactionRetentionPercentageString,
+                        keyboardType: .numberPad
+                    )
+
+                    Divider().padding(.horizontal, Spacing.md)
+
+                    promptEditorRow(
+                        title: "Context Compaction Prompt",
+                        text: $viewModel.chatConfig.contextCompactionPromptTemplate
+                    )
+                }
             }
         }
         .padding(.horizontal, Spacing.screenPadding)
@@ -394,17 +464,12 @@ struct AdminInterfaceView: View {
         text: Binding<String>,
         keyboardType: UIKeyboardType = .default
     ) -> some View {
-        VStack(alignment: .leading, spacing: Spacing.xs) {
-            Text(title)
-                .scaledFont(size: 14, weight: .medium)
-                .foregroundStyle(theme.textSecondary)
-            TextField(placeholder, text: text)
-                .scaledFont(size: 15)
-                .foregroundStyle(theme.textPrimary)
-                .keyboardType(keyboardType)
-                .textInputAutocapitalization(.never)
-                .autocorrectionDisabled()
-        }
+        ExpandableTextField(
+            text: text,
+            placeholder: placeholder,
+            label: title,
+            keyboardType: keyboardType
+        )
         .padding(.horizontal, Spacing.md)
         .padding(.vertical, Spacing.chatBubblePadding)
     }
@@ -476,29 +541,17 @@ struct AdminInterfaceView: View {
         .padding(.vertical, Spacing.chatBubblePadding)
     }
 
-    /// A multiline text editor for prompt templates.
+    /// A multiline text editor for prompt templates — starts collapsed, swipe up to expand.
     private func promptEditorRow(
         title: String,
         text: Binding<String>
     ) -> some View {
-        VStack(alignment: .leading, spacing: Spacing.xs) {
-            Text(title)
-                .scaledFont(size: 14, weight: .medium)
-                .foregroundStyle(theme.textSecondary)
-
-            TextEditor(text: text)
-                .scaledFont(size: 14)
-                .foregroundStyle(theme.textPrimary)
-                .scrollContentBackground(.hidden)
-                .frame(minHeight: 80, maxHeight: 200)
-                .padding(Spacing.xs)
-                .background(theme.surfaceContainer.opacity(0.5))
-                .clipShape(RoundedRectangle(cornerRadius: CornerRadius.sm, style: .continuous))
-                .overlay(
-                    RoundedRectangle(cornerRadius: CornerRadius.sm, style: .continuous)
-                        .strokeBorder(theme.inputBorder.opacity(0.3), lineWidth: 0.5)
-                )
-        }
+        ExpandableTextField(
+            text: text,
+            placeholder: "Enter prompt template…",
+            label: title,
+            isMultiline: false
+        )
         .padding(.horizontal, Spacing.md)
         .padding(.vertical, Spacing.chatBubblePadding)
     }

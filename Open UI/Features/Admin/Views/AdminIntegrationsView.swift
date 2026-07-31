@@ -7,6 +7,7 @@ struct AdminIntegrationsView: View {
     @Environment(AppDependencyContainer.self) private var dependencies
 
     @State private var viewModel = AdminIntegrationsViewModel()
+    @State private var knowledgeViewModel = AdminExternalKnowledgeViewModel()
 
     var body: some View {
         ScrollView {
@@ -16,6 +17,7 @@ struct AdminIntegrationsView: View {
                 } else {
                     toolServersSection
                     terminalServersSection
+                    knowledgeSection
                     Spacer(minLength: 80)
                 }
             }
@@ -25,6 +27,8 @@ struct AdminIntegrationsView: View {
         .task {
             viewModel.configure(apiClient: dependencies.apiClient)
             await viewModel.loadAll()
+            knowledgeViewModel.configure(apiClient: dependencies.apiClient)
+            await knowledgeViewModel.load()
         }
         // Edit Tool Server Sheet
         .sheet(
@@ -60,6 +64,13 @@ struct AdminIntegrationsView: View {
         // Add Terminal Server Sheet
         .sheet(isPresented: $viewModel.isShowingAddTerminal) {
             AddTerminalSheet(viewModel: viewModel)
+                .presentationDetents([.large])
+                .presentationDragIndicator(.visible)
+                .presentationCornerRadius(24)
+        }
+        // External Knowledge Editor Sheet
+        .sheet(isPresented: $knowledgeViewModel.showEditor) {
+            ExternalKnowledgeEditorSheet(viewModel: knowledgeViewModel)
                 .presentationDetents([.large])
                 .presentationDragIndicator(.visible)
                 .presentationCornerRadius(24)
@@ -317,6 +328,147 @@ struct AdminIntegrationsView: View {
                 .labelsHidden()
                 .tint(theme.brandPrimary)
             }
+        }
+        .padding(.horizontal, Spacing.screenPadding)
+        .padding(.vertical, 12)
+    }
+
+    // MARK: - Knowledge Section
+
+    private var knowledgeSection: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            // Section header
+            HStack(alignment: .center) {
+                Text("External Knowledge Sources")
+                    .scaledFont(size: 18, weight: .semibold)
+                    .foregroundStyle(theme.textPrimary)
+
+                Text("EXPERIMENTAL")
+                    .scaledFont(size: 9, weight: .heavy)
+                    .foregroundStyle(theme.textTertiary)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 3)
+                    .background(theme.textTertiary.opacity(0.12))
+                    .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
+
+                Spacer()
+
+                Button {
+                    knowledgeViewModel.openCreate()
+                    Haptics.play(.light)
+                } label: {
+                    Image(systemName: "plus")
+                        .scaledFont(size: 16, weight: .semibold)
+                        .foregroundStyle(theme.brandPrimary)
+                        .frame(width: 32, height: 32)
+                        .background(theme.brandPrimary.opacity(0.1))
+                        .clipShape(Circle())
+                }
+                .buttonStyle(.plain)
+            }
+            .padding(.horizontal, Spacing.screenPadding)
+
+            if let err = knowledgeViewModel.error {
+                errorBanner(err)
+                    .padding(.horizontal, Spacing.screenPadding)
+                    .padding(.top, Spacing.xs)
+            }
+
+            // Sources list
+            VStack(spacing: 0) {
+                if knowledgeViewModel.isLoading {
+                    ProgressView()
+                        .controlSize(.small)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, Spacing.lg)
+                } else if knowledgeViewModel.items.isEmpty {
+                    VStack(spacing: Spacing.sm) {
+                        Text("No external knowledge sources configured.")
+                            .scaledFont(size: 14)
+                            .foregroundStyle(theme.textTertiary)
+                        Text("Test must pass before a source is created.")
+                            .scaledFont(size: 12)
+                            .foregroundStyle(theme.textTertiary)
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, Spacing.lg)
+                } else {
+                    ForEach(Array(knowledgeViewModel.items.enumerated()), id: \.element.id) { index, item in
+                        knowledgeRow(item: item)
+                        if index != knowledgeViewModel.items.count - 1 {
+                            Divider()
+                                .padding(.horizontal, Spacing.screenPadding)
+                        }
+                    }
+                }
+            }
+            .background(theme.surfaceContainer)
+            .clipShape(RoundedRectangle(cornerRadius: CornerRadius.card, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: CornerRadius.card, style: .continuous)
+                    .strokeBorder(theme.cardBorder, lineWidth: 0.5)
+            )
+            .padding(.horizontal, Spacing.screenPadding)
+            .padding(.top, Spacing.sm)
+
+            Text("Connect to external vector databases (Qdrant, Milvus, pgvector) as knowledge sources.")
+                .scaledFont(size: 12)
+                .foregroundStyle(theme.textTertiary)
+                .padding(.horizontal, Spacing.screenPadding)
+                .padding(.top, Spacing.xs)
+        }
+    }
+
+    private func knowledgeRow(item: ExternalKnowledgeItem) -> some View {
+        let conn = knowledgeViewModel.connectionForItem(item)
+        let isEnabled = conn?.enabled != false
+        return HStack(spacing: Spacing.sm) {
+            Image(systemName: "externaldrive.connected.to.line.below")
+                .scaledFont(size: 16, weight: .medium)
+                .foregroundStyle(theme.textTertiary)
+                .frame(width: 24)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(item.name)
+                    .scaledFont(size: 14, weight: .medium)
+                    .foregroundStyle(isEnabled ? theme.textPrimary : theme.textTertiary)
+                    .lineLimit(1)
+                HStack(spacing: 4) {
+                    if let provider = item.provider ?? conn?.provider, !provider.isEmpty {
+                        Text(provider.capitalized)
+                            .scaledFont(size: 11)
+                            .foregroundStyle(theme.textTertiary)
+                    }
+                    if let sn = item.sourceName {
+                        Text("· \(sn)")
+                            .scaledFont(size: 11)
+                            .foregroundStyle(theme.textTertiary)
+                    }
+                }
+                .opacity(isEnabled ? 1 : 0.5)
+            }
+
+            Spacer()
+
+            Button {
+                knowledgeViewModel.openEdit(item: item)
+                Haptics.play(.light)
+            } label: {
+                Image(systemName: "gearshape")
+                    .scaledFont(size: 15, weight: .medium)
+                    .foregroundStyle(theme.textTertiary)
+                    .frame(width: 32, height: 32)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .disabled(conn == nil)
+
+            Toggle("", isOn: Binding(
+                get: { isEnabled },
+                set: { _ in Task { await knowledgeViewModel.toggleSource(item: item) } }
+            ))
+            .labelsHidden()
+            .tint(theme.brandPrimary)
         }
         .padding(.horizontal, Spacing.screenPadding)
         .padding(.vertical, 12)

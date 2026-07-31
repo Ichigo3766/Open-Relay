@@ -244,6 +244,11 @@ struct ChatMessage: Identifiable, Hashable, Sendable {
     var annotation: MessageAnnotation?
     /// Server-assigned feedback record ID, used to update the rating details.
     var feedbackId: String?
+    /// True when this is an internal message (e.g. a background sub-agent completion notice).
+    /// Internal messages are rendered as compact banners instead of full user bubbles.
+    var isInternalMessage: Bool
+    /// The delegation ID of the sub-agent that produced this internal message (if any).
+    var subagentDelegationId: String?
 
     init(
         id: String = UUID().uuidString,
@@ -264,7 +269,9 @@ struct ChatMessage: Identifiable, Hashable, Sendable {
         usage: [String: Any]? = nil,
         embeds: [String] = [],
         annotation: MessageAnnotation? = nil,
-        feedbackId: String? = nil
+        feedbackId: String? = nil,
+        isInternalMessage: Bool = false,
+        subagentDelegationId: String? = nil
     ) {
         self.id = id
         self.parentId = parentId
@@ -285,6 +292,8 @@ struct ChatMessage: Identifiable, Hashable, Sendable {
         self.embeds = embeds
         self.annotation = annotation
         self.feedbackId = feedbackId
+        self.isInternalMessage = isInternalMessage
+        self.subagentDelegationId = subagentDelegationId
     }
 
     /// O(1) equality check — uses `content.utf8.count` instead of full string
@@ -348,6 +357,12 @@ extension ChatMessage: Codable {
         }
         // embeds are not persisted — they come from the server JSON on each load.
         embeds = []
+        // These fields are runtime-only / not persisted via Codable.
+        parentId = nil
+        annotation = nil
+        feedbackId = nil
+        isInternalMessage = false
+        subagentDelegationId = nil
     }
 
     func encode(to encoder: Encoder) throws {

@@ -83,6 +83,9 @@ struct ToolsMenuSheet: View {
     /// Called when the user taps the gear icon on a tool that has user valves.
     /// Receives (toolId, isFunctionTool).
     var onOpenToolUserValves: ((String, Bool) -> Void)?
+    /// Whether the server has Notes feature enabled (config.features.enable_notes).
+    /// When false, "Attach Notes" is hidden — mirrors WebUI's {#if $config?.features?.enable_notes}.
+    var isNotesEnabled: Bool = true
     /// Skills available to toggle on/off for this conversation.
     var skills: [SkillItem] = []
     @Binding var selectedSkillIds: [String]
@@ -348,14 +351,17 @@ struct ToolsMenuSheet: View {
                 destination: .files,
                 isAvailable: apiClient != nil || onFilesAttachment != nil
             )
-            // Attach Notes
-            attachNavRow(
-                icon: "note.text",
-                title: "Attach Notes",
-                subtitle: "Inject a note's content into your message",
-                destination: .notes,
-                isAvailable: notesManager != nil || onNotesAttachment != nil
-            )
+            // Attach Notes — only shown when server has notes feature enabled.
+            // Mirrors WebUI: {#if $config?.features?.enable_notes ?? false}
+            if isNotesEnabled {
+                attachNavRow(
+                    icon: "note.text",
+                    title: "Attach Notes",
+                    subtitle: "Inject a note's content into your message",
+                    destination: .notes,
+                    isAvailable: notesManager != nil || onNotesAttachment != nil
+                )
+            }
             // Attach Knowledge
             attachNavRow(
                 icon: "cylinder.split.1x2",
