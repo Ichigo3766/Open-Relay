@@ -279,36 +279,35 @@ final class ServerConnectionMonitor: @unchecked Sendable {
             guard let self else { return }
             let wasAvailable = self.isNetworkAvailable
 
-            // On local-only LANs (no internet gateway), iOS NWPathMonitor reports
-            // path.status == .unsatisfied even though WiFi is fully functional.
-            // This is because iOS defines "satisfied" as "can reach the internet",
-            // not "has a network interface". For local/LAN-only servers we must not
-            // use .satisfied as the sole indicator — instead check whether any
-            // relevant interface (WiFi, Ethernet, cellular) is present at all.
-            let hasLocalInterface = path.availableInterfaces.contains(where: {
+            // Whether any relevant interface (WiFi, Ethernet, cellular) is present.
+            // We treat "has an interface" as sufficient rather than relying solely on
+            // path.status == .satisfied — the actual server reachability is verified
+            // by the /health poll, not by NWPathMonitor's notion of "internet access".
+            // This keeps behaviour identical for LAN-only and internet-routable servers.
+            let hasInterface = path.availableInterfaces.contains(where: {
                 $0.type == .wifi || $0.type == .wiredEthernet || $0.type == .cellular
             })
-            let isLocal = self.isLocalServerURL()
-            let nowAvailable = (path.status == .satisfied) || (hasLocalInterface && isLocal)
+            let nowAvailable = (path.status == .satisfied) || hasInterface
 
             self.isNetworkAvailable = nowAvailable
 
             if !nowAvailable {
-                // Device truly lost network — transition immediately even in background
-                // (NWPathMonitor is reliable; this is a real loss)
+                // Device truly lost all network interfaces — transition immediately
+                // even in background (NWPathMonitor is reliable; this is a real loss).
                 Task { @MainActor [weak self] in
                     self?.consecutiveFailures = self?.failureThreshold ?? 2 // mark as failed
-                    self?.transitionTo(isLocal ? .serverDown : .internetDown)
+                    self?.transitionTo(.internetDown)
                 }
             } else if !wasAvailable && nowAvailable {
                 // Network just came back
-                self.logger.info("NWPathMonitor: network restored (local=\(isLocal))")
+                self.logger.info("NWPathMonitor: network restored")
                 // Only run an immediate check if we're in the foreground
                 if !self.isAppInBackground {
                     self.triggerImmediateCheck()
                 }
             }
         }
+
 
         monitor.start(queue: monitorQueue)
     }
@@ -374,16 +373,14 @@ final class ServerConnectionMonitor: @unchecked Sendable {
                 }
 
                 if !self.isNetworkAvailable {
-                    self.transitionTo(self.isLocalServerURL() ? .serverDown : .internetDown)
-                } else if self.isLocalServerURL() {
-                    // Local/LAN-only server — internet reachability is irrelevant.
-                    // If /health fails on a LAN server, the server itself is down
-                    // (or temporarily unreachable on the LAN), not the internet.
-                    // Skip the external ping entirely to avoid a false .internetDown.
-                    self.transitionTo(.serverDown)
+                    // Device-level network is gone — this is an internet-down state.
+                    self.transitionTo(.internetDown)
                 } else {
-                    // NWPath says we're online — check if internet actually works
-                    // (distinguishes captive portals from real server-down conditions)
+                    // NWPath says a network interface is available — check whether
+                    // internet actually works (distinguishes captive portals / DNS-only
+                    // environments from a genuinely unreachable server). Behaviour is
+                    // identical regardless of whether the server is on a LAN or the
+                    // public internet — only the /health poll result matters.
                     Task { [weak self] in
                         guard let self else { return }
                         let externalReachable = await self.pingExternalEndpoint()
@@ -396,34 +393,6 @@ final class ServerConnectionMonitor: @unchecked Sendable {
         }
     }
 
-    /// Returns `true` when the currently configured server URL resolves to a
-    /// local/private network address where internet reachability is irrelevant.
-    ///
-    /// Covers:
-    /// - RFC 1918 private IPv4 ranges: 10.x.x.x, 172.16-31.x.x, 192.168.x.x
-    /// - Loopback: 127.x.x.x, localhost
-    /// - mDNS / Bonjour: *.local hostnames
-    private func isLocalServerURL() -> Bool {
-        guard let urlString = apiClient?.baseURL,
-              let url = URL(string: urlString),
-              let host = url.host else { return false }
-
-        // mDNS / .local and loopback names
-        let lowered = host.lowercased()
-        if lowered == "localhost" || lowered.hasSuffix(".local") { return true }
-
-        // Parse as dotted-decimal IPv4
-        let octets = host.split(separator: ".").compactMap { UInt8($0) }
-        guard octets.count == 4 else { return false }
-
-        switch octets[0] {
-        case 10:                                      return true  // 10.0.0.0/8
-        case 172 where (16...31).contains(octets[1]): return true  // 172.16.0.0/12
-        case 192 where octets[1] == 168:              return true  // 192.168.0.0/16
-        case 127:                                     return true  // 127.0.0.0/8 loopback
-        default:                                      return false
-        }
-    }
 
     /// Pings Apple's captive portal URL to determine if the device actually
     /// has working internet (as opposed to a captive portal or blocked network).

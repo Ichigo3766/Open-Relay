@@ -3,6 +3,108 @@ import PhotosUI
 import QuickLook
 import ReactionContextMenu
 
+// MARK: - Overlay Reply Input Field
+//
+// A focused, minimal text field used inside the iMessage-style reply overlay.
+// Auto-focuses when shown, sends on Return (if text is non-empty), and
+// respects the keyboard safe area so it sits just above the keyboard.
+
+struct OverlayReplyInputField: View {
+    @Binding var text: String
+    var placeholder: String = "Reply…"
+    var onSend: () -> Void
+    var onDismiss: () -> Void
+
+    @Environment(\.theme) private var theme
+    @FocusState private var isFocused: Bool
+
+    var body: some View {
+        HStack(alignment: .center, spacing: 10) {
+            TextField(placeholder, text: $text, axis: .vertical)
+                .scaledFont(size: 15)
+                .lineLimit(1...6)
+                .focused($isFocused)
+                .submitLabel(.send)
+                .onSubmit {
+                    let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+                    guard !trimmed.isEmpty else { return }
+                    onSend()
+                }
+                .foregroundStyle(theme.textPrimary)
+
+            if !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                Button {
+                    onSend()
+                } label: {
+                    Circle()
+                        .fill(theme.brandPrimary)
+                        .frame(width: 32, height: 32)
+                        .overlay(
+                            Image(systemName: "arrow.up")
+                                .scaledFont(size: 14, weight: .bold)
+                                .foregroundStyle(theme.brandOnPrimary)
+                        )
+                }
+                .buttonStyle(.plain)
+                .transition(.scale.combined(with: .opacity))
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+        .background(
+            theme.isDark
+                ? theme.cardBackground.opacity(0.95)
+                : theme.inputBackground
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 24, style: .continuous)
+                .strokeBorder(theme.cardBorder.opacity(0.4), lineWidth: 0.5)
+        )
+        .padding(.horizontal, Spacing.screenPadding)
+        .padding(.vertical, 10)
+        .animation(.easeInOut(duration: 0.15), value: text.isEmpty)
+        .onAppear {
+            // Auto-focus with a tiny delay so the overlay animation completes first
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
+                isFocused = true
+            }
+        }
+    }
+}
+
+// MARK: - Typing Dots View
+//
+// Animated three-dot indicator shown when someone is typing in a channel.
+// Matches the Slack/Discord "X is typing…" pattern.
+
+struct TypingDotsView: View {
+    @State private var phase: Int = 0
+    @Environment(\.theme) private var theme
+    
+    var body: some View {
+        HStack(spacing: 3) {
+            ForEach(0..<3, id: \.self) { index in
+                Circle()
+                    .fill(theme.textTertiary)
+                    .frame(width: 5, height: 5)
+                    .scaleEffect(phase == index ? 1.3 : 0.8)
+                    .opacity(phase == index ? 1.0 : 0.4)
+            }
+        }
+        .onAppear { startAnimation() }
+    }
+    
+    private func startAnimation() {
+        // Cycle through dots with a 300ms interval
+        Timer.scheduledTimer(withTimeInterval: 0.3, repeats: true) { timer in
+            withAnimation(.easeInOut(duration: 0.25)) {
+                phase = (phase + 1) % 3
+            }
+        }
+    }
+}
+
 // MARK: - User & Model Picker (Combined @mention)
 
 /// Combined picker that shows channel members (users) first, then AI models.

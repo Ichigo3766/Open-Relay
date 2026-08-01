@@ -30,6 +30,12 @@ struct ChannelInputField: View {
     var onPasteAttachments: (([ChatAttachment]) -> Void)?
     var onRemoveAttachment: ((ChatAttachment) -> Void)?
 
+    // MARK: - Text change callback (for typing indicators)
+
+    /// Called whenever the text field content changes.
+    /// Used by ChannelDetailView to emit typing indicators to the server.
+    var onTextChange: (() -> Void)?
+
     // MARK: - Mention / channel-link trigger callbacks
 
     var onAtTrigger: ((String) -> Void)?
@@ -177,6 +183,10 @@ struct ChannelInputField: View {
         .padding(.bottom, 8)
         .animation(.easeInOut(duration: 0.15), value: canSend)
         .animation(.easeOut(duration: 0.2), value: attachments.count)
+        // Fire onTextChange whenever text changes — used by ChannelDetailView to emit typing indicators.
+        .onChange(of: text) { _, _ in
+            onTextChange?()
+        }
     }
 
     // MARK: - Attachment Strip

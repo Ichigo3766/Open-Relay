@@ -486,8 +486,15 @@ final class NetworkManager: NSObject, Sendable {
         let config = URLSessionConfiguration.default
         config.timeoutIntervalForRequest = 600
         config.timeoutIntervalForResource = 1200
-        config.waitsForConnectivity = true
+        // Do NOT set waitsForConnectivity = true — same reasoning as the main
+        // session above. When true, iOS silently suppresses the request timeout
+        // whenever NWPathMonitor reports the network path as "unsatisfied", which
+        // happens routinely for LAN-only servers (no internet gateway) even though
+        // the server is perfectly reachable. This caused SSE fallback requests to
+        // hang forever instead of failing fast and letting the retry/recovery
+        // logic take over.
         config.urlCache = nil
+
         config.requestCachePolicy = .reloadIgnoringLocalCacheData
         // Allow cookie jar so cf_clearance is auto-sent (same as main session above)
         config.httpCookieStorage = HTTPCookieStorage.shared

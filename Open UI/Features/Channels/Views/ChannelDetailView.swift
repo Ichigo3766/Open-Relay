@@ -24,6 +24,16 @@ struct ChannelDetailView: View {
     @State private var containerHeight: CGFloat = 0
     @State private var keyboard = KeyboardTracker()
     
+    // Swipe-to-reply / highlight
+    @State private var highlightedMessageId: String?
+    @State private var swipeOffsets: [String: CGFloat] = [:]
+    @State private var swipeTriggered: Set<String> = []
+
+    // iMessage-style reply focus overlay
+    @State private var replyFocusMessage: ChannelMessage?
+    @State private var replyOverlayInputText: String = ""
+    @State private var showReplyOverlay: Bool = false
+    
     // @mention picker
     @State private var isShowingMentionPicker = false
     @State private var mentionQuery = ""
@@ -71,10 +81,20 @@ struct ChannelDetailView: View {
     /// Optional reference to the parent list VM so we can zero the unread badge
     /// and suppress badge increments while this channel is actively viewed.
     var channelListVM: ChannelListViewModel?
-    
+
+    /// Optional callback invoked when the hamburger/sidebar button is tapped (iPad drawer).
+    private var toggleDrawerAction: (() -> Void)?
+
     init(channelId: String, channelListVM: ChannelListViewModel? = nil) {
         self._viewModel = State(initialValue: ChannelViewModel(channelId: channelId))
         self.channelListVM = channelListVM
+    }
+
+    /// Fluent modifier to wire up the sidebar-toggle action (mirrors ChatDetailView pattern).
+    func onToggleDrawer(_ action: @escaping () -> Void) -> ChannelDetailView {
+        var copy = self
+        copy.toggleDrawerAction = action
+        return copy
     }
     
     var body: some View {
@@ -104,6 +124,10 @@ struct ChannelDetailView: View {
                 if viewModel.mentionedModelName != nil {
                     modelMentionBar
                 }
+                // Typing indicator — show when others are typing
+                if !viewModel.typingUsers.isEmpty {
+                    typingIndicatorBar
+                }
                 // MF-005: Only show input if user has write access
                 if viewModel.hasWriteAccess {
                     channelInputField
@@ -112,6 +136,14 @@ struct ChannelDetailView: View {
                 }
             }
             .background(theme.background)
+        }
+        // iMessage-style reply focus overlay
+        .overlay {
+            if showReplyOverlay, let msg = replyFocusMessage {
+                replyFocusOverlay(for: msg)
+                    .ignoresSafeArea()
+                    .transition(.opacity)
+            }
         }
         .overlay(alignment: .bottom) {
             if isShowingChannelPicker {
@@ -416,6 +448,21 @@ struct ChannelDetailView: View {
     
     @ToolbarContentBuilder
     private var toolbarContent: some ToolbarContent {
+        // Hamburger — only shown when wired from the drawer parent.
+        // Matches ChatDetailView exactly: 46×46 circle, line.3.horizontal icon,
+        // surfaceContainer background, .plain style, .contentShape(Circle()).
+        if let drawerAction = toggleDrawerAction {
+            ToolbarItem(placement: .topBarLeading) {
+                Button {
+                    drawerAction()
+                } label: {
+                    Image(systemName: "line.3.horizontal")
+                        .scaledFont(size: 18, weight: .medium, context: .ui)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Menu")
+            }
+        }
         ToolbarItem(placement: .principal) {
             if viewModel.isDM {
                 dmToolbarTitle
@@ -566,6 +613,92 @@ struct ChannelDetailView: View {
         }
     }
     
+    // MARK: - Swipe-to-Reply Logic
+
+    /// Threshold (pts) at which swipe triggers the reply action.
+    private let swipeReplyThreshold: CGFloat = 64
+
+    /// Returns the swipe offset for a given message, clamped to a max so it bounces back.
+    private func swipeOffset(for id: String) -> CGFloat {
+        min(swipeOffsets[id] ?? 0, swipeReplyThreshold * 1.1)
+    }
+
+    /// Handles swipe drag change — moves the bubble and shows the reply icon.
+    private func onSwipeChanged(_ value: DragGesture.Value, messageId: String) {
+        let translation = value.translation.width
+        // Only allow right-swipe (positive x)
+        guard translation > 0 else { return }
+        let clamped = min(translation, swipeReplyThreshold * 1.5)
+        swipeOffsets[messageId] = clamped
+
+        // Trigger haptic once we cross the threshold
+        if clamped >= swipeReplyThreshold && !(swipeTriggered.contains(messageId)) {
+            swipeTriggered.insert(messageId)
+            Haptics.play(.medium)
+        } else if clamped < swipeReplyThreshold {
+            swipeTriggered.remove(messageId)
+        }
+    }
+
+    /// Handles swipe drag end — fires the iMessage-style reply overlay if threshold crossed.
+    private func onSwipeEnded(_ value: DragGesture.Value, message: ChannelMessage) {
+        let translation = value.translation.width
+        if translation >= swipeReplyThreshold {
+            // Show the iMessage-style focused reply overlay
+            replyFocusMessage = message
+            replyOverlayInputText = ""
+            withAnimation(.spring(response: 0.4, dampingFraction: 0.85)) {
+                showReplyOverlay = true
+            }
+            Haptics.play(.light)
+        }
+        withAnimation(.spring(response: 0.35, dampingFraction: 0.7)) {
+            swipeOffsets[message.id] = 0
+        }
+        swipeTriggered.remove(message.id)
+    }
+
+    /// Dismiss the reply overlay with a smooth keyboard-first animation.
+    private func dismissReplyOverlay() {
+        // Step 1: resign keyboard so it slides away smoothly first
+        UIApplication.shared.sendAction(
+            #selector(UIResponder.resignFirstResponder),
+            to: nil, from: nil, for: nil
+        )
+        // Step 2: wait for keyboard to finish descending (~0.25s), then fade overlay
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
+            withAnimation(.easeOut(duration: 0.25)) {
+                showReplyOverlay = false
+            }
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.55) {
+            replyFocusMessage = nil
+            replyOverlayInputText = ""
+        }
+    }
+
+    // MARK: - Scroll + Highlight
+
+    /// Scrolls to and briefly highlights the original message referenced by a reply.
+    private func scrollToAndHighlight(messageId: String) {
+        // Scroll to the message
+        withAnimation(.easeInOut(duration: 0.35)) {
+            scrollPosition.scrollTo(id: messageId, anchor: .center)
+        }
+        // Flash highlight after scroll settles
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+            withAnimation(.easeInOut(duration: 0.2)) {
+                highlightedMessageId = messageId
+            }
+            // Remove highlight after 1.2s
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
+                withAnimation(.easeOut(duration: 0.4)) {
+                    highlightedMessageId = nil
+                }
+            }
+        }
+    }
+
     private var scrollContent: some View {
         ScrollView {
             VStack(spacing: 0) {
@@ -583,13 +716,62 @@ struct ChannelDetailView: View {
                     let showHeader = shouldShowSenderHeader(at: index)
                     let showTimestamp = isLastInGroup(at: index)
                     let position = groupPosition(at: index)
-                    channelMessageRow(message, showSenderHeader: showHeader, showGroupTimestamp: showTimestamp, position: position)
-                        .id(message.id)
-                        .task {
-                            if message.id == viewModel.messages.first?.id {
-                                await viewModel.loadOlderMessages()
+                    let isHighlighted = highlightedMessageId == message.id
+                    let offset = swipeOffset(for: message.id)
+                    let swipeProgress = min(offset / swipeReplyThreshold, 1.0)
+                    let isCurrentUser = message.userId == viewModel.currentUserId && !viewModel.isModelMessage(message)
+
+                    // ZStack: message row fills full width; swipe icon is an overlay
+                    // pinned to the leading (received) or trailing (sent) edge.
+                    // This prevents the icon slot from stealing horizontal space from
+                    // the message content, fixing the uneven width issue.
+                    ZStack(alignment: isCurrentUser ? .trailing : .leading) {
+                        channelMessageRow(message, showSenderHeader: showHeader, showGroupTimestamp: showTimestamp, position: position)
+                            .offset(x: offset)
+                            .background(
+                                isHighlighted
+                                    ? theme.brandPrimary.opacity(0.12)
+                                    : Color.clear
+                            )
+                            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+
+                        // Reply icon — fades/scales in as swipe progresses
+                        SwipeReplyIcon(progress: swipeProgress)
+                            .opacity(swipeProgress > 0.05 ? 1 : 0)
+                            .scaleEffect(0.7 + swipeProgress * 0.3)
+                            .padding(isCurrentUser ? .trailing : .leading, Spacing.screenPadding)
+                            .animation(.easeOut(duration: 0.1), value: swipeProgress)
+                            .allowsHitTesting(false)
+                    }
+                    // Swipe gesture lives on the ZStack OUTSIDE CustomContextMenuWrapper
+                    // so it doesn't compete with the long-press context menu gesture.
+                    .simultaneousGesture(
+                        DragGesture(minimumDistance: 10, coordinateSpace: .local)
+                            .onChanged { value in
+                                let dx = value.translation.width
+                                let dy = value.translation.height
+                                // Only activate for clearly-horizontal right-swipes
+                                guard dx > 0, abs(dx) > abs(dy) * 1.2 else {
+                                    // Wrong direction — reset any partial offset
+                                    if swipeOffsets[message.id] != nil {
+                                        withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
+                                            swipeOffsets[message.id] = 0
+                                        }
+                                    }
+                                    return
+                                }
+                                onSwipeChanged(value, messageId: message.id)
                             }
+                            .onEnded { value in
+                                onSwipeEnded(value, message: message)
+                            }
+                    )
+                    .id(message.id)
+                    .task {
+                        if message.id == viewModel.messages.first?.id {
+                            await viewModel.loadOlderMessages()
                         }
+                    }
                 }
             }
             .padding(.top, 8)
@@ -624,6 +806,7 @@ struct ChannelDetailView: View {
             if abs(newSize.width - contentHeight) > 1 { contentHeight = newSize.width }
             if abs(newSize.height - containerHeight) > 1 { containerHeight = newSize.height }
         }
+        .scrollContentBackground(.hidden)
         .background(ScrollViewEdgeEffectDisabler())
     }
     
@@ -776,11 +959,30 @@ struct ChannelDetailView: View {
             
             if let replyId = message.replyToId {
                 replyIndicator(for: replyId, message: message)
+                    .frame(maxWidth: UIScreen.main.bounds.width * 0.72, alignment: frameAlignment)
                     .padding(.bottom, 2)
             }
             
             if viewModel.editingMessage?.id == message.id {
                 editBubble(isCurrentUser: isCurrentUser)
+            } else if isModel && message.content.isEmpty && message.files.isEmpty {
+                // Model is streaming — show animated typing dots while content arrives
+                // This covers the gap between when the empty placeholder message is
+                // created by the backend and when the first token arrives via socket.
+                HStack(spacing: 8) {
+                    TypingDotsView()
+                    Text("Generating…")
+                        .scaledFont(size: 12)
+                        .foregroundStyle(theme.textTertiary)
+                }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 9)
+                .background(receivedBubbleBackground)
+                .clipShape(ChannelBubbleShape(isCurrentUser: false, showTail: showTail))
+                .overlay(
+                    ChannelBubbleShape(isCurrentUser: false, showTail: showTail)
+                        .strokeBorder(receivedBubbleBorder, lineWidth: 0.5)
+                )
             } else if !message.content.isEmpty || !message.files.isEmpty {
                 VStack(alignment: .leading, spacing: 4) {
                     if !message.content.isEmpty {
@@ -930,22 +1132,37 @@ struct ChannelDetailView: View {
     }
     
     // MARK: - Reply Indicator
-    
+
     @ViewBuilder
     private func replyIndicator(for replyId: String, message: ChannelMessage) -> some View {
+        // Try to find the original message in the loaded list
         if let replyMsg = viewModel.messages.first(where: { $0.id == replyId }) {
             let isModel = viewModel.isModelMessage(replyMsg)
+            let avatarURL = avatarURLForUser(id: replyMsg.userId)
             ChannelReplyPreview(
                 senderName: viewModel.resolvedSenderName(for: replyMsg),
                 content: replyMsg.content,
-                isModel: isModel
-            )
+                isModel: isModel,
+                avatarURL: avatarURL,
+                authToken: viewModel.serverAuthToken,
+                hasFiles: !replyMsg.files.isEmpty
+            ) {
+                scrollToAndHighlight(messageId: replyId)
+            }
         } else if let slim = message.replyToMessage {
+            // Fallback: use the slim snapshot embedded in the message
+            let avatarURL = avatarURLForUser(id: slim.userId)
             ChannelReplyPreview(
                 senderName: slim.user?.displayName ?? "Unknown",
                 content: slim.content,
-                isModel: false
-            )
+                isModel: false,
+                avatarURL: avatarURL,
+                authToken: viewModel.serverAuthToken,
+                hasFiles: false
+            ) {
+                // Try to scroll even if message may not be visible (best-effort)
+                scrollToAndHighlight(messageId: replyId)
+            }
         }
     }
     
@@ -1097,39 +1314,184 @@ struct ChannelDetailView: View {
         .padding(.vertical, 8)
     }
     
-    // MARK: - Reply Preview Bar
-    
-    private func replyPreviewBar(_ message: ChannelMessage) -> some View {
-        HStack(spacing: 8) {
-            RoundedRectangle(cornerRadius: 2)
-                .fill(theme.replyBorder)
-                .frame(width: 3, height: 32)
-            
-            VStack(alignment: .leading, spacing: 2) {
-                Text("Replying to \(viewModel.resolvedSenderName(for: message))")
-                    .scaledFont(size: 11, weight: .semibold)
-                    .foregroundStyle(theme.replyBorder)
-                Text(ChannelMessage.parseMentions(in: message.content).prefix(60))
-                    .scaledFont(size: 12)
-                    .foregroundStyle(theme.textSecondary)
-                    .lineLimit(1)
+    // MARK: - iMessage-Style Reply Focus Overlay
+    //
+    // Shown when the user swipes to reply. Blurs the background, floats the
+    // target message in the center, and presents a focused reply composer at
+    // the bottom — mimicking the iMessage / Signal reply UX.
+
+    @ViewBuilder
+    private func replyFocusOverlay(for message: ChannelMessage) -> some View {
+        // The overlay is structured as a ZStack so the blur fills the entire screen
+        // while the content VStack rides *above* the keyboard via normal safe area insets.
+        // Key rules:
+        //   • Background layer: ignores ALL safe areas (covers status bar + home indicator)
+        //   • Content VStack: does NOT ignore the keyboard safe area so it animates up
+        //     with the keyboard automatically — no manual height tracking needed.
+        ZStack(alignment: .bottom) {
+            // ── Full-screen blurred background — sits behind everything ──
+            Color.black.opacity(0.35)
+                .background(.ultraThinMaterial)
+                .ignoresSafeArea()           // covers notch, home indicator, keyboard area
+                .contentShape(Rectangle())
+                .onTapGesture { dismissReplyOverlay() }
+
+            // ── Foreground content: floats above keyboard ──
+            // .overlay{} lives outside SwiftUI's layout tree so automatic keyboard
+            // avoidance does NOT apply. We manually offset by keyboard.height +
+            // the window's bottom safe area inset so the composer fully clears the
+            // keyboard on devices with a home indicator.
+            VStack(spacing: 0) {
+                Spacer(minLength: 0)
+
+                // ── Reply composer — sits directly above the keyboard ──
+                VStack(spacing: 0) {
+                    // Thin accent bar + context preview
+                    HStack(spacing: 6) {
+                        RoundedRectangle(cornerRadius: 2, style: .continuous)
+                            .fill(theme.replyBorder)
+                            .frame(width: 3, height: 36)
+                        VStack(alignment: .leading, spacing: 2) {
+                            HStack(spacing: 4) {
+                                Image(systemName: "arrowshape.turn.up.left.fill")
+                                    .scaledFont(size: 9, weight: .semibold)
+                                    .foregroundStyle(theme.replyBorder)
+                                Text(viewModel.resolvedSenderName(for: message))
+                                    .scaledFont(size: 12, weight: .bold)
+                                    .foregroundStyle(theme.replyBorder)
+                                    .lineLimit(1)
+                            }
+                            let preview = ChannelMessage.parseMentions(in: message.content)
+                            if !preview.isEmpty {
+                                Text(preview)
+                                    .scaledFont(size: 12)
+                                    .foregroundStyle(theme.textTertiary)
+                                    .lineLimit(1)
+                                    .truncationMode(.tail)
+                            }
+                        }
+                        Spacer()
+                        // Dismiss / cancel button
+                        Button {
+                            dismissReplyOverlay()
+                        } label: {
+                            Image(systemName: "xmark.circle.fill")
+                                .scaledFont(size: 22)
+                                .symbolRenderingMode(.palette)
+                                .foregroundStyle(theme.textTertiary, theme.cardBackground.opacity(0.9))
+                        }
+                        .buttonStyle(.plain)
+                        .padding(.trailing, 4)
+                    }
+                    .padding(.horizontal, Spacing.screenPadding)
+                    .padding(.top, 10)
+                    .padding(.bottom, 4)
+
+                    OverlayReplyInputField(
+                        text: $replyOverlayInputText,
+                        placeholder: "Reply to \(viewModel.resolvedSenderName(for: message))…",
+                        onSend: {
+                            let trimmed = replyOverlayInputText.trimmingCharacters(in: .whitespacesAndNewlines)
+                            guard !trimmed.isEmpty else { return }
+                            viewModel.setReplyTo(message)
+                            viewModel.inputText = trimmed
+                            Task { await viewModel.sendMessage() }
+                            dismissReplyOverlay()
+                            Haptics.play(.medium)
+                        },
+                        onDismiss: { dismissReplyOverlay() }
+                    )
+                    .padding(.bottom, 6)
+                }
+                .background(theme.background)
             }
-            
-            Spacer()
-            
-            Button {
-                viewModel.clearReply()
-                Haptics.play(.light)
-            } label: {
-                Image(systemName: "xmark.circle.fill")
-                    .scaledFont(size: 18)
-                    .foregroundStyle(theme.textTertiary)
-            }
-            .buttonStyle(.plain)
+            // Push the composer above the keyboard.
+            //
+            // KeyboardTracker.height = rawKeyboardHeight - safeAreaBottom
+            // (it subtracts the safe area so safeAreaInset{bottom} users don't
+            //  double-count it).
+            //
+            // Our overlay uses .ignoresSafeArea() so it extends to the PHYSICAL
+            // screen bottom — we must add safeAreaBottom back to get the correct
+            // physical offset: rawKeyboardHeight = keyboard.height + safeAreaBottom.
+            //
+            // When keyboard is hidden (height == 0), we still pad by safeAreaBottom
+            // so the composer clears the home indicator.
+            .padding(.bottom, keyboard.height + (UIApplication.shared.connectedScenes
+                .compactMap { ($0 as? UIWindowScene)?.keyWindow }
+                .first?.safeAreaInsets.bottom ?? 0))
+            .animation(keyboard.matchedAnimation, value: keyboard.height)
         }
-        .padding(.horizontal, Spacing.screenPadding)
-        .padding(.vertical, 8)
+    }
+
+    // MARK: - Reply Preview Bar
+    //
+    // Shown above the input field when replying via the context menu (not swipe).
+    // Features: sender avatar, name, content preview, smooth slide-in, dismiss button.
+
+    private func replyPreviewBar(_ message: ChannelMessage) -> some View {
+        HStack(spacing: 0) {
+            // Left accent bar
+            RoundedRectangle(cornerRadius: 2, style: .continuous)
+                .fill(theme.replyBorder)
+                .frame(width: 3)
+                .padding(.vertical, 8)
+
+            HStack(spacing: 8) {
+                // Sender avatar
+                let avatarURL = avatarURLForUser(id: message.userId)
+                UserAvatar(
+                    size: 22,
+                    imageURL: avatarURL,
+                    name: viewModel.resolvedSenderName(for: message),
+                    authToken: viewModel.serverAuthToken
+                )
+
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack(spacing: 4) {
+                        Image(systemName: "arrowshape.turn.up.left.fill")
+                            .scaledFont(size: 9, weight: .semibold)
+                            .foregroundStyle(theme.replyBorder)
+                        Text("Replying to \(viewModel.resolvedSenderName(for: message))")
+                            .scaledFont(size: 12, weight: .semibold)
+                            .foregroundStyle(theme.replyBorder)
+                            .lineLimit(1)
+                    }
+
+                    let preview = ChannelMessage.parseMentions(in: message.content)
+                    if !preview.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        Text(preview.prefix(80))
+                            .scaledFont(size: 12)
+                            .foregroundStyle(theme.textSecondary)
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                    } else if !message.files.isEmpty {
+                        Label("Attachment", systemImage: "paperclip")
+                            .scaledFont(size: 12)
+                            .foregroundStyle(theme.textSecondary)
+                    }
+                }
+
+                Spacer()
+
+                Button {
+                    viewModel.clearReply()
+                    Haptics.play(.light)
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .scaledFont(size: 20)
+                        .foregroundStyle(theme.textTertiary)
+                }
+                .buttonStyle(.plain)
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 8)
+        }
         .background(theme.replyBackground)
+        .transition(.asymmetric(
+            insertion: .move(edge: .bottom).combined(with: .opacity),
+            removal: .move(edge: .bottom).combined(with: .opacity)
+        ))
     }
     
     // MARK: - Model Mention Bar
@@ -1163,6 +1525,38 @@ struct ChannelDetailView: View {
         .background(theme.mentionModelBackground)
     }
     
+    // MARK: - Typing Indicator Bar
+
+    /// Shows "Alice is typing…" or "Alice and Bob are typing…" below the input.
+    /// Matches the web client's behaviour (Channel.svelte → typingUsers state).
+    private var typingIndicatorBar: some View {
+        HStack(spacing: 6) {
+            // Animated three-dot pulse
+            TypingDotsView()
+            
+            Text(typingLabel)
+                .scaledFont(size: 12)
+                .foregroundStyle(theme.textTertiary)
+            
+            Spacer()
+        }
+        .padding(.horizontal, Spacing.screenPadding)
+        .padding(.vertical, 6)
+        .transition(.asymmetric(
+            insertion: .move(edge: .bottom).combined(with: .opacity),
+            removal: .opacity
+        ))
+    }
+    
+    private var typingLabel: String {
+        let names = viewModel.typingUsers.prefix(3).map(\.name)
+        switch names.count {
+        case 1: return "\(names[0]) is typing…"
+        case 2: return "\(names[0]) and \(names[1]) are typing…"
+        default: return "\(names[0]), \(names[1]) and others are typing…"
+        }
+    }
+    
     // MARK: - Input Field
 
     private var channelInputField: some View {
@@ -1182,6 +1576,10 @@ struct ChannelDetailView: View {
             },
             onRemoveAttachment: { att in
                 vm.attachments.removeAll { $0.id == att.id }
+            },
+            onTextChange: {
+                // Emit typing indicator to server when user types
+                viewModel.emitTyping()
             },
             onAtTrigger: { query in
                 mentionQuery = query

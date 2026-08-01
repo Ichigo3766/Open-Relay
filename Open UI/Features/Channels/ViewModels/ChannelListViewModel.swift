@@ -91,7 +91,22 @@ final class ChannelListViewModel {
         
         do {
             let fetched = try await apiClient.getChannels()
-            channels = fetched.sorted { $0.updatedAt > $1.updatedAt }
+            // Sort by most recently updated first
+            var sorted = fetched.sorted { $0.updatedAt > $1.updatedAt }
+            // Filter out DM participants for the current user from inline `users` data.
+            // Channel.fromJSON() already populated dmParticipants from the server's `users` array,
+            // but that array includes ALL participants (including the current user).
+            // We strip the current user here so DM rows show "other person", not self.
+            if let myId = currentUserId {
+                for idx in sorted.indices {
+                    if sorted[idx].type == .dm && !sorted[idx].dmParticipants.isEmpty {
+                        sorted[idx].dmParticipants = sorted[idx].dmParticipants.filter { $0.id != myId }
+                    }
+                }
+            }
+            channels = sorted
+            // Only run the fallback fetch for DMs that still have no participant data
+            // (older server versions or channels where `users` was absent in the response).
             await populateDMParticipants()
             hasLoaded = true
         } catch {
@@ -416,6 +431,35 @@ final class ChannelListViewModel {
             } else {
                 // Fallback: refresh all (only if we can't determine the channel)
                 Task { await refreshChannels() }
+            }
+            
+        case .channelCreated:
+            // A new channel or DM was created and the server added us to its socket room.
+            // Refresh the channel list so the new channel appears in the sidebar immediately.
+            // This handles the case where someone starts a DM with the current user.
+            Task { await refreshChannels() }
+            
+        case .channelUpdated:
+            // Channel name/description updated — refresh to get new metadata
+            let channelId = data["channel_id"] as? String
+                ?? (event["channel"] as? [String: Any])?["id"] as? String
+            if let channelId {
+                Task {
+                    guard let apiClient else { return }
+                    if let updated = try? await apiClient.getChannel(id: channelId) {
+                        if let idx = channels.firstIndex(where: { $0.id == channelId }) {
+                            channels[idx] = updated
+                        }
+                    }
+                }
+            }
+            
+        case .channelDeleted:
+            // Channel was deleted — remove it from the sidebar
+            let channelId = data["channel_id"] as? String
+                ?? (event["channel"] as? [String: Any])?["id"] as? String
+            if let channelId {
+                channels.removeAll { $0.id == channelId }
             }
             
         default:

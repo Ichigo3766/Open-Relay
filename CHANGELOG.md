@@ -1,5 +1,35 @@
 # Changelog
 
+## v5.1 — August 1, 2026
+
+### What's New
+- Added swipe-to-reply gesture in channels — swipe right on any message to reply.
+- Reply previews inside message bubbles now show the sender's avatar, name, and a content preview, and tapping them scrolls to and highlights the original message.
+- Reply bar above the keyboard now shows the sender's avatar, a reply arrow icon, and message preview for clear context.
+
+### Improvements
+- Channels now show a compact single-line reply preview (sender avatar + bold name + italic message) matching the Open WebUI web style.
+- Sidebar hamburger button now works in channel views on both iPhone and iPad — tap it to slide open the conversation list from any channel.
+- iPad: selecting a channel from the sidebar now correctly closes the drawer and loads the channel.
+- iPad sidebar now slides in and out with the same push/scale/blur animation as iPhone — tap the sidebar button or swipe from the left edge to open, swipe left or tap the content to close.
+- Channels now show a live "X is typing…" indicator with an animated dot pulse when another user is composing a message.
+- New channels and DM conversations started by others now appear in your sidebar instantly without needing to pull-to-refresh.
+- Thread reply counts and "# replies" badges on channel messages now update in real time when a new reply is posted.
+- Channel member presence state and status emoji/message are now fetched from the server for more accurate online indicators.
+- AI model responses in channels now show an animated "Generating…" indicator in the bubble while the model is writing its first tokens, instead of a blank gap.
+
+### Bug Fixes
+- Fixed DM conversations showing the wrong name — the recipient's sidebar now correctly shows the sender's name instead of their own name.
+- Fixed online/offline status dot in DM conversations always showing as offline even when the other user is actively connected — now correctly reflects the server's real-time active status both in the sidebar and inside the DM.
+- Fixed iPad sidebar hamburger menu button not appearing when on the new chat screen or inside a chat.
+- Fixed chat responses sometimes never arriving after sending a message, with the server showing "Checking..." indefinitely — caused by a timing race where messages could be sent before the connection was fully ready.
+- Fixed the app treating local network servers differently from remote ones, which could cause inconsistent connection status.
+- Fixed channel lifecycle events (channel updated/deleted) not being handled in the sidebar, which could leave stale channels visible.
+- Fixed occasional duplicate messages when sending two identical messages in quick succession in a channel.
+
+## Previous Builds
+
+
 ## v5.0 — July 31, 2026
 
 ### What's New

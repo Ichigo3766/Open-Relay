@@ -48,6 +48,9 @@ final class ChannelViewModel {
     var mentionedModelId: String?
     var mentionedModelName: String?
     
+    // Typing indicators — users currently typing in this channel
+    var typingUsers: [TypingUser] = []
+    
     // UI state
     var showMembersSheet: Bool = false
     var showPinnedSheet: Bool = false
@@ -484,13 +487,15 @@ final class ChannelViewModel {
         mentionedModelId = nil
         mentionedModelName = nil
         
-        // Send to server
+        // Send to server — include temp_id so the socket broadcast can carry it back,
+        // allowing us to match the confirmed message to the optimistic placeholder by ID.
         do {
             let serverMsg = try await apiClient.postChannelMessage(
                 channelId: channelId,
                 content: currentText,
                 replyToId: replyId,
-                data: msgData.isEmpty ? nil : msgData
+                data: msgData.isEmpty ? nil : msgData,
+                tempId: tempId
             )
             
             if let idx = messages.firstIndex(where: { $0.id == tempId }) {
@@ -1131,6 +1136,9 @@ final class ChannelViewModel {
         case .messageDelete, .channelMessageDelete:
             handleMessageDeleteEvent(data)
 
+        case .messageReply:
+            handleMessageReplyEvent(data)
+
         case .channelMessagePinned, .channelMessageUnpinned,
              .messagePinned, .messageUnpinned:
             handlePinEvent(data)
@@ -1138,6 +1146,13 @@ final class ChannelViewModel {
         case .channelReactionAdd, .channelReactionRemove,
              .messageReactionAdd, .messageReactionRemove:
             handleReactionEvent(data)
+            
+        case .typing:
+            handleTypingEvent(event)
+            
+        case .channelCreated, .channelUpdated, .channelDeleted:
+            // Channel lifecycle events — handled by ChannelListViewModel
+            break
             
         case nil:
             // Unknown type — try to handle as a message
@@ -1363,6 +1378,73 @@ final class ChannelViewModel {
         } else {
             logger.error("❌ handleReactionEvent — no msgId found, cannot refresh. Full data: \(data)")
         }
+    }
+    
+    /// Handles `message:reply` socket event — server sends the full updated parent message
+    /// after a thread reply is created or deleted, updating reply_count / latest_reply_at.
+    private func handleMessageReplyEvent(_ data: [String: Any]) {
+        let msgData = data["data"] as? [String: Any] ?? data
+        guard let msg = ChannelMessage.fromJSON(msgData) else { return }
+        
+        logger.debug("message:reply event for parent id=\(msg.id), reply_count=\(msg.replyCount)")
+        
+        withAnimation(.messageUpdate) {
+            if let idx = messages.firstIndex(where: { $0.id == msg.id }) {
+                messages[idx] = msg
+            }
+        }
+        
+        // If the thread for this parent is open, update the parent reference too
+        if threadParentMessage?.id == msg.id {
+            threadParentMessage = msg
+        }
+    }
+    
+    /// Handles `typing` socket event — shows/hides the "X is typing…" indicator.
+    /// Server emits: { channel_id, message_id: null, data: { type: "typing", data: { typing: bool } }, user: { id, name } }
+    private func handleTypingEvent(_ event: [String: Any]) {
+        // Extract the user who is typing
+        let userDict = event["user"] as? [String: Any]
+        guard let userId = userDict?["id"] as? String,
+              userId != currentUserId else { return } // Don't show own typing
+        
+        let userName = userDict?["name"] as? String ?? userId
+        let data = event["data"] as? [String: Any]
+        let innerData = data?["data"] as? [String: Any]
+        let isTyping = innerData?["typing"] as? Bool ?? false
+        
+        if isTyping {
+            // Add if not already present
+            if !typingUsers.contains(where: { $0.id == userId }) {
+                typingUsers.append(TypingUser(id: userId, name: userName))
+            }
+        } else {
+            typingUsers.removeAll { $0.id == userId }
+        }
+        
+        // Auto-remove after 5s (matches web client behaviour).
+        // If the user sends a stop-typing before this fires, they're already removed — no-op.
+        let capturedUserId = userId
+        Task {
+            try? await Task.sleep(for: .seconds(5))
+            await MainActor.run {
+                self.typingUsers.removeAll { $0.id == capturedUserId }
+            }
+        }
+    }
+    
+    /// Emits a typing indicator to the server for this channel.
+    /// Call this when the user types in the input field.
+    func emitTyping() {
+        guard socketService != nil else { return }
+        socketService?.emit("events:channel", data: [
+            "channel_id": channelId,
+            "message_id": NSNull(),
+            "data": [
+                "type": "typing",
+                "data": ["typing": true]
+            ]
+        ])
     }
     
     /// Enriches a message with user info from the members list if not present in the socket payload.

@@ -13,6 +13,8 @@ enum ChannelSocketEventType: String {
     // Delete — server may emit either variant
     case messageDelete = "message:delete"
     case channelMessageDelete = "channel:message:delete"
+    // Thread reply update (server emits when thread reply is created/deleted)
+    case messageReply = "message:reply"
     // Reactions
     case channelReactionAdd = "channel:reaction:add"
     case channelReactionRemove = "channel:reaction:remove"
@@ -23,6 +25,12 @@ enum ChannelSocketEventType: String {
     case channelMessageUnpinned = "channel:message:unpinned"
     case messagePinned = "message:pinned"
     case messageUnpinned = "message:unpinned"
+    // Typing indicator
+    case typing = "typing"
+    // Channel lifecycle
+    case channelCreated = "channel:created"
+    case channelUpdated = "channel:updated"
+    case channelDeleted = "channel:deleted"
     
     /// Returns the matching event type from a raw string, or nil if unknown.
     static func from(_ raw: String?) -> ChannelSocketEventType? {
@@ -456,6 +464,15 @@ struct ChannelMessageUser: Hashable, Sendable {
 struct PinMessageForm: Sendable {
     let isPinned: Bool
     var toJSON: [String: Any] { ["is_pinned": isPinned] }
+}
+
+// MARK: - Typing User
+
+/// A user who is currently typing in a channel.
+/// Used to drive the "X is typing…" indicator.
+struct TypingUser: Identifiable, Hashable, Sendable {
+    let id: String
+    let name: String
 }
 
 // MARK: - Common Reaction Emojis

@@ -51,6 +51,12 @@ final class ActiveChatStore {
     /// Updated by AppDependencyContainer.fetchTaskConfig().
     var serverTaskConfig: TaskConfig = .default
 
+    /// Session-level cache for the server's user-facing feature flags (from BackendConfig.features).
+    /// Set once by ChatDetailView after `backendConfig` is available.
+    /// Used by `isMemoryAvailable` to show the memory toggle for all models when memories
+    /// are enabled server-side — not just models with `builtinTools.memory`.
+    var serverFeatures: GroupFeaturePermissions? = nil
+
     /// Session-level cache for the user's memory setting (`ui.memory`).
     /// Populated by the first ChatViewModel that fetches it, then reused by
     /// all subsequent VMs so `GET /api/v1/users/user/settings` is called at

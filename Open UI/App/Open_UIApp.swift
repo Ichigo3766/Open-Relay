@@ -125,6 +125,9 @@ struct Open_UIApp: App {
         UINavigationBar.appearance().standardAppearance = navBarAppearance
         UINavigationBar.appearance().scrollEdgeAppearance = navBarAppearance
         UINavigationBar.appearance().compactAppearance = navBarAppearance
+        // Force white window background in light mode so safe-area insets
+        // never show the system grey instead of the app's #FFFFFF background.
+        UIWindow.appearance().backgroundColor = .white
     }
 
     var body: some Scene {

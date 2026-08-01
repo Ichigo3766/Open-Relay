@@ -176,6 +176,15 @@ struct Channel: Identifiable, Hashable, Sendable {
         channel.lastMessage = lastMessage
         // Trust server's computed write permission directly
         channel.writeAccess = json["write_access"] as? Bool
+        
+        // Parse inline `users` array from ChannelListItemResponse / ChannelFullResponse.
+        // The server returns this for DM (and group) channels, including presence_state.
+        // Parsing here eliminates N separate getChannelMembers() calls and ensures
+        // presence/online-status is populated immediately on load.
+        if let usersArray = json["users"] as? [[String: Any]], !usersArray.isEmpty {
+            channel.dmParticipants = usersArray.compactMap { ChannelMember.fromJSON($0) }
+        }
+        
         return channel
     }
 }
@@ -285,30 +294,28 @@ struct ChannelMember: Identifiable, Hashable, Sendable {
     var email: String
     var profileImageURL: String?
     var role: String?
+    /// Server-computed active status: true when `last_active_at` is within the last 3 minutes.
+    /// Populated from the `is_active` field on `UserIdNameStatusResponse` (channel list/detail)
+    /// and `ChannelMemberResponse` (members endpoint).
     var isActive: Bool
-    var lastActiveAt: Date?
     
     var displayName: String {
         name ?? email
     }
     
-    /// Whether the user was recently active (within 5 minutes).
-    var isOnline: Bool {
-        guard let lastActive = lastActiveAt else { return false }
-        return Date().timeIntervalSince(lastActive) < 300
-    }
+    /// Whether the user is currently online.
+    /// Driven directly by the server's `is_active` bool, which the server computes
+    /// as `last_active_at >= now - 180s` on every channel list/detail response.
+    var isOnline: Bool { isActive }
     
     /// Resolves the correct avatar URL for this member.
     /// Always uses the `/api/v1/users/{id}/profile/image` endpoint which
     /// returns the current avatar dynamically (same as the Admin Console).
-    /// The endpoint works for ALL users regardless of whether profileImageURL is set.
     func resolveAvatarURL(serverBaseURL: String) -> URL? {
         // External URLs (e.g. Google OAuth avatars) → use directly
         if let urlString = profileImageURL, !urlString.isEmpty, urlString.hasPrefix("http") {
             return URL(string: urlString)
         }
-        // Always use the profile image API endpoint — it works for every user
-        // and returns the current avatar (base64, uploaded, or default).
         guard !serverBaseURL.isEmpty, !id.isEmpty else { return nil }
         return URL(string: "\(serverBaseURL)/api/v1/users/\(id)/profile/image")
     }
@@ -319,10 +326,9 @@ struct ChannelMember: Identifiable, Hashable, Sendable {
         let email = json["email"] as? String ?? ""
         let profileImageURL = json["profile_image_url"] as? String
         let role = json["role"] as? String
-        let isActive = json["is_active"] as? Bool ?? true
-        
-        // BUG-008 fix: Use shared TimestampParser for consistent ns/µs/ms/s handling
-        let lastActiveAt = TimestampParser.parseOptional(json["last_active_at"])
+        // The server computes is_active = last_active_at >= now-180s on every response.
+        // Default false (not active) — do not default true, which would show everyone online.
+        let isActive = json["is_active"] as? Bool ?? false
         
         return ChannelMember(
             id: id,
@@ -330,8 +336,7 @@ struct ChannelMember: Identifiable, Hashable, Sendable {
             email: email,
             profileImageURL: profileImageURL,
             role: role,
-            isActive: isActive,
-            lastActiveAt: lastActiveAt
+            isActive: isActive
         )
     }
 }

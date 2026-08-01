@@ -3509,19 +3509,29 @@ final class APIClient: @unchecked Sendable {
         return []
     }
 
-    func addMemory(content: String) async throws -> [String: Any] {
-        try await network.requestJSON(
+    /// Add a new memory. `type` is `"user"` (durable facts about the user) or `"context"`
+    /// (other durable context). Defaults to `"user"` to match the web UI default and ensure
+    /// the memory is surfaced in the priority `[User Memory]` section of the injected context.
+    func addMemory(content: String, type: String = "user", path: String? = nil) async throws -> [String: Any] {
+        var body: [String: Any] = ["content": content, "type": type]
+        if let path, !path.isEmpty { body["path"] = path }
+        return try await network.requestJSON(
             path: "/api/v1/memories/add",
             method: .post,
-            body: ["content": content]
+            body: body
         )
     }
 
-    func updateMemory(id: String, content: String) async throws -> [String: Any] {
-        try await network.requestJSON(
+    /// Update an existing memory. Pass `nil` for fields you don't want to change.
+    func updateMemory(id: String, content: String? = nil, type: String? = nil, path: String? = nil) async throws -> [String: Any] {
+        var body: [String: Any] = [:]
+        if let content { body["content"] = content }
+        if let type { body["type"] = type }
+        if let path { body["path"] = path }
+        return try await network.requestJSON(
             path: "/api/v1/memories/\(id)/update",
             method: .post,
-            body: ["content": content]
+            body: body
         )
     }
 
@@ -3537,6 +3547,53 @@ final class APIClient: @unchecked Sendable {
             path: "/api/v1/memories/delete/user",
             method: .delete
         )
+    }
+
+    /// Rebuild the vector embeddings for all user memories.
+    /// Useful when the vector DB gets out of sync with the relational store.
+    func resetMemoryEmbeddings() async throws -> Bool {
+        let json = try await network.requestJSON(
+            path: "/api/v1/memories/reset",
+            method: .post,
+            body: [String: Any]()
+        )
+        return json["result"] as? Bool ?? true
+    }
+
+    /// Semantic vector search over memories. Returns the top-k most relevant results
+    /// for the given query string.
+    func queryMemory(content: String, k: Int = 8) async throws -> [String: Any] {
+        try await network.requestJSON(
+            path: "/api/v1/memories/query",
+            method: .post,
+            body: ["content": content, "k": k]
+        )
+    }
+
+    /// Batch apply memory operations: `add`, `replace`, `remove`, `move`.
+    /// `source` is `"tool"` or `"background_review"` (defaults to `"tool"`).
+    func updateMemories(operations: [[String: Any]], source: String? = nil) async throws -> [[String: Any]] {
+        var body: [String: Any] = ["operations": operations]
+        if let source { body["source"] = source }
+        let (data, _) = try await network.requestRaw(
+            path: "/api/v1/memories/update",
+            method: .post,
+            body: try JSONSerialization.data(withJSONObject: body)
+        )
+        return (try? JSONSerialization.jsonObject(with: data) as? [[String: Any]]) ?? []
+    }
+
+    /// Server-side text search over memories with optional type/path filtering.
+    func searchMemories(query: String? = nil, type: String = "all", path: String? = nil, limit: Int = 20) async throws -> [[String: Any]] {
+        var body: [String: Any] = ["type": type, "limit": limit]
+        if let query, !query.isEmpty { body["query"] = query }
+        if let path, !path.isEmpty { body["path"] = path }
+        let (data, _) = try await network.requestRaw(
+            path: "/api/v1/memories/search",
+            method: .post,
+            body: try JSONSerialization.data(withJSONObject: body)
+        )
+        return (try? JSONSerialization.jsonObject(with: data) as? [[String: Any]]) ?? []
     }
 
     // MARK: - Title Generation
@@ -5166,17 +5223,22 @@ final class APIClient: @unchecked Sendable {
     }
 
     /// Posts a new message to a channel.
+    /// Sends a `temp_id` so the server can include it in the socket broadcast,
+    /// allowing the client to match the confirmed message to its optimistic placeholder
+    /// by ID instead of falling back to content+userId dedup.
     func postChannelMessage(
         channelId: String,
         content: String,
         replyToId: String? = nil,
         parentId: String? = nil,
-        data msgData: [String: Any]? = nil
+        data msgData: [String: Any]? = nil,
+        tempId: String? = nil
     ) async throws -> ChannelMessage? {
         var body: [String: Any] = ["content": content]
         if let replyToId { body["reply_to_id"] = replyToId }
         if let parentId { body["parent_id"] = parentId }
         if let msgData { body["data"] = msgData }
+        if let tempId { body["temp_id"] = tempId }
 
         let bodyData = try JSONSerialization.data(withJSONObject: body)
         let (data, _) = try await network.requestRaw(

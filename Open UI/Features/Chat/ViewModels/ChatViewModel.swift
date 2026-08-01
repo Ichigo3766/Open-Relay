@@ -3190,7 +3190,12 @@ final class ChatViewModel {
         // For Cloudflare-protected servers, WebSocket connections may be blocked
         // entirely. In that case, we fall back to SSE streaming (normal HTTPS).
         let socket = socketService
-        var socketConnected = socket?.isConnected ?? false
+        // Readiness requires BOTH isConnected AND isUserJoined. A socket can be
+        // "connected" while the server has not yet processed user-join and added
+        // it to the user:{id} room — sending a message during that window results
+        // in the server emitting completion events to an empty room, which the
+        // app previously interpreted as "waiting for socket events" forever.
+        var socketConnected = (socket?.isConnected ?? false) && (socket?.isUserJoined ?? false)
 
         if let socket, !socketConnected {
             // Show "Reconnecting..." status while we wait
@@ -3203,6 +3208,7 @@ final class ChatViewModel {
                 if socketConnected { break }
                 logger.warning("Socket connect attempt \(attempt) failed, retrying…")
             }
+
 
             if socketConnected {
                 appendStatusUpdate(id: assistantMessageId,
@@ -5680,10 +5686,20 @@ final class ChatViewModel {
         }
     }
 
-    /// Whether the selected model supports the memory builtin tool.
-    /// Controls visibility of the memory toggle in ToolsMenuSheet.
+    /// Whether the memory feature is available for use in chats.
+    ///
+    /// Memory context injection is model-agnostic on the server — it works for ALL models
+    /// by default (server's `model_allows_memory` defaults to `true`). The only server-side
+    /// gate is `memories.system_context.enable` (controlled via admin settings).
+    ///
+    /// We show the memory toggle whenever the server has memories enabled (`features.memories`)
+    /// AND the user has opted in (`memoryEnabled`), not just for models with `builtinTools.memory`.
+    /// The `builtinTools.memory` flag is for the native function-calling memory *tool*, which is
+    /// a separate concept from system-context injection.
     var isMemoryAvailable: Bool {
-        selectedModel?.supportsMemory ?? false
+        // Use server config's memories feature flag — same logic as web UI which shows
+        // the memory toggle based on `$config?.features?.enable_memories` not model metadata.
+        activeChatStore?.serverFeatures?.memories ?? memoryEnabled
     }
 
     /// Syncs the UI toggles (web search pill, selected tools) with the selected

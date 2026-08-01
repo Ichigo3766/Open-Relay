@@ -1297,6 +1297,7 @@ struct MainChatView: View {
         if let channelId = activeChannelId {
             // Show channel detail inline (same as how chats work)
             ChannelDetailView(channelId: channelId, channelListVM: channelListVM)
+                .onToggleDrawer { toggleDrawer() }
                 .id("channel-\(channelId)")
         } else if let conversationId = activeConversationId {
             ChatDetailView(
@@ -1306,6 +1307,7 @@ struct MainChatView: View {
             .onDeleteChat { startNewChat() }
             .onToggleDrawer { toggleDrawer() }
             .onNewChat { startNewChat() }
+            .onOpenFileBrowser { openFileBrowserAnimated() }
             .id(conversationId)
         } else if let folderWorkspaceId = activeFolderWorkspaceId {
             // Folder workspace: new chat screen locked to this folder.
@@ -1320,6 +1322,7 @@ struct MainChatView: View {
             )
             .onToggleDrawer { toggleDrawer() }
             .onNewChat { startNewChat() }
+            .onOpenFileBrowser { openFileBrowserAnimated() }
             .id("folder-workspace-\(folderWorkspaceId)-\(newChatGeneration)")
             .onAppear {
                 // Set folder context on the VM so new chats are created in this folder
@@ -1339,6 +1342,7 @@ struct MainChatView: View {
             )
             .onToggleDrawer { toggleDrawer() }
             .onNewChat { startNewChat() }
+            .onOpenFileBrowser { openFileBrowserAnimated() }
             .id("new-chat-\(newChatGeneration)")
         }
     }
@@ -2258,14 +2262,21 @@ struct MainChatView: View {
             closeDrawer()
         } label: {
             HStack(spacing: 6) {
-                // DM: show participant avatar; others: show icon
+                // DM: show participant avatar with online dot; others: show icon
                 if channel.type == .dm, let participant = channel.dmParticipants.first {
-                    UserAvatar(
-                        size: 22,
-                        imageURL: participant.resolveAvatarURL(serverBaseURL: dependencies.apiClient?.baseURL ?? ""),
-                        name: participant.displayName,
-                        authToken: dependencies.apiClient?.network.authToken
-                    )
+                    ZStack(alignment: .bottomTrailing) {
+                        UserAvatar(
+                            size: 22,
+                            imageURL: participant.resolveAvatarURL(serverBaseURL: dependencies.apiClient?.baseURL ?? ""),
+                            name: participant.displayName,
+                            authToken: dependencies.apiClient?.network.authToken
+                        )
+                        Circle()
+                            .fill(participant.isOnline ? Color.green : Color.gray.opacity(0.5))
+                            .frame(width: 7, height: 7)
+                            .overlay(Circle().stroke(theme.background, lineWidth: 1))
+                            .offset(x: 2, y: 2)
+                    }
                 } else {
                     Image(systemName: channel.sidebarIcon)
                         .scaledFont(size: 11, context: .list)

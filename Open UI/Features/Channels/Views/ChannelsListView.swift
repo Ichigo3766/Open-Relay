@@ -9,6 +9,10 @@ struct ChannelsListView: View {
     @Environment(AppRouter.self) private var router
     @Environment(\.theme) private var theme
     
+    // Expose the channelListVM so ChannelDetailView can manage unread badges
+    // when navigating from the standalone channels tab (not the sidebar drawer).
+    var channelListVM: ChannelListViewModel? = nil
+    
     @State private var channelToDelete: Channel?
     @State private var showDeleteConfirmation = false
     @State private var showNewDMSheet = false

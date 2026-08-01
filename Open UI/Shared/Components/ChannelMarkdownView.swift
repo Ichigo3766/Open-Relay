@@ -114,44 +114,127 @@ struct ChannelMarkdownView: View {
 }
 
 // MARK: - Channel Reply Preview
+//
+// Open WebUI-style compact single-line reply quote shown above the main bubble.
+// Matches the web: [avatar] [bold sender name]  [italic preview text]
+// All on one line inside a subtle pill with a small left-curve notch.
+// Tappable: scrolls to and highlights the original message.
 
 struct ChannelReplyPreview: View {
     let senderName: String
     let content: String
     let isModel: Bool
-    
+    var avatarURL: URL? = nil
+    var authToken: String? = nil
+    var hasFiles: Bool = false
+    var onTap: (() -> Void)? = nil
+
     @Environment(\.theme) private var theme
-    
+
+    private var accentColor: Color {
+        isModel ? theme.mentionModelText : theme.replyBorder
+    }
+
+    private var previewText: String {
+        let parsed = ChannelMessage.parseMentions(in: content)
+        let trimmed = parsed.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmed.isEmpty { return trimmed }
+        if hasFiles { return "📎 Attachment" }
+        return ""
+    }
+
     var body: some View {
-        HStack(spacing: 8) {
-            RoundedRectangle(cornerRadius: 2)
-                .fill(isModel ? theme.mentionModelText : theme.replyBorder)
-                .frame(width: 3)
-            
-            VStack(alignment: .leading, spacing: 2) {
-                HStack(spacing: 3) {
-                    if isModel {
-                        Image(systemName: "cpu")
-                            .scaledFont(size: 9)
-                            .foregroundStyle(theme.mentionModelText)
-                    }
-                    Text(senderName)
-                        .scaledFont(size: 12, weight: .semibold)
-                        .foregroundStyle(isModel ? theme.mentionModelText : theme.replyBorder)
+        Button {
+            onTap?()
+            Haptics.play(.light)
+        } label: {
+            HStack(alignment: .center, spacing: 6) {
+                // Small avatar
+                if let url = avatarURL {
+                    UserAvatar(
+                        size: 18,
+                        imageURL: url,
+                        name: senderName,
+                        authToken: authToken
+                    )
+                } else {
+                    // Fallback: initials circle
+                    Circle()
+                        .fill(accentColor.opacity(0.25))
+                        .frame(width: 18, height: 18)
+                        .overlay(
+                            Text(String(senderName.prefix(1)).uppercased())
+                                .font(.system(size: 9, weight: .bold))
+                                .foregroundStyle(accentColor)
+                        )
                 }
-                
-                Text(ChannelMessage.parseMentions(in: content).prefix(80))
-                    .scaledFont(size: 12)
-                    .foregroundStyle(theme.replyText)
-                    .lineLimit(2)
+
+                // Single-line: "SenderName  preview text…"
+                // Name is bold, preview is regular italic — same as Open WebUI
+                (Text(senderName)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundColor(accentColor)
+                + Text(previewText.isEmpty ? "" : "  ")
+                + Text(previewText)
+                    .font(.system(size: 12, weight: .regular).italic())
+                    .foregroundColor(theme.textSecondary.opacity(0.85))
+                )
+                .lineLimit(1)
+                .truncationMode(.tail)
             }
-            
-            Spacer(minLength: 0)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 5)
+            .background(
+                // Subtle tinted background matching Open WebUI's reply quote style
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(accentColor.opacity(0.08))
+                    .overlay(
+                        // Left edge accent bar — thin, like web
+                        HStack {
+                            RoundedRectangle(cornerRadius: 1, style: .continuous)
+                                .fill(accentColor)
+                                .frame(width: 2)
+                            Spacer()
+                        }
+                        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    )
+            )
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 8)
-        .background(theme.replyBackground)
-        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .buttonStyle(.plain)
+    }
+}
+
+// MARK: - Swipe Reply Icon
+//
+// The arrow icon that emerges from behind a message bubble during a swipe-to-reply gesture.
+// `progress` goes from 0.0 (hidden) to 1.0 (fully revealed at threshold).
+// At 1.0 the icon turns blue and scales up slightly for satisfying tactile feedback.
+
+struct SwipeReplyIcon: View {
+    /// 0.0 → not visible, 1.0 → threshold reached (accent color + scale pop)
+    let progress: CGFloat
+
+    @Environment(\.theme) private var theme
+
+    private var iconColor: Color {
+        progress >= 1.0 ? theme.brandPrimary : theme.textTertiary
+    }
+
+    private var scale: CGFloat {
+        progress >= 1.0 ? 1.15 : 0.85 + (progress * 0.15)
+    }
+
+    var body: some View {
+        Image(systemName: "arrowshape.turn.up.left.fill")
+            .scaledFont(size: 15, weight: .medium)
+            .foregroundStyle(iconColor)
+            .frame(width: 32, height: 32)
+            .background(
+                Circle()
+                    .fill(iconColor.opacity(0.12))
+            )
+            .scaleEffect(scale)
+            .animation(.spring(response: 0.3, dampingFraction: 0.6), value: progress >= 1.0)
     }
 }
 

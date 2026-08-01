@@ -2,14 +2,12 @@ import SwiftUI
 
 // MARK: - iPad Main Chat View
 //
-// Purpose-built split-column layout for iPad using NavigationSplitView.
-// - Sidebar (Column 1, ~300pt): Persistent conversation list + folders — always visible.
-// - Detail (Column 2): ChatDetailView — fills remaining space with max reading width.
-// - Optional trailing column: TerminalBrowserView when terminal is active.
-//
-// iPhone uses MainChatView (unchanged). This view is only shown when
-// horizontalSizeClass == .regular (iPad, or iPhone in landscape with a keyboard
-// connected if it reports regular).
+// iPhone-style slide-out drawer layout for iPad — identical push/scale/blur
+// behaviour to MainChatView so the UX is consistent across both platforms.
+// - Drawer (left panel, ~320pt): iPadSidebarContent — slides in and pushes the
+//   content card right, with scale/blur/corner-radius animation.
+// - Detail (main content): ChatDetailView — fills the screen when drawer is closed.
+// - Optional trailing panel: TerminalBrowserView when terminal is active.
 
 struct iPadMainChatView: View {
     @Environment(AppDependencyContainer.self) private var dependencies
@@ -53,8 +51,17 @@ struct iPadMainChatView: View {
     /// Controls the My Defaults sheet presentation.
     @State private var showUserSettings = false
 
-    /// Controls column visibility for the NavigationSplitView.
-    @State private var columnVisibility: NavigationSplitViewVisibility = .all
+    /// Controls the drawer visibility (mirrors MainChatView).
+    @State private var showDrawer = false
+
+    /// Live drag offset for interactive drawer sliding.
+    @State private var dragOffset: CGFloat = 0
+
+    /// Whether a drawer drag is in progress (prevents animation fighting).
+    @State private var isDraggingDrawer = false
+
+    /// Cached container width from GeometryReader (avoids deprecated UIScreen.main).
+    @State private var containerWidth: CGFloat = 768
 
     /// Whether socket reconnect handler has been registered.
     @State private var hasRegisteredSocketHandlers = false
@@ -109,18 +116,42 @@ struct iPadMainChatView: View {
     /// Whether the terminal file browser panel is visible (independent of terminal being enabled).
     @State private var showTerminalBrowser: Bool = true
 
+    // MARK: - Drawer Geometry (mirrors MainChatView)
+
+    /// Drawer width — wider on iPad for comfortable reading (capped at 360pt).
+    private var drawerWidth: CGFloat {
+        min(containerWidth * 0.40, 360)
+    }
+
+    /// Effective drawer X offset (0 = fully open, -drawerWidth = fully closed).
+    private var effectiveDrawerX: CGFloat {
+        let base: CGFloat = showDrawer ? 0 : -drawerWidth
+        let combined = base + dragOffset
+        return min(0, max(-drawerWidth, combined))
+    }
+
+    /// Open fraction 0→1 — drives push animation on main content.
+    private var drawerFraction: CGFloat {
+        let fraction = (effectiveDrawerX + drawerWidth) / drawerWidth
+        return min(1, max(0, fraction))
+    }
+
+    /// How far the main content card is pushed right.
+    private var mainContentOffset: CGFloat { drawerFraction * drawerWidth }
+
     // MARK: - Body
 
     var body: some View {
         @Bindable var bindableRouter = router
-        NavigationSplitView(columnVisibility: $columnVisibility) {
-            sidebarContent
-                .navigationSplitViewColumnWidth(min: 260, ideal: 300, max: 360)
-        } detail: {
-            detailContent(voiceCallBinding: $bindableRouter.isVoiceCallPresented)
-        }
-        .navigationSplitViewStyle(.balanced)
-        .applySheets(
+        mainZStack(voiceCallBinding: $bindableRouter.isVoiceCallPresented)
+            .onGeometryChange(for: CGFloat.self) { proxy in
+                proxy.size.width
+            } action: { newWidth in
+                if abs(containerWidth - newWidth) > 1 {
+                    containerWidth = newWidth
+                }
+            }
+            .applySheets(
             showSettings: $showSettings,
             showNotes: $showNotes,
             showCreateFolderSheet: $showCreateFolderSheet,
@@ -173,6 +204,13 @@ struct iPadMainChatView: View {
             showExportShareSheet: $showExportShareSheet,
             onSocketSetup: { registerSocketReconnectHandler() }
         )
+        // Reset drag state on background (prevents stale offset blocking hits on foreground)
+        .onChange(of: scenePhase) { _, newPhase in
+            if newPhase == .active {
+                dragOffset = 0
+                isDraggingDrawer = false
+            }
+        }
         // Terminal WebSocket lifecycle — disconnect on background, reconnect on foreground
         .onChange(of: scenePhase) { oldPhase, newPhase in
             if newPhase == .active && oldPhase != .active {
@@ -340,9 +378,127 @@ struct iPadMainChatView: View {
         }
     }
 
-    // MARK: - Sidebar
+    // MARK: - Main ZStack (drawer layout — mirrors MainChatView)
 
-    private var sidebarContent: some View {
+    @ViewBuilder
+    private func mainZStack(voiceCallBinding: Binding<Bool>) -> some View {
+        ZStack(alignment: .leading) {
+            // MARK: Main content — pushed right as drawer opens
+            NavigationStack {
+                detailContent(voiceCallBinding: voiceCallBinding)
+                    .navigationBarTitleDisplayMode(.inline)
+                    .toolbarBackground(.hidden, for: .navigationBar)
+            }
+            .ignoresSafeArea(.keyboard, edges: .bottom)
+            .offset(x: mainContentOffset)
+            .scaleEffect(1.0 - (drawerFraction * 0.08), anchor: .center)
+            .clipShape(RoundedRectangle(cornerRadius: drawerFraction * 16, style: .continuous))
+            .blur(radius: drawerFraction * 8)
+            .shadow(color: .black.opacity(0.18 * drawerFraction), radius: 20, x: -4)
+            .overlay {
+                Color.black
+                    .opacity(0.12 * drawerFraction)
+                    .ignoresSafeArea()
+                    .allowsHitTesting(false)
+            }
+            // Tap or swipe-left to close when drawer is open
+            .overlay {
+                if drawerFraction > 0.01 || isDraggingDrawer {
+                    Color.clear
+                        .contentShape(Rectangle())
+                        .onTapGesture { closeDrawerAnimated() }
+                        .gesture(
+                            DragGesture(minimumDistance: 12, coordinateSpace: .local)
+                                .onChanged { value in
+                                    let h = value.translation.width
+                                    guard h < 0 else { return }
+                                    isDraggingDrawer = true
+                                    dragOffset = h
+                                }
+                                .onEnded { value in
+                                    guard isDraggingDrawer else { return }
+                                    isDraggingDrawer = false
+                                    let h = value.translation.width
+                                    let v = value.velocity.width
+                                    if h < -(drawerWidth * 0.15) || v < -300 {
+                                        closeDrawerAnimated()
+                                    } else {
+                                        openDrawerAnimated()
+                                    }
+                                }
+                        )
+                }
+            }
+
+            // MARK: Drawer panel
+            drawerPanel
+                .frame(width: drawerWidth)
+                .offset(x: effectiveDrawerX)
+                .accessibilityHidden(drawerFraction < 0.01)
+                .gesture(
+                    DragGesture(minimumDistance: 12, coordinateSpace: .local)
+                        .onChanged { value in
+                            let h = value.translation.width
+                            guard h < 0 else { return }
+                            isDraggingDrawer = true
+                            dragOffset = h
+                        }
+                        .onEnded { value in
+                            guard isDraggingDrawer else { return }
+                            isDraggingDrawer = false
+                            let h = value.translation.width
+                            let v = value.velocity.width
+                            if h < -(drawerWidth * 0.15) || v < -300 {
+                                closeDrawerAnimated()
+                            } else {
+                                openDrawerAnimated()
+                            }
+                        }
+                )
+
+            // MARK: Left-edge strip — swipe right to open (when drawer is closed)
+            // Note: do NOT hide this based on isDraggingDrawer — removing it mid-gesture
+            // cancels the DragGesture before onEnded fires, causing the drawer to open only ~5%.
+            if !showDrawer {
+                Color.clear
+                    .frame(width: 44)
+                    .frame(maxHeight: .infinity)
+                    .contentShape(Rectangle())
+                    .gesture(
+                        DragGesture(minimumDistance: 8, coordinateSpace: .local)
+                            .onChanged { value in
+                                let h = value.translation.width
+                                let v = abs(value.translation.height)
+                                guard abs(h) > v, h > 0 else { return }
+                                if !isDraggingDrawer {
+                                    UIApplication.shared.sendAction(
+                                        #selector(UIResponder.resignFirstResponder),
+                                        to: nil, from: nil, for: nil)
+                                }
+                                isDraggingDrawer = true
+                                dragOffset = h
+                            }
+                            .onEnded { value in
+                                guard isDraggingDrawer else { return }
+                                isDraggingDrawer = false
+                                let h = value.translation.width
+                                let v = value.velocity.width
+                                // Low threshold so even a short flick commits the open
+                                if h > drawerWidth * 0.05 || v > 200 {
+                                    openDrawerAnimated()
+                                } else {
+                                    closeDrawerAnimated()
+                                }
+                            }
+                    )
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+    }
+
+    // MARK: - Drawer Panel
+
+    private var drawerPanel: some View {
         iPadSidebarContent(
             listViewModel: listViewModel,
             channelListVM: channelListVM,
@@ -367,21 +523,42 @@ struct iPadMainChatView: View {
             renamingConversation: $renamingConversation,
             renameText: $renameText,
             dependencies: dependencies,
-            onNewChat: { startNewChat() },
+            onNewChat: {
+                startNewChat()
+                closeDrawerAnimated()
+            },
             onSelectFolder: { folderId in
                 let folderVM = listViewModel.folderViewModel
                 Task { await folderVM.setActiveFolder(folderId) }
-                // Reset the new-chat VM so the folder workspace always starts fresh.
                 dependencies.activeChatStore.remove(nil)
                 newChatGeneration += 1
                 activeFolderWorkspaceId = folderId
                 activeConversationId = nil
                 activeChannelId = nil
+                closeDrawerAnimated()
             },
             onExport: { conv, format in Task { await exportChat(conv, format: format) } },
             onShowArchivedChats: { showArchivedChats = true },
-            onShowSharedChats: { showSharedChats = true }
+            onShowSharedChats: { showSharedChats = true },
+            onCloseDrawer: { closeDrawerAnimated() }
         )
+    }
+
+    // MARK: - Drawer Animations
+
+    private func openDrawerAnimated() {
+        withAnimation(.spring(response: 0.35, dampingFraction: 0.85)) {
+            showDrawer = true
+            dragOffset = 0
+        }
+        Haptics.play(.light)
+    }
+
+    private func closeDrawerAnimated() {
+        withAnimation(.spring(response: 0.3, dampingFraction: 0.9)) {
+            showDrawer = false
+            dragOffset = 0
+        }
     }
 
     // MARK: - Detail
@@ -453,41 +630,22 @@ struct iPadMainChatView: View {
     private var chatDetailContent: some View {
         if let channelId = activeChannelId {
             ChannelDetailView(channelId: channelId, channelListVM: channelListVM)
+                .onToggleDrawer { openDrawerAnimated() }
                 .id("channel-\(channelId)")
-                .toolbar {
-                    ToolbarItem(placement: .topBarTrailing) {
-                        Button { startNewChat() } label: {
-                            Image(systemName: "square.and.pencil")
-                                .scaledFont(size: 14, weight: .medium)
-                                .foregroundStyle(theme.textSecondary)
-                        }
-                        .buttonStyle(.plain)
-                        .accessibilityLabel("New Chat")
-                    }
-                }
         } else if let conversationId = activeConversationId {
             ChatDetailView(
                 conversationId: conversationId,
                 viewModel: dependencies.activeChatStore.viewModel(for: conversationId)
             )
             .onDeleteChat { startNewChat() }
+            .onToggleDrawer { openDrawerAnimated() }
             .id(conversationId)
-            .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button { startNewChat() } label: {
-                        Image(systemName: "square.and.pencil")
-                            .scaledFont(size: 14, weight: .medium)
-                            .foregroundStyle(theme.textSecondary)
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel("New Chat")
-                }
-            }
         } else if let folderWorkspaceId = activeFolderWorkspaceId {
             let vm = dependencies.activeChatStore.viewModel(for: nil)
             let folder = listViewModel.folderViewModel.folders.first { $0.id == folderWorkspaceId }
                 ?? listViewModel.folderViewModel.activeFolderDetail
             ChatDetailView(viewModel: vm, folderWorkspace: folder)
+                .onToggleDrawer { openDrawerAnimated() }
                 .id("folder-workspace-\(folderWorkspaceId)-\(newChatGeneration)")
                 .onAppear {
                     let folderDetail = listViewModel.folderViewModel.activeFolderDetail
@@ -497,32 +655,24 @@ struct iPadMainChatView: View {
                         modelIds: folderDetail?.modelIds ?? folder?.modelIds ?? []
                     )
                 }
-                .toolbar {
-                    ToolbarItem(placement: .topBarTrailing) {
-                        Button { startNewChat() } label: {
-                            Image(systemName: "square.and.pencil")
-                                .scaledFont(size: 14, weight: .medium)
-                                .foregroundStyle(theme.textSecondary)
-                        }
-                        .buttonStyle(.plain)
-                        .accessibilityLabel("New Chat")
-                    }
-                }
         } else {
             ChatDetailView(viewModel: dependencies.activeChatStore.viewModel(for: nil))
+                .onToggleDrawer { openDrawerAnimated() }
                 .id("new-chat-\(newChatGeneration)")
-                .toolbar {
-                    ToolbarItem(placement: .topBarTrailing) {
-                        Button { startNewChat() } label: {
-                            Image(systemName: "square.and.pencil")
-                                .scaledFont(size: 14, weight: .medium)
-                                .foregroundStyle(theme.textSecondary)
-                        }
-                        .buttonStyle(.plain)
-                        .accessibilityLabel("New Chat")
-                    }
-                }
         }
+    }
+
+    /// Hamburger button that opens the sidebar drawer — placed in each detail view's toolbar.
+    private var sidebarButton: some View {
+        Button {
+            openDrawerAnimated()
+        } label: {
+            Image(systemName: "sidebar.left")
+                .scaledFont(size: 14, weight: .medium)
+                .foregroundStyle(theme.textSecondary)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Open Sidebar")
     }
 
     // MARK: - Overlays
@@ -732,6 +882,8 @@ struct iPadSidebarContent: View {
     let onExport: (Conversation, iPadMainChatView.ExportFormat) -> Void
     var onShowArchivedChats: (() -> Void)? = nil
     var onShowSharedChats: (() -> Void)? = nil
+    /// Called when a conversation/channel is selected — closes the drawer on iPad.
+    var onCloseDrawer: (() -> Void)? = nil
 
     @Environment(\.theme) private var theme
     @State private var drawerChatsDropActive = false
@@ -1422,15 +1574,23 @@ struct iPadSidebarContent: View {
         Button {
             activeChannelId = channel.id
             activeConversationId = nil
+            onCloseDrawer?()
         } label: {
             HStack(spacing: 6) {
                 if channel.type == .dm, let participant = channel.dmParticipants.first {
-                    UserAvatar(
-                        size: 22,
-                        imageURL: participant.resolveAvatarURL(serverBaseURL: dependencies.apiClient?.baseURL ?? ""),
-                        name: participant.displayName,
-                        authToken: dependencies.apiClient?.network.authToken
-                    )
+                    ZStack(alignment: .bottomTrailing) {
+                        UserAvatar(
+                            size: 22,
+                            imageURL: participant.resolveAvatarURL(serverBaseURL: dependencies.apiClient?.baseURL ?? ""),
+                            name: participant.displayName,
+                            authToken: dependencies.apiClient?.network.authToken
+                        )
+                        Circle()
+                            .fill(participant.isOnline ? Color.green : Color.gray.opacity(0.5))
+                            .frame(width: 7, height: 7)
+                            .overlay(Circle().stroke(theme.background, lineWidth: 1))
+                            .offset(x: 2, y: 2)
+                    }
                 } else {
                     Image(systemName: channel.sidebarIcon)
                         .scaledFont(size: 11, context: .list)
@@ -1672,12 +1832,17 @@ struct iPadSidebarContent: View {
         } else {
                 Button {
                     let targetId = conversation.id
-                    guard targetId != activeConversationId else { return }
+                    guard targetId != activeConversationId else {
+                        // Already on this chat — just close the drawer
+                        onCloseDrawer?()
+                        return
+                    }
                     dependencies.activeChatStore.prewarm(conversationId: targetId, using: dependencies)
                     activeConversationId = targetId
                     activeChannelId = nil
                     activeFolderWorkspaceId = nil
                     SharedDataService.shared.saveLastActiveConversationId(targetId)
+                    onCloseDrawer?()
                     Haptics.play(.light)
                 } label: {
                     let isActive = activeConversationId == conversation.id

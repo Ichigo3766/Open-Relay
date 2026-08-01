@@ -287,6 +287,17 @@ struct ChatDetailView: View {
         return copy
     }
 
+    /// Optional callback invoked when the "Browse Files" button is tapped in the terminal toolbar.
+    /// When set, opens the file browser drawer from the parent (MainChatView) using the
+    /// same scale/blur/push effect as the chat history drawer.
+    private var openFileBrowserAction: (() -> Void)?
+
+    func onOpenFileBrowser(_ action: @escaping () -> Void) -> ChatDetailView {
+        var copy = self
+        copy.openFileBrowserAction = action
+        return copy
+    }
+
     // MARK: - Body
 
     var body: some View {
@@ -621,13 +632,9 @@ struct ChatDetailView: View {
                     drawerAction()
                 } label: {
                     Image(systemName: "line.3.horizontal")
-                        .scaledFont(size: 18, weight: .medium)
-                        .foregroundStyle(theme.textSecondary)
-                        .frame(width: 46, height: 46)
-                        .background(theme.surfaceContainer, in: Circle())
+                        .scaledFont(size: 18, weight: .medium, context: .ui)
                 }
                 .buttonStyle(.plain)
-                .contentShape(Circle())
                 .accessibilityLabel("Menu")
             }
 
@@ -1019,7 +1026,7 @@ struct ChatDetailView: View {
                 onTerminalServerSelected: { server in
                     viewModel.selectedTerminalServer = server
                 },
-                onBrowseFiles: nil,
+                onBrowseFiles: openFileBrowserAction,
                 mentionedModel: $mentionedModel,
                 mentionedModelImageURL: mentionedModel.flatMap { viewModel.resolvedImageURL(for: $0) },
                 mentionedModelAuthToken: viewModel.serverAuthToken,
@@ -1463,6 +1470,7 @@ struct ChatDetailView: View {
         // Combined with the opacity curtain, the user sees the chat already at
         // the bottom on reveal, with no programmatic scroll animation at all.
         .defaultScrollAnchor(.bottom)
+        .scrollContentBackground(.hidden)
         .background(ScrollViewHorizontalLock())
         .scrollIndicators(.hidden)
         .scrollDismissesKeyboard(editingMessageId != nil ? .never : (viewModel.isStreaming ? .immediately : .interactively))
@@ -2649,6 +2657,7 @@ struct ChatDetailView: View {
                     #selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
             }
         }
+        .scrollContentBackground(.hidden)
         .background(ScrollViewHorizontalLock())
         .scrollDismissesKeyboard(.interactively)
     }
@@ -3715,6 +3724,12 @@ struct ChatDetailView: View {
         // toolbar/model-selector pop-in; this guard prevents a redundant second call.
         if !viewModel.isConfigured, let manager = dependencies.conversationManager {
             viewModel.configure(with: manager, socket: dependencies.socketService, store: dependencies.activeChatStore, asr: dependencies.asrService, notes: dependencies.notesManager)
+        }
+        // Populate server feature flags in ActiveChatStore so isMemoryAvailable
+        // returns true for all models when the server has memories enabled —
+        // not just for models with builtinTools.memory.
+        if dependencies.activeChatStore.serverFeatures == nil {
+            dependencies.activeChatStore.serverFeatures = dependencies.authViewModel.featurePermissions
         }
         // Perform non-async setup before awaiting load() so the UI
         // populates prompts and temporary-chat state instantly.
