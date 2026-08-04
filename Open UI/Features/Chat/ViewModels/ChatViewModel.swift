@@ -698,6 +698,11 @@ final class ChatViewModel {
     /// Registers an observer for `.memorySettingChanged` so that when the user
     /// toggles memory in Settings → Personalization → Memories, all active
     /// ChatViewModels update `memoryEnabled` immediately without a server refetch.
+    ///
+    /// IMPORTANT: Also updates `activeChatStore?.cachedMemorySetting` so that new
+    /// ChatViewModel instances created AFTER the toggle (e.g. opening a new chat)
+    /// pick up the correct value from the session cache instead of the stale `false`
+    /// that was set when the session started with memory disabled.
     private func setupMemorySettingObserver() {
         NotificationCenter.default.addObserver(
             forName: .memorySettingChanged,
@@ -708,6 +713,10 @@ final class ChatViewModel {
             Task { @MainActor [weak self] in
                 guard let self else { return }
                 self.memoryEnabled = newValue
+                // Keep the session-level cache in sync so new VMs (opened after
+                // this toggle) read the correct value from the cache rather than
+                // the stale value set at session start.
+                self.activeChatStore?.cachedMemorySetting = newValue
             }
         }
     }
@@ -5980,6 +5989,15 @@ final class ChatViewModel {
             // Fallback to user My Defaults system prompt
             if let dp = activeChatStore?.cachedUserDefaultParams?.systemPrompt,
                !dp.trimmingCharacters(in: .whitespaces).isEmpty { return dp }
+            // Fallback to the workspace model's server-side system prompt.
+            // This ensures that when a user changes the workspace model's system
+            // prompt in OpenWebUI, the app picks up the fresh value on the next
+            // send — even for existing chats where chatParams was set at creation
+            // time and never re-read from the server.
+            if let info = selectedModel?.rawModelItem?["info"] as? [String: Any],
+               let mParams = info["params"] as? [String: Any],
+               let sp = mParams["system"] as? String,
+               !sp.trimmingCharacters(in: .whitespaces).isEmpty { return sp }
             return nil
         }()
         if let sp = effectiveSP, !sp.trimmingCharacters(in: .whitespaces).isEmpty {

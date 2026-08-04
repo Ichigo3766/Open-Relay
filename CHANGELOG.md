@@ -1,5 +1,14 @@
 # Changelog
 
+## v5.2 — August 4, 2026
+
+### Improvements
+- Added option in Privacy & Security settings to exclude downloaded AI models (TTS/ASR) from iCloud backup — models are redownloadable so they don't need to consume iCloud storage. Enabled by default. (Turn Open Relay off/on in the icloud backup setting to apply.)
+
+### Bug Fixes
+- Fixed workspace model system prompts being ignored mid-conversation — the app now correctly falls back to the model's server-side system prompt when no per-chat or personal default prompt is set, so changes made in the OpenWebUI workspace are picked up immediately.
+- Fixed memories not being injected into conversations — the memory enabled/disabled toggle now stays in sync across all new chats opened after the toggle is changed.
+
 ## v5.1 — August 1, 2026
 
 ### What's New

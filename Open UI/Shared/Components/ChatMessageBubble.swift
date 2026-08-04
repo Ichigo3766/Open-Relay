@@ -49,8 +49,16 @@ struct ChatMessageBubble<Content: View>: View {
     // MARK: - User Bubble
 
     private var userBubble: some View {
-        HStack(alignment: .bottom, spacing: 0) {
-            Spacer(minLength: 64)
+        // Cap the bubble at 80% of the physical screen width so it never
+        // overflows on small devices (iPhone SE) or wide columns (iPad).
+        // Using UIScreen.main.bounds.width is intentional — we want the
+        // physical screen width as the cap, not the SwiftUI container width,
+        // and avoiding GeometryReader prevents the zero-height collapse bug
+        // that occurs when GeometryReader is inside a ScrollView.
+        let maxBubbleWidth = UIScreen.main.bounds.width * 0.80
+
+        return HStack(alignment: .bottom, spacing: 0) {
+            Spacer()
 
             VStack(alignment: .trailing, spacing: 4) {
                 content()
@@ -71,6 +79,7 @@ struct ChatMessageBubble<Content: View>: View {
                     }
                 }
             }
+            .frame(maxWidth: maxBubbleWidth, alignment: .trailing)
         }
         .padding(.horizontal, Spacing.screenPadding)
         .padding(.vertical, 2)

@@ -372,7 +372,11 @@ struct StorageSettingsView: View {
             .buttonStyle(.plain)
 
             // File entries (only when expanded)
-            AnimatedPresence(visible: isExpanded) {
+            // NOTE: Plain `if` is intentional here — AnimatedPresence always renders
+            // content (just clipped to 0 height), which causes List to allocate the
+            // full row height even when collapsed. Real conditional rendering lets
+            // SwiftUI insert/remove rows; withAnimation on the toggle still animates.
+            if isExpanded {
                 if entries.isEmpty {
                     Text("Empty")
                         .scaledFont(size: 14)

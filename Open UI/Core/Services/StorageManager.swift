@@ -55,14 +55,55 @@ final class StorageManager: @unchecked Sendable {
 
     // MARK: - Model Cache Location
 
-    /// The canonical directory where all on-device ML models (MarvisTTS, Qwen3 ASR)
+    /// UserDefaults key controlling whether the ML model cache is excluded from
+    /// iCloud / device backups. Defaults to `true` (excluded). Models are
+    /// redownloadable so there is no need to back them up.
+    static let excludeModelsFromBackupKey = "storage.excludeMLModelsFromBackup"
+
+    /// Whether the user has opted to exclude ML models from iCloud backup.
+    /// Reads from UserDefaults; defaults to `true` when unset.
+    static var excludeModelsFromBackup: Bool {
+        get {
+            let ud = UserDefaults.standard
+            // Return true if the key hasn't been set yet (first launch)
+            if ud.object(forKey: excludeModelsFromBackupKey) == nil { return true }
+            return ud.bool(forKey: excludeModelsFromBackupKey)
+        }
+        set {
+            UserDefaults.standard.set(newValue, forKey: excludeModelsFromBackupKey)
+            // Apply immediately whenever the preference changes
+            applyBackupExclusion(enabled: newValue)
+        }
+    }
+
+    /// Applies or removes the `isExcludedFromBackup` resource flag on the
+    /// `Documents/Models` directory based on the provided `enabled` value.
+    ///
+    /// The Apple docs note that some file operations can reset this flag, so
+    /// this is called both at directory creation time and whenever the user
+    /// changes their preference.
+    static func applyBackupExclusion(enabled: Bool) {
+        let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
+        var dir = docs.appendingPathComponent("Models", isDirectory: true)
+        guard FileManager.default.fileExists(atPath: dir.path) else { return }
+        var rv = URLResourceValues()
+        rv.isExcludedFromBackup = enabled
+        try? dir.setResourceValues(rv)
+    }
+
+    /// The canonical directory where all on-device ML models (TTS, ASR)
     /// are stored. Lives in `Documents/Models` so it is visible and fully deletable
     /// via the Files app. Pass `HubCache(location: .fixed(directory: StorageManager.modelCacheDirectory))`
     /// to any `fromPretrained` call.
+    ///
+    /// Also re-applies the backup-exclusion flag each time it is called,
+    /// since some file operations can reset it (per Apple docs).
     static var modelCacheDirectory: URL {
         let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
         let dir = docs.appendingPathComponent("Models", isDirectory: true)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        // Re-apply backup exclusion flag every time (Apple docs warn it can be reset)
+        applyBackupExclusion(enabled: excludeModelsFromBackup)
         return dir
     }
 

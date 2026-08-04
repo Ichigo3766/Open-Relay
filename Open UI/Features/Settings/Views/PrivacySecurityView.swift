@@ -11,6 +11,7 @@ struct PrivacySecurityView: View {
     @State private var exportError: String?
     @State private var showLocationDeniedAlert = false
     @State private var showDisableBiometricsConfirm = false
+    @State private var excludeModelsFromBackup: Bool = StorageManager.excludeModelsFromBackup
 
     // Observe the shared LocationManager so the UI refreshes when auth status changes
     private var locationManager: LocationManager { LocationManager.shared }
@@ -40,11 +41,13 @@ struct PrivacySecurityView: View {
                         icon: "arrow.down.circle",
                         title: "Export Data",
                         subtitle: isExporting ? "Exporting..." : "Download your conversations as JSON",
-                        showDivider: false,
+                        showDivider: true,
                         accessory: isExporting ? .loading : .chevron
                     ) {
                         Task { await exportData() }
                     }
+
+                    excludeFromBackupRow
                 }
             }
             .padding(.vertical, Spacing.lg)
@@ -81,6 +84,48 @@ struct PrivacySecurityView: View {
         } message: {
             Text("Open Relay needs location access to use {{USER_LOCATION}} in prompts. Please enable it in Settings > Privacy & Security > Location Services.")
         }
+    }
+
+    // MARK: - Exclude from Backup Row
+
+    @ViewBuilder
+    private var excludeFromBackupRow: some View {
+        HStack(spacing: 12) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 8)
+                    .fill(Color.teal.opacity(0.15))
+                    .frame(width: 32, height: 32)
+                Image(systemName: "icloud.slash")
+                    .scaledFont(size: 14, weight: .medium)
+                    .foregroundStyle(Color.teal)
+            }
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Exclude AI Models from Backup")
+                    .scaledFont(size: 15)
+                    .foregroundStyle(theme.textPrimary)
+                Text(excludeModelsFromBackup
+                     ? "Models won't use iCloud storage — they're redownloadable"
+                     : "AI models will be included in your iCloud backup")
+                    .scaledFont(size: 12)
+                    .foregroundStyle(theme.textSecondary)
+                    .lineLimit(2)
+            }
+
+            Spacer()
+
+            Toggle("", isOn: Binding(
+                get: { excludeModelsFromBackup },
+                set: { newValue in
+                    excludeModelsFromBackup = newValue
+                    StorageManager.excludeModelsFromBackup = newValue
+                }
+            ))
+            .labelsHidden()
+            .tint(Color.teal)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
     }
 
     // MARK: - Biometric Row
