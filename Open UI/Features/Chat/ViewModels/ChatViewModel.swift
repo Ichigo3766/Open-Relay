@@ -2436,7 +2436,7 @@ final class ChatViewModel {
             contentDelta = payload?["content"] as? String
             isReplace = true
         case "chat:completion":
-            // v0.7+ structured output: reconstruct full content string (text + tool call
+            // structured output: reconstruct full content string (text + tool call
             // <details> blocks) from the output array, using the same helper as history
             // parsing. This ensures tool cards, preamble, and final answer all render.
             if let outputArr = payload?["output"] as? [[String: Any]],
@@ -4720,7 +4720,7 @@ final class ChatViewModel {
         socketSessionId: String, effectiveChatId: String?,
         acc: ContentAccumulator
     ) {
-        // v0.7+ structured output format: content lives in `output` array.
+        // structured output format: content lives in `output` array.
         // The server sends cumulative snapshots (each event contains the full
         // output so far), so we use `replace` not `append`.
         //

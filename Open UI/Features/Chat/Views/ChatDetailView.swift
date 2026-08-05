@@ -101,6 +101,13 @@ struct ChatDetailView: View {
     /// deceleration + bounce recovery (which is .decelerating, NOT .interacting) can
     /// never trigger jittery nav-bar show/hide at the bottom edge.
     @State private var isFingerDriving = false
+    /// True while iOS is decelerating (coasting) after the user lifts their finger.
+    /// The streaming pump must NOT fire during deceleration — each programmatic
+    /// scrollTo() call cancels the OS momentum curve, causing the instant-stop
+    /// behaviour the user reported (swipe → lifts finger → scroll stops dead instead
+    /// of coasting to a smooth stop). Stored in @State rather than PumpRef so that
+    /// the pump guard inside onScrollGeometryChange reads the live value.
+    @State private var isDecelerating = false
     /// Rate-limit timestamp for the streaming scroll pump (writes are non-rendering).
     private let _pumpRef = PumpRef()
     /// Whether the navigation bar is currently hidden.
@@ -1478,7 +1485,58 @@ struct ChatDetailView: View {
         .onScrollPhaseChange { _, newPhase in
             // isUserDriving: yield the streaming pump to BOTH finger touch AND inertia/deceleration.
             // This prevents the pump from fighting the user during a flick-scroll.
-            isUserDriving = (newPhase == .interacting || newPhase == .decelerating)
+            //
+            // IMPORTANT: Do NOT reset isUserDriving when the new phase is .animating.
+            // When the streaming pump fires scrollPosition.scrollTo(edge: .bottom), it
+            // transitions the scroll phase to .animating — which would immediately reset
+            // isUserDriving = false, unblocking the pump again on the very next frame.
+            // That creates a frame-by-frame fight: finger scrolls up one frame, pump snaps
+            // back the next, finger moves again, repeat — producing choppy "stuck" scrolling.
+            // By treating .animating as a no-op here, a user-initiated isUserDriving = true
+            // survives across pump-triggered .animating transitions and stays true until
+            // the scroll genuinely reaches .idle (no motion) or the user lifts their finger
+            // and inertia finishes (.decelerating → .idle).
+            switch newPhase {
+            case .interacting, .decelerating:
+                isUserDriving = true
+            case .idle:
+                isUserDriving = false
+            case .animating:
+                // A programmatic scrollTo() just fired (either the streaming pump or a
+                // FAB tap). Do NOT change isUserDriving — if the user was driving before
+                // this programmatic scroll, keep the pump suppressed.
+                break
+            @unknown default:
+                isUserDriving = false
+            }
+            // isDecelerating: true while iOS is coasting after the user lifts their finger.
+            // The streaming pump must NOT fire during deceleration — each programmatic
+            // scrollTo() cancels the OS momentum curve, killing the natural coast-to-stop.
+            // Only set true for .decelerating; cleared on .idle (motion stopped) and
+            // .interacting (new touch began, finger overrides inertia anyway).
+            // .animating is left unchanged — a programmatic scroll during ongoing
+            // deceleration should not reset the flag (very rare race, defensive).
+            switch newPhase {
+            case .decelerating:
+                isDecelerating = true
+                // During streaming: the moment the user lifts their finger and iOS starts
+                // coasting, permanently lock out the pump by setting isScrolledUp = true.
+                // Without this, isDecelerating blocks the pump DURING the coast, but the
+                // moment deceleration finishes (.idle → isDecelerating = false), the pump
+                // immediately resumes and snaps content back to the streaming bottom —
+                // exactly the "flick then snap back" behaviour shown in the video.
+                // Setting isScrolledUp here keeps the pump suppressed after deceleration
+                // until the user explicitly taps the ↓ FAB to re-engage auto-scroll.
+                if viewModel.isStreaming && !isScrolledUp {
+                    isScrolledUp = true
+                }
+            case .idle, .interacting:
+                isDecelerating = false
+            case .animating:
+                break
+            @unknown default:
+                isDecelerating = false
+            }
             // isFingerDriving: ONLY set while the finger is physically on screen (.interacting).
             // The nav-bar and isScrolledUp upward-delta logic use this flag, NOT isUserDriving,
             // so that inertia deceleration + bottom-bounce recovery never trigger jittery
@@ -1679,7 +1737,7 @@ struct ChatDetailView: View {
             // Guards: not user-driving, not manually scrolled up, not paginating.
             let distFromBottom = max(0, contentHeight - containerHeight - newOffset.y)
             let driftedFar = distFromBottom > 4
-            if driftedFar && viewModel.isStreaming && !isUserDriving && !isScrolledUp && !isLoadingMoreMessages {
+            if driftedFar && viewModel.isStreaming && !isUserDriving && !isDecelerating && !isScrolledUp && !isLoadingMoreMessages {
                 let now = Date()
                 guard now.timeIntervalSince(_pumpRef.lastScrollTime) >= 0.016 else { return }
                 _pumpRef.lastScrollTime = now
@@ -4864,15 +4922,17 @@ private struct IsolatedAssistantMessage: View {
                         // An unclosed <details> block must disable streaming so
                         // the raw HTML tag text doesn't flash before the block
                         // completes.
-                        let liveTailHasUnclosedDetails = liveTailStr.contains("<details") && !liveTailStr.contains("</details>")
                         // A VIZ block must still stream so InlineVisualizerView
                         // receives isStreaming: true and uses its reconcileContent
                         // path instead of finalizeContent (which fails on partial HTML).
+                        // NOTE: We no longer disable streaming for unclosed <details> blocks.
+                        // The pipeline freeze was removed — ToolCallParser.findDetailsBlocks()
+                        // skips incomplete blocks, so partial <details> in the live tail
+                        // are invisible to the user and always safe to stream through.
                         let liveTailHasViz = liveTailStr.contains("@@@VIZ-START")
-                        let liveTailHasSpecial = liveTailHasUnclosedDetails || liveTailHasViz
 
                         if !liveTailStr.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                            if !liveTailHasSpecial && !streamingStore.liveTailFrozenProse.isEmpty {
+                            if !liveTailHasViz && !streamingStore.liveTailFrozenProse.isEmpty {
                                 // Further split at prose boundary within the live tail.
                                 // The live segment starts on a new paragraph boundary,
                                 // so we add 16pt to match the CommonMark paragraphSpacing
@@ -4883,8 +4943,8 @@ private struct IsolatedAssistantMessage: View {
                                         .padding(.top, 16)
                                 }
                             } else {
-                                // VIZ content must stream; only unclosed <details> disables it.
-                                StreamingMarkdownView(content: liveTailStr, isStreaming: !liveTailHasUnclosedDetails)
+                                // Stream live tail — VIZ content and plain text both stream.
+                                StreamingMarkdownView(content: liveTailStr, isStreaming: true)
                             }
                         }
                     } else if useSplitProse {

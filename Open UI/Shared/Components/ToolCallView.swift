@@ -1158,8 +1158,6 @@ enum ToolCallParser {
             .replacingOccurrences(of: "&apos;", with: "'")
             .replacingOccurrences(of: "&#x27;", with: "'")
             .replacingOccurrences(of: "&#39;", with: "'")
-            .replacingOccurrences(of: "\\n", with: "\n")
-            .replacingOccurrences(of: "\\\"", with: "\"")
     }
 
     // MARK: - File ID Extraction from Tool Results

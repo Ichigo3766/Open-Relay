@@ -128,7 +128,7 @@ struct ChatFolder: Identifiable, Hashable, Sendable {
     /// Child folders (populated when building the tree from a flat list).
     var childFolders: [ChatFolder]
 
-    // MARK: - Sharing (v0.7+)
+    // MARK: - Sharing
 
     /// User ID of the folder owner (nil if server doesn't return it).
     var userId: String?

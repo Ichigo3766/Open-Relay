@@ -39,7 +39,7 @@ struct HistoryNode: Sendable {
     var isInternalMessage: Bool
     /// Delegation ID from meta.delegation_id (background sub-agent completion notices).
     var subagentDelegationId: String?
-    /// Raw `output` array from the server (v0.7+). Stored as-is and re-emitted
+    /// Raw `output` array from the server. Stored as-is and re-emitted
     /// verbatim on every sync so the server's canonical format is never corrupted.
     /// Content is reconstructed from this array during parsing but the original
     /// array must survive the round-trip so that `files`, `images`, and other
@@ -195,7 +195,7 @@ struct HistoryNode: Sendable {
             dict["statusHistory"] = statusArray
         }
 
-        // Re-emit the raw output array verbatim so the server's v0.7+ format is
+        // Re-emit the raw output array verbatim so the server's format is
         // preserved across every sync. Without this, the server loses the `output`
         // array and falls back to `content` only — which strips `files` and breaks
         // image rendering when switching between regenerated versions.
@@ -428,14 +428,14 @@ struct MessageHistory: Sendable {
         return history
     }
 
-    // MARK: - v0.7 Output Array Reconstruction
+    // MARK: - Output Array Reconstruction
 
-    /// Reconstructs a legacy-style content string from Open WebUI v0.7's structured
+    /// Reconstructs a content string from the server's structured
     /// `output` array, producing inline `<details type="tool_calls">` and
     /// `<details type="reasoning">` blocks that the existing `ToolCallParser`
     /// can render without modification.
     ///
-    /// Output array structure (v0.7+):
+    /// Output array structure:
     /// ```
     /// [
     ///   { type: "message", content: [{type: "output_text", text: "..."}] },
@@ -591,7 +591,7 @@ struct MessageHistory: Sendable {
         let roleStr = msg["role"] as? String ?? "user"
         let role = MessageRole(rawValue: roleStr) ?? .user
         var content = msg["content"] as? String ?? ""
-        // v0.7+: content is stored in a structured `output` array.
+        //: content is stored in a structured `output` array.
         // Reconstruct the full content string (with inline <details> blocks for
         // tool calls and reasoning) so the existing ToolCallParser renders everything
         // correctly: text, tool call cards, and reasoning blocks — all in order.
@@ -773,7 +773,7 @@ struct MessageHistory: Sendable {
             }
         }
 
-        // Preserve the raw output array (v0.7+) so it can be re-emitted verbatim
+        // Preserve the raw output array so it can be re-emitted verbatim
         // on every sync. This prevents the server's canonical format from being
         // corrupted when the app re-serializes a node it loaded from the server.
         let rawOutput = msg["output"] as? [[String: Any]] ?? []

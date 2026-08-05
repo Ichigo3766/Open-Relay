@@ -10,6 +10,8 @@ struct AppearanceSettingsView: View {
     @State private var wheelColor: Color = .blue
     @Namespace private var accentAnimation
     @AppStorage("streamingBlurAnimation") private var streamingBlurEnabled: Bool = true
+    /// iPad-only: whether the sidebar is pinned as a persistent left column.
+    @AppStorage("ipad_sidebar_always_shown") private var iPadSidebarAlwaysShown: Bool = false
 
     var body: some View {
         ScrollView {
@@ -56,6 +58,24 @@ struct AppearanceSettingsView: View {
                         )
                     )
 
+                }
+
+                // iPad-only: sidebar layout preference
+                if UIDevice.current.userInterfaceIdiom == .pad {
+                    SettingsSection(
+                        header: "iPad Sidebar",
+                        footer: "When enabled, the sidebar stays visible as a fixed panel while you chat. When disabled, it slides in as a drawer overlay."
+                    ) {
+                        SettingsCell(
+                            icon: "sidebar.left",
+                            title: "Always Show Sidebar",
+                            subtitle: iPadSidebarAlwaysShown ? "Sidebar pinned — always visible" : "Sidebar auto-hides as a drawer",
+                            accessory: .toggle(
+                                isOn: iPadSidebarAlwaysShown,
+                                onChange: { iPadSidebarAlwaysShown = $0 }
+                            )
+                        )
+                    }
                 }
 
             }

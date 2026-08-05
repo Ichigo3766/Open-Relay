@@ -133,7 +133,7 @@ final class FolderManager: @unchecked Sendable {
         try await apiClient.moveFolderParent(id: id, parentId: parentId)
     }
 
-    // MARK: - Sharing (v0.7+)
+    // MARK: - Sharing
 
     /// Fetches all folders shared with the current user (not owned by them).
     func fetchSharedFolders() async throws -> [ChatFolder] {

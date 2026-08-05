@@ -1,5 +1,15 @@
 # Changelog
 
+## v5.2.1 — August 5, 2026
+
+### What's New
+- Added iPad sidebar layout toggle in Settings → Appearance: choose between "Always Show Sidebar" (pinned split-view) or the default slide-out drawer overlay.
+
+### Bug Fixes
+- Fixed tool calls causing the entire chat response to freeze with no output
+- Fixed tool call responses silently delivering no content — events containing only tool call data (no text yet) are no longer dropped.
+- Fixed tool call JSON arguments being corrupted
+
 ## v5.2 — August 4, 2026
 
 ### Improvements
