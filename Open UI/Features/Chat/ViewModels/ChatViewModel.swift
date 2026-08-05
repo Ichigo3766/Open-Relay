@@ -5784,9 +5784,20 @@ final class ChatViewModel {
             let settings = try await apiClient.getUserSettings()
             if let ui = settings["ui"] as? [String: Any],
                let memory = ui["memory"] as? Bool {
+                // User has an explicit preference stored in their settings
                 memoryEnabled = memory
                 activeChatStore?.cachedMemorySetting = memory
                 logger.debug("Memory setting fetched from server: \(memory)")
+            } else {
+                // ui.memory is absent — the user has never explicitly set the toggle.
+                // Fall back to the server-level default, exactly matching OpenWebUI:
+                //   $settings?.memory ?? $config?.features?.enable_memories ?? false
+                // When an admin enables memories globally, new accounts inherit `true`
+                // without ever having a ui.memory key in their settings JSON.
+                let serverDefault = activeChatStore?.serverFeatures?.memories ?? false
+                memoryEnabled = serverDefault
+                activeChatStore?.cachedMemorySetting = serverDefault
+                logger.debug("Memory setting absent — using server default: \(serverDefault)")
             }
         } catch {
             logger.debug("Failed to fetch memory setting: \(error.localizedDescription)")
@@ -6042,6 +6053,14 @@ final class ChatViewModel {
         // Tool IDs (user selection respects manual toggles via userDisabledToolIds)
         let allToolIds = Array(selectedToolIds)
         if !allToolIds.isEmpty { request.toolIds = allToolIds }
+
+        // folder_id: include when chatting inside a folder so the server tags the
+        // chat, emits sidebar events with the right folder_id, and applies
+        // folder-level knowledge/system prompts — mirrors OpenWebUI's folder_id field.
+        let effectiveFolderId = folderContextId ?? conversation?.folderId
+        if let fid = effectiveFolderId, !fid.isEmpty {
+            request.folderId = fid
+        }
 
         // Terminal ID if enabled
         if terminalEnabled, let terminalServer = selectedTerminalServer {

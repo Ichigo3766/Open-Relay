@@ -286,6 +286,10 @@ struct ChatCompletionRequest: Sendable {
     /// flag which adds `assistant_message_id` to the request payload. The server uses
     /// this to prefix all new output with the existing message content.
     var assistantMessageId: String?
+    /// The folder ID for the chat. Sent when chatting inside a folder so the
+    /// server tags the chat correctly, emits sidebar events with the right
+    /// folder_id, and applies folder-level knowledge/system prompts server-side.
+    var folderId: String?
 
     struct ChatFeatures: Sendable {
         var webSearch: Bool = false
@@ -362,6 +366,11 @@ struct ChatCompletionRequest: Sendable {
         // existing assistant message rather than starting fresh. Mirrors OpenWebUI's
         // continueResponse flag. Only sent when set (i.e. for continue requests).
         if let assistantMessageId { data["assistant_message_id"] = assistantMessageId }
+
+        // folder_id: send when chatting inside a folder so the server tags the chat,
+        // emits sidebar events with the correct folder_id, and applies folder-level
+        // knowledge/system prompts server-side — matching OpenWebUI's `folder_id` field.
+        if let folderId, !folderId.isEmpty { data["folder_id"] = folderId }
 
         // Always send all feature keys with explicit true/false values,
         // matching the web client behavior. If we only send `true` keys

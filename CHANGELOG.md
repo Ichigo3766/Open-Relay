@@ -1,5 +1,15 @@
 # Changelog
 
+## v5.2.2 — August 5, 2026
+
+### Improvements
+- Chats started inside a folder now correctly send the folder context to the server, ensuring folder-level knowledge and system prompts are applied and the sidebar updates properly.
+
+### Bug Fixes
+- Fixed memories not being used in chat — the app now correctly falls back to the server's global memories setting when no explicit preference is stored in the user's account, matching OpenWebUI's behavior.
+
+## Previous Builds
+
 ## v5.2.1 — August 5, 2026
 
 ### What's New
