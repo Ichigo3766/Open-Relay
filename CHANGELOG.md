@@ -1,5 +1,13 @@
 # Changelog
 
+## v5.2.3 — August 7, 2026
+
+### Bug Fixes
+- Fixed response text after a tool call not appearing during streaming
+- Fixed chat messages overflowing horizontally past the screen edge on smaller iPhones
+
+## Previous Builds
+
 ## v5.2.2 — August 5, 2026
 
 ### Improvements

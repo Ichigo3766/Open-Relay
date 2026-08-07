@@ -88,7 +88,16 @@ struct ChatMessageBubble<Content: View>: View {
     // MARK: - Assistant Content (no bubble — clean full-width)
 
     private var assistantContent: some View {
-        VStack(alignment: .leading, spacing: 4) {
+        // Cap assistant content at the physical screen width so it never overflows
+        // on small devices (iPhone SE). Using UIScreen.main.bounds.width is intentional
+        // — we want the physical screen width as the cap, not the SwiftUI container
+        // width. Inside a ScrollView, .infinity expands to the scroll content's
+        // intrinsic width (which can exceed the screen), so capping here gives
+        // MarkdownView a correctly bounded width proposal and prevents text from
+        // laying out lines wider than the visible area.
+        let maxContentWidth = UIScreen.main.bounds.width
+
+        return VStack(alignment: .leading, spacing: 4) {
             content()
                 .foregroundStyle(theme.chatBubbleAssistantText)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -100,6 +109,7 @@ struct ChatMessageBubble<Content: View>: View {
                 }
             }
         }
+        .frame(maxWidth: maxContentWidth, alignment: .leading)
         .padding(.horizontal, Spacing.screenPadding)
         .padding(.vertical, 2)
     }

@@ -4931,7 +4931,7 @@ private struct IsolatedAssistantMessage: View {
                         // are invisible to the user and always safe to stream through.
                         let liveTailHasViz = liveTailStr.contains("@@@VIZ-START")
 
-                        if !liveTailStr.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        if !liveTailStr.isEmpty {
                             if !liveTailHasViz && !streamingStore.liveTailFrozenProse.isEmpty {
                                 // Further split at prose boundary within the live tail.
                                 // The live segment starts on a new paragraph boundary,
@@ -5184,12 +5184,14 @@ struct UserMessageContentView: View {
             if !hasChips {
                 Text(content)
                     .scaledFont(size: 15, context: .content)
+                    .fixedSize(horizontal: false, vertical: true)
             } else {
                 SkillTaggedTextView(segments: segs)
             }
         } else {
             Text(content)
                 .scaledFont(size: 15, context: .content)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 }

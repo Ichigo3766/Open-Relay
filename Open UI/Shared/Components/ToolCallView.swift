@@ -2148,28 +2148,14 @@ private struct RichUIWebView: UIViewRepresentable {
 
 // MARK: - Tool Call Result Block View
 
-/// Renders the OUTPUT section as a syntax-highlighted code block via MarkdownView.
-/// JSON results are pretty-printed and displayed with JSON syntax highlighting.
-/// All other text is shown as plain monospaced output. The underlying CodeView
-/// uses virtual line windowing — only the visible lines are laid out, matching
-/// the same "only parse what's shown" behaviour as regular markdown code blocks.
+/// Renders the OUTPUT section as a plain monospaced text block.
+/// JSON results are pretty-printed. Uses a simple ScrollView+Text instead of
+/// MarkdownView to avoid async WKWebView zero-height collapse on first render.
 private struct ToolCallResultBlockView: View {
     let content: String
 
     @Environment(\.theme) private var theme
-    @Environment(\.accessibilityScale) private var accessibilityScale
-
-    private static let baseBodyFontSize: CGFloat = UIFont.preferredFont(forTextStyle: .body).pointSize
-
-    /// Builds a MarkdownTheme scaled to the current accessibility text size.
-    private var scaledTheme: MarkdownTheme {
-        let scale = accessibilityScale.scale(for: .content)
-        var t = MarkdownTheme.default
-        if abs(scale - 1.0) > 0.01 {
-            t.align(to: Self.baseBodyFontSize * scale)
-        }
-        return t
-    }
+    @State private var showFullPreview = false
 
     /// Pretty-prints the content if it is JSON, otherwise returns the raw string.
     /// Also handles double-encoded JSON strings (e.g. `"\"{ ... }\""` ).
@@ -2199,39 +2185,71 @@ private struct ToolCallResultBlockView: View {
         return content
     }
 
-    /// Language hint passed to the code fence. `json` enables syntax highlighting;
-    /// plain text output falls back to an empty language tag (monospaced, no colours).
-    private var codeLanguage: String {
-        guard let data = content.data(using: .utf8),
-              let _ = try? JSONSerialization.jsonObject(with: data) else {
-            // Also accept double-encoded JSON
-            let stripped = content.trimmingCharacters(in: .whitespacesAndNewlines)
-            if stripped.hasPrefix("\"") && stripped.hasSuffix("\"") {
-                let inner = String(stripped.dropFirst().dropLast())
-                    .replacingOccurrences(of: "\\\"", with: "\"")
-                    .replacingOccurrences(of: "\\n", with: "\n")
-                    .replacingOccurrences(of: "\\\\", with: "\\")
-                if let d = inner.data(using: .utf8),
-                   let _ = try? JSONSerialization.jsonObject(with: d) {
-                    return "json"
-                }
+    var body: some View {
+        ZStack(alignment: .topTrailing) {
+            ScrollView([.vertical, .horizontal], showsIndicators: false) {
+                Text(formattedContent)
+                    .font(.system(size: 12, design: .monospaced))
+                    .foregroundStyle(theme.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .multilineTextAlignment(.leading)
+                    .textSelection(.enabled)
+                    .padding(10)
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
-            return ""
+            .frame(maxHeight: 200)
+            .background(theme.surfaceContainer.opacity(theme.isDark ? 0.35 : 0.25))
+            .clipShape(RoundedRectangle(cornerRadius: CornerRadius.sm, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: CornerRadius.sm, style: .continuous)
+                    .strokeBorder(theme.cardBorder.opacity(0.35), lineWidth: 0.5)
+            )
+
+            // Eye / preview button
+            Button {
+                showFullPreview = true
+            } label: {
+                Image(systemName: "eye")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(theme.textTertiary)
+                    .padding(6)
+                    .background(theme.surfaceContainer.opacity(0.8))
+                    .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+            }
+            .padding(6)
         }
-        return "json"
+        .sheet(isPresented: $showFullPreview) {
+            ToolCallResultFullPreviewSheet(content: formattedContent)
+        }
     }
+}
+
+// MARK: - Full-screen preview sheet for tool call output
+
+private struct ToolCallResultFullPreviewSheet: View {
+    let content: String
+    @Environment(\.dismiss) private var dismiss
+    @Environment(\.theme) private var theme
 
     var body: some View {
-        MarkdownView(
-            "```\(codeLanguage)\n\(formattedContent)\n```",
-            theme: scaledTheme
-        )
-        .codeBarHidden(true)
-        .clipShape(RoundedRectangle(cornerRadius: CornerRadius.sm, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: CornerRadius.sm, style: .continuous)
-                .strokeBorder(theme.cardBorder.opacity(0.35), lineWidth: 0.5)
-        )
+        NavigationView {
+            ScrollView {
+                Text(content)
+                    .font(.system(size: 13, design: .monospaced))
+                    .foregroundStyle(theme.textPrimary)
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding()
+            }
+            .background(theme.background)
+            .navigationTitle("Output")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") { dismiss() }
+                }
+            }
+        }
     }
 }
 
