@@ -70,6 +70,11 @@ final class SocketIOService: NSObject, @unchecked Sendable, URLSessionWebSocketD
     /// Engine.IO session ID received from the handshake.
     private(set) var sid: String?
 
+    /// Monotonically increasing counter, incremented on every `connect()` call.
+    /// All async callbacks capture this value and ignore results from older
+    /// connection generations, preventing stale disconnect/reconnect races.
+    private var connectionGeneration: Int = 0
+
     /// Whether the socket is currently connected.
     private(set) var isConnected = false
 
@@ -192,6 +197,10 @@ final class SocketIOService: NSObject, @unchecked Sendable, URLSessionWebSocketD
     func connect(force: Bool = false) {
         if isConnected && !force { return }
         if isConnecting && !force { return }
+
+        // Increment generation so any callbacks from the previous connection
+        // can detect they belong to a stale generation and self-discard.
+        connectionGeneration += 1
 
         isConnecting = true
         autoReconnectEnabled = true
@@ -1111,26 +1120,21 @@ final class SocketIOService: NSObject, @unchecked Sendable, URLSessionWebSocketD
 
     // MARK: - Private: Heartbeat & Ping
 
+    /// Starts the OpenWebUI `heartbeat` Socket.IO event timer.
+    ///
+    /// Engine.IO v4 heartbeat direction: **server sends PING, client responds PONG**.
+    /// The `case "2": send("3")` in `handleEngineIOMessage` already handles that correctly.
+    /// We must NOT send Engine.IO "2" packets from the client — that would be the wrong
+    /// direction per the EIO4 spec and wastes a connection slot on every tick.
+    ///
+    /// This timer only sends the Socket.IO-level `heartbeat` event that OpenWebUI uses
+    /// to track `last_seen_at` in SESSION_POOL. It does NOT send Engine.IO PINGs.
     private func startPing() {
         stopPing()
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
-            self.pingTimer = Timer.scheduledTimer(
-                withTimeInterval: self.pingInterval,
-                repeats: true
-            ) { [weak self] _ in
-                self?.send("2") // Engine.IO PING
-            }
-        }
-    }
-
-    private func startHeartbeat() {
-        // Invalidate any previous heartbeat timer to prevent accumulation
-        // across reconnections (each connect() calls startHeartbeat()).
-        DispatchQueue.main.async { [weak self] in
-            guard let self else { return }
-            self.heartbeatTimer?.invalidate()
-            // OpenWebUI expects a heartbeat event every 30 seconds
+            // OpenWebUI expects a Socket.IO `heartbeat` event every 30 seconds
+            // to update last_seen_at in SESSION_POOL.
             self.heartbeatTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] timer in
                 guard let self, self.isConnected else {
                     timer.invalidate()
@@ -1139,6 +1143,11 @@ final class SocketIOService: NSObject, @unchecked Sendable, URLSessionWebSocketD
                 self.emit("heartbeat", data: [:] as [String: Any])
             }
         }
+    }
+
+    private func startHeartbeat() {
+        // No-op: heartbeat is now consolidated into startPing() above.
+        // Engine.IO v4 PING/PONG is handled server→client in handleEngineIOMessage.
     }
 
     private func stopPing() {

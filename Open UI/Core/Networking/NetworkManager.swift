@@ -35,6 +35,14 @@ final class NetworkManager: NSObject, Sendable {
         // behaviour, but regular API calls have no such override and will stall forever.
         // Removing this flag restores the expected 30s timeout behaviour on all calls.
 
+        // Limit per-host connections to 4 (iOS default is 6 for HTTP/1.1).
+        // Reserving 2 slots for health-check requests and SSE streams prevents the
+        // startup request burst from exhausting the connection pool, which on
+        // high-latency LAN paths (e.g. Docker/Gluetun network namespaces) caused
+        // FIN_WAIT1 socket accumulation and made both the app and Safari temporarily
+        // unable to reach the OpenWebUI origin for ~2 minutes after launch.
+        configuration.httpMaximumConnectionsPerHost = 4
+
         // Disable URLSession HTTP caching — the app is API-driven with its own
         // ImageCacheService, and the default URLCache causes unbounded disk growth.
         configuration.urlCache = nil
@@ -231,7 +239,15 @@ final class NetworkManager: NSObject, Sendable {
             timeout: timeout
         )
 
-        let (data, response) = try await performRequest(urlRequest)
+        // Use the deduplicator for bodyless GET requests to prevent duplicate
+        // in-flight requests from multiple startup code paths exhausting the
+        // iOS per-host TCP connection pool.
+        let (data, response): (Data, URLResponse)
+        if method == .get && body == nil {
+            (data, response) = try await deduplicatedGET(urlRequest)
+        } else {
+            (data, response) = try await performRequest(urlRequest)
+        }
         try validateHTTPResponse(response, data: data)
         return (data, response as! HTTPURLResponse)
     }
@@ -579,6 +595,50 @@ final class NetworkManager: NSObject, Sendable {
             )
         }
         return json
+    }
+
+    // MARK: - GET Request Deduplicator
+
+    /// In-flight GET request tasks keyed by URL string.
+    /// Prevents the startup burst from making identical parallel GET requests
+    /// (e.g. `/api/models`, `/api/v1/chats/`, `/api/v1/folders/` each called
+    /// from multiple code paths simultaneously) which exhausted the iOS per-host
+    /// TCP connection pool on high-latency LAN paths (Docker/Gluetun namespaces).
+    ///
+    /// Only GET requests with no body are deduplicated — mutating requests are
+    /// always sent independently.
+    private let deduplicatorLock = NSLock()
+    private var inFlightGETs: [String: Task<(Data, URLResponse), Error>] = [:]
+
+    /// Performs a GET request, coalescing identical in-flight requests.
+    /// If a GET to the same URL is already in progress, waits for that result
+    /// instead of opening a new connection. Cleans up automatically on completion.
+    func deduplicatedGET(_ urlRequest: URLRequest) async throws -> (Data, URLResponse) {
+        guard urlRequest.httpMethod == "GET" || urlRequest.httpMethod == nil,
+              let key = urlRequest.url?.absoluteString
+        else {
+            // Non-GET or no URL — perform directly
+            return try await performRequest(urlRequest)
+        }
+
+        deduplicatorLock.lock()
+        if let existing = inFlightGETs[key] {
+            deduplicatorLock.unlock()
+            return try await existing.value
+        }
+
+        let task = Task<(Data, URLResponse), Error> { [weak self] in
+            guard let self else { throw APIError.unknown(underlying: nil) }
+            let result = try await self.performRequest(urlRequest)
+            self.deduplicatorLock.lock()
+            self.inFlightGETs.removeValue(forKey: key)
+            self.deduplicatorLock.unlock()
+            return result
+        }
+        inFlightGETs[key] = task
+        deduplicatorLock.unlock()
+
+        return try await task.value
     }
 
     // MARK: - Auth Token Management

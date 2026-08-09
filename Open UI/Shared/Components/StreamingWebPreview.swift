@@ -122,6 +122,13 @@ struct StreamingWebPreview: UIViewRepresentable {
                 return
             }
             if isStreaming {
+                // Reset finalized flag when streaming restarts (e.g. regeneration).
+                // Without this, height updates during re-streaming fire with easeOut
+                // animation because `isFinalized` was left `true` from the prior generation,
+                // causing 10 animated height jumps/sec competing with the render process.
+                if coord.finalized {
+                    coord.finalized = false
+                }
                 // Throttle reconcileContent to at most once per 100ms.
                 // Without this, every streamed character fires a JS bridge call
                 // serializing 300+ lines of HTML into WKWebView at 60fps — the
@@ -440,9 +447,16 @@ struct StreamingWebPreview: UIViewRepresentable {
           })();
 
           // ── Height reporter ──
+          // _rhFloor: minimum height that reportHeight will ever send.
+          // Set to the current height before a DOM swap so the ResizeObserver
+          // can't report a collapsed (near-zero) height while innerHTML is empty.
+          // Cleared to 0 after the new DOM has fully painted.
           var _rhLast = 0;
+          var _rhFloor = 0;
           function reportHeight() {
             var h = Math.ceil(document.body.scrollHeight);
+            // Never send a height smaller than the floor set during finalization.
+            if (_rhFloor > 0 && h < _rhFloor) h = _rhFloor;
             if (h > 0 && h !== _rhLast) {
               _rhLast = h;
               window.webkit.messageHandlers.heightHandler.postMessage(h);
@@ -511,12 +525,28 @@ struct StreamingWebPreview: UIViewRepresentable {
           }
 
           // ── Finalize: full replace + script execution ──
+          // The key insight: when innerHTML is set to a new value, the browser
+          // briefly empties the DOM before painting the new content. The
+          // ResizeObserver fires during this gap and reports scrollHeight ≈ 0,
+          // which causes Swift to shrink the WKWebView frame — producing the
+          // visible "collapse and re-expand" flash.
+          //
+          // Fix: set _rhFloor to the current height before touching the DOM,
+          // so reportHeight() clamps any transient near-zero readings to the
+          // last known good height. After scripts have run and the final layout
+          // is painted, _rhFloor is cleared so height can grow freely.
           function finalizeContent(html) {
             html = extractBody(html);
             var render = document.getElementById('render');
-            render.innerHTML = html;
 
-            // Monkey-patch listeners so DOMContentLoaded/load handlers in VIZ scripts fire now
+            // ── Freeze height: prevent ResizeObserver collapse flash ──
+            // Capture the last-reported height as a floor. Any height report
+            // while the DOM is being swapped will be clamped to this value,
+            // so Swift never sees a near-zero height during the transition.
+            _rhFloor = _rhLast > 0 ? _rhLast : Math.ceil(document.body.scrollHeight);
+
+            // Patch event listeners BEFORE swapping DOM so any scripts that
+            // register DOMContentLoaded/load during innerHTML assignment are caught.
             var _origDocAdd = document.addEventListener.bind(document);
             var _origWinAdd = window.addEventListener.bind(window);
             var _deferred = [];
@@ -528,6 +558,9 @@ struct StreamingWebPreview: UIViewRepresentable {
               if (type === 'DOMContentLoaded' || type === 'load') { _deferred.push(fn); }
               else { _origWinAdd(type, fn, opts); }
             };
+
+            // Swap the DOM and re-execute scripts.
+            render.innerHTML = html;
 
             // Re-execute inline / external scripts in order
             var scripts = render.querySelectorAll('script');
@@ -553,8 +586,15 @@ struct StreamingWebPreview: UIViewRepresentable {
               _deferred.forEach(function(fn) {
                 try { fn({ type: 'DOMContentLoaded', target: document }); } catch(e) {}
               });
-              scheduleHeight();
-              setTimeout(scheduleHeight, 120);
+              // ── Unfreeze height ──
+              // New DOM is fully painted. Allow _rhFloor to drop so the height
+              // can shrink (e.g. final content shorter than streaming preview)
+              // or grow. Use a rAF to ensure one paint has occurred first.
+              requestAnimationFrame(function() {
+                _rhFloor = 0;
+                scheduleHeight();
+                setTimeout(scheduleHeight, 120);
+              });
             });
           }
 
@@ -602,8 +642,12 @@ struct LazyStreamingWebPreview: View {
             } else {
                 // Transparent placeholder — frame is always applied by the
                 // caller using the `height` binding, so layout is stable.
+                // Use .task instead of .onAppear: .task is re-triggered by
+                // SwiftUI identity changes whereas .onAppear can be skipped
+                // on re-insertion, which would leave the WebView permanently
+                // hidden after a parent view identity change.
                 Color.clear
-                    .onAppear { isVisible = true }
+                    .task { isVisible = true }
             }
         }
     }

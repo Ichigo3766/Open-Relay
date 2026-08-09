@@ -34,6 +34,8 @@
 			</array>
 		</dict>
 	</array>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>Open Relay uses your local network to connect to your self-hosted OpenWebUI server.</string>
 	<key>NSPhotoLibraryAddUsageDescription</key>
 	<string>Open Relay needs access to save images from chat to your Photos library.</string>
 	<key>NSLocationWhenInUseUsageDescription</key>

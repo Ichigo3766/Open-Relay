@@ -1,5 +1,15 @@
 # Changelog
 
+## v5.2.4 — August 9, 2026
+
+### Improvements
+- Significantly improved connection reliability for self-hosted servers on local networks
+
+### Bug Fixes
+- Fixed Engine.IO heartbeat sending in the wrong direction
+
+## Previous Builds
+
 ## v5.2.3 — August 7, 2026
 
 ### Bug Fixes
