@@ -607,8 +607,7 @@ final class NetworkManager: NSObject, Sendable {
     ///
     /// Only GET requests with no body are deduplicated — mutating requests are
     /// always sent independently.
-    private let deduplicatorLock = NSLock()
-    private var inFlightGETs: [String: Task<(Data, URLResponse), Error>] = [:]
+    private let deduplicator = GETDeduplicator()
 
     /// Performs a GET request, coalescing identical in-flight requests.
     /// If a GET to the same URL is already in progress, waits for that result
@@ -621,23 +620,17 @@ final class NetworkManager: NSObject, Sendable {
             return try await performRequest(urlRequest)
         }
 
-        deduplicatorLock.lock()
-        if let existing = inFlightGETs[key] {
-            deduplicatorLock.unlock()
+        // Check for an existing in-flight task (actor-isolated, async-safe)
+        if let existing = await deduplicator.existing(for: key) {
             return try await existing.value
         }
 
         let task = Task<(Data, URLResponse), Error> { [weak self] in
             guard let self else { throw APIError.unknown(underlying: nil) }
-            let result = try await self.performRequest(urlRequest)
-            self.deduplicatorLock.lock()
-            self.inFlightGETs.removeValue(forKey: key)
-            self.deduplicatorLock.unlock()
-            return result
+            defer { Task { await self.deduplicator.remove(key) } }
+            return try await self.performRequest(urlRequest)
         }
-        inFlightGETs[key] = task
-        deduplicatorLock.unlock()
-
+        await deduplicator.register(task, for: key)
         return try await task.value
     }
 
@@ -747,6 +740,26 @@ enum HTTPMethod: String, Sendable {
     case put = "PUT"
     case patch = "PATCH"
     case delete = "DELETE"
+}
+
+// MARK: - GET Deduplicator
+
+/// Actor-isolated store for in-flight GET tasks.
+/// Replaces the old NSLock-based approach which was unavailable in async contexts (Swift 6).
+actor GETDeduplicator {
+    private var inFlight: [String: Task<(Data, URLResponse), Error>] = [:]
+
+    func existing(for key: String) -> Task<(Data, URLResponse), Error>? {
+        inFlight[key]
+    }
+
+    func register(_ task: Task<(Data, URLResponse), Error>, for key: String) {
+        inFlight[key] = task
+    }
+
+    func remove(_ key: String) {
+        inFlight.removeValue(forKey: key)
+    }
 }
 
 // MARK: - Certificate Trust Delegate

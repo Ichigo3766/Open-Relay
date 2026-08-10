@@ -384,7 +384,7 @@ struct ProfileView: View {
                                 .buttonStyle(.plain)
 
                                 Button {
-                                    withAnimation { chatVariables.removeValue(forKey: key) }
+                                    _ = withAnimation { chatVariables.removeValue(forKey: key) }
                                     Task { await saveVariables() }
                                 } label: {
                                     Image(systemName: "trash")

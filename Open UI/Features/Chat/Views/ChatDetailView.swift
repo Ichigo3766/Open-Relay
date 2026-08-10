@@ -1506,7 +1506,7 @@ struct ChatDetailView: View {
                 // FAB tap). Do NOT change isUserDriving — if the user was driving before
                 // this programmatic scroll, keep the pump suppressed.
                 break
-            @unknown default:
+            default:
                 isUserDriving = false
             }
             // isDecelerating: true while iOS is coasting after the user lifts their finger.
@@ -1534,7 +1534,7 @@ struct ChatDetailView: View {
                 isDecelerating = false
             case .animating:
                 break
-            @unknown default:
+            default:
                 isDecelerating = false
             }
             // isFingerDriving: ONLY set while the finger is physically on screen (.interacting).

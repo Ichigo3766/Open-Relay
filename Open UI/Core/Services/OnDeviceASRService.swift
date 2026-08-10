@@ -373,9 +373,13 @@ final class OnDeviceASRService {
 
         // Load audio and downsample to 16 kHz — Qwen3 ASR requires 16 kHz input.
         // Runs off the main actor to keep the UI spinner responsive.
-        let (sampleRate, audioArray) = try await Task.detached(priority: .userInitiated) { [tempURL] in
-            try loadAudioArray(from: tempURL, sampleRate: 16000)
+        // Extract [Float] samples inside the detached task so the non-Sendable
+        // MLXArray never crosses an actor boundary — only a plain [Float] is returned.
+        let (sampleRate, audioSamples): (Int, [Float]) = try await Task.detached(priority: .userInitiated) { [tempURL] in
+            let (sr, arr) = try loadAudioArray(from: tempURL, sampleRate: 16000)
+            return (sr, arr.asArray(Float.self))
         }.value
+        let audioArray = MLXArray(audioSamples)
 
         let totalSamples = audioArray.dim(0)
         guard totalSamples > 0 else {

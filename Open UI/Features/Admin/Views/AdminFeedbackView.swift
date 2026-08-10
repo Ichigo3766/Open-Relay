@@ -363,7 +363,7 @@ private struct AdminFeedbackDetailSheet: View {
             }
 
             if let response = item.ratedMessage {
-                messageBlock(role: response.modelName ?? "Assistant", content: response.content ?? "", color: Color.green)
+                messageBlock(role: response.modelName ?? "Assistant", content: response.content, color: Color.green)
             }
 
             if item.promptMessage == nil && item.ratedMessage == nil {

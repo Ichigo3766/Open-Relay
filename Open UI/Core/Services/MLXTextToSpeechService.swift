@@ -789,6 +789,8 @@ final class OnDeviceTTSService {
                     firedStart = true
                     await MainActor.run { onStarted?() }
                 }
+            default:
+                break
             }
         }
 

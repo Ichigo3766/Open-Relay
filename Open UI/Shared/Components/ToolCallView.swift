@@ -113,7 +113,7 @@ actor MessageParseCache {
                existing.entry.content == content {
                 continue
             }
-            let result = await ToolCallParser.parseOrdered(content)
+            let result = ToolCallParser.parseOrdered(content)
             let entry = Entry(result: result, byteCount: content.utf8.count, content: content)
             cache.setObject(EntryBox(entry), forKey: key as NSString)
             // Yield to the cooperative thread pool every 4 items so the actor
@@ -176,7 +176,7 @@ struct ReasoningData: Identifiable {
     let duration: String?
     let isDone: Bool
 
-    init(summary: String, content: String, duration: String?, isDone: Bool) {
+    nonisolated init(summary: String, content: String, duration: String?, isDone: Bool) {
         // Use the first 80 characters as a stable anchor — the beginning of
         // a reasoning block is fixed once streaming starts (only the tail grows).
         let prefix = String(content.prefix(80))
@@ -224,7 +224,7 @@ enum ToolCallParser {
 
     /// Returns a cached (or freshly compiled) NSRegularExpression for `pattern`.
     /// Thread-safe via `os_unfair_lock` (non-recursive, no allocation).
-    static func cachedRegex(_ pattern: String, options: NSRegularExpression.Options = []) -> NSRegularExpression? {
+    nonisolated static func cachedRegex(_ pattern: String, options: NSRegularExpression.Options = []) -> NSRegularExpression? {
         let key = pattern + "\0\(options.rawValue)"
         os_unfair_lock_lock(&_regexCacheLock)
         if let cached = _regexCache[key] {
@@ -289,7 +289,7 @@ enum ToolCallParser {
     /// Parses the content into ordered segments preserving the original
     /// position of each `<details>` block relative to surrounding text.
     /// This is the core parser that all other methods delegate to.
-    static func parseOrdered(_ content: String) -> OrderedParseResult {
+    nonisolated static func parseOrdered(_ content: String) -> OrderedParseResult {
         // Pre-process: convert raw <think>…</think> tags (sent by models
         // like Qwen, DeepSeek, etc.) into <details type="reasoning"> blocks
         // so the state-machine tokenizer picks them up and renders them as
@@ -396,7 +396,7 @@ enum ToolCallParser {
     ///   found the closing `>` of the opening tag) but whose `</details>` has
     ///   not yet arrived. In that case the block is skipped and left as
     ///   surrounding text so that streaming does not flash partial content.
-    private static func findDetailsBlocks(in content: String) -> [DetailsMatch] {
+    private nonisolated static func findDetailsBlocks(in content: String) -> [DetailsMatch] {
         var results: [DetailsMatch] = []
         var i = content.startIndex
 
@@ -583,7 +583,7 @@ enum ToolCallParser {
     ///   embedding a raw closing tag (e.g. `</thinking>`, `</details>`) inside
     ///   the `<details type="reasoning">` block content, with the real response
     ///   following it before the outer `</details>`.
-    private static func parseReasoningBlock(_ block: String) -> (data: ReasoningData, spillover: String?)? {
+    private nonisolated static func parseReasoningBlock(_ block: String) -> (data: ReasoningData, spillover: String?)? {
         let doneStr = extractAttribute("done", from: block)
         let isDone = doneStr == "true"
         let duration = extractAttribute("duration", from: block)
@@ -679,7 +679,7 @@ enum ToolCallParser {
     }
 
     /// Parses a single tool call `<details>` block into a `ToolCallData`.
-    private static func parseToolCallBlock(_ block: String) -> ToolCallData? {
+    private nonisolated static func parseToolCallBlock(_ block: String) -> ToolCallData? {
         let name = extractAttribute("name", from: block) ?? "tool"
         let id = extractAttribute("id", from: block) ?? UUID().uuidString
         let doneStr = extractAttribute("done", from: block)
@@ -727,7 +727,7 @@ enum ToolCallParser {
     /// Those are JSON escape sequences that must remain intact so JSONSerialization
     /// can parse the array correctly. Raw newlines inside JSON string values make
     /// the JSON invalid and cause parse failure.
-    private static func parseEmbedsAttribute(from block: String) -> [String] {
+    private nonisolated static func parseEmbedsAttribute(from block: String) -> [String] {
         guard let raw = extractAttribute("embeds", from: block),
               !raw.isEmpty else { return [] }
 
@@ -766,7 +766,7 @@ enum ToolCallParser {
 
     /// All tag pairs that OpenWebUI recognises by default for reasoning content.
     /// Order matters: more specific / longer tags first to avoid partial matches.
-    private static let defaultReasoningTagPairs: [(open: String, close: String)] = [
+    private nonisolated static let defaultReasoningTagPairs: [(open: String, close: String)] = [
         ("<|begin_of_thought|>", "<|end_of_thought|>"),
         ("◁think▷", "◁/think▷"),
         ("<thinking>", "</thinking>"),
@@ -800,7 +800,7 @@ enum ToolCallParser {
     /// 2. **Unclosed tag**: `<think>content` (mid-stream) → in-progress block
     /// 3. **Incomplete details block**: `<details type="reasoning"><summary>…` → in-progress block
     /// 4. **No matching tags**: content returned unchanged
-    private static func preprocessThinkTags(_ content: String) -> String {
+    private nonisolated static func preprocessThinkTags(_ content: String) -> String {
         var result = content
 
         // ── Phase 1: Convert raw model reasoning tags ──
@@ -1123,13 +1123,13 @@ enum ToolCallParser {
     }
 
     /// Counts regex occurrences in a string.
-    private static func countOccurrences(of pattern: String, in text: String) -> Int {
+    private nonisolated static func countOccurrences(of pattern: String, in text: String) -> Int {
         guard let regex = cachedRegex(pattern, options: [.dotMatchesLineSeparators]) else { return 0 }
         return regex.numberOfMatches(in: text, range: NSRange(location: 0, length: (text as NSString).length))
     }
 
     /// Extracts an HTML attribute value from a tag string.
-    private static func extractAttribute(_ name: String, from html: String) -> String? {
+    private nonisolated static func extractAttribute(_ name: String, from html: String) -> String? {
         // Match attribute="value" with double or single quotes
         let patterns = [
             name + #"\s*=\s*"([^"]*)""#,
@@ -1148,7 +1148,7 @@ enum ToolCallParser {
     }
 
     /// Decodes common HTML entities in attribute values.
-    private static func decodeHTMLEntities(_ string: String?) -> String? {
+    private nonisolated static func decodeHTMLEntities(_ string: String?) -> String? {
         guard let string, !string.isEmpty else { return string }
         return string
             .replacingOccurrences(of: "&quot;", with: "\"")

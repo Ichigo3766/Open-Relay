@@ -4,6 +4,7 @@ import os.log
 /// ViewModel for the Admin Interface settings screen.
 /// Manages task config (generation toggles + prompts) and chat config (context compaction).
 @Observable
+@MainActor
 final class AdminInterfaceViewModel {
 
     // MARK: - State
@@ -39,7 +40,7 @@ final class AdminInterfaceViewModel {
         error = nil
         do {
             async let configTask = api.getAdminTaskConfig()
-            async let chatConfigTask: AdminChatConfig = {
+            async let chatConfigTask: AdminChatConfig = { @MainActor in
                 do { return try await api.getAdminChatConfig() }
                 catch { return AdminChatConfig() }
             }()
@@ -69,7 +70,7 @@ final class AdminInterfaceViewModel {
         success = false
         do {
             async let taskSave = api.updateTaskConfig(config)
-            async let chatSave: AdminChatConfig = {
+            async let chatSave: AdminChatConfig = { @MainActor in
                 do { return try await api.updateAdminChatConfig(self.chatConfig) }
                 catch { return self.chatConfig }
             }()
