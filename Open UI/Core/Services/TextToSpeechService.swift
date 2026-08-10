@@ -590,19 +590,26 @@ final class TextToSpeechService: NSObject {
         let speakerOverride = speakerOverrideEnabled
 
         // Configure audio session before starting the player.
+        // setCategory is safe on the main thread; setActive(true) is moved to a background
+        // thread to avoid the "may lead to UI unresponsiveness" warning.
+        let outputPortOverride = outputPortOverride
         if speakerOverride {
             let result = Result { try session.setCategory(.playAndRecord, mode: .voiceChat,
                                      options: [.allowBluetoothHFP, .allowBluetoothA2DP, .mixWithOthers]) }
             print("🔊[TTS] setCategory(.playAndRecord .voiceChat): \(result)")
-            let result2 = Result { try session.setActive(true) }
-            print("🔊[TTS] setActive(true) voiceCall: \(result2)")
-            try? session.overrideOutputAudioPort(outputPortOverride)
+            Task.detached(priority: .userInitiated) {
+                let result2 = Result { try AVAudioSession.sharedInstance().setActive(true) }
+                print("🔊[TTS] setActive(true) voiceCall: \(result2)")
+                try? AVAudioSession.sharedInstance().overrideOutputAudioPort(outputPortOverride)
+            }
         } else {
             let result = Result { try session.setCategory(.playback, mode: .default,
                                      options: [.allowBluetoothHFP, .allowBluetoothA2DP]) }
             print("🔊[TTS] setCategory(.playback .default): \(result)")
-            let result2 = Result { try session.setActive(true) }
-            print("🔊[TTS] setActive(true) playback: \(result2)")
+            Task.detached(priority: .userInitiated) {
+                let result2 = Result { try AVAudioSession.sharedInstance().setActive(true) }
+                print("🔊[TTS] setActive(true) playback: \(result2)")
+            }
         }
         print("🔊[TTS] after session setup — category=\(session.category.rawValue) mode=\(session.mode.rawValue)")
 
@@ -819,25 +826,28 @@ final class TextToSpeechService: NSObject {
         utterance.preUtteranceDelay = 0
         utterance.postUtteranceDelay = 0.05
 
-        do {
-            let session = AVAudioSession.sharedInstance()
-            if speakerOverrideEnabled {
-                // Voice call — .voiceChat mode enables echo cancellation + HFP mic routing.
-                try session.setCategory(.playAndRecord, mode: .voiceChat,
-                                        options: [.allowBluetoothHFP, .allowBluetoothA2DP, .mixWithOthers])
-                try session.setActive(true)
+        // Configure the audio session for this utterance.
+        // setCategory is lightweight and safe on the main thread; setActive(true) is
+        // dispatched to a background thread to avoid "UI unresponsiveness" warnings.
+        let session = AVAudioSession.sharedInstance()
+        let portOverride = outputPortOverride
+        if speakerOverrideEnabled {
+            // Voice call — .voiceChat mode enables echo cancellation + HFP mic routing.
+            try? session.setCategory(.playAndRecord, mode: .voiceChat,
+                                     options: [.allowBluetoothHFP, .allowBluetoothA2DP, .mixWithOthers])
+            Task.detached(priority: .userInitiated) {
+                try? AVAudioSession.sharedInstance().setActive(true)
                 // setActive resets overrideOutputAudioPort — re-apply earpiece/speaker preference.
-                try session.overrideOutputAudioPort(outputPortOverride)
-            } else {
-                // Regular read-aloud — .playback ignores the silent switch and keeps
-                // audio alive in background (UIBackgroundModes "audio" required).
-                try session.setCategory(.playback, mode: .default,
-                                        options: [.allowBluetoothHFP, .allowBluetoothA2DP,
-                                                  .mixWithOthers])
-                try session.setActive(true)
+                try? AVAudioSession.sharedInstance().overrideOutputAudioPort(portOverride)
             }
-        } catch {
-            // Audio session config failed — proceed anyway, system will use defaults
+        } else {
+            // Regular read-aloud — .playback ignores the silent switch and keeps
+            // audio alive in background (UIBackgroundModes "audio" required).
+            try? session.setCategory(.playback, mode: .default,
+                                     options: [.allowBluetoothHFP, .allowBluetoothA2DP, .mixWithOthers])
+            Task.detached(priority: .userInitiated) {
+                try? AVAudioSession.sharedInstance().setActive(true)
+            }
         }
 
         isSpeakingSystemChunk = true
@@ -865,11 +875,14 @@ final class TextToSpeechService: NSObject {
 
     /// Deactivates the shared audio session to release hardware resources.
     /// Called after all TTS playback finishes (both natural completion and stop()).
+    /// Runs setActive(false) on a background thread to avoid main-thread UI stalls.
     private func deactivateAudioSession() {
-        try? AVAudioSession.sharedInstance().setActive(
-            false,
-            options: .notifyOthersOnDeactivation
-        )
+        Task.detached(priority: .userInitiated) {
+            try? AVAudioSession.sharedInstance().setActive(
+                false,
+                options: .notifyOthersOnDeactivation
+            )
+        }
     }
 
     // MARK: - Chunk Enqueuing (used by streaming TTS)

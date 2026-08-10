@@ -588,7 +588,7 @@ struct AudioRecorderSheet: View {
                     Button {
                         switch recordingService.state {
                         case .idle:
-                            try? recordingService.startRecording()
+                            Task { try? await recordingService.startRecording() }
                         case .recording:
                             recordingService.pauseRecording()
                         case .paused:

@@ -93,7 +93,7 @@ struct Open_UIApp: App {
         //
         // 20 MB is the value from Apple's own MLX iOS guide. It's enough for smooth
         // TTS/ASR inference without the startup memory spike.
-        #if canImport(MLX)
+        #if canImport(MLX) && !targetEnvironment(simulator)
         Memory.cacheLimit = 20 * 1024 * 1024  // 20 MB
         #endif
 

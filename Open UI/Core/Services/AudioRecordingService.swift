@@ -39,13 +39,17 @@ final class AudioRecordingService: NSObject {
     // MARK: - Public API
 
     /// Starts recording audio to a temporary file.
-    func startRecording() throws {
+    func startRecording() async throws {
         guard recorder == nil else { return }
 
-        // Configure audio session
+        // Configure audio session.
+        // setCategory is lightweight; setActive(true) is performed on a background thread
+        // to avoid the "may lead to UI unresponsiveness" warning from AVAudioSession.
         let session = AVAudioSession.sharedInstance()
         try session.setCategory(.playAndRecord, mode: .default, options: [.defaultToSpeaker])
-        try session.setActive(true)
+        try await Task.detached(priority: .userInitiated) {
+            try AVAudioSession.sharedInstance().setActive(true)
+        }.value
 
         // Create temporary file URL
         let tempDir = FileManager.default.temporaryDirectory

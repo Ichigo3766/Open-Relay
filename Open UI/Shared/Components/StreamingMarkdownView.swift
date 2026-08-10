@@ -169,6 +169,18 @@ struct StreamingMarkdownView: View {
 
     @ViewBuilder
     private var unifiedBody: some View {
+        // Cap the entire content area to prevent WKWebView-backed blocks (SVG, HTML, code)
+        // from reporting a wider intrinsic size than the visible viewport. Without this cap,
+        // a wide SVG or code block causes the ScrollView content to be wider than the screen,
+        // which stretches the entire chat layout (navbar, messages, input bar) on smaller
+        // devices such as iPhone 12 Pro. UIViewRepresentable views ignore SwiftUI's .frame()
+        // from parent containers, but respect it when applied to their own output — so this
+        // constraint here is what actually propagates the width budget into WKWebView.
+        //
+        // The value matches ChatMessageBubble.assistantContent's maxContentWidth so the
+        // two caps are in sync and neither exceeds the screen width.
+        let maxContentWidth = UIScreen.main.bounds.width - (Spacing.screenPadding * 2)
+        let _ = maxContentWidth  // suppress unused-variable warning when not used in fast path
         if content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             EmptyView()
         } else {
@@ -200,6 +212,11 @@ struct StreamingMarkdownView: View {
                         segmentView(for: segment)
                     }
                 }
+                // Cap the multi-segment VStack so WKWebView-backed blocks (SVG, HTML,
+                // code) can never report a width wider than the visible viewport.
+                // UIViewRepresentable width constraints are honoured when the .frame
+                // is applied at this level — they propagate down into the UIKit layout.
+                .frame(maxWidth: maxContentWidth)
             }
         }
     }

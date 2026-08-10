@@ -1465,10 +1465,18 @@ struct ChatDetailView: View {
                 // (4 skeleton rows → N message rows) that happened even under opacity 0.
                 messagesList
             }
-            .padding(.top, 8)
-            .padding(.bottom, 8)
-            .frame(maxWidth: iPadMaxContentWidth)
-            .frame(maxWidth: .infinity)
+        .padding(.top, 8)
+        .padding(.bottom, 8)
+        .frame(maxWidth: iPadMaxContentWidth)
+        .frame(maxWidth: .infinity)
+        // Hard-cap the entire messages VStack to the current device's screen width.
+        // This prevents ANY child — user bubbles, assistant text, tool calls, follow-ups,
+        // source bars, SVGs, etc. — from pushing the ScrollView content wider than the
+        // screen, regardless of which device the chat was originally created on.
+        // Anything that would overflow is clipped inside its own component rather than
+        // stretching the parent scroll view horizontally.
+        .frame(maxWidth: UIScreen.main.bounds.width, alignment: .leading)
+        .clipped()
         }
         // defaultScrollAnchor(.bottom): tells SwiftUI to render the ScrollView
         // with its initial content offset at the bottom on first appearance.
