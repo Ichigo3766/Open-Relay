@@ -47,6 +47,21 @@ extension Date {
         Self._relativeFormatter.localizedString(for: self, relativeTo: .now)
     }
 
+    /// Short relative string for compact contexts (e.g. folder chat list).
+    /// Examples: "2m", "1h", "Mon", "Jan 5"
+    var relativeShort: String {
+        let now = Date()
+        let seconds = Int(now.timeIntervalSince(self))
+        if seconds < 60 { return "now" }
+        let minutes = seconds / 60
+        if minutes < 60 { return "\(minutes)m" }
+        let hours = minutes / 60
+        if hours < 24 { return "\(hours)h" }
+        let days = hours / 24
+        if days < 7 { return Self._dayOfWeekFormatter.string(from: self).prefix(3).description }
+        return Self._dateFormatter.string(from: self)
+    }
+
     /// Returns a formatted string suitable for chat timestamps.
     var chatTimestamp: String {
         if Calendar.current.isDateInToday(self) {

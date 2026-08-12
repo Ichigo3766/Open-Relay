@@ -6076,12 +6076,18 @@ final class ChatViewModel {
         let tagsEnabled = serverConfig.enableTagsGeneration
         let isFirst = (conversation?.messages.filter { !$0.isStreaming }.count ?? 0) <= 2
 
+        // Build background_tasks matching the web client's exact behaviour:
+        // - follow_up_generation is ALWAYS sent with its boolean value (true/false)
+        // - title_generation and tags_generation are only included on the first
+        //   message of a saved chat (with their boolean value); omitted otherwise
+        // - web_search is NOT a background task — it belongs only in features.web_search
         var bgTasks: [String: Any] = [:]
-        if suggestionsEnabled { bgTasks["follow_up_generation"] = true }
-        if isFirst && titleGenEnabled { bgTasks["title_generation"] = true }
-        if isFirst && tagsEnabled { bgTasks["tags_generation"] = true }
-        if webSearchEnabled { bgTasks["web_search"] = true }
-        if !bgTasks.isEmpty { request.backgroundTasks = bgTasks }
+        bgTasks["follow_up_generation"] = suggestionsEnabled
+        if isFirst {
+            bgTasks["title_generation"] = titleGenEnabled
+            bgTasks["tags_generation"] = tagsEnabled
+        }
+        request.backgroundTasks = bgTasks
 
         #if DEBUG
         if let body = try? JSONSerialization.data(withJSONObject: request.toJSON(), options: .prettyPrinted),

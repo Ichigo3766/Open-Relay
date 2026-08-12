@@ -194,6 +194,9 @@ extension Notification.Name {
     static let openUIWidgetVoiceCall     = Notification.Name("com.openui.widget.voiceCall")
     // Internal relay: MainChatView → ChatInputField to request keyboard focus
     static let chatInputFieldRequestFocus = Notification.Name("com.openui.input.requestFocus")
+    /// Fired from the folder workspace chat list when the user taps a recent chat row.
+    /// Object: the conversation ID (String).
+    static let folderWorkspaceChatSelected = Notification.Name("com.openui.folder.chatSelected")
     // Broadcast: dismiss all presented overlays (camera, file picker, voice call, sheets)
     // before starting a new quick action to prevent stacking.
     static let openUIDismissOverlays = Notification.Name("com.openui.dismissOverlays")

@@ -22,6 +22,7 @@ struct EditFolderSheet: View {
     @State private var systemPrompt: String
     @State private var attachedKnowledge: [FolderKnowledgeItem]
     @State private var backgroundImageUrl: String?
+    @State private var folderIcon: String?
 
     // Knowledge loading
     @State private var allKnowledgeItems: [KnowledgeItem] = []
@@ -30,6 +31,12 @@ struct EditFolderSheet: View {
     // PhotosPicker
     @State private var selectedPhotoItem: PhotosPickerItem?
     @State private var isUploadingImage = false
+
+    // Background image preview loaded with auth headers
+    @State private var previewUIImage: UIImage?
+
+    // Emoji picker
+    @State private var showEmojiPicker = false
 
     // Models
     @State private var allModels: [AIModel] = []
@@ -59,6 +66,7 @@ struct EditFolderSheet: View {
         _systemPrompt = State(initialValue: folder.data?.systemPrompt ?? "")
         _attachedKnowledge = State(initialValue: folder.data?.knowledgeItems ?? [])
         _backgroundImageUrl = State(initialValue: folder.meta?.backgroundImageUrl)
+        _folderIcon = State(initialValue: folder.meta?.icon)
         _selectedModelIds = State(initialValue: folder.data?.modelIds ?? [])
     }
 
@@ -116,6 +124,12 @@ struct EditFolderSheet: View {
         .presentationDetents([.large])
         .presentationDragIndicator(.visible)
         .presentationBackground(theme.background)
+        .sheet(isPresented: $showEmojiPicker) {
+            EmojiPickerSheet { emoji in
+                folderIcon = emoji
+            }
+            .presentationDetents([.medium, .large])
+        }
         .sheet(isPresented: $showKnowledgePicker) {
             knowledgePickerSheet
         }
@@ -155,8 +169,53 @@ struct EditFolderSheet: View {
 
     private var backgroundSection: some View {
         VStack(alignment: .leading, spacing: Spacing.sm) {
+            // ── Folder Icon row ──────────────────────────────────────
             HStack {
-                sectionLabel("Folder Background Image")
+                sectionLabel("Folder Icon")
+                Spacer()
+                HStack(spacing: Spacing.sm) {
+                    // Emoji button — shows current emoji or placeholder
+                    Button {
+                        showEmojiPicker = true
+                    } label: {
+                        ZStack {
+                            RoundedRectangle(cornerRadius: 8)
+                                .fill(theme.inputBackground)
+                                .frame(width: 36, height: 36)
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 8)
+                                        .stroke(theme.inputBorder, lineWidth: 1)
+                                )
+                            if let icon = folderIcon, !icon.isEmpty {
+                                Text(icon)
+                                    .scaledFont(size: 20)
+                            } else {
+                                Image(systemName: "face.smiling")
+                                    .scaledFont(size: 16)
+                                    .foregroundStyle(theme.textTertiary)
+                            }
+                        }
+                    }
+                    .buttonStyle(.plain)
+
+                    // Clear button — only visible when icon is set
+                    if let icon = folderIcon, !icon.isEmpty {
+                        Button {
+                            folderIcon = nil
+                        } label: {
+                            Image(systemName: "xmark.circle.fill")
+                                .scaledFont(size: 18)
+                                .foregroundStyle(theme.textTertiary)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .padding(.trailing, Spacing.md)
+            }
+
+            // ── Background Image row ─────────────────────────────────
+            HStack {
+                sectionLabel("Background Image")
                 Spacer()
                 PhotosPicker(
                     selection: $selectedPhotoItem,
@@ -177,39 +236,108 @@ struct EditFolderSheet: View {
                     guard let newItem else { return }
                     Task {
                         isUploadingImage = true
-                        if let data = try? await newItem.loadTransferable(type: Data.self),
-                           let uiImage = UIImage(data: data),
-                           let jpegData = uiImage.jpegData(compressionQuality: 0.8) {
+                        defer { isUploadingImage = false }
+                        guard let data = try? await newItem.loadTransferable(type: Data.self),
+                              let uiImage = UIImage(data: data),
+                              let jpegData = uiImage.jpegData(compressionQuality: 0.8)
+                        else { return }
+
+                        // Try to upload the image to the server files API and store the
+                        // returned content URL. Sending raw base64 in the folder JSON payload
+                        // often exceeds server request size limits and gets silently dropped.
+                        if let api = apiClient,
+                           let result = try? await api.uploadFileOnly(
+                               data: jpegData,
+                               fileName: "folder-background.jpg"
+                           ),
+                           let fileId = result["id"] as? String {
+                            // Build the authenticated content URL — same pattern used by
+                            // AuthenticatedImageView when rendering images from the server.
+                            backgroundImageUrl = "\(api.baseURL)/api/v1/files/\(fileId)/content"
+                        } else {
+                            // Fallback: store as base64 data URI when server upload is unavailable
                             let base64 = jpegData.base64EncodedString()
                             backgroundImageUrl = "data:image/jpeg;base64,\(base64)"
                         }
-                        isUploadingImage = false
                     }
                 }
             }
 
+            // Background image preview
             if let url = backgroundImageUrl, !url.isEmpty {
-                HStack {
-                    Image(systemName: url.hasPrefix("data:") ? "photo.fill" : "photo")
-                        .scaledFont(size: 14)
-                        .foregroundStyle(theme.textTertiary)
-                    Text(url.hasPrefix("data:") ? "Image selected" : url)
-                        .scaledFont(size: 12)
-                        .foregroundStyle(theme.textSecondary)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
+                HStack(spacing: Spacing.sm) {
+                    // Thumbnail (authenticated)
+                    backgroundImagePreview(url: url)
+
                     Spacer()
+
                     Button {
                         backgroundImageUrl = nil
                         selectedPhotoItem = nil
+                        previewUIImage = nil
                     } label: {
                         Image(systemName: "xmark.circle.fill")
-                            .scaledFont(size: 16)
+                            .scaledFont(size: 18)
                             .foregroundStyle(theme.textTertiary)
                     }
+                    .buttonStyle(.plain)
                 }
                 .padding(.horizontal, Spacing.md)
+                .padding(.top, 2)
+                .task(id: url) {
+                    await loadPreviewImage(url: url)
+                }
             }
+        }
+    }
+
+    /// Renders a 60×45 thumbnail from the loaded preview image.
+    @ViewBuilder
+    private func backgroundImagePreview(url: String) -> some View {
+        if let img = previewUIImage {
+            Image(uiImage: img)
+                .resizable()
+                .scaledToFill()
+                .frame(width: 60, height: 45)
+                .clipShape(RoundedRectangle(cornerRadius: 6))
+        } else {
+            RoundedRectangle(cornerRadius: 6)
+                .fill(theme.inputBackground)
+                .frame(width: 60, height: 45)
+                .overlay(
+                    ProgressView().controlSize(.small)
+                )
+        }
+    }
+
+    /// Loads the background image with auth headers (for server URLs) or decodes base64 (for data URLs).
+    private func loadPreviewImage(url: String) async {
+        if url.hasPrefix("data:"),
+           let commaIdx = url.firstIndex(of: ",") {
+            let b64 = String(url[url.index(after: commaIdx)...])
+            if let data = Data(base64Encoded: b64, options: .ignoreUnknownCharacters),
+               let uiImage = UIImage(data: data) {
+                previewUIImage = uiImage
+            }
+            return
+        }
+
+        // Server URL — fetch with auth headers via apiClient's network manager
+        guard let api = apiClient, let imgURL = URL(string: url) else { return }
+        do {
+            var request = URLRequest(url: imgURL)
+            request.timeoutInterval = 15
+            // Attach the same bearer token the NetworkManager uses
+            if let token = api.network.authToken {
+                request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+            }
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard (response as? HTTPURLResponse)?.statusCode == 200 else { return }
+            if let uiImage = UIImage(data: data) {
+                previewUIImage = uiImage
+            }
+        } catch {
+            // Silently fail — placeholder shown
         }
     }
 
@@ -549,12 +677,11 @@ struct EditFolderSheet: View {
             )
         }()
 
-        let meta: FolderMeta? = {
-            if let url = backgroundImageUrl, !url.isEmpty {
-                return FolderMeta(backgroundImageUrl: url)
-            }
-            return nil
-        }()
+        // Always send meta so icon/background changes (including clears) are persisted
+        let meta = FolderMeta(
+            backgroundImageUrl: (backgroundImageUrl?.isEmpty == false) ? backgroundImageUrl : nil,
+            icon: (folderIcon?.isEmpty == false) ? folderIcon : nil
+        )
 
         dismiss()
         onSave(name.isEmpty ? folder.name : name, data, meta)

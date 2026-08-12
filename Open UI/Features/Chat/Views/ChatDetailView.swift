@@ -248,7 +248,27 @@ struct ChatDetailView: View {
         self._viewModel = State(initialValue: viewModel)
     }
 
+    /// Creates a ChatDetailView for an existing conversation that belongs to a folder workspace.
+    /// The `folderWorkspace` is used to show the background image and folder context even
+    /// when viewing existing messages — the background should persist when opening chats inside
+    /// a folder (matches the web UI behaviour where the folder theme stays visible in all chats).
+    init(conversationId: String, viewModel: ChatViewModel, folderWorkspace: ChatFolder?) {
+        self.initialConversationId = conversationId
+        self._folderWorkspace = folderWorkspace
+        self._viewModel = State(initialValue: viewModel)
+    }
+
     private var _folderWorkspace: ChatFolder?
+
+    /// Pre-decoded background image, cached at init time so re-renders never flash black.
+    /// Decoding a large base64 string on every body evaluation would be expensive and cause
+    /// a brief transparent/black frame while the image loads.
+    @State private var _cachedFolderBgImage: UIImage?
+
+    /// Locked-in background image URL. Once we know the URL (either from the initial
+    /// `_folderWorkspace` or a later update) we never allow it to regress to nil, even
+    /// if the parent refreshes the folder list with a flat response that has no meta data.
+    @State private var _lockedFolderBgUrl: String?
 
     /// Called after the chat is successfully deleted, so the parent can
     /// navigate away smoothly (e.g. animate to new chat). Defaults to nil
@@ -312,8 +332,29 @@ struct ChatDetailView: View {
 
         ZStack {
             theme.background.ignoresSafeArea()
+
+            // ── Folder background image ──────────────────────────────────────
+            // Use _lockedFolderBgUrl as the authoritative source (locked in via
+            // .onAppear/.onChange with a folderId guard).
+            // The _folderWorkspace fallback is only used for brand-new chats
+            // (initialConversationId == nil) — there's no stale-state risk there
+            // because a new view instance starts fresh with no prior conversation.
+            // For existing chats (initialConversationId != nil) we NEVER fall back
+            // to _folderWorkspace directly, preventing the background from showing
+            // on regular chats when _lockedFolderBgUrl was never set (i.e. the
+            // folderId guard in .onAppear correctly rejected it).
+            let _bgUrl: String? = _lockedFolderBgUrl
+                ?? (initialConversationId == nil ? _folderWorkspace?.backgroundImageUrl : nil)
+            if let bgUrl = _bgUrl, !bgUrl.isEmpty {
+                GeometryReader { geo in
+                    folderBackgroundImage(url: bgUrl, containerSize: geo.size)
+                }
+                .ignoresSafeArea()
+            }
+
             messageListArea
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         // Custom top bar replaces the system navigation bar entirely.
         //
         // CRITICAL: The safeAreaInset height must NEVER change — it is the source
@@ -385,6 +426,65 @@ struct ChatDetailView: View {
         }
         .onAppear {
             viewModel.syncOnEntry()
+            // Lock in the background URL on first appear so it survives folder refreshes
+            // that return a flat list without meta data.
+            if _lockedFolderBgUrl == nil, let url = _folderWorkspace?.backgroundImageUrl, !url.isEmpty {
+                // Defence-in-depth: only lock the BGI if this conversation actually
+                // belongs to this folder (guards against folderWorkspace leaking to
+                // non-folder chats via stale state in the parent view).
+                let convFolderId = viewModel.conversation?.folderId
+                if convFolderId != nil && convFolderId == _folderWorkspace?.id {
+                    _lockedFolderBgUrl = url
+                    // Pre-fetch remote images immediately using the authenticated session
+                    // so the background is ready before the GeometryReader fires.
+                    if !url.hasPrefix("data:"), let api = dependencies.apiClient {
+                        let resolvedURL: URL?
+                        if url.hasPrefix("http") {
+                            resolvedURL = URL(string: url)
+                        } else {
+                            // Relative path (e.g. /api/v1/files/<id>/content) —
+                            // resolve against the server base URL.
+                            resolvedURL = URL(string: api.baseURL + url)
+                        }
+                        if let imgURL = resolvedURL {
+                            Task(priority: .userInitiated) {
+                                if let (data, _) = try? await api.network.requestRawAbsoluteURL(imgURL),
+                                   let img = UIImage(data: data) {
+                                    _cachedFolderBgImage = img
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        .onChange(of: _folderWorkspace?.backgroundImageUrl) { _, newUrl in
+            // Keep the locked URL updated if the folder's meta is refreshed with a new value,
+            // but only if this conversation actually belongs to this folder.
+            if let url = newUrl, !url.isEmpty {
+                let convFolderId = viewModel.conversation?.folderId
+                if convFolderId != nil && convFolderId == _folderWorkspace?.id {
+                    _lockedFolderBgUrl = url
+                    // Reset cached image and re-fetch when the URL changes to a new remote URL.
+                    if !url.hasPrefix("data:"), let api = dependencies.apiClient {
+                        _cachedFolderBgImage = nil
+                        let resolvedURL: URL?
+                        if url.hasPrefix("http") {
+                            resolvedURL = URL(string: url)
+                        } else {
+                            resolvedURL = URL(string: api.baseURL + url)
+                        }
+                        if let imgURL = resolvedURL {
+                            Task(priority: .userInitiated) {
+                                if let (data, _) = try? await api.network.requestRawAbsoluteURL(imgURL),
+                                   let img = UIImage(data: data) {
+                                    _cachedFolderBgImage = img
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         }
         .onDisappear { handleDisappear() }
         // Stop TTS when app enters background to prevent Metal GPU crashes
@@ -2728,21 +2828,124 @@ struct ChatDetailView: View {
         .scrollDismissesKeyboard(.interactively)
     }
 
+    // MARK: - Folder Background Image
+
+    /// Renders the folder background image full-screen with a dim overlay.
+    /// Handles both base64 data URIs and remote HTTP/HTTPS URLs.
+    /// Mirrors the web UI: image layer + dark overlay (black 45% opacity) so text stays readable.
+    ///
+    /// The `containerSize` parameter is provided by the `GeometryReader` in `body` so the image
+    /// fills the actual *view* bounds — not `UIScreen.main.bounds`. This prevents the background
+    /// from expanding beyond the view on iPad split-view, landscape, or Stage Manager, which was
+    /// causing the entire ZStack (and therefore the folder chat view) to stretch to the image's
+    /// native dimensions.
+    ///
+    /// Renders the folder workspace background image.
+    ///
+    /// Rendering strategy:
+    /// - Base64 images are decoded once into `_cachedFolderBgImage` via `.onAppear`.
+    /// - Remote URLs are routed through `ImageCacheService` which provides memory + disk
+    ///   caching, downsampling, and deduplication. The image is available instantly on
+    ///   repeat visits (no network round-trip), eliminating the flash/layout-shift.
+    /// - A stable `theme.background` placeholder fills the frame while loading so the
+    ///   layout never shifts; the image crossfades in once ready.
+    @ViewBuilder
+    private func folderBackgroundImage(url: String, containerSize: CGSize) -> some View {
+        let w = containerSize.width
+        let h = containerSize.height
+
+        ZStack {
+            // Stable background — always present, prevents any layout shift
+            theme.background
+                .frame(width: w, height: h)
+
+            if let cached = _cachedFolderBgImage {
+                Image(uiImage: cached)
+                    .resizable()
+                    .scaledToFill()
+                    .frame(width: w, height: h)
+                    .clipped()
+                    .transition(.opacity)
+            }
+
+            // Dim overlay — matches web UI's dark:from-gray-900/90 gradient
+            Color.black.opacity(0.70)
+                .frame(width: w, height: h)
+        }
+        .frame(width: w, height: h)
+        .clipped()
+        // Load the background image once and cache it into @State.
+        // Base64: decoded synchronously (no network needed).
+        // Remote URL: routed through ImageCacheService for memory + disk caching.
+        //   - First visit: network fetch + downsampled to display size, saved to disk.
+        //   - Subsequent visits: instant memory/disk cache hit, no network round-trip.
+        .onAppear {
+            guard _cachedFolderBgImage == nil else { return }
+            if url.hasPrefix("data:") {
+                // Base64 inline — decode synchronously
+                guard let commaIdx = url.firstIndex(of: ",") else { return }
+                let b64 = String(url[url.index(after: commaIdx)...])
+                if let data = Data(base64Encoded: b64, options: .ignoreUnknownCharacters),
+                   let img = UIImage(data: data) {
+                    withAnimation(.easeIn(duration: 0.2)) {
+                        _cachedFolderBgImage = img
+                    }
+                }
+            } else if let api = dependencies.apiClient {
+                // Remote URL — use ImageCacheService for memory + disk caching.
+                let resolvedURL: URL?
+                if url.hasPrefix("http") {
+                    resolvedURL = URL(string: url)
+                } else {
+                    resolvedURL = URL(string: api.baseURL + url)
+                }
+                if let imgURL = resolvedURL {
+                    let authToken = api.network.authToken
+                    // Downsample to 2× the screen width for crisp display without memory waste.
+                    // A typical iPhone screen is 390pt wide; 3× = 1170px. Cap at 1280px.
+                    let targetPx = min(Int(w * UIScreen.main.scale), 1280)
+                    Task(priority: .userInitiated) {
+                        let img = await ImageCacheService.shared.loadImage(
+                            from: imgURL,
+                            authToken: authToken,
+                            targetPixelSize: targetPx
+                        )
+                        if let img {
+                            withAnimation(.easeIn(duration: 0.2)) {
+                                _cachedFolderBgImage = img
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     // MARK: - Folder Welcome View
 
     private func folderWelcomeView(folder: ChatFolder) -> some View {
+        // Wrap in a ScrollView so the keyboard can be dismissed interactively
+        // (same pattern as welcomeView). Without this, tapping in the input field
+        // while the folder workspace is shown leaves the keyboard covering the bar
+        // because there's no scroll gesture to drive the interactive dismissal.
+        ScrollView {
         VStack(spacing: 0) {
-            Spacer(minLength: 60).layoutPriority(1)
+            Spacer(minLength: 40).layoutPriority(1)
 
             VStack(spacing: Spacing.md) {
-                // Folder icon
+                // Folder icon — show emoji if set, otherwise default folder SF Symbol
                 ZStack {
                     RoundedRectangle(cornerRadius: 20, style: .continuous)
                         .fill(theme.brandPrimary.opacity(0.12))
                         .frame(width: 72, height: 72)
-                    Image(systemName: "folder.fill")
-                        .scaledFont(size: 34, weight: .medium)
-                        .foregroundStyle(theme.brandPrimary)
+                    if let icon = folder.meta?.icon, !icon.isEmpty {
+                        Text(icon)
+                            .font(.system(size: 36))
+                    } else {
+                        Image(systemName: "folder.fill")
+                            .scaledFont(size: 34, weight: .medium)
+                            .foregroundStyle(theme.brandPrimary)
+                    }
                 }
 
                 // Folder name
@@ -2796,7 +2999,16 @@ struct ChatDetailView: View {
             }
             .padding(.horizontal, Spacing.screenPadding)
 
-            Spacer(minLength: 60).layoutPriority(1)
+            // ── Recent chats list ─────────────────────────────────────────────────
+            // Shows recent chats in this folder so the user can quickly resume one
+            // without opening the sidebar drawer. Matches the web UI layout.
+            if !folder.chats.isEmpty {
+                Spacer(minLength: 24)
+
+                folderChatList(folder: folder)
+            }
+
+            Spacer(minLength: 40).layoutPriority(1)
         }
         .frame(maxWidth: iPadMaxContentWidth)
         .frame(maxWidth: .infinity)
@@ -2804,6 +3016,78 @@ struct ChatDetailView: View {
             UIApplication.shared.sendAction(
                 #selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
         }
+        } // end ScrollView
+        .scrollContentBackground(.hidden)
+        .scrollDismissesKeyboard(.interactively)
+    }
+
+    /// Scrollable list of recent chats in the folder workspace landing screen.
+    /// Matches the web UI's "Title / Updated at" table below the input field.
+    @ViewBuilder
+    private func folderChatList(folder: ChatFolder) -> some View {
+        // Section header
+        HStack {
+            Text("Recent Chats")
+                .scaledFont(size: 12, weight: .semibold)
+                .foregroundStyle(theme.textTertiary)
+                .textCase(.uppercase)
+                .tracking(0.5)
+            Spacer()
+        }
+        .padding(.horizontal, Spacing.screenPadding)
+        .padding(.bottom, 4)
+
+        // Chat rows — show up to 20; truncate silently for long folders
+        VStack(spacing: 0) {
+            let visibleChats = Array(folder.chats.prefix(20))
+            ForEach(Array(visibleChats.enumerated()), id: \.element.id) { idx, chat in
+                Button {
+                    // Notify parent to open this chat. We post a notification that
+                    // MainChatView/iPadMainChatView listen to via .onReceive so we
+                    // don't need a direct callback binding here.
+                    NotificationCenter.default.post(
+                        name: .folderWorkspaceChatSelected,
+                        object: chat.id
+                    )
+                    Haptics.play(.light)
+                } label: {
+                    HStack(spacing: Spacing.sm) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(chat.title.isEmpty ? "New Chat" : chat.title)
+                                .scaledFont(size: 14, weight: .medium)
+                                .foregroundStyle(theme.textPrimary)
+                                .lineLimit(1)
+                                .truncationMode(.tail)
+                        }
+                        Spacer(minLength: Spacing.sm)
+                        Text(chat.updatedAt.relativeShort)
+                            .scaledFont(size: 12)
+                            .foregroundStyle(theme.textTertiary)
+                            .lineLimit(1)
+                            .fixedSize()
+                    }
+                    .padding(.horizontal, Spacing.screenPadding)
+                    .padding(.vertical, 11)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+
+                if idx < visibleChats.count - 1 {
+                    Divider()
+                        .padding(.leading, Spacing.screenPadding)
+                        .opacity(0.5)
+                }
+            }
+        }
+        .background(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .fill(theme.surfaceContainer.opacity(theme.isDark ? 0.3 : 0.5))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .strokeBorder(theme.cardBorder.opacity(0.4), lineWidth: 0.5)
+        )
+        .padding(.horizontal, Spacing.screenPadding)
     }
 
     @ViewBuilder
@@ -5190,9 +5474,25 @@ struct UserMessageContentView: View {
             let segs = segments
             let hasChips = segs.contains { if case .skill = $0 { return true }; return false }
             if !hasChips {
-                Text(content)
-                    .scaledFont(size: 15, context: .content)
-                    .fixedSize(horizontal: false, vertical: true)
+                // Render inline markdown (bold, italic, code, strikethrough) using
+                // Swift's built-in AttributedString. inlineOnlyPreservingWhitespace
+                // handles all standard inline syntax while preserving newlines and
+                // whitespace, which is important inside a compact user bubble.
+                // Falls back to plain text if parsing fails.
+                if let attributed = try? AttributedString(
+                    markdown: content,
+                    options: AttributedString.MarkdownParsingOptions(
+                        interpretedSyntax: .inlineOnlyPreservingWhitespace
+                    )
+                ) {
+                    Text(attributed)
+                        .scaledFont(size: 15, context: .content)
+                        .fixedSize(horizontal: false, vertical: true)
+                } else {
+                    Text(content)
+                        .scaledFont(size: 15, context: .content)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             } else {
                 SkillTaggedTextView(segments: segs)
             }

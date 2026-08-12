@@ -180,10 +180,16 @@ struct FolderRow: View {
                     .animation(.easeInOut(duration: AnimDuration.fast), value: folder.isExpanded)
                     .frame(width: 16)
 
-                // Folder icon + name
-                Image(systemName: folder.isExpanded ? "folder.fill" : "folder")
-                    .scaledFont(size: 15)
-                    .foregroundStyle(theme.brandPrimary)
+                // Folder icon + name — show emoji if set, else default SF Symbol
+                if let icon = folder.meta?.icon, !icon.isEmpty {
+                    Text(icon)
+                        .scaledFont(size: 16)
+                        .frame(width: 20, height: 20)
+                } else {
+                    Image(systemName: folder.isExpanded ? "folder.fill" : "folder")
+                        .scaledFont(size: 15)
+                        .foregroundStyle(theme.brandPrimary)
+                }
 
                 Text(folder.name)
                     .scaledFont(size: 16)

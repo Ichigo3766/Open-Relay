@@ -2,7 +2,7 @@ import SwiftUI
 import PhotosUI
 
 /// Sheet for creating a new folder — shows full settings matching the web UI:
-/// name, background image, system prompt, and knowledge.
+/// name, folder icon (emoji), background image, system prompt, and knowledge.
 ///
 /// On save, calls `onCreate` with the name plus optional data/meta.
 struct CreateFolderSheet: View {
@@ -20,12 +20,15 @@ struct CreateFolderSheet: View {
     @State private var systemPrompt = ""
     @State private var attachedKnowledge: [FolderKnowledgeItem] = []
     @State private var backgroundImageUrl: String?
+    @State private var folderIcon: String?
 
     @State private var allKnowledgeItems: [KnowledgeItem] = []
     @State private var isLoadingKnowledge = false
 
     @State private var selectedPhotoItem: PhotosPickerItem?
     @State private var isUploadingImage = false
+
+    @State private var showEmojiPicker = false
 
     @State private var allModels: [AIModel] = []
     @State private var isLoadingModels = false
@@ -73,7 +76,7 @@ struct CreateFolderSheet: View {
 
                     Divider().padding(.horizontal, Spacing.md)
 
-                    // Background image
+                    // Folder icon + Background image
                     backgroundSection
 
                     Divider().padding(.horizontal, Spacing.md)
@@ -123,6 +126,12 @@ struct CreateFolderSheet: View {
         .presentationDetents([.large])
         .presentationDragIndicator(.visible)
         .presentationBackground(theme.background)
+        .sheet(isPresented: $showEmojiPicker) {
+            EmojiPickerSheet { emoji in
+                folderIcon = emoji
+            }
+            .presentationDetents([.medium, .large])
+        }
         .sheet(isPresented: $showKnowledgePicker) {
             knowledgePickerSheet
         }
@@ -156,8 +165,53 @@ struct CreateFolderSheet: View {
 
     private var backgroundSection: some View {
         VStack(alignment: .leading, spacing: Spacing.sm) {
+            // ── Folder Icon row ──────────────────────────────────────
             HStack {
-                sectionLabel("Folder Background Image")
+                sectionLabel("Folder Icon")
+                Spacer()
+                HStack(spacing: Spacing.sm) {
+                    // Emoji button — shows current emoji or placeholder
+                    Button {
+                        showEmojiPicker = true
+                    } label: {
+                        ZStack {
+                            RoundedRectangle(cornerRadius: 8)
+                                .fill(theme.inputBackground)
+                                .frame(width: 36, height: 36)
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 8)
+                                        .stroke(theme.inputBorder, lineWidth: 1)
+                                )
+                            if let icon = folderIcon, !icon.isEmpty {
+                                Text(icon)
+                                    .scaledFont(size: 20)
+                            } else {
+                                Image(systemName: "face.smiling")
+                                    .scaledFont(size: 16)
+                                    .foregroundStyle(theme.textTertiary)
+                            }
+                        }
+                    }
+                    .buttonStyle(.plain)
+
+                    // Clear button — only visible when icon is set
+                    if let icon = folderIcon, !icon.isEmpty {
+                        Button {
+                            folderIcon = nil
+                        } label: {
+                            Image(systemName: "xmark.circle.fill")
+                                .scaledFont(size: 18)
+                                .foregroundStyle(theme.textTertiary)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .padding(.trailing, Spacing.md)
+            }
+
+            // ── Background Image row ─────────────────────────────────
+            HStack {
+                sectionLabel("Background Image")
                 Spacer()
                 PhotosPicker(
                     selection: $selectedPhotoItem,
@@ -188,27 +242,67 @@ struct CreateFolderSheet: View {
                 }
             }
 
+            // Background image preview
             if let url = backgroundImageUrl, !url.isEmpty {
-                HStack {
-                    Image(systemName: url.hasPrefix("data:") ? "photo.fill" : "photo")
-                        .scaledFont(size: 14)
-                        .foregroundStyle(theme.textTertiary)
-                    Text(url.hasPrefix("data:") ? "Image selected" : url)
+                HStack(spacing: Spacing.sm) {
+                    backgroundImagePreview(url: url)
+
+                    Text(url.hasPrefix("data:") ? "Custom image" : url)
                         .scaledFont(size: 12)
                         .foregroundStyle(theme.textSecondary)
                         .lineLimit(1)
                         .truncationMode(.middle)
+
                     Spacer()
+
                     Button {
                         backgroundImageUrl = nil
                         selectedPhotoItem = nil
                     } label: {
                         Image(systemName: "xmark.circle.fill")
-                            .scaledFont(size: 16)
+                            .scaledFont(size: 18)
                             .foregroundStyle(theme.textTertiary)
                     }
+                    .buttonStyle(.plain)
                 }
                 .padding(.horizontal, Spacing.md)
+                .padding(.top, 2)
+            }
+        }
+    }
+
+    /// Renders a 60×45 thumbnail from either a base64 data URL or a remote URL.
+    @ViewBuilder
+    private func backgroundImagePreview(url: String) -> some View {
+        if url.hasPrefix("data:"),
+           let commaIdx = url.firstIndex(of: ",") {
+            let b64 = String(url[url.index(after: commaIdx)...])
+            if let data = Data(base64Encoded: b64, options: .ignoreUnknownCharacters),
+               let uiImage = UIImage(data: data) {
+                Image(uiImage: uiImage)
+                    .resizable()
+                    .scaledToFill()
+                    .frame(width: 60, height: 45)
+                    .clipShape(RoundedRectangle(cornerRadius: 6))
+            }
+        } else if let imgURL = URL(string: url) {
+            AsyncImage(url: imgURL) { phase in
+                switch phase {
+                case .success(let image):
+                    image
+                        .resizable()
+                        .scaledToFill()
+                        .frame(width: 60, height: 45)
+                        .clipShape(RoundedRectangle(cornerRadius: 6))
+                default:
+                    RoundedRectangle(cornerRadius: 6)
+                        .fill(theme.inputBackground)
+                        .frame(width: 60, height: 45)
+                        .overlay(
+                            Image(systemName: "photo")
+                                .foregroundStyle(theme.textTertiary)
+                        )
+                }
             }
         }
     }
@@ -493,12 +587,15 @@ struct CreateFolderSheet: View {
             )
         }()
 
-        let meta: FolderMeta? = {
-            if let url = backgroundImageUrl, !url.isEmpty {
-                return FolderMeta(backgroundImageUrl: url)
-            }
-            return nil
-        }()
+        // Only send meta if something is actually set
+        let hasBackground = backgroundImageUrl?.isEmpty == false
+        let hasIcon = folderIcon?.isEmpty == false
+        let meta: FolderMeta? = (hasBackground || hasIcon)
+            ? FolderMeta(
+                backgroundImageUrl: hasBackground ? backgroundImageUrl : nil,
+                icon: hasIcon ? folderIcon : nil
+              )
+            : nil
 
         dismiss()
         onCreate(name, data, meta)

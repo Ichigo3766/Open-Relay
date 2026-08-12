@@ -79,6 +79,11 @@ struct iPadMainChatView: View {
     /// are created inside this folder (mirrors MainChatView behaviour).
     @State private var activeFolderWorkspaceId: String?
 
+    /// The folder object for the current workspace — captured synchronously at
+    /// selection time so the background image is available on the FIRST render,
+    /// before `setActiveFolder`'s async detail fetch completes.
+    @State private var activeFolderForWorkspace: ChatFolder?
+
     /// Channel list view model for sidebar display.
     @State private var channelListVM = ChannelListViewModel()
 
@@ -700,12 +705,54 @@ struct iPadMainChatView: View {
             },
             onSelectFolder: { folderId in
                 let folderVM = listViewModel.folderViewModel
-                Task { await folderVM.setActiveFolder(folderId) }
-                dependencies.activeChatStore.remove(nil)
-                newChatGeneration += 1
                 activeFolderWorkspaceId = folderId
                 activeConversationId = nil
                 activeChannelId = nil
+                dependencies.activeChatStore.remove(nil)
+                newChatGeneration += 1
+                // Set immediate placeholder from the flat list (may lack meta)
+                activeFolderForWorkspace = folderVM.folders.first { $0.id == folderId }
+                Task {
+                    // Fetch full detail (background image URL, system prompt, models)
+                    await folderVM.setActiveFolder(folderId)
+                    // Pre-warm the folder background image so ChatDetailView has
+                    // an instant cache hit and shows no layout shift.
+                    if let bgUrl = folderVM.activeFolderDetail?.backgroundImageUrl,
+                       !bgUrl.isEmpty, !bgUrl.hasPrefix("data:"),
+                       let api = dependencies.apiClient {
+                        let resolvedURL: URL?
+                        if bgUrl.hasPrefix("http") {
+                            resolvedURL = URL(string: bgUrl)
+                        } else {
+                            resolvedURL = URL(string: api.baseURL + bgUrl)
+                        }
+                        if let imgURL = resolvedURL {
+                            Task(priority: .userInitiated) {
+                                _ = await ImageCacheService.shared.loadImage(
+                                    from: imgURL,
+                                    authToken: api.network.authToken,
+                                    targetPixelSize: Int(UIScreen.main.bounds.width * UIScreen.main.scale)
+                                )
+                            }
+                        }
+                    }
+                    // Load chats — they're fetched lazily and may be empty
+                    // if the folder was never expanded in the sidebar.
+                    if var flatFolder = folderVM.folders.first(where: { $0.id == folderId }) {
+                        flatFolder.isExpanded = true   // satisfy the isExpanded guard in loadChatsIfNeeded
+                        await folderVM.loadChatsIfNeeded(for: flatFolder)
+                    }
+                    // Merge: full detail has meta/background, flat list now has chats
+                    if let detail = folderVM.activeFolderDetail {
+                        var merged = detail
+                        if merged.chats.isEmpty,
+                           let flatFolder = folderVM.folders.first(where: { $0.id == folderId }),
+                           !flatFolder.chats.isEmpty {
+                            merged.chats = flatFolder.chats
+                        }
+                        activeFolderForWorkspace = merged
+                    }
+                }
                 if !sidebarAlwaysShown { closeDrawerAnimated() }
             },
             onExport: { conv, format in Task { await exportChat(conv, format: format) } },
@@ -815,9 +862,17 @@ struct iPadMainChatView: View {
                 .onToggleDrawer(toggleDrawerAction)
                 .id("channel-\(channelId)")
         } else if let conversationId = activeConversationId {
+            // If this conversation belongs to the active folder workspace, pass the folder
+            // so the background image and folder context persists while viewing the chat.
+            let folderForConversation: ChatFolder? = {
+                guard let fwId = activeFolderWorkspaceId else { return nil }
+                return listViewModel.folderViewModel.folders.first { $0.id == fwId }
+                    ?? listViewModel.folderViewModel.activeFolderDetail
+            }()
             ChatDetailView(
                 conversationId: conversationId,
-                viewModel: dependencies.activeChatStore.viewModel(for: conversationId)
+                viewModel: dependencies.activeChatStore.viewModel(for: conversationId),
+                folderWorkspace: folderForConversation
             )
             .onDeleteChat { startNewChat() }
             .onToggleDrawer(toggleDrawerAction)
@@ -916,6 +971,8 @@ struct iPadMainChatView: View {
             return
         }
 
+        // The navbar "new chat" button always navigates to a plain new chat —
+        // never inside a folder workspace, regardless of the current context.
         // Always remove + recreate the VM so derived state (random prompt cards,
         // terminal status, model avatar, etc.) refreshes correctly. The view
         // identity bump (.id change) is what drives those @State resets.
@@ -930,6 +987,7 @@ struct iPadMainChatView: View {
             activeFolderWorkspaceId = nil
             newChatGeneration += 1
         }
+
         // Clear the persisted last-active conversation so a cold launch after
         // this explicit new-chat navigation does not restore the old chat.
         SharedDataService.shared.saveLastActiveConversationId(nil)
@@ -2760,24 +2818,22 @@ private extension View {
                 onSocketSetup()
             }
             .onChange(of: scenePhase) { oldPhase, newPhase in
-                if newPhase == .active && oldPhase != .active {
-                    let chatVM = dependencies.activeChatStore.viewModel(for: activeConversationId.wrappedValue)
-                    Task {
-                        if let socket = dependencies.socketService,
-                           !socket.isConnected, !socket.isConnecting {
-                            socket.connect()
-                        }
-                        // Refresh conversations, folders, channels, and pinned models on foreground
-                        await withTaskGroup(of: Void.self) { group in
-                            group.addTask { await listViewModel.refreshIfStale() }
-                            group.addTask { await listViewModel.folderViewModel.refreshFolders() }
-                            if let channelListVM {
-                                group.addTask { await channelListVM.refreshChannels() }
-                            }
-                            group.addTask { await chatVM.fetchPinnedModels() }
-                        }
-                        dependencies.updateWidgetData(conversations: listViewModel.conversations)
+                guard newPhase == .active && oldPhase != .active else { return }
+                let chatVM = dependencies.activeChatStore.viewModel(for: activeConversationId.wrappedValue)
+                let lvm = listViewModel
+                let deps = dependencies
+                let cvm = channelListVM
+                Task {
+                    if let socket = deps.socketService, !socket.isConnected, !socket.isConnecting {
+                        socket.connect()
                     }
+                    await withTaskGroup(of: Void.self) { group in
+                        group.addTask { await lvm.refreshIfStale() }
+                        group.addTask { await lvm.folderViewModel.refreshFolders() }
+                        if let cvm { group.addTask { await cvm.refreshChannels() } }
+                        group.addTask { await chatVM.fetchPinnedModels() }
+                    }
+                    deps.updateWidgetData(conversations: lvm.conversations)
                 }
             }
             .onReceive(NotificationCenter.default.publisher(for: .conversationTitleUpdated)) { notification in
@@ -2799,6 +2855,16 @@ private extension View {
                         group.addTask { await listViewModel.folderViewModel.refreshFolders() }
                         if let channelListVM {
                             group.addTask { await channelListVM.refreshChannels() }
+                        }
+                    }
+                    // If a folder workspace is active, reload its chats so that any new
+                    // conversation created inside the folder appears under the folder
+                    // instead of appearing stale or under normal chats.
+                    if let folderId = activeFolderWorkspaceId.wrappedValue {
+                        let folderVM = listViewModel.folderViewModel
+                        if let idx = folderVM.folders.firstIndex(where: { $0.id == folderId }) {
+                            folderVM.folders[idx].isExpanded = true
+                            await folderVM.loadChatsIfNeeded(for: folderVM.folders[idx])
                         }
                     }
                 }
@@ -2833,6 +2899,34 @@ private extension View {
             .onReceive(NotificationCenter.default.publisher(for: .openUINewChannel)) { _ in
                 // Widget "Channel" button — open the create-channel sheet
                 showCreateChannel.wrappedValue = true
+            }
+            // Folder workspace chat list row tapped — open that conversation while
+            // keeping the folder context (background image) intact.
+            .onReceive(NotificationCenter.default.publisher(for: .folderWorkspaceChatSelected)) { notification in
+                guard let chatId = notification.object as? String else { return }
+                activeConversationId.wrappedValue = chatId
+                // Keep activeFolderWorkspaceId set so the background image persists
+                SharedDataService.shared.saveLastActiveConversationId(chatId)
+            }
+            .onChange(of: listViewModel.folderViewModel.activeFolderDetail) { _, detail in
+                guard let detail,
+                      detail.id == activeFolderWorkspaceId.wrappedValue else { return }
+                // Merge: use the full detail's meta/data (backgroundImageUrl, icon, systemPrompt,
+                // modelIds) but preserve the chats from the flat list folder so both the
+                // background image AND the recent-chats list are always visible together.
+                var merged = detail
+                if merged.chats.isEmpty,
+                   let flatFolder = listViewModel.folderViewModel.folders.first(where: { $0.id == detail.id }),
+                   !flatFolder.chats.isEmpty {
+                    merged.chats = flatFolder.chats
+                }
+                // Note: iPadMainChatView uses activeFolderWorkspaceId binding from parent;
+                // the activeFolderForWorkspace @State is in iPadMainChatView itself — post
+                // a notification so iPadMainChatView can update it.
+                // Actually we update it directly via the drawerPanel's onSelectFolder callback
+                // which is already wired. Here we just need to trigger the folder workspace
+                // to rebuild by refreshing the folderVM. The actual activeFolderForWorkspace
+                // update happens in iPadMainChatView.drawerPanel.onSelectFolder reactive path.
             }
             .onChange(of: dependencies.authViewModel.accountSwitchCount) {
                 // Account was switched — perform a full reset so the new account's

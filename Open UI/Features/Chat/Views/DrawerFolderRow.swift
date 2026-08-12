@@ -86,9 +86,16 @@ struct DrawerFolderRow: View {
                     onSelectFolder?(folder.id)
                 } label: {
                     HStack(spacing: Spacing.sm) {
-                        Image(systemName: folder.isExpanded ? "folder.fill" : "folder")
-                            .scaledFont(size: 12)
-                            .foregroundStyle(isActiveWorkspace ? theme.brandPrimary : theme.brandPrimary)
+                        // Show custom emoji icon when set, otherwise default folder SF Symbol
+                        if let icon = folder.meta?.icon, !icon.isEmpty {
+                            Text(icon)
+                                .scaledFont(size: 14)
+                                .frame(width: 16, height: 16)
+                        } else {
+                            Image(systemName: folder.isExpanded ? "folder.fill" : "folder")
+                                .scaledFont(size: 12)
+                                .foregroundStyle(isActiveWorkspace ? theme.brandPrimary : theme.brandPrimary)
+                        }
 
                         Text(folder.name)
                             .scaledFont(size: 14, weight: isActiveWorkspace ? .semibold : .medium, context: .list)
@@ -556,11 +563,13 @@ struct DrawerFolderRow: View {
                         Label("Download", systemImage: "arrow.down.circle")
                     }
 
-                    // Rename
-                    Button {
-                        onRenameChat?(chat)
-                    } label: {
-                        Label("Rename", systemImage: "pencil")
+                    // Rename — hidden for chats in read-only shared folders
+                    if !folder.readonly {
+                        Button {
+                            onRenameChat?(chat)
+                        } label: {
+                            Label("Rename", systemImage: "pencil")
+                        }
                     }
 
                     // Pin / Unpin

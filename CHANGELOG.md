@@ -1,5 +1,19 @@
 # Changelog
 
+## v5.3 — August 12, 2026
+
+### What's New
+- Folders now support a custom emoji icon and background images
+- Folder workspace landing screen now shows a scrollable list of recent chats so you can quickly jump back into any conversation
+
+### Improvements
+- Improved server-side background task handling (title generation, follow-up suggestions, tags) to correctly respect your settings and match web client behavior.
+
+### Bug Fixes
+- Fixed "Rename" option appearing on chats inside read-only shared folders where editing is not permitted
+- Fixed markdown syntax not rendering in user messages when "Render markdown in user messages" is enabled
+
+
 ## v5.2.4 — August 9, 2026
 
 ### Improvements

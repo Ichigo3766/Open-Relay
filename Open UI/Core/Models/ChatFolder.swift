@@ -78,20 +78,43 @@ struct FolderKnowledgeItem: Identifiable, Sendable, Hashable {
 struct FolderMeta: Sendable, Hashable {
     /// URL of a background image (set via Edit Folder → Upload).
     var backgroundImageUrl: String?
+    /// Emoji shortcode string used as the folder icon (e.g. ":grinning:").
+    /// When set, replaces the default folder SF Symbol in the sidebar.
+    var icon: String?
 
-    init(backgroundImageUrl: String? = nil) {
+    init(backgroundImageUrl: String? = nil, icon: String? = nil) {
         self.backgroundImageUrl = backgroundImageUrl
+        self.icon = icon
     }
 
     init?(json: [String: Any]) {
         backgroundImageUrl = json["background_image_url"] as? String
             ?? json["backgroundImageUrl"] as? String
+        if let rawIcon = json["icon"] as? String, !rawIcon.isEmpty {
+            // Resolve the icon to an actual emoji character.
+            // The server stores icons in three possible formats:
+            //   1. Raw emoji character:   "🐒"                      → pass through
+            //   2. Bare shortcode name:   "rolling_on_the_floor_laughing" → look up in map
+            //   3. Colon-wrapped:         ":grinning:"              → strip colons, look up
+            let stripped = rawIcon.hasPrefix(":") && rawIcon.hasSuffix(":")
+                ? String(rawIcon.dropFirst().dropLast())
+                : rawIcon
+            icon = EmojiShortcodeMap.map[stripped] ?? rawIcon
+        } else {
+            icon = nil
+        }
     }
 
     func toJSON() -> [String: Any] {
         var dict: [String: Any] = [:]
         if let url = backgroundImageUrl {
             dict["background_image_url"] = url
+        }
+        if let icon {
+            dict["icon"] = icon
+        } else {
+            // Explicitly send empty string to clear icon on server
+            dict["icon"] = ""
         }
         return dict
     }
