@@ -19,6 +19,9 @@ final class APIClient: @unchecked Sendable {
             _authCallbackLock.lock()
             _onAuthTokenInvalid = newValue
             _authCallbackLock.unlock()
+            // Keep NetworkManager in sync so any 401 from any request method
+            // (not just those routed through APIClient) triggers sign-out.
+            network.onTokenExpired = newValue
         }
     }
 
@@ -1141,6 +1144,17 @@ final class APIClient: @unchecked Sendable {
     func stopTask(taskId: String) async throws {
         try await network.requestVoid(
             path: "/api/tasks/stop/\(taskId)",
+            method: .post
+        )
+    }
+
+    /// Stops all active server-side tasks for a given chat in a single request.
+    /// Mirrors open-webui's `stopTasksByChatId(chat_id)` → POST `/api/tasks/chat/{id}/stop`.
+    /// Called from `stopStreaming()` when `activeTaskId` is nil (external stream),
+    /// and always when cancelling — avoids a loop of individual stopTask() calls.
+    func stopTasksByChatId(chatId: String) async throws {
+        try await network.requestVoid(
+            path: "/api/tasks/chat/\(chatId)/stop",
             method: .post
         )
     }

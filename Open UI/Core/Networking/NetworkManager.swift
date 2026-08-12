@@ -16,6 +16,14 @@ final class NetworkManager: NSObject, Sendable {
         keychain.getToken(forServer: serverConfig.url)
     }
 
+    /// Callback fired once when a 401 response is received, so the app can
+    /// immediately route to the sign-in screen without waiting for the next
+    /// API call to fail. Guarded by a one-shot flag so it fires at most once
+    /// per session (avoids multiple parallel requests all triggering logout).
+    private let _tokenExpiredLock = NSLock()
+    private var _tokenExpiredFired = false
+    var onTokenExpired: (() -> Void)?
+
     // MARK: - Initialisation
 
     init(serverConfig: ServerConfig, keychain: KeychainService = .shared) {
@@ -207,7 +215,7 @@ final class NetworkManager: NSObject, Sendable {
             timeout: timeout
         )
 
-        let (data, response) = try await performRequest(urlRequest)
+        let (data, response) = try await performRequestWithRetry(urlRequest, maxRetries: 2)
         try validateHTTPResponse(response, data: data)
 
         do {
@@ -302,7 +310,7 @@ final class NetworkManager: NSObject, Sendable {
             authenticated: authenticated
         )
 
-        let (data, response) = try await performRequest(urlRequest)
+        let (data, response) = try await performRequestWithRetry(urlRequest, maxRetries: 2)
         try validateHTTPResponse(response, data: data)
     }
 
@@ -328,7 +336,7 @@ final class NetworkManager: NSObject, Sendable {
             authenticated: authenticated
         )
 
-        let (data, response) = try await performRequest(urlRequest)
+        let (data, response) = try await performRequestWithRetry(urlRequest, maxRetries: 2)
         try validateHTTPResponse(response, data: data)
     }
 
@@ -356,7 +364,7 @@ final class NetworkManager: NSObject, Sendable {
             timeout: timeout
         )
 
-        let (data, response) = try await performRequest(urlRequest)
+        let (data, response) = try await performRequestWithRetry(urlRequest, maxRetries: 2)
         try validateHTTPResponse(response, data: data)
 
         guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
@@ -400,7 +408,7 @@ final class NetworkManager: NSObject, Sendable {
             timeout: timeout
         )
 
-        let (data, response) = try await performRequest(urlRequest)
+        let (data, response) = try await performRequestWithRetry(urlRequest, maxRetries: 2)
         try validateHTTPResponse(response, data: data)
 
         // Tolerate null / array / empty body — return empty dict rather than throwing.
@@ -434,7 +442,7 @@ final class NetworkManager: NSObject, Sendable {
             timeout: timeout
         )
 
-        let (data, response) = try await performRequest(urlRequest)
+        let (data, response) = try await performRequestWithRetry(urlRequest, maxRetries: 2)
         try validateHTTPResponse(response, data: data)
 
         guard let arr = try JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
@@ -709,7 +717,20 @@ final class NetworkManager: NSObject, Sendable {
         }
 
         guard (200..<400).contains(statusCode) else {
-            throw parseHTTPError(statusCode: statusCode, data: data)
+            let error = parseHTTPError(statusCode: statusCode, data: data)
+            // Fire the 401 auto-sign-out callback once per session so the app
+            // immediately routes to sign-in instead of silently failing.
+            if statusCode == 401 {
+                _tokenExpiredLock.lock()
+                let alreadyFired = _tokenExpiredFired
+                if !alreadyFired { _tokenExpiredFired = true }
+                _tokenExpiredLock.unlock()
+                if !alreadyFired {
+                    let cb = onTokenExpired
+                    DispatchQueue.main.async { cb?() }
+                }
+            }
+            throw error
         }
     }
 

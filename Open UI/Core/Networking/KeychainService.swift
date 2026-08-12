@@ -46,6 +46,7 @@ final class KeychainService: Sendable {
     }
 
     /// Retrieves the JWT token for the given server URL.
+    /// Returns `nil` if the token is expired or within 5 minutes of expiry.
     func getToken(forServer serverURL: String) -> String? {
         let account = accountKey(for: serverURL)
 
@@ -63,7 +64,9 @@ final class KeychainService: Sendable {
         guard status == errSecSuccess, let data = result as? Data else {
             return nil
         }
-        return String(data: data, encoding: .utf8)
+        guard let token = String(data: data, encoding: .utf8) else { return nil }
+        if jwtIsExpired(token) { return nil }
+        return token
     }
 
     /// Removes the JWT token for the given server URL.
@@ -115,6 +118,7 @@ final class KeychainService: Sendable {
     }
 
     /// Retrieves the JWT token for a specific user account on a server.
+    /// Returns `nil` if the token is expired or within 5 minutes of expiry.
     func getToken(forServer serverURL: String, userId: String) -> String? {
         let account = accountKey(for: serverURL, userId: userId)
 
@@ -132,7 +136,9 @@ final class KeychainService: Sendable {
         guard status == errSecSuccess, let data = result as? Data else {
             return nil
         }
-        return String(data: data, encoding: .utf8)
+        guard let token = String(data: data, encoding: .utf8) else { return nil }
+        if jwtIsExpired(token) { return nil }
+        return token
     }
 
     /// Removes the JWT token for a specific user account on a server.
@@ -323,5 +329,31 @@ final class KeychainService: Sendable {
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .lowercased()
             .replacingOccurrences(of: "/$", with: "", options: .regularExpression)
+    }
+
+    /// Returns `true` if the JWT token's `exp` claim is within 5 minutes of expiry (or already expired).
+    /// Tokens without an `exp` claim are treated as non-expiring and return `false`.
+    private func jwtIsExpired(_ token: String) -> Bool {
+        // JWT format: header.payload.signature — all base64url-encoded
+        let parts = token.split(separator: ".", omittingEmptySubsequences: false)
+        guard parts.count == 3 else { return false }
+
+        // Decode the payload (middle segment) from base64url → base64 → Data
+        var base64 = String(parts[1])
+            .replacingOccurrences(of: "-", with: "+")
+            .replacingOccurrences(of: "_", with: "/")
+        // Pad to a multiple of 4
+        let remainder = base64.count % 4
+        if remainder != 0 { base64 += String(repeating: "=", count: 4 - remainder) }
+
+        guard let data = Data(base64Encoded: base64),
+              let payload = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let exp = payload["exp"] as? TimeInterval else {
+            // No exp claim — treat as non-expiring
+            return false
+        }
+
+        // Treat as expired if less than 5 minutes remain
+        return Date(timeIntervalSince1970: exp) < Date().addingTimeInterval(5 * 60)
     }
 }

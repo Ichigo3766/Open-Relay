@@ -268,18 +268,46 @@ actor ImageCacheService {
                     request.setValue(hValue, forHTTPHeaderField: hKey)
                 }
 
+                // Attach conditional-request headers if we have cached metadata.
+                // This lets the server respond with 304 Not Modified when the image
+                // hasn't changed, saving bandwidth and re-decode work.
+                let meta = self.loadMetadata(key: key)
+                if let etag = meta.etag {
+                    request.setValue(etag, forHTTPHeaderField: "If-None-Match")
+                }
+                if let lastModified = meta.lastModified {
+                    request.setValue(lastModified, forHTTPHeaderField: "If-Modified-Since")
+                }
+
                 let (data, response) = try await urlSession.data(for: request)
 
-                guard let httpResponse = response as? HTTPURLResponse,
-                      (200...399).contains(httpResponse.statusCode),
-                      !data.isEmpty
-                else {
-                    if let httpResponse = response as? HTTPURLResponse {
-                        self.logger.debug("Image load failed for \(url.lastPathComponent): status=\(httpResponse.statusCode)")
-                    } else {
-                        self.logger.debug("Image load failed for \(url.lastPathComponent): no HTTP response")
-                    }
+                guard let httpResponse = response as? HTTPURLResponse else {
+                    self.logger.debug("Image load failed for \(url.lastPathComponent): no HTTP response")
                     return nil
+                }
+
+                // 304 Not Modified — serve the existing disk-cached image
+                if httpResponse.statusCode == 304 {
+                    self.logger.debug("Image 304 Not Modified: \(url.lastPathComponent)")
+                    if let diskImage = self.loadFromDisk(key: key) {
+                        let canonical = self.deduplicatedImage(diskImage)
+                        let cost = self.bitmapCost(for: canonical)
+                        self.memoryCache.setObject(canonical, forKey: key as NSString, cost: cost)
+                        return canonical
+                    }
+                    // Disk file was evicted — fall through to treat as cache miss
+                }
+
+                guard (200...299).contains(httpResponse.statusCode), !data.isEmpty else {
+                    self.logger.debug("Image load failed for \(url.lastPathComponent): status=\(httpResponse.statusCode)")
+                    return nil
+                }
+
+                // Persist ETag / Last-Modified for future conditional requests
+                let newEtag = httpResponse.value(forHTTPHeaderField: "ETag")
+                let newLastModified = httpResponse.value(forHTTPHeaderField: "Last-Modified")
+                if newEtag != nil || newLastModified != nil {
+                    self.saveMetadata(etag: newEtag, lastModified: newLastModified, key: key)
                 }
 
                 // Downsample to target pixel size if requested, otherwise decode normally
@@ -532,6 +560,37 @@ actor ImageCacheService {
             h2 &*= 6364136223846793005
         }
         return String(h1, radix: 16) + String(h2, radix: 16)
+    }
+
+    // MARK: - ETag / Last-Modified Metadata
+
+    /// Loads stored ETag and Last-Modified values for a cache key.
+    /// These are persisted as a small JSON sidecar file (`{key}.meta`) next to the image data.
+    private func loadMetadata(key: String) -> (etag: String?, lastModified: String?) {
+        guard let directory = diskCacheDirectory else { return (nil, nil) }
+        let metaURL = directory.appendingPathComponent(key + ".meta")
+        guard let data = try? Data(contentsOf: metaURL),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: String] else {
+            return (nil, nil)
+        }
+        return (etag: json["etag"], lastModified: json["lastModified"])
+    }
+
+    /// Saves ETag and Last-Modified values for a cache key as a JSON sidecar file.
+    private func saveMetadata(etag: String?, lastModified: String?, key: String) {
+        guard let directory = diskCacheDirectory else { return }
+        var json: [String: String] = [:]
+        if let etag { json["etag"] = etag }
+        if let lastModified { json["lastModified"] = lastModified }
+        guard !json.isEmpty,
+              let data = try? JSONSerialization.data(withJSONObject: json) else { return }
+        do {
+            try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
+            let metaURL = directory.appendingPathComponent(key + ".meta")
+            try data.write(to: metaURL, options: .atomic)
+        } catch {
+            logger.error("Failed to save image metadata: \(error.localizedDescription)")
+        }
     }
 
     private func saveToDisk(data: Data, key: String) {

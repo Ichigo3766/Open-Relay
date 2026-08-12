@@ -929,6 +929,22 @@ private struct AppLaunchErrorView: View {
     }
 }
 
+/// Runs `work` and cancels it after `seconds`, returning silently on timeout.
+/// Used to cap `prewarmModels` at startup so a slow/unreachable server can never
+/// permanently block the launch overlay dismissal and leave the user stuck on splash.
+@discardableResult
+private func withPrewarmTimeout(seconds: Double, work: @escaping @Sendable () async -> Void) async {
+    await withTaskGroup(of: Void.self) { group in
+        group.addTask { await work() }
+        group.addTask {
+            try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+        }
+        // First task to finish wins; cancel the other.
+        await group.next()
+        group.cancelAll()
+    }
+}
+
 /// Root view that manages the full authentication flow using a phase-based state machine.
 struct RootView: View {
     @Environment(AppDependencyContainer.self) private var dependencies
@@ -1002,7 +1018,11 @@ struct RootView: View {
                 // This ensures the toolbar is fully populated on the very first frame
                 // the user sees after the overlay fades — no "New Chat" → "Select Model"
                 // → "Haiku" three-step pop-in on cold launch.
-                await dependencies.activeChatStore.prewarmModels(using: dependencies)
+                // Capped at 3 s so a slow/unreachable server can never permanently
+                // block the overlay dismissal and leave the user stuck on the splash.
+                await withPrewarmTimeout(seconds: 3) {
+                    await dependencies.activeChatStore.prewarmModels(using: dependencies)
+                }
                 dismissLaunchOverlay()
 
             case .restoringSession:
@@ -1015,7 +1035,11 @@ struct RootView: View {
                     return ()
                 }
                 // Pre-fetch models while overlay is still visible so first frame is clean.
-                await dependencies.activeChatStore.prewarmModels(using: dependencies)
+                // Capped at 3 s — a slow/unreachable server must never block dismissal
+                // and permanently trap the user on the splash screen (see user report).
+                await withPrewarmTimeout(seconds: 3) {
+                    await dependencies.activeChatStore.prewarmModels(using: dependencies)
+                }
                 dismissLaunchOverlay()
 
             case .authMethodSelection:

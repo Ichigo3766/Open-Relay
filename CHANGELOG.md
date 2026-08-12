@@ -1,5 +1,20 @@
 # Changelog
 
+## v5.3.1 — August 12, 2026
+
+### Improvements
+- Improved networking resilience with automatic retry (up to 2 attempts with backoff) on transient network errors and server errors across all API calls.
+- Improved streaming resilience with a 60-second stall watchdog that terminates hung SSE connections instead of waiting forever.
+- Improved session security by automatically signing out when any API call receives a 401, so expired tokens never leave the app in a broken state.
+- Improved streaming reliability by correctly handling multi-line server-sent events per the SSE spec.
+- Improved stop-generation to cancel all server-side tasks for a chat in a single request instead of one per task.
+- Improved session security by automatically treating stored auth tokens as expired when they are within 5 minutes of their expiry time, preventing 401 errors mid-session.
+- Improved image loading efficiency with conditional HTTP requests (ETag/Last-Modified), allowing the server to respond with 304 Not Modified and skip re-downloading unchanged images.
+
+### Bug Fixes
+- Fixed app getting stuck on the loading screen when the server is slow or temporarily unreachable on launch.
+
+
 ## v5.3 — August 12, 2026
 
 ### What's New

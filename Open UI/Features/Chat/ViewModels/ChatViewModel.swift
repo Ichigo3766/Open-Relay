@@ -3462,13 +3462,10 @@ final class ChatViewModel {
         } else if let chatId, let apiClient = manager?.apiClient {
             Task {
                 do {
-                    let taskIds = try await apiClient.getTasksForChat(chatId: chatId)
-                    for taskId in taskIds {
-                        try? await apiClient.stopTask(taskId: taskId)
-                        logger.info("External server task stopped: \(taskId)")
-                    }
+                    try await apiClient.stopTasksByChatId(chatId: chatId)
+                    logger.info("All external server tasks stopped for chat: \(chatId)")
                 } catch {
-                    logger.warning("Failed to fetch tasks for chat \(chatId): \(error.localizedDescription)")
+                    logger.warning("Failed to stop tasks for chat \(chatId): \(error.localizedDescription)")
                 }
             }
         }
