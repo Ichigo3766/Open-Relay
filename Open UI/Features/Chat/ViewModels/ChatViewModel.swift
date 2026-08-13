@@ -4465,6 +4465,16 @@ final class ChatViewModel {
         // Re-derive the flat message list from the updated tree
         conversation!.rederiveMessages()
 
+        // If all messages were deleted, reset to a true new-chat state.
+        // Without this, conversation is still non-nil (just with zero messages),
+        // and sendMessage() would append the next user message to the same old
+        // conversation object instead of creating a fresh chat — causing the new
+        // message to become a sibling/version of the deleted node rather than
+        // the start of a new conversation.
+        if conversation?.messages.isEmpty == true {
+            conversation = nil
+        }
+
         // Sync tree to server
         await syncToServerViaTree()
 

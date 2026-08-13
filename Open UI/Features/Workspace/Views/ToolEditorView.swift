@@ -2,7 +2,7 @@ import SwiftUI
 
 // MARK: - Valves Sheet
 
-/// Dynamic form for configuring a tool's user-facing valves.
+/// Dynamic form for configuring a tool's valves (admin or user-level).
 /// Fetches the JSON schema (spec) and current values from the server, renders
 /// a field per property, and saves back via the update endpoint.
 struct ValvesSheet: View {
@@ -11,6 +11,9 @@ struct ValvesSheet: View {
     @Environment(\.dismiss) private var dismiss
 
     let toolId: String
+    /// When true, uses the user-valve endpoints (/valves/user, /valves/user/spec, /valves/user/update).
+    /// When false (default), uses the admin-valve endpoints (/valves, /valves/spec, /valves/update).
+    var isUserValves: Bool = false
 
     @State private var spec: [String: Any] = [:]       // JSON Schema object
     @State private var values: [String: Any] = [:]     // current saved values
@@ -41,6 +44,11 @@ struct ValvesSheet: View {
         return props.keys.sorted()
     }
 
+    /// Required fields from the JSON Schema "required" array.
+    private var requiredKeys: Set<String> {
+        Set(spec["required"] as? [String] ?? [])
+    }
+
     var body: some View {
         NavigationStack {
             Group {
@@ -62,7 +70,7 @@ struct ValvesSheet: View {
                         Text("No valves")
                             .scaledFont(size: 18, weight: .semibold)
                             .foregroundStyle(theme.textPrimary)
-                        Text("This tool has no user-configurable settings.")
+                        Text("This tool has no configurable settings.")
                             .scaledFont(size: 14)
                             .foregroundStyle(theme.textSecondary)
                             .multilineTextAlignment(.center)
@@ -74,7 +82,7 @@ struct ValvesSheet: View {
                 }
             }
             .background(theme.background)
-            .navigationTitle("Valves")
+            .navigationTitle(isUserValves ? "User Valves" : "Valves")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
@@ -153,6 +161,15 @@ struct ValvesSheet: View {
         let description = schema["description"] as? String
         let type = schema["type"] as? String ?? "string"
         let currentText = editValues[key] ?? ""
+        let isRequired = requiredKeys.contains(key)
+
+        // Detect special input metadata
+        let inputMeta = schema["input"] as? [String: Any]
+        let inputType = inputMeta?["type"] as? String  // "password", "select", "multiselect"
+        let inputOptions = inputMeta?["options"] as? [[String: String]]  // [{value:, label:}, ...]
+
+        // Detect enum values for a native picker
+        let enumValues = schema["enum"] as? [String]
 
         // "Default" if this key has no server override (or user toggled it back)
         let isDefault = defaultKeys.contains(key)
@@ -161,20 +178,24 @@ struct ValvesSheet: View {
 
         VStack(alignment: .leading, spacing: 0) {
             HStack(alignment: .center) {
-                Text(title)
-                    .scaledFont(size: 14, weight: .semibold)
-                    .foregroundStyle(isDefault ? theme.textTertiary : theme.textPrimary)
+                HStack(spacing: 4) {
+                    Text(title)
+                        .scaledFont(size: 14, weight: .semibold)
+                        .foregroundStyle(isDefault ? theme.textTertiary : theme.textPrimary)
+                    if isRequired {
+                        Text("*")
+                            .scaledFont(size: 14, weight: .bold)
+                            .foregroundStyle(theme.brandPrimary)
+                    }
+                }
                 Spacer()
                 // Tappable badge: always tappable to toggle Default ↔ Custom
                 Button {
                     Haptics.play(.light)
                     if isDefault {
-                        // Switch to Custom — editValues already has spec default seeded
                         defaultKeys.remove(key)
-                        // If server had a value, restore it; otherwise keep the spec default
                         if let v = values[key] { editValues[key] = "\(v)" }
                     } else {
-                        // Switch back to Default — hide input, will clear on save if server had a value
                         defaultKeys.insert(key)
                     }
                 } label: {
@@ -213,6 +234,7 @@ struct ValvesSheet: View {
             // Input — only shown when Custom (hidden entirely when Default)
             if !isDefault {
                 if type == "boolean" {
+                    // Boolean → Toggle
                     HStack {
                         Spacer()
                         Toggle("", isOn: Binding(
@@ -224,7 +246,91 @@ struct ValvesSheet: View {
                     }
                     .padding(.horizontal, Spacing.md)
                     .padding(.vertical, 10)
+                } else if let options = enumValues ?? inputOptions?.map({ $0["value"] ?? $0["label"] ?? "" }),
+                          !options.isEmpty,
+                          inputType != "multiselect" {
+                    // Enum or select → Picker
+                    let labels: [String] = inputOptions?.map { $0["label"] ?? $0["value"] ?? "" } ?? options
+                    Menu {
+                        ForEach(Array(zip(options, labels)), id: \.0) { value, label in
+                            Button(label) {
+                                editValues[key] = value
+                            }
+                        }
+                    } label: {
+                        HStack {
+                            let displayLabel: String = {
+                                if let idx = options.firstIndex(of: currentText), idx < labels.count {
+                                    return labels[idx]
+                                }
+                                return currentText.isEmpty ? (options.first ?? "") : currentText
+                            }()
+                            Text(displayLabel)
+                                .scaledFont(size: 14)
+                                .foregroundStyle(theme.textPrimary)
+                            Spacer()
+                            Image(systemName: "chevron.up.chevron.down")
+                                .scaledFont(size: 12)
+                                .foregroundStyle(theme.textTertiary)
+                        }
+                        .padding(.horizontal, Spacing.md)
+                        .padding(.vertical, 10)
+                        .background(theme.surfaceContainer.opacity(0.5))
+                        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                .stroke(theme.inputBorder.opacity(0.2), lineWidth: 1)
+                        )
+                        .padding(.horizontal, Spacing.md)
+                        .padding(.vertical, 8)
+                    }
+                    .buttonStyle(.plain)
+                } else if inputType == "password" {
+                    // Password → SecureField
+                    SecureField("", text: Binding(
+                        get: { editValues[key] ?? "" },
+                        set: { editValues[key] = $0 }
+                    ))
+                    .scaledFont(size: 14)
+                    .foregroundStyle(theme.textPrimary)
+                    .padding(10)
+                    .background(theme.surfaceContainer.opacity(0.5))
+                    .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 8, style: .continuous)
+                            .stroke(theme.inputBorder.opacity(0.2), lineWidth: 1)
+                    )
+                    .padding(.horizontal, Spacing.md)
+                    .padding(.vertical, 8)
+                    .autocorrectionDisabled()
+                    .textInputAutocapitalization(.never)
+                } else if type == "array" {
+                    // Array → comma-separated TextEditor
+                    VStack(alignment: .leading, spacing: 4) {
+                        TextEditor(text: Binding(
+                            get: { editValues[key] ?? "" },
+                            set: { editValues[key] = $0 }
+                        ))
+                        .scaledFont(size: 14)
+                        .foregroundStyle(theme.textPrimary)
+                        .scrollContentBackground(.hidden)
+                        .frame(minHeight: 50, maxHeight: 100)
+                        .padding(8)
+                        .background(theme.surfaceContainer.opacity(0.5))
+                        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                .stroke(theme.inputBorder.opacity(0.2), lineWidth: 1)
+                        )
+                        .autocorrectionDisabled()
+                        Text("Comma-separated values")
+                            .scaledFont(size: 11)
+                            .foregroundStyle(theme.textTertiary)
+                    }
+                    .padding(.horizontal, Spacing.md)
+                    .padding(.vertical, 8)
                 } else {
+                    // Default → TextEditor (multiline)
                     TextEditor(text: Binding(
                         get: { editValues[key] ?? "" },
                         set: { editValues[key] = $0 }
@@ -242,7 +348,7 @@ struct ValvesSheet: View {
                     )
                     .padding(.horizontal, Spacing.md)
                     .padding(.vertical, 8)
-                    .keyboardType(type == "integer" ? .numberPad : .default)
+                    .keyboardType(type == "integer" || type == "number" ? .decimalPad : .default)
                     .autocorrectionDisabled()
                 }
             }
@@ -256,29 +362,45 @@ struct ValvesSheet: View {
         guard !toolId.isEmpty, let manager else { isLoading = false; return }
         isLoading = true
         do {
-            // Fetch spec first (required) — also captures insertion-order of keys
-            let (fetchedSpec, keyOrder) = try await manager.getValvesSpecWithOrder(id: toolId)
+            // Fetch spec — branch on isUserValves
+            let (fetchedSpec, keyOrder): ([String: Any], [String])
+            if isUserValves {
+                (fetchedSpec, keyOrder) = try await manager.getUserValvesSpecWithOrder(id: toolId)
+            } else {
+                (fetchedSpec, keyOrder) = try await manager.getValvesSpecWithOrder(id: toolId)
+            }
             spec = fetchedSpec
             specKeyOrder = keyOrder.isEmpty ? nil : keyOrder
 
-            // Fetch current user values independently — empty dict means no overrides.
-            let fetchedValues = (try? await manager.getValves(id: toolId)) ?? [:]
+            // Fetch current values
+            let fetchedValues: [String: Any]
+            if isUserValves {
+                fetchedValues = (try? await manager.getUserValves(id: toolId)) ?? [:]
+            } else {
+                fetchedValues = (try? await manager.getValves(id: toolId)) ?? [:]
+            }
             values = fetchedValues
 
             // Seed edit fields from spec defaults + any server-stored overrides.
-            // /valves ONLY returns keys the user has explicitly overridden.
-            // So: if key is in fetchedValues → Custom; otherwise → Default (use spec default).
             let props = fetchedSpec["properties"] as? [String: Any] ?? [:]
             for key in props.keys {
                 let propSchema = props[key] as? [String: Any] ?? [:]
                 if let v = fetchedValues[key] {
-                    // Server has an override for this key — show it as Custom
-                    editValues[key] = "\(v)"
+                    // Server has an override — decode arrays as comma-joined string
+                    if let arr = v as? [Any] {
+                        editValues[key] = arr.map { "\($0)" }.joined(separator: ", ")
+                    } else {
+                        editValues[key] = "\(v)"
+                    }
                 } else {
                     // No server override → seed spec default, mark as Default
                     defaultKeys.insert(key)
                     if let defVal = propSchema["default"] {
-                        editValues[key] = "\(defVal)"
+                        if let arr = defVal as? [Any] {
+                            editValues[key] = arr.map { "\($0)" }.joined(separator: ", ")
+                        } else {
+                            editValues[key] = "\(defVal)"
+                        }
                     } else {
                         editValues[key] = ""
                     }
@@ -295,25 +417,15 @@ struct ValvesSheet: View {
     private func save() async {
         guard let manager else { return }
         isSaving = true
-        // Build payload with three rules:
-        //   1. Key was previously custom on server AND user toggled it to Default
-        //      → send NSNull() to clear the server override
-        //   2. Key was already default (no server override) AND user left it as Default
-        //      → skip entirely (don't send anything)
-        //   3. Key is not in defaultKeys (user has a custom value set)
-        //      → send the coerced value
         var payload: [String: Any] = [:]
         let props = spec["properties"] as? [String: Any] ?? [:]
         for key in propertyKeys {
             if defaultKeys.contains(key) {
                 if values[key] != nil {
-                    // Was custom on server, user reset it → send null to clear
                     payload[key] = NSNull()
                 }
-                // Was already default → skip (don't touch the server value)
                 continue
             }
-            // User has set a custom value — coerce and send
             let propSchema = props[key] as? [String: Any] ?? [:]
             let type = propSchema["type"] as? String ?? "string"
             let raw = editValues[key] ?? ""
@@ -324,18 +436,25 @@ struct ValvesSheet: View {
                 payload[key] = Double(raw) ?? 0.0
             case "boolean":
                 payload[key] = raw == "true" || raw == "1"
+            case "array":
+                // Split comma-separated string back into an array
+                let items = raw.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
+                payload[key] = items
             default:
                 payload[key] = raw
             }
         }
-        // Only make the network call if there's actually something to update
         guard !payload.isEmpty else {
             dismiss()
             isSaving = false
             return
         }
         do {
-            _ = try await manager.updateValves(id: toolId, values: payload)
+            if isUserValves {
+                _ = try await manager.updateUserValves(id: toolId, values: payload)
+            } else {
+                _ = try await manager.updateValves(id: toolId, values: payload)
+            }
             Haptics.notify(.success)
             dismiss()
         } catch {

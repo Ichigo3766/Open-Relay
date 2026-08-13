@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// Dynamic form for configuring a function's user-facing valves.
+/// Dynamic form for configuring a function's valves (admin or user-level).
 /// Mirrors ValvesSheet (from ToolEditorView) but uses FunctionsManager endpoints.
 struct FunctionValvesSheet: View {
     @Environment(AppDependencyContainer.self) private var dependencies
@@ -8,6 +8,9 @@ struct FunctionValvesSheet: View {
     @Environment(\.dismiss) private var dismiss
 
     let functionId: String
+    /// When true, uses the user-valve endpoints (/valves/user, /valves/user/spec, /valves/user/update).
+    /// When false (default), uses the admin-valve endpoints (/valves, /valves/spec, /valves/update).
+    var isUserValves: Bool = false
 
     @State private var spec: [String: Any] = [:]
     @State private var values: [String: Any] = [:]
@@ -33,6 +36,11 @@ struct FunctionValvesSheet: View {
         return props.keys.sorted()
     }
 
+    /// Required fields from the JSON Schema "required" array.
+    private var requiredKeys: Set<String> {
+        Set(spec["required"] as? [String] ?? [])
+    }
+
     var body: some View {
         NavigationStack {
             Group {
@@ -54,7 +62,7 @@ struct FunctionValvesSheet: View {
                         Text("No valves")
                             .scaledFont(size: 18, weight: .semibold)
                             .foregroundStyle(theme.textPrimary)
-                        Text("This function has no user-configurable settings.")
+                        Text("This function has no configurable settings.")
                             .scaledFont(size: 14)
                             .foregroundStyle(theme.textSecondary)
                             .multilineTextAlignment(.center)
@@ -66,7 +74,7 @@ struct FunctionValvesSheet: View {
                 }
             }
             .background(theme.background)
-            .navigationTitle("Valves")
+            .navigationTitle(isUserValves ? "User Valves" : "Valves")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
@@ -144,14 +152,31 @@ struct FunctionValvesSheet: View {
         let description = schema["description"] as? String
         let type = schema["type"] as? String ?? "string"
         let currentText = editValues[key] ?? ""
+        let isRequired = requiredKeys.contains(key)
+
+        // Detect special input metadata
+        let inputMeta = schema["input"] as? [String: Any]
+        let inputType = inputMeta?["type"] as? String  // "password", "select", "multiselect"
+        let inputOptions = inputMeta?["options"] as? [[String: String]]  // [{value:, label:}, ...]
+
+        // Detect enum values for a native picker
+        let enumValues = schema["enum"] as? [String]
+
         let isDefault = defaultKeys.contains(key)
         let isCustom = !isDefault
 
         VStack(alignment: .leading, spacing: 0) {
             HStack(alignment: .center) {
-                Text(title)
-                    .scaledFont(size: 14, weight: .semibold)
-                    .foregroundStyle(isDefault ? theme.textTertiary : theme.textPrimary)
+                HStack(spacing: 4) {
+                    Text(title)
+                        .scaledFont(size: 14, weight: .semibold)
+                        .foregroundStyle(isDefault ? theme.textTertiary : theme.textPrimary)
+                    if isRequired {
+                        Text("*")
+                            .scaledFont(size: 14, weight: .bold)
+                            .foregroundStyle(theme.brandPrimary)
+                    }
+                }
                 Spacer()
                 Button {
                     Haptics.play(.light)
@@ -194,8 +219,10 @@ struct FunctionValvesSheet: View {
                     .padding(.top, 3)
             }
 
+            // Input — only shown when Custom (hidden entirely when Default)
             if !isDefault {
                 if type == "boolean" {
+                    // Boolean → Toggle
                     HStack {
                         Spacer()
                         Toggle("", isOn: Binding(
@@ -207,7 +234,91 @@ struct FunctionValvesSheet: View {
                     }
                     .padding(.horizontal, Spacing.md)
                     .padding(.vertical, 10)
+                } else if let options = enumValues ?? inputOptions?.map({ $0["value"] ?? $0["label"] ?? "" }),
+                          !options.isEmpty,
+                          inputType != "multiselect" {
+                    // Enum or select → Menu picker
+                    let labels: [String] = inputOptions?.map { $0["label"] ?? $0["value"] ?? "" } ?? options
+                    Menu {
+                        ForEach(Array(zip(options, labels)), id: \.0) { value, label in
+                            Button(label) {
+                                editValues[key] = value
+                            }
+                        }
+                    } label: {
+                        HStack {
+                            let displayLabel: String = {
+                                if let idx = options.firstIndex(of: currentText), idx < labels.count {
+                                    return labels[idx]
+                                }
+                                return currentText.isEmpty ? (options.first ?? "") : currentText
+                            }()
+                            Text(displayLabel)
+                                .scaledFont(size: 14)
+                                .foregroundStyle(theme.textPrimary)
+                            Spacer()
+                            Image(systemName: "chevron.up.chevron.down")
+                                .scaledFont(size: 12)
+                                .foregroundStyle(theme.textTertiary)
+                        }
+                        .padding(.horizontal, Spacing.md)
+                        .padding(.vertical, 10)
+                        .background(theme.surfaceContainer.opacity(0.5))
+                        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                .stroke(theme.inputBorder.opacity(0.2), lineWidth: 1)
+                        )
+                        .padding(.horizontal, Spacing.md)
+                        .padding(.vertical, 8)
+                    }
+                    .buttonStyle(.plain)
+                } else if inputType == "password" {
+                    // Password → SecureField
+                    SecureField("", text: Binding(
+                        get: { editValues[key] ?? "" },
+                        set: { editValues[key] = $0 }
+                    ))
+                    .scaledFont(size: 14)
+                    .foregroundStyle(theme.textPrimary)
+                    .padding(10)
+                    .background(theme.surfaceContainer.opacity(0.5))
+                    .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 8, style: .continuous)
+                            .stroke(theme.inputBorder.opacity(0.2), lineWidth: 1)
+                    )
+                    .padding(.horizontal, Spacing.md)
+                    .padding(.vertical, 8)
+                    .autocorrectionDisabled()
+                    .textInputAutocapitalization(.never)
+                } else if type == "array" {
+                    // Array → comma-separated TextEditor
+                    VStack(alignment: .leading, spacing: 4) {
+                        TextEditor(text: Binding(
+                            get: { editValues[key] ?? "" },
+                            set: { editValues[key] = $0 }
+                        ))
+                        .scaledFont(size: 14)
+                        .foregroundStyle(theme.textPrimary)
+                        .scrollContentBackground(.hidden)
+                        .frame(minHeight: 50, maxHeight: 100)
+                        .padding(8)
+                        .background(theme.surfaceContainer.opacity(0.5))
+                        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                .stroke(theme.inputBorder.opacity(0.2), lineWidth: 1)
+                        )
+                        .autocorrectionDisabled()
+                        Text("Comma-separated values")
+                            .scaledFont(size: 11)
+                            .foregroundStyle(theme.textTertiary)
+                    }
+                    .padding(.horizontal, Spacing.md)
+                    .padding(.vertical, 8)
                 } else {
+                    // Default → TextEditor (multiline)
                     TextEditor(text: Binding(
                         get: { editValues[key] ?? "" },
                         set: { editValues[key] = $0 }
@@ -225,7 +336,7 @@ struct FunctionValvesSheet: View {
                     )
                     .padding(.horizontal, Spacing.md)
                     .padding(.vertical, 8)
-                    .keyboardType(type == "integer" ? .numberPad : .default)
+                    .keyboardType(type == "integer" || type == "number" ? .decimalPad : .default)
                     .autocorrectionDisabled()
                 }
             }
@@ -239,22 +350,45 @@ struct FunctionValvesSheet: View {
         guard !functionId.isEmpty, let manager else { isLoading = false; return }
         isLoading = true
         do {
-            let (fetchedSpec, keyOrder) = try await manager.getValvesSpecWithOrder(id: functionId)
+            // Fetch spec — branch on isUserValves
+            let (fetchedSpec, keyOrder): ([String: Any], [String])
+            if isUserValves {
+                (fetchedSpec, keyOrder) = try await manager.getUserValvesSpecWithOrder(id: functionId)
+            } else {
+                (fetchedSpec, keyOrder) = try await manager.getValvesSpecWithOrder(id: functionId)
+            }
             spec = fetchedSpec
             specKeyOrder = keyOrder.isEmpty ? nil : keyOrder
 
-            let fetchedValues = (try? await manager.getValves(id: functionId)) ?? [:]
+            // Fetch current values
+            let fetchedValues: [String: Any]
+            if isUserValves {
+                fetchedValues = (try? await manager.getUserValves(id: functionId)) ?? [:]
+            } else {
+                fetchedValues = (try? await manager.getValves(id: functionId)) ?? [:]
+            }
             values = fetchedValues
 
+            // Seed edit fields from spec defaults + any server-stored overrides.
             let props = fetchedSpec["properties"] as? [String: Any] ?? [:]
             for key in props.keys {
                 let propSchema = props[key] as? [String: Any] ?? [:]
                 if let v = fetchedValues[key] {
-                    editValues[key] = "\(v)"
+                    // Server has an override — decode arrays as comma-joined string
+                    if let arr = v as? [Any] {
+                        editValues[key] = arr.map { "\($0)" }.joined(separator: ", ")
+                    } else {
+                        editValues[key] = "\(v)"
+                    }
                 } else {
+                    // No server override → seed spec default, mark as Default
                     defaultKeys.insert(key)
                     if let defVal = propSchema["default"] {
-                        editValues[key] = "\(defVal)"
+                        if let arr = defVal as? [Any] {
+                            editValues[key] = arr.map { "\($0)" }.joined(separator: ", ")
+                        } else {
+                            editValues[key] = "\(defVal)"
+                        }
                     } else {
                         editValues[key] = ""
                     }
@@ -291,6 +425,10 @@ struct FunctionValvesSheet: View {
                 payload[key] = Double(raw) ?? 0.0
             case "boolean":
                 payload[key] = raw == "true" || raw == "1"
+            case "array":
+                // Split comma-separated string back into an array
+                let items = raw.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
+                payload[key] = items
             default:
                 payload[key] = raw
             }
@@ -303,7 +441,11 @@ struct FunctionValvesSheet: View {
         }
 
         do {
-            _ = try await manager.updateValves(id: functionId, values: payload)
+            if isUserValves {
+                _ = try await manager.updateUserValves(id: functionId, values: payload)
+            } else {
+                _ = try await manager.updateValves(id: functionId, values: payload)
+            }
             Haptics.notify(.success)
             dismiss()
         } catch {

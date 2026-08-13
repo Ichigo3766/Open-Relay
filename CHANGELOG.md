@@ -1,5 +1,14 @@
 # Changelog
 
+## v5.3.2 — August 13, 2026
+
+### Improvements
+- Improved valve editing for tools and functions
+
+### Bug Fixes
+- Fixed sending a message after deleting the last message in a chat incorrectly adding it as a version of the deleted message instead of starting a fresh new chat.
+
+
 ## v5.3.1 — August 12, 2026
 
 ### Improvements

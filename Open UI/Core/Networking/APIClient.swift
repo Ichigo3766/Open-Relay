@@ -2802,32 +2802,10 @@ final class APIClient: @unchecked Sendable {
     /// GET /api/v1/functions/id/{id}/valves/spec — with insertion-order key preservation
     func getFunctionValvesSpecOrdered(id: String) async throws -> ([String: Any], [String]) {
         let (data, _) = try await network.requestRaw(path: "/api/v1/functions/id/\(id)/valves/spec")
-        guard !data.isEmpty,
-              let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            return ([:], [])
-        }
-        // Extract key order from raw JSON
-        var orderedKeys: [String] = []
-        if let propsData = (json["properties"] as? [String: Any]) {
-            // Try to extract order from raw bytes
-            if let rawStr = String(data: data, encoding: .utf8),
-               let propsRange = rawStr.range(of: "\"properties\"") {
-                let afterProps = rawStr[propsRange.upperBound...]
-                let pattern = try? NSRegularExpression(pattern: "\"([^\"]+)\"\\s*:", options: [])
-                let nsRange = NSRange(afterProps.startIndex..<afterProps.endIndex, in: rawStr)
-                if let matches = pattern?.matches(in: String(rawStr), options: [], range: nsRange) {
-                    for match in matches {
-                        if let keyRange = Range(match.range(at: 1), in: rawStr) {
-                            let key = String(rawStr[keyRange])
-                            if propsData[key] != nil && !orderedKeys.contains(key) {
-                                orderedKeys.append(key)
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        return (json, orderedKeys)
+        guard !data.isEmpty else { return ([:], []) }
+        let spec = (try? JSONSerialization.jsonObject(with: data) as? [String: Any]) ?? [:]
+        let keyOrder = extractPropertyKeyOrder(from: data)
+        return (spec, keyOrder)
     }
 
     /// POST /api/v1/functions/id/{id}/valves/update — saves valve overrides
@@ -2839,8 +2817,8 @@ final class APIClient: @unchecked Sendable {
             body: try JSONSerialization.data(withJSONObject: values)
         )
         guard !data.isEmpty,
-              let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            return values
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return [:]
         }
         return json
     }
@@ -2876,7 +2854,7 @@ final class APIClient: @unchecked Sendable {
         )
         guard !data.isEmpty,
               let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            return values
+            return [:]
         }
         return json
     }
