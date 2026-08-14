@@ -1,15 +1,12 @@
 # Changelog
 
-## 📦 NEXT BUILD
-
-### What's New
+## v5.3.4 — August 14, 2026
 
 ### Improvements
+- Minor animation tweaking throughout the app for smoothness.
 
 ### Bug Fixes
-
-
-## Previous Builds
+- Fixed app logging out on every launch — removed an overly aggressive JWT expiry check that was treating tokens with less than 5 minutes remaining as already expired, matching Open WebUI's approach of letting the server decide token validity via 401.
 
 ## v5.3.3 — August 14, 2026
 

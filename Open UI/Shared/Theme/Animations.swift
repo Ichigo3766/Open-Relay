@@ -11,20 +11,22 @@ enum MicroAnimation {
     // MARK: - Named Springs
 
     /// A responsive spring for button presses and quick feedback.
+    /// Critically-damped (no overshoot) — overshoot is reserved for momentum-driven gestures.
     static let snappy: Animation = .spring(
         response: 0.3,
-        dampingFraction: 0.7,
+        dampingFraction: 0.85,
         blendDuration: 0
     )
 
     /// A gentle spring for view transitions.
     static let gentle: Animation = .spring(
         response: 0.5,
-        dampingFraction: 0.8,
+        dampingFraction: 0.85,
         blendDuration: 0.1
     )
 
     /// A bouncy spring for playful, attention-grabbing effects.
+    /// Only for momentum-driven interactions (flicks, throws, drag releases).
     static let bouncy: Animation = .spring(
         response: 0.4,
         dampingFraction: 0.6,
@@ -35,6 +37,30 @@ enum MicroAnimation {
     static let stiff: Animation = .spring(
         response: 0.25,
         dampingFraction: 0.9,
+        blendDuration: 0
+    )
+
+    /// Spring for panels/drawers sliding open (slightly under-damped for a physical snap-open feel).
+    /// response: 0.32 = fast enough to feel instant, slow enough to track.
+    /// dampingFraction: 0.86 = minimal overshoot that communicates physical mass.
+    static let panelOpen: Animation = .spring(
+        response: 0.32,
+        dampingFraction: 0.86,
+        blendDuration: 0
+    )
+
+    /// Spring for panels/drawers sliding closed (slightly stiffer — dismiss feels decisive).
+    static let panelClose: Animation = .spring(
+        response: 0.28,
+        dampingFraction: 0.9,
+        blendDuration: 0
+    )
+
+    /// Spring for UI elements that appear/disappear without a gesture (FABs, toasts, overlays).
+    /// Critically damped — no bounce since there is no preceding momentum.
+    static let presence: Animation = .spring(
+        response: 0.35,
+        dampingFraction: 1.0,
         blendDuration: 0
     )
 

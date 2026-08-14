@@ -456,7 +456,7 @@ struct iPadMainChatView: View {
                             TerminalBrowserView(
                                 viewModel: terminalBrowserVM,
                                 onDismiss: {
-                                    withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) {
+                                    withAnimation(MicroAnimation.panelClose) {
                                         showTerminalBrowser = false
                                         terminalDragOffset = 0
                                     }
@@ -481,13 +481,13 @@ struct iPadMainChatView: View {
                                         let h = value.translation.width
                                         let v = value.velocity.width
                                         if h > 100 || v > 400 {
-                                            withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) {
+                                            withAnimation(MicroAnimation.panelClose) {
                                                 showTerminalBrowser = false
                                                 terminalDragOffset = 0
                                             }
                                             terminalBrowserVM.handlePanelClosed()
                                         } else {
-                                            withAnimation(.spring(response: 0.3, dampingFraction: 0.9)) {
+                                            withAnimation(MicroAnimation.panelClose) {
                                                 terminalDragOffset = 0
                                             }
                                         }
@@ -524,7 +524,7 @@ struct iPadMainChatView: View {
                                         let h = value.translation.width
                                         let vel = value.velocity.width
                                         if h < -60 || vel < -300 {
-                                            withAnimation(.spring(response: 0.35, dampingFraction: 0.85)) {
+                                            withAnimation(MicroAnimation.panelOpen) {
                                                 showTerminalBrowser = true
                                                 terminalDragOffset = 0
                                             }
@@ -533,7 +533,7 @@ struct iPadMainChatView: View {
                                             terminalBrowserVM.refresh()
                                             Haptics.play(.light)
                                         } else {
-                                            withAnimation(.spring(response: 0.3, dampingFraction: 0.9)) {
+                                            withAnimation(MicroAnimation.panelClose) {
                                                 terminalDragOffset = 0
                                             }
                                         }
@@ -543,7 +543,7 @@ struct iPadMainChatView: View {
                     }
                 }
             }
-            .animation(.spring(response: 0.35, dampingFraction: 0.85), value: splitSidebarVisible)
+            .animation(MicroAnimation.panelOpen, value: splitSidebarVisible)
 
         }
         // When switching TO always-shown, make sure the drawer state is clean
@@ -767,7 +767,7 @@ struct iPadMainChatView: View {
     // MARK: - Drawer Animations
 
     private func openDrawerAnimated() {
-        withAnimation(.spring(response: 0.35, dampingFraction: 0.85)) {
+        withAnimation(MicroAnimation.panelOpen) {
             showDrawer = true
             dragOffset = 0
         }
@@ -775,7 +775,7 @@ struct iPadMainChatView: View {
     }
 
     private func closeDrawerAnimated() {
-        withAnimation(.spring(response: 0.3, dampingFraction: 0.9)) {
+        withAnimation(MicroAnimation.panelClose) {
             showDrawer = false
             dragOffset = 0
         }
@@ -797,10 +797,10 @@ struct iPadMainChatView: View {
                     TerminalBrowserView(
                         viewModel: terminalBrowserVM,
                         onDismiss: {
-                            withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) {
-                                showTerminalBrowser = false
-                            }
-                            terminalBrowserVM.handlePanelClosed()
+                        withAnimation(MicroAnimation.panelClose) {
+                            showTerminalBrowser = false
+                        }
+                        terminalBrowserVM.handlePanelClosed()
                         }
                     )
                     .frame(width: 340)
@@ -819,7 +819,7 @@ struct iPadMainChatView: View {
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button {
-                        withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) {
+                        withAnimation(showTerminalBrowser ? MicroAnimation.panelClose : MicroAnimation.panelOpen) {
                             if showTerminalBrowser {
                                 showTerminalBrowser = false
                                 terminalBrowserVM.handlePanelClosed()
@@ -852,7 +852,7 @@ struct iPadMainChatView: View {
         // In always-shown mode: hamburger toggles the sidebar column (hide/show).
         let toggleDrawerAction: () -> Void = sidebarAlwaysShown
             ? {
-                withAnimation(.spring(response: 0.35, dampingFraction: 0.85)) {
+                withAnimation(splitSidebarVisible ? MicroAnimation.panelClose : MicroAnimation.panelOpen) {
                     splitSidebarVisible.toggle()
                 }
                 Haptics.play(.light)
@@ -1459,7 +1459,7 @@ struct iPadSidebarContent: View {
         VStack(alignment: .leading, spacing: 0) {
             // Collapsible header
             Button {
-                withAnimation(.easeInOut(duration: AnimDuration.fast)) {
+                withAnimation(MicroAnimation.snappy) {
                     foldersExpanded.toggle()
                 }
                 Haptics.play(.light)
@@ -1469,7 +1469,7 @@ struct iPadSidebarContent: View {
                         .scaledFont(size: 8, weight: .bold, context: .list)
                         .foregroundStyle(theme.textTertiary)
                         .rotationEffect(.degrees(foldersExpanded ? 0 : -90))
-                        .animation(.easeInOut(duration: AnimDuration.fast), value: foldersExpanded)
+                        .animation(MicroAnimation.snappy, value: foldersExpanded)
 
                     Image(systemName: "folder")
                         .scaledFont(size: 9, weight: .semibold, context: .list)
@@ -1594,7 +1594,7 @@ struct iPadSidebarContent: View {
     private func sharedFoldersSection(folderVM: FolderListViewModel) -> some View {
         VStack(alignment: .leading, spacing: 0) {
             Button {
-                withAnimation(.easeInOut(duration: AnimDuration.fast)) {
+                withAnimation(MicroAnimation.snappy) {
                     sharedFoldersExpanded.toggle()
                 }
                 Haptics.play(.light)
@@ -1604,7 +1604,7 @@ struct iPadSidebarContent: View {
                         .scaledFont(size: 8, weight: .bold, context: .list)
                         .foregroundStyle(theme.textTertiary)
                         .rotationEffect(.degrees(sharedFoldersExpanded ? 0 : -90))
-                        .animation(.easeInOut(duration: AnimDuration.fast), value: sharedFoldersExpanded)
+                        .animation(MicroAnimation.snappy, value: sharedFoldersExpanded)
 
                     Image(systemName: "person.2.fill")
                         .scaledFont(size: 9, weight: .semibold, context: .list)
@@ -1647,7 +1647,7 @@ struct iPadSidebarContent: View {
                         .scaledFont(size: 8, weight: .bold, context: .list)
                         .foregroundStyle(theme.textTertiary)
                         .rotationEffect(.degrees(folder.isExpanded ? 90 : 0))
-                        .animation(.easeInOut(duration: AnimDuration.fast), value: folder.isExpanded)
+                        .animation(MicroAnimation.snappy, value: folder.isExpanded)
 
                     Image(systemName: "folder.fill.badge.person.crop")
                         .scaledFont(size: 13, context: .list)
@@ -1726,7 +1726,7 @@ struct iPadSidebarContent: View {
         VStack(alignment: .leading, spacing: 0) {
             // Collapsible header
             Button {
-                withAnimation(.easeInOut(duration: AnimDuration.fast)) {
+                withAnimation(MicroAnimation.snappy) {
                     channelsExpanded.toggle()
                 }
                 Haptics.play(.light)
@@ -1736,7 +1736,7 @@ struct iPadSidebarContent: View {
                         .scaledFont(size: 8, weight: .bold, context: .list)
                         .foregroundStyle(theme.textTertiary)
                         .rotationEffect(.degrees(channelsExpanded ? 0 : -90))
-                        .animation(.easeInOut(duration: AnimDuration.fast), value: channelsExpanded)
+                        .animation(MicroAnimation.snappy, value: channelsExpanded)
 
                     Image(systemName: "bubble.left.and.bubble.right")
                         .scaledFont(size: 9, weight: .semibold, context: .list)
@@ -1899,7 +1899,7 @@ struct iPadSidebarContent: View {
         VStack(alignment: .leading, spacing: 0) {
             // Collapsible header
             Button {
-                withAnimation(.easeInOut(duration: AnimDuration.fast)) {
+                withAnimation(MicroAnimation.snappy) {
                     chatsExpanded.toggle()
                 }
                 Haptics.play(.light)
@@ -1909,7 +1909,7 @@ struct iPadSidebarContent: View {
                         .scaledFont(size: 8, weight: .bold, context: .list)
                         .foregroundStyle(drawerChatsDropActive ? theme.brandPrimary : theme.textTertiary)
                         .rotationEffect(.degrees(chatsExpanded ? 0 : -90))
-                        .animation(.easeInOut(duration: AnimDuration.fast), value: chatsExpanded)
+                        .animation(MicroAnimation.snappy, value: chatsExpanded)
 
                     Image(systemName: "bubble.left.and.text.bubble.right")
                         .scaledFont(size: 9, weight: .semibold, context: .list)

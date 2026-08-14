@@ -32,9 +32,9 @@ struct StreamingStatusView: View {
     }
 
     var body: some View {
-        if visibleStatuses.isEmpty { return AnyView(EmptyView()) }
-
-        return AnyView(
+        if visibleStatuses.isEmpty {
+            EmptyView()
+        } else {
             VStack(alignment: .leading, spacing: Spacing.xs) {
                 // Header row with latest status
                 statusHeader
@@ -74,7 +74,7 @@ struct StreamingStatusView: View {
                     }
                 }
             }
-        )
+        }
     }
 
     // MARK: - Header

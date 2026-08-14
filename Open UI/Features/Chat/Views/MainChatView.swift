@@ -1240,7 +1240,7 @@ struct MainChatView: View {
         // Dismiss keyboard immediately so it doesn't overlap the drawer
         UIApplication.shared.sendAction(
             #selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
-        withAnimation(.spring(response: 0.32, dampingFraction: 0.86)) {
+        withAnimation(MicroAnimation.panelOpen) {
             showDrawer = true
             dragOffset = 0
         }
@@ -1259,7 +1259,7 @@ struct MainChatView: View {
 
     /// Animates the drawer to fully closed and resets drag offset.
     private func closeDrawerAnimated() {
-        withAnimation(.spring(response: 0.32, dampingFraction: 0.86)) {
+        withAnimation(MicroAnimation.panelClose) {
             showDrawer = false
             dragOffset = 0
         }
@@ -1278,7 +1278,7 @@ struct MainChatView: View {
     /// Animates the file browser to fully open.
     private func openFileBrowserAnimated() {
         configureTerminalBrowserIfNeeded()
-        withAnimation(.spring(response: 0.32, dampingFraction: 0.86)) {
+        withAnimation(MicroAnimation.panelOpen) {
             showFileBrowser = true
             fileBrowserDragOffset = 0
         }
@@ -1292,7 +1292,7 @@ struct MainChatView: View {
 
     /// Animates the file browser to fully closed.
     private func closeFileBrowserAnimated() {
-        withAnimation(.spring(response: 0.32, dampingFraction: 0.86)) {
+        withAnimation(MicroAnimation.panelClose) {
             showFileBrowser = false
             fileBrowserDragOffset = 0
         }
@@ -1457,7 +1457,7 @@ struct MainChatView: View {
                     VStack(alignment: .leading, spacing: 0) {
                         // Collapsible header
                         Button {
-                            withAnimation(.easeInOut(duration: AnimDuration.fast)) {
+                            withAnimation(MicroAnimation.snappy) {
                                 channelsExpanded.toggle()
                             }
                             Haptics.play(.light)
@@ -1467,7 +1467,7 @@ struct MainChatView: View {
                                     .scaledFont(size: 8, weight: .bold, context: .list)
                                     .foregroundStyle(theme.textTertiary)
                                     .rotationEffect(.degrees(channelsExpanded ? 0 : -90))
-                                    .animation(.easeInOut(duration: AnimDuration.fast), value: channelsExpanded)
+                                    .animation(MicroAnimation.snappy, value: channelsExpanded)
 
                                 Image(systemName: "bubble.left.and.bubble.right")
                                     .scaledFont(size: 10, weight: .semibold, context: .list)
@@ -1550,7 +1550,7 @@ struct MainChatView: View {
                         VStack(alignment: .leading, spacing: 0) {
                             // Collapsible header (also acts as drop zone indicator)
                             Button {
-                                withAnimation(.easeInOut(duration: AnimDuration.fast)) {
+                                withAnimation(MicroAnimation.snappy) {
                                     chatsExpanded.toggle()
                                 }
                                 Haptics.play(.light)
@@ -1560,7 +1560,7 @@ struct MainChatView: View {
                                         .scaledFont(size: 8, weight: .bold, context: .list)
                                         .foregroundStyle(drawerChatsDropActive ? theme.brandPrimary : theme.textTertiary)
                                         .rotationEffect(.degrees(chatsExpanded ? 0 : -90))
-                                        .animation(.easeInOut(duration: AnimDuration.fast), value: chatsExpanded)
+                                        .animation(MicroAnimation.snappy, value: chatsExpanded)
 
                                     Image(systemName: "bubble.left.and.text.bubble.right")
                                         .scaledFont(size: 10, weight: .semibold, context: .list)
@@ -1953,7 +1953,7 @@ struct MainChatView: View {
         VStack(alignment: .leading, spacing: 0) {
             // Section header with collapse toggle + "New Folder" button
             Button {
-                withAnimation(.easeInOut(duration: AnimDuration.fast)) {
+                withAnimation(MicroAnimation.snappy) {
                     foldersExpanded.toggle()
                 }
                 Haptics.play(.light)
@@ -1963,7 +1963,7 @@ struct MainChatView: View {
                         .scaledFont(size: 8, weight: .bold, context: .list)
                         .foregroundStyle(theme.textTertiary)
                         .rotationEffect(.degrees(foldersExpanded ? 0 : -90))
-                        .animation(.easeInOut(duration: AnimDuration.fast), value: foldersExpanded)
+                        .animation(MicroAnimation.snappy, value: foldersExpanded)
 
                     Image(systemName: "folder")
                         .scaledFont(size: 10, weight: .semibold, context: .list)
@@ -2152,7 +2152,7 @@ struct MainChatView: View {
         VStack(alignment: .leading, spacing: 0) {
             // Section header
             Button {
-                withAnimation(.easeInOut(duration: AnimDuration.fast)) {
+                withAnimation(MicroAnimation.snappy) {
                     sharedFoldersExpanded.toggle()
                 }
                 Haptics.play(.light)
@@ -2162,7 +2162,7 @@ struct MainChatView: View {
                         .scaledFont(size: 8, weight: .bold, context: .list)
                         .foregroundStyle(theme.textTertiary)
                         .rotationEffect(.degrees(sharedFoldersExpanded ? 0 : -90))
-                        .animation(.easeInOut(duration: AnimDuration.fast), value: sharedFoldersExpanded)
+                        .animation(MicroAnimation.snappy, value: sharedFoldersExpanded)
 
                     Image(systemName: "person.2.fill")
                         .scaledFont(size: 10, weight: .semibold, context: .list)
@@ -2207,7 +2207,7 @@ struct MainChatView: View {
                         .scaledFont(size: 8, weight: .bold, context: .list)
                         .foregroundStyle(theme.textTertiary)
                         .rotationEffect(.degrees(folder.isExpanded ? 90 : 0))
-                        .animation(.easeInOut(duration: AnimDuration.fast), value: folder.isExpanded)
+                        .animation(MicroAnimation.snappy, value: folder.isExpanded)
 
                     Image(systemName: "folder.fill.badge.person.crop")
                         .scaledFont(size: 13, context: .list)

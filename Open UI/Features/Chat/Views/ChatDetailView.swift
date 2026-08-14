@@ -1417,8 +1417,8 @@ struct ChatDetailView: View {
         // Both appear together as one unit. ↑ is hidden when already at the very top.
         .overlay(alignment: .bottomTrailing) {
             scrollFABGroup
-                .animation(.spring(response: 0.3, dampingFraction: 0.7), value: isScrolledUp)
-                .animation(.spring(response: 0.3, dampingFraction: 0.7), value: isAtTop)
+                .animation(MicroAnimation.presence, value: isScrolledUp)
+                .animation(MicroAnimation.presence, value: isAtTop)
         }
         .onAppear {
             // Snap instantly to bottom on chat open.
@@ -2019,7 +2019,7 @@ struct ChatDetailView: View {
                     insertion: .scale(scale: 0.7).combined(with: .opacity),
                     removal: .scale(scale: 0.7).combined(with: .opacity)
                 )
-                .animation(.spring(response: 0.3, dampingFraction: 0.7))
+                .animation(MicroAnimation.presence)
             )
         }
     }
@@ -3177,7 +3177,7 @@ struct ChatDetailView: View {
                         )
                     }
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(CompactActionButtonStyle())
                 .accessibilityLabel(speakingMessageId == message.id ? "Stop speaking" : "Speak")
             }
 
@@ -3185,7 +3185,7 @@ struct ChatDetailView: View {
             Button { copyMessage(message) } label: {
                 compactActionIcon(icon: "doc.on.doc", isActive: false)
             }
-            .buttonStyle(.plain)
+            .buttonStyle(CompactActionButtonStyle())
             .accessibilityLabel("Copy")
 
             // Edit assistant message — gated by permissions.chat.edit
@@ -3198,7 +3198,7 @@ struct ChatDetailView: View {
                 } label: {
                     compactActionIcon(icon: "pencil", isActive: false)
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(CompactActionButtonStyle())
                 .accessibilityLabel("Edit response")
             }
 
@@ -3225,7 +3225,7 @@ struct ChatDetailView: View {
                     } label: {
                         compactActionIcon(icon: "chevron.left", isActive: false, size: 10)
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(CompactActionButtonStyle())
                     .disabled(displayIndex == 1)
                     .opacity(displayIndex == 1 ? 0.35 : 1)
 
@@ -3250,7 +3250,7 @@ struct ChatDetailView: View {
                     } label: {
                         compactActionIcon(icon: "chevron.right", isActive: false, size: 10)
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(CompactActionButtonStyle())
                     .disabled(displayIndex == totalVersions)
                     .opacity(displayIndex == totalVersions ? 0.35 : 1)
                 }
@@ -3264,7 +3264,7 @@ struct ChatDetailView: View {
                 } label: {
                     compactActionIcon(icon: "arrow.clockwise", isActive: false)
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(CompactActionButtonStyle())
                 .accessibilityLabel("Regenerate")
             }
 
@@ -3279,7 +3279,7 @@ struct ChatDetailView: View {
                 } label: {
                     compactActionIcon(icon: "play.fill", isActive: false)
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(CompactActionButtonStyle())
                 .accessibilityLabel("Continue response")
             }
 
@@ -3302,7 +3302,7 @@ struct ChatDetailView: View {
                         compactActionIcon(icon: "arrow.branch", isActive: false)
                     }
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(CompactActionButtonStyle())
                 .accessibilityLabel("Fork chat")
             }
 
@@ -3317,7 +3317,7 @@ struct ChatDetailView: View {
                 } label: {
                     compactActionIcon(icon: "trash", isActive: false)
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(CompactActionButtonStyle())
                 .accessibilityLabel("Delete Version")
             }
 
@@ -3336,7 +3336,7 @@ struct ChatDetailView: View {
                         isActive: usagePopoverMessageId == message.id
                     )
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(CompactActionButtonStyle())
                 .accessibilityLabel("Token usage")
             }
 
@@ -3361,7 +3361,7 @@ struct ChatDetailView: View {
                         isActive: currentRating == 1
                     )
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(CompactActionButtonStyle())
                 .accessibilityLabel("Thumbs up")
 
                 Button {
@@ -3378,7 +3378,7 @@ struct ChatDetailView: View {
                         isActive: currentRating == -1
                     )
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(CompactActionButtonStyle())
                 .accessibilityLabel("Thumbs down")
             }
 
@@ -3393,7 +3393,7 @@ struct ChatDetailView: View {
                         } label: {
                             actionButtonIcon(action: action)
                         }
-                        .buttonStyle(.plain)
+                        .buttonStyle(CompactActionButtonStyle())
                         .accessibilityLabel(action.name)
                     }
                 }
@@ -3441,6 +3441,17 @@ struct ChatDetailView: View {
             .foregroundStyle(isActive ? theme.brandPrimary : theme.textTertiary.opacity(0.7))
             .frame(width: 28, height: 28)
             .contentShape(Circle())
+    }
+
+    /// ButtonStyle for the compact action icons in assistantActionBar.
+    /// Scales to 0.88 and dims on press — snappy spring so it feels instantly responsive.
+    private struct CompactActionButtonStyle: ButtonStyle {
+        func makeBody(configuration: Configuration) -> some View {
+            configuration.label
+                .scaleEffect(configuration.isPressed ? 0.88 : 1.0)
+                .opacity(configuration.isPressed ? 0.65 : 1.0)
+                .animation(.spring(response: 0.2, dampingFraction: 0.85), value: configuration.isPressed)
+        }
     }
 
     // MARK: - User Version Switcher (always-visible when edit history exists)
@@ -5606,7 +5617,7 @@ struct PromptCardButtonStyle: ButtonStyle {
         configuration.label
             .scaleEffect(configuration.isPressed ? 0.97 : 1.0)
             .opacity(configuration.isPressed ? 0.85 : 1.0)
-            .animation(.spring(response: 0.25, dampingFraction: 0.7), value: configuration.isPressed)
+            .animation(.spring(response: 0.25, dampingFraction: 0.85), value: configuration.isPressed)
     }
 }
 
