@@ -471,12 +471,19 @@ final class AppDependencyContainer: ServiceContainer {
             fileAttachmentService.configure(with: manager)
         }
 
-        // Set up 401 callback for automatic re-auth
+        // Set up 401 callback for mid-session token expiry.
+        // IMPORTANT: Only fire when the user is already authenticated — NOT during
+        // session restore on launch. restoreSession() already handles launch-time 401s
+        // via its own requiresReauth check (clears token + routes to login correctly).
+        // Firing this callback during .restoringSession would flash the login screen
+        // spuriously on slow networks before restoreSession() has finished its work.
         apiClient?.onAuthTokenInvalid = { [weak self] in
             Task { @MainActor in
-                self?.authViewModel.currentUser = nil
-                self?.authViewModel.phase = .authMethodSelection
-                self?.authViewModel.errorMessage = "Your session has expired. Please sign in again."
+                guard let self else { return }
+                guard self.authViewModel.phase == .authenticated else { return }
+                self.authViewModel.currentUser = nil
+                self.authViewModel.phase = .authMethodSelection
+                self.authViewModel.errorMessage = "Your session has expired. Please sign in again."
             }
         }
 

@@ -426,15 +426,17 @@ struct iPadMainChatView: View {
             HStack(spacing: 0) {
                 // Sidebar column — animated in/out
                 if splitSidebarVisible {
-                    drawerPanel
-                        .frame(width: drawerWidth)
-                        .overlay(alignment: .trailing) {
-                            Rectangle()
-                                .fill(theme.textTertiary.opacity(0.15))
-                                .frame(width: 0.5)
-                                .ignoresSafeArea()
-                        }
-                        .transition(.move(edge: .leading))
+                    NavigationStack {
+                        drawerPanel
+                    }
+                    .frame(width: drawerWidth)
+                    .overlay(alignment: .trailing) {
+                        Rectangle()
+                            .fill(theme.textTertiary.opacity(0.15))
+                            .frame(width: 0.5)
+                            .ignoresSafeArea()
+                    }
+                    .transition(.move(edge: .leading))
                 }
 
                 // Chat/channel detail with terminal overlay
@@ -875,6 +877,7 @@ struct iPadMainChatView: View {
                 folderWorkspace: folderForConversation
             )
             .onDeleteChat { startNewChat() }
+            .onNewChat { startNewChat() }
             .onToggleDrawer(toggleDrawerAction)
             .id(conversationId)
         } else if let folderWorkspaceId = activeFolderWorkspaceId {
@@ -882,6 +885,7 @@ struct iPadMainChatView: View {
             let folder = listViewModel.folderViewModel.folders.first { $0.id == folderWorkspaceId }
                 ?? listViewModel.folderViewModel.activeFolderDetail
             ChatDetailView(viewModel: vm, folderWorkspace: folder)
+                .onNewChat { startNewChat() }
                 .onToggleDrawer(toggleDrawerAction)
                 .id("folder-workspace-\(folderWorkspaceId)-\(newChatGeneration)")
                 .onAppear {
@@ -894,6 +898,7 @@ struct iPadMainChatView: View {
                 }
         } else {
             ChatDetailView(viewModel: dependencies.activeChatStore.viewModel(for: nil))
+                .onNewChat { startNewChat() }
                 .onToggleDrawer(toggleDrawerAction)
                 .id("new-chat-\(newChatGeneration)")
         }

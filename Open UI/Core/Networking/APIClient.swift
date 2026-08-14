@@ -4725,26 +4725,6 @@ final class APIClient: @unchecked Sendable {
         return TaskConfig(from: json)
     }
 
-    /// Checks which of the given chat IDs have active (in-progress) tasks on the server.
-    func checkActiveChats(chatIds: [String]) async throws -> Set<String> {
-        guard !chatIds.isEmpty else { return [] }
-        let json = try await network.requestJSON(
-            path: "/api/v1/tasks/active/chats",
-            method: .post,
-            body: ["chat_ids": chatIds]
-        )
-        if let activeIds = json["chat_ids"] as? [String] {
-            return Set(activeIds)
-        }
-        var active = Set<String>()
-        for (key, value) in json {
-            if let isActive = value as? Bool, isActive {
-                active.insert(key)
-            }
-        }
-        return active
-    }
-
     func generateAutocompletion(
         model: String,
         messages: [[String: Any]],

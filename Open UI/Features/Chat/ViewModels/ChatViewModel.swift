@@ -930,12 +930,6 @@ final class ChatViewModel {
         // Start listening for app foreground events to sync with server
         startForegroundSyncListener()
 
-        // Check if an external client is currently streaming to this chat
-        // (only meaningful for existing conversations)
-        if !isNew {
-            await checkForActiveExternalStream()
-        }
-
         // Fetch terminal servers in the background (fire-and-forget).
         // This is lightweight and determines whether to show the terminal pill.
         Task { await loadTerminalServers() }
@@ -2768,48 +2762,6 @@ final class ChatViewModel {
                 }
                 NotificationCenter.default.post(name: .conversationListNeedsRefresh, object: nil)
             }
-        }
-    }
-
-    /// Checks whether an external client is currently streaming to this chat.
-    ///
-    /// Uses the `POST /api/v1/tasks/active/chats` endpoint to detect in-progress
-    /// generations. If active, sets isExternallyStreaming and isStreaming to true, and marks
-    /// the last assistant message as streaming so the UI shows the correct state.
-    private func checkForActiveExternalStream() async {
-        guard let chatId = conversationId ?? conversation?.id else { return }
-        guard let apiClient = manager?.apiClient else { return }
-
-        do {
-            let activeChats = try await apiClient.checkActiveChats(chatIds: [chatId])
-            if activeChats.contains(chatId) {
-                // This chat has an active generation from another client
-                if let lastAssistant = conversation?.messages.last(where: { $0.role == .assistant }) {
-                    // Only mark as externally streaming if the message looks incomplete
-                    // (empty or the server is still producing content)
-                    let content = lastAssistant.content.trimmingCharacters(in: .whitespacesAndNewlines)
-                    if content.isEmpty || lastAssistant.isStreaming {
-                        isExternallyStreaming = true
-                        isStreaming = true
-                        // Route through the pipeline instead of directly marking isStreaming.
-                        // Seed the accumulator with any existing partial content so incoming
-                        // delta tokens are appended to the correct base rather than starting empty.
-                        if !streamingStore.isActive {
-                            externalStreamAccumulatedContent = lastAssistant.content
-                            streamingStore.beginStreaming(
-                                messageId: lastAssistant.id,
-                                modelId: lastAssistant.model ?? selectedModelId)
-                            if !lastAssistant.content.isEmpty {
-                                streamingStore.updateContent(lastAssistant.content)
-                            }
-                        }
-                        logger.info("Detected active external stream on chat open — routing via StreamingContentStore")
-                    }
-                }
-            }
-        } catch {
-            // Non-critical — passive listener will catch events anyway
-            logger.debug("Active chat check failed: \(error.localizedDescription)")
         }
     }
 

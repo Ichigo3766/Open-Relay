@@ -929,22 +929,6 @@ private struct AppLaunchErrorView: View {
     }
 }
 
-/// Runs `work` and cancels it after `seconds`, returning silently on timeout.
-/// Used to cap `prewarmModels` at startup so a slow/unreachable server can never
-/// permanently block the launch overlay dismissal and leave the user stuck on splash.
-@discardableResult
-private func withPrewarmTimeout(seconds: Double, work: @escaping @Sendable () async -> Void) async {
-    await withTaskGroup(of: Void.self) { group in
-        group.addTask { await work() }
-        group.addTask {
-            try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
-        }
-        // First task to finish wins; cancel the other.
-        await group.next()
-        group.cancelAll()
-    }
-}
-
 /// Root view that manages the full authentication flow using a phase-based state machine.
 struct RootView: View {
     @Environment(AppDependencyContainer.self) private var dependencies
@@ -1011,18 +995,13 @@ struct RootView: View {
             switch viewModel.phase {
             case .authenticated:
                 // Optimistic auth — chat view is already rendered underneath the overlay.
-                // Fire-and-forget background validation — do NOT await, so the overlay
-                // dismisses immediately and the user never sees a stuck loading screen.
+                // Fire-and-forget background validation — never needs to block the overlay.
                 Task { await viewModel.validateSessionInBackground() }
-                // Pre-fetch models while the overlay is still on screen (max 3 s).
-                // This ensures the toolbar is fully populated on the very first frame
-                // the user sees after the overlay fades — no "New Chat" → "Select Model"
-                // → "Haiku" three-step pop-in on cold launch.
-                // Capped at 3 s so a slow/unreachable server can never permanently
-                // block the overlay dismissal and leave the user stuck on the splash.
-                await withPrewarmTimeout(seconds: 3) {
-                    await dependencies.activeChatStore.prewarmModels(using: dependencies)
-                }
+                // Await model prefetch with its built-in 3 s timeout (races loadModels()
+                // against Task.sleep — whichever finishes first wins). This ensures the
+                // model selector is already populated when the overlay fades, so the UI
+                // appears fully ready with no post-reveal flicker or loading state.
+                await dependencies.activeChatStore.prewarmModels(using: dependencies)
                 dismissLaunchOverlay()
 
             case .restoringSession:
@@ -1034,12 +1013,9 @@ struct RootView: View {
                     await viewModel.restoreSession()
                     return ()
                 }
-                // Pre-fetch models while overlay is still visible so first frame is clean.
-                // Capped at 3 s — a slow/unreachable server must never block dismissal
-                // and permanently trap the user on the splash screen (see user report).
-                await withPrewarmTimeout(seconds: 3) {
-                    await dependencies.activeChatStore.prewarmModels(using: dependencies)
-                }
+                // Await model prefetch with its built-in 3 s timeout so the overlay
+                // only fades once models are ready (or 3 s have passed on slow servers).
+                await dependencies.activeChatStore.prewarmModels(using: dependencies)
                 dismissLaunchOverlay()
 
             case .authMethodSelection:

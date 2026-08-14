@@ -1,5 +1,25 @@
 # Changelog
 
+## 📦 NEXT BUILD
+
+### What's New
+
+### Improvements
+
+### Bug Fixes
+
+
+## Previous Builds
+
+## v5.3.3 — August 14, 2026
+
+### Bug Fixes
+- Fixed app permanently freezing on the launch screen when the server was slow or unreachable.
+- Fixed login screen briefly flashing on launch when on a slow or unreachable network.
+- Fixed iPad crashing on launch when "Always Show Sidebar" was enabled in Appearance settings.
+- Fixed new chat button (✏️) not appearing in the navbar when inside a chat on iPad.
+
+
 ## v5.3.2 — August 13, 2026
 
 ### Improvements
