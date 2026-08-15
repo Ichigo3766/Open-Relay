@@ -1,5 +1,12 @@
 # Changelog
 
+## v5.3.5 — August 15, 2026
+
+### Bug Fixes
+- Fixed HTTP polling fallback timing out after 60 seconds of silent processing — responses from long-running tasks now wait for the server to confirm the task is complete before finalising, preventing truncated or missing responses.
+
+## Previous Builds
+
 ## v5.3.4 — August 14, 2026
 
 ### Improvements
