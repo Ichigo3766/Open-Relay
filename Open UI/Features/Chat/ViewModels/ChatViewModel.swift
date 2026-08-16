@@ -339,6 +339,18 @@ final class ChatViewModel {
     /// Tracks whether the socket has received at least one content token.
     /// Used by the recovery timer to avoid overwriting an active stream.
     private var socketHasReceivedContent = false
+    /// Wall-clock time of the last socket-delivered content token.
+    /// Lets the recovery timer distinguish an actively-streaming socket from one
+    /// that delivered earlier tokens and then went silent mid-response (e.g. right
+    /// after a tool call finished) — in the silent case the recovery poll may
+    /// adopt newer server content so the rest of the response still renders.
+    private var lastSocketContentAt: Date = .distantPast
+    /// True when the recovery poll adopted server content that the socket
+    /// accumulator (`acc`) never saw. If a `done:true` socket event arrives after
+    /// that, `acc.content` is STALE — finalizing with it would truncate the
+    /// message back to the pre-silence prefix. finishStreamingSuccessfully()
+    /// checks this flag and re-fetches the full content from the server instead.
+    private var recoveryAdoptedServerContent = false
     private(set) var serverBaseURL: String = ""
     @ObservationIgnored nonisolated(unsafe) private var foregroundObserver: NSObjectProtocol?
     @ObservationIgnored nonisolated(unsafe) private var backgroundObserver: NSObjectProtocol?
@@ -3140,6 +3152,8 @@ final class ChatViewModel {
         isStreaming = true
         hasFinishedStreaming = false
         socketHasReceivedContent = false
+        lastSocketContentAt = .distantPast
+        recoveryAdoptedServerContent = false
         selfInitiatedStream = true
         streamingSessionId += 1
         // Clear the replay-block for the previous completed message — a new
@@ -3311,56 +3325,132 @@ final class ChatViewModel {
                         self.activeTaskId = taskId
                     }
 
-                    // Aggressive polling: start immediately, poll every 1.5s
-                    // Content is being generated server-side and persisted to DB
-                    // in real-time. Each poll picks up the latest accumulated text.
-                    self.logger.info("HTTP POST done – starting aggressive polling (no socket)")
+                    // ── Task-aware polling ──
+                    // Content stability is NOT a completion signal: reasoning
+                    // models, web-search workflows, and long prompt-processing
+                    // phases can go minutes without emitting visible tokens
+                    // (issue #157). The server's task registry
+                    // (GET /api/tasks/chat/{chatId}) is authoritative:
+                    //   • task still registered → keep polling, stay "streaming"
+                    //   • task gone            → one final fetch, then finalize
+                    self.logger.info("HTTP POST done – starting task-aware polling (no socket)")
                     guard let chatId = effectiveChatId else {
                         self.cleanupStreaming()
                         return
                     }
                     var lastContentLength = 0
                     var staleCount = 0
-                    for _ in 0..<40 { // up to ~60s of polling
-                        if Task.isCancelled { break }
+                    var taskCheckFailures = 0
+                    var doneFlagPollCount = 0
+                    let pollingStartedAt = Date()
+
+                    // Shared finalize path for every completion route below.
+                    func finalizePolling(_ finalConversation: Conversation?) async {
+                        var finalContent = ""
+                        if let refreshed = finalConversation,
+                           let serverAssistant = refreshed.messages.last(where: { $0.role == .assistant }),
+                           !serverAssistant.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                            finalContent = serverAssistant.content
+                            self.updateAssistantMessage(id: assistantMessageId, content: finalContent, isStreaming: false)
+                            self.adoptServerMessages(serverConversation: refreshed)
+                        } else {
+                            finalContent = self.conversation?.messages.last(where: { $0.role == .assistant })?.content ?? ""
+                            self.updateAssistantMessage(id: assistantMessageId, content: finalContent, isStreaming: false)
+                        }
+                        await manager.sendChatCompleted(chatId: chatId, messageId: assistantMessageId, model: modelId, sessionId: socketSessionId, messages: self.buildSimpleAPIMessages())
+                        try? await self.refreshConversationMetadata(chatId: chatId, assistantMessageId: assistantMessageId)
+                        self.cleanupStreaming()
+                        await self.sendCompletionNotificationIfNeeded(content: finalContent)
+                        NotificationCenter.default.post(name: .conversationListNeedsRefresh, object: nil)
+                    }
+
+                    while !Task.isCancelled {
                         try? await Task.sleep(nanoseconds: 1_500_000_000)
                         if Task.isCancelled { break }
 
+                        // Hard backstop — never poll forever, even if the task
+                        // registry keeps reporting an active (stuck) task.
+                        if Date().timeIntervalSince(pollingStartedAt) > 600 {
+                            self.logger.warning("Polling: hard timeout after 600s — finalizing with best available content")
+                            let best = try? await manager.fetchConversation(id: chatId)
+                            await finalizePolling(best)
+                            return
+                        }
+
+                        var latestConversation: Conversation? = nil
+                        var serverDone = false
+                        var sawContent = false
+
                         do {
                             let refreshed = try await manager.fetchConversation(id: chatId)
+                            latestConversation = refreshed
                             if let serverAssistant = refreshed.messages.last(where: { $0.role == .assistant }) {
                                 let serverContent = serverAssistant.content.trimmingCharacters(in: .whitespacesAndNewlines)
                                 if !serverContent.isEmpty {
+                                    sawContent = true
                                     self.updateAssistantMessage(id: assistantMessageId, content: serverAssistant.content, isStreaming: true)
-                                    // Check if content is still growing
                                     if serverContent.count > lastContentLength {
                                         lastContentLength = serverContent.count
                                         staleCount = 0
                                     } else {
                                         staleCount += 1
                                     }
-                                    // If content hasn't changed for 3 consecutive polls (4.5s), it's done
-                                    if staleCount >= 3 {
-                                        self.logger.info("Polling: content stable at \(serverContent.count) chars — finalizing")
-                                        self.updateAssistantMessage(id: assistantMessageId, content: serverAssistant.content, isStreaming: false)
-                                        self.hasFinishedStreaming = true
-                                        self.isStreaming = false
-                                        // Post-completion
-                                        self.adoptServerMessages(serverConversation: refreshed)
-                                        await manager.sendChatCompleted(chatId: chatId, messageId: assistantMessageId, model: modelId, sessionId: socketSessionId, messages: self.buildSimpleAPIMessages())
-                                        try? await self.refreshConversationMetadata(chatId: chatId, assistantMessageId: assistantMessageId)
-                                        self.cleanupStreaming()
-                                        await self.sendCompletionNotificationIfNeeded(content: serverContent)
-                                        NotificationCenter.default.post(name: .conversationListNeedsRefresh, object: nil)
-                                        return
-                                    }
                                 }
+                                serverDone = !serverAssistant.isStreaming
                             }
                         } catch {
                             self.logger.warning("Polling failed: \(error.localizedDescription)")
                         }
+
+                        // ── Authoritative completion: server done flag ──
+                        if serverDone && sawContent {
+                            self.logger.info("Polling: server reports done — finalizing")
+                            await finalizePolling(latestConversation)
+                            return
+                        }
+                        if serverDone {
+                            // Done flag set but content not visible yet — give the
+                            // server a few extra polls to persist it before giving up.
+                            doneFlagPollCount += 1
+                            if doneFlagPollCount >= 3 {
+                                self.logger.info("Polling: server done with no content after \(doneFlagPollCount) polls — finalizing")
+                                await finalizePolling(latestConversation)
+                                return
+                            }
+                        }
+
+                        // ── Task-registry check when content isn't growing ──
+                        // While content grows the task is obviously alive; only
+                        // consult the registry once tokens stop arriving.
+                        guard staleCount > 0 || !sawContent else { continue }
+
+                        do {
+                            let activeTaskIds = try await manager.apiClient.getTasksForChat(chatId: chatId)
+                            taskCheckFailures = 0
+                            if activeTaskIds.isEmpty {
+                                // Task finished — one final sync, then finalize.
+                                self.logger.info("Polling: server task finished (empty task list) — final sync")
+                                let final = (try? await manager.fetchConversation(id: chatId)) ?? latestConversation
+                                await finalizePolling(final)
+                                return
+                            }
+                            // Task still running (e.g. silent reasoning/web search)
+                            // — stay patient, never finalize on stale content.
+                            staleCount = 0
+                        } catch {
+                            taskCheckFailures += 1
+                            self.logger.warning("Polling: task-check failed (\(taskCheckFailures)): \(error.localizedDescription)")
+                            // Task API unreachable (e.g. older server) — fall back
+                            // to a conservative stability window: finalize only
+                            // after ~30s of static content (20 × 1.5s), not 4.5s.
+                            if taskCheckFailures >= 5 && staleCount >= 20 {
+                                self.logger.warning("Polling: task-check unreachable, content static for \(staleCount) polls — finalizing")
+                                await finalizePolling(latestConversation)
+                                return
+                            }
+                        }
                     }
-                    // Polling exhausted — finalize with whatever we have
+                    // Polling cancelled (stop button / navigation) — finalize with whatever we have
                     self.updateAssistantMessage(id: assistantMessageId,
                         content: self.conversation?.messages.last(where: { $0.role == .assistant })?.content ?? "",
                         isStreaming: false)
@@ -4476,6 +4566,7 @@ final class ChatViewModel {
             // ignore late-arriving accumulated content dispatches.
             guard let self, !self.hasFinishedStreaming else { return }
             self.socketHasReceivedContent = true
+            self.lastSocketContentAt = Date()
             self.updateAssistantMessage(id: msgId, content: content, isStreaming: true)
         }
 
@@ -4802,8 +4893,11 @@ final class ChatViewModel {
         effectiveChatId: String?,
         acc: ContentAccumulator
     ) {
-        // If content is empty, poll server for it
-        if acc.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        // If content is empty — or the recovery poll adopted newer server content
+        // the socket accumulator never saw (socket went silent mid-stream, issue
+        // #160) — poll the server for the authoritative full content instead of
+        // finalizing with a stale accumulator string.
+        if acc.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || recoveryAdoptedServerContent {
             Task {
                 await pollAndFinish(
                     assistantMessageId: assistantMessageId,
@@ -5103,11 +5197,20 @@ final class ChatViewModel {
                     polledContentLength = lastAssistant.content.count
 
                     // Server has more content than local — but ONLY update if the socket
-                    // has NOT been delivering tokens. If the socket is actively streaming,
-                    // let it continue token-by-token rather than dumping the entire server
-                    // content at once.
-                    if !serverContent.isEmpty && serverContent.count > localContent.count && !self.socketHasReceivedContent {
+                    // has NOT been delivering tokens, or has gone silent for >10s after
+                    // delivering earlier tokens (e.g. socket died mid-stream right after
+                    // a tool call — issue #160). If the socket is actively streaming,
+                    // let it continue token-by-token rather than dumping the entire
+                    // server content at once.
+                    let socketSilent = Date().timeIntervalSince(self.lastSocketContentAt) > 10
+                    if !serverContent.isEmpty && serverContent.count > localContent.count
+                        && (!self.socketHasReceivedContent || socketSilent) {
                         self.logger.info("Recovery: adopting server content (socket silent)")
+                        if self.socketHasReceivedContent {
+                            // The socket accumulator hasn't seen this newer content —
+                            // mark it so a late done:true can't finalize with stale acc content.
+                            self.recoveryAdoptedServerContent = true
+                        }
                         self.updateAssistantMessage(
                             id: assistantMessageId, content: lastAssistant.content, isStreaming: true)
                     }
@@ -5116,20 +5219,49 @@ final class ChatViewModel {
                     //
                     // Primary signal: server's done flag (set when chatCompleted is processed).
                     // Fallback signal: content-based detection — the response is structurally
-                    // complete when all tool-call blocks are closed, regardless of the done flag.
-                    // This catches the slow-connection case where the done:true socket event
-                    // was delayed or dropped and chatCompleted was never sent.
+                    // complete when all tool-call blocks are closed. BUT closed tool blocks
+                    // alone do NOT mean finished: a reasoning model routinely closes its
+                    // tool-call block (web search) and then thinks again — silently — before
+                    // writing the final answer (issue #160). So the structural signal is only
+                    // trusted after the server's task registry confirms no task is running,
+                    // or the task API is confirmed unreachable for older servers.
                     let serverDone = !lastAssistant.isStreaming
-                    let contentComplete = !serverContent.isEmpty && Self.toolCallResponseIsComplete(serverContent)
 
-                    if (serverDone || contentComplete) && !serverContent.isEmpty {
-                        self.logger.info("Recovery: finalizing — serverDone=\(serverDone) contentComplete=\(contentComplete) chars=\(serverContent.count)")
+                    func finalizeRecovery() {
+                        self.logger.info("Recovery: finalizing — serverDone=\(serverDone) chars=\(serverContent.count)")
                         self.updateAssistantMessage(
                             id: assistantMessageId, content: lastAssistant.content, isStreaming: false)
                         let doneContent = lastAssistant.content
                         Task { await self.sendCompletionNotificationIfNeeded(content: doneContent) }
                         self.cleanupStreaming()
+                    }
+
+                    if serverDone && !serverContent.isEmpty {
+                        finalizeRecovery()
                         return
+                    }
+
+                    if !serverContent.isEmpty && Self.toolCallResponseIsComplete(serverContent)
+                        && (!self.socketHasReceivedContent || socketSilent) {
+                        do {
+                            let activeTaskIds = try await manager.apiClient.getTasksForChat(chatId: chatId)
+                            self.recoveryTaskCheckFailures = 0
+                            if activeTaskIds.isEmpty {
+                                finalizeRecovery()
+                                return
+                            }
+                            // Task still active — post-tool reasoning in progress; keep waiting.
+                            self.logger.debug("Recovery: tool blocks closed but task still active — waiting")
+                        } catch {
+                            self.recoveryTaskCheckFailures += 1
+                            // Only trust the structural signal once the task API is
+                            // confirmed unreachable (5 consecutive failures ≈ older server).
+                            if self.recoveryTaskCheckFailures >= 5 {
+                                self.logger.warning("Recovery: task-check unreachable, content structurally complete — finalizing")
+                                finalizeRecovery()
+                                return
+                            }
+                        }
                     }
                 }
             } catch {
@@ -5383,6 +5515,8 @@ final class ChatViewModel {
         lastRecoveryPollContentLength = 0
         recoveryTaskCheckFailures = 0
         recoveryTimerStartDate = .distantPast
+        lastSocketContentAt = .distantPast
+        recoveryAdoptedServerContent = false
         // or remove them if they never produced meaningful output
         if let lastIdx = conversation?.messages.lastIndex(where: { $0.role == .assistant }) {
             let statuses = conversation?.messages[lastIdx].statusHistory ?? []
