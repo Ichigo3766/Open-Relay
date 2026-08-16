@@ -351,6 +351,12 @@ final class ChatViewModel {
     /// message back to the pre-silence prefix. finishStreamingSuccessfully()
     /// checks this flag and re-fetches the full content from the server instead.
     private var recoveryAdoptedServerContent = false
+    /// The content accumulator for the currently-active socket stream, if any.
+    /// When the recovery poll adopts newer server content during a socket-silence
+    /// window, it syncs this accumulator (replace) so a resuming socket continues
+    /// appending from the adopted content instead of replaying its stale shorter
+    /// prefix and visually shrinking the message.
+    private weak var activeAccumulator: ContentAccumulator?
     private(set) var serverBaseURL: String = ""
     @ObservationIgnored nonisolated(unsafe) private var foregroundObserver: NSObjectProtocol?
     @ObservationIgnored nonisolated(unsafe) private var backgroundObserver: NSObjectProtocol?
@@ -4527,6 +4533,7 @@ final class ChatViewModel {
         chatSubscription?.dispose()
         channelSubscription?.dispose()
         let acc = ContentAccumulator()
+        activeAccumulator = acc
 
         // For continue responses: pre-seed the accumulator with the existing message
         // content so that delta tokens are appended to the correct base.
@@ -5167,6 +5174,11 @@ final class ChatViewModel {
             // It is set inside the do-block and reused for the content-growth check after,
             // avoiding a second redundant fetchConversation call.
             var polledContentLength = self.lastRecoveryPollContentLength
+            // Set when the done/structural completion block below already queried the
+            // task registry this poll and found the task active — the static-content
+            // branch then skips its own registry query (dedupe; that combination is
+            // exactly the long silent post-tool-reasoning window of issue #160).
+            var registryConfirmedActiveThisPoll = false
 
             do {
                 let refreshed = try await manager.fetchConversation(id: chatId)
@@ -5193,6 +5205,9 @@ final class ChatViewModel {
                             // mark it so a late done:true can't finalize with stale acc content.
                             self.recoveryAdoptedServerContent = true
                         }
+                        // Sync the socket accumulator so a resuming socket appends from
+                        // the adopted content rather than replaying its stale prefix.
+                        self.activeAccumulator?.replace(lastAssistant.content)
                         self.updateAssistantMessage(
                             id: assistantMessageId, content: lastAssistant.content, isStreaming: true)
                     }
@@ -5241,6 +5256,7 @@ final class ChatViewModel {
                             }
                             // Task still active — post-tool reasoning in progress; keep waiting.
                             self.logger.debug("Recovery: done/structural signal set but task still active — waiting")
+                            registryConfirmedActiveThisPoll = true
                         } catch {
                             self.recoveryTaskCheckFailures += 1
                             // Only trust the done/structural signals once the task API is
@@ -5291,59 +5307,65 @@ final class ChatViewModel {
                     return
                 }
 
-                do {
-                    let activeTaskIds = try await manager.apiClient.getTasksForChat(chatId: chatId)
-                    self.recoveryTaskCheckFailures = 0
+                if registryConfirmedActiveThisPoll {
+                    // Registry already queried above this poll and reported the task
+                    // active — just keep the give-up counters reset and wait.
+                    self.emptyPollCount = 0
+                } else {
+                    do {
+                        let activeTaskIds = try await manager.apiClient.getTasksForChat(chatId: chatId)
+                        self.recoveryTaskCheckFailures = 0
 
-                    if !activeTaskIds.isEmpty {
-                        // Server confirms the task is still running — stay patient and
-                        // reset emptyPollCount so the stale-content counter never fires
-                        // while the server is genuinely processing (e.g. long web search).
-                        self.logger.debug("Recovery: task still active (\(activeTaskIds.count) task(s)) — content=\(currentServerContentLength) chars, waiting")
-                        self.emptyPollCount = 0
-                    } else {
-                        // Server says the task is finished — do a final conversation fetch
-                        // and finalize so we display the complete response immediately.
-                        self.logger.info("Recovery: server task finished (empty task list) — performing final sync")
-                        if let refreshed = try? await manager.fetchConversation(id: chatId),
-                           let lastAssistant = refreshed.messages.last(where: { $0.role == .assistant }) {
-                            self.updateAssistantMessage(
-                                id: assistantMessageId,
-                                content: lastAssistant.content,
-                                isStreaming: false)
-                            let doneContent = lastAssistant.content
-                            Task { await self.sendCompletionNotificationIfNeeded(content: doneContent) }
+                        if !activeTaskIds.isEmpty {
+                            // Server confirms the task is still running — stay patient and
+                            // reset emptyPollCount so the stale-content counter never fires
+                            // while the server is genuinely processing (e.g. long web search).
+                            self.logger.debug("Recovery: task still active (\(activeTaskIds.count) task(s)) — content=\(currentServerContentLength) chars, waiting")
+                            self.emptyPollCount = 0
                         } else {
-                            let giveUpContent = self.conversation?.messages.last(where: { $0.role == .assistant })?.content ?? ""
-                            self.updateAssistantMessage(
-                                id: assistantMessageId,
-                                content: giveUpContent,
-                                isStreaming: false)
-                            Task { await self.sendCompletionNotificationIfNeeded(content: giveUpContent) }
-                        }
-                        self.cleanupStreaming()
-                    }
-                } catch {
-                    // Task-check network error — count consecutive failures
-                    self.recoveryTaskCheckFailures += 1
-                    self.logger.warning("Recovery: task-check failed (\(self.recoveryTaskCheckFailures)/5): \(error.localizedDescription)")
-                    if self.recoveryTaskCheckFailures >= 5 {
-                        // 5 consecutive failures means we can't reach the server reliably;
-                        // fall back to the old stale-content give-up threshold (12 polls).
-                        self.emptyPollCount += 1
-                        self.logger.debug("Recovery: falling back to stale-poll counter (\(self.emptyPollCount)/12) after task-check failures")
-                        if self.emptyPollCount >= 12 {
-                            self.logger.warning("Recovery: giving up after \(self.emptyPollCount) static polls (task-check unreachable)")
-                            let giveUpContent = self.conversation?.messages.last(where: { $0.role == .assistant })?.content ?? ""
-                            self.updateAssistantMessage(
-                                id: assistantMessageId,
-                                content: giveUpContent,
-                                isStreaming: false)
-                            Task { await self.sendCompletionNotificationIfNeeded(content: giveUpContent) }
+                            // Server says the task is finished — do a final conversation fetch
+                            // and finalize so we display the complete response immediately.
+                            self.logger.info("Recovery: server task finished (empty task list) — performing final sync")
+                            if let refreshed = try? await manager.fetchConversation(id: chatId),
+                               let lastAssistant = refreshed.messages.last(where: { $0.role == .assistant }) {
+                                self.updateAssistantMessage(
+                                    id: assistantMessageId,
+                                    content: lastAssistant.content,
+                                    isStreaming: false)
+                                let doneContent = lastAssistant.content
+                                Task { await self.sendCompletionNotificationIfNeeded(content: doneContent) }
+                            } else {
+                                let giveUpContent = self.conversation?.messages.last(where: { $0.role == .assistant })?.content ?? ""
+                                self.updateAssistantMessage(
+                                    id: assistantMessageId,
+                                    content: giveUpContent,
+                                    isStreaming: false)
+                                Task { await self.sendCompletionNotificationIfNeeded(content: giveUpContent) }
+                            }
                             self.cleanupStreaming()
                         }
+                    } catch {
+                        // Task-check network error — count consecutive failures
+                        self.recoveryTaskCheckFailures += 1
+                        self.logger.warning("Recovery: task-check failed (\(self.recoveryTaskCheckFailures)/5): \(error.localizedDescription)")
+                        if self.recoveryTaskCheckFailures >= 5 {
+                            // 5 consecutive failures means we can't reach the server reliably;
+                            // fall back to the old stale-content give-up threshold (12 polls).
+                            self.emptyPollCount += 1
+                            self.logger.debug("Recovery: falling back to stale-poll counter (\(self.emptyPollCount)/12) after task-check failures")
+                            if self.emptyPollCount >= 12 {
+                                self.logger.warning("Recovery: giving up after \(self.emptyPollCount) static polls (task-check unreachable)")
+                                let giveUpContent = self.conversation?.messages.last(where: { $0.role == .assistant })?.content ?? ""
+                                self.updateAssistantMessage(
+                                    id: assistantMessageId,
+                                    content: giveUpContent,
+                                    isStreaming: false)
+                                Task { await self.sendCompletionNotificationIfNeeded(content: giveUpContent) }
+                                self.cleanupStreaming()
+                            }
+                        }
+                        // If fewer than 5 failures, assume still running and keep waiting
                     }
-                    // If fewer than 5 failures, assume still running and keep waiting
                 }
             }
         }
