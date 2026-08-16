@@ -3341,7 +3341,6 @@ final class ChatViewModel {
                     var lastContentLength = 0
                     var staleCount = 0
                     var taskCheckFailures = 0
-                    var doneFlagPollCount = 0
                     let pollingStartedAt = Date()
 
                     // Shared finalize path for every completion route below.
@@ -3378,8 +3377,6 @@ final class ChatViewModel {
                         }
 
                         var latestConversation: Conversation? = nil
-                        var serverDone = false
-                        var sawContent = false
 
                         do {
                             let refreshed = try await manager.fetchConversation(id: chatId)
@@ -3387,42 +3384,27 @@ final class ChatViewModel {
                             if let serverAssistant = refreshed.messages.last(where: { $0.role == .assistant }) {
                                 let serverContent = serverAssistant.content.trimmingCharacters(in: .whitespacesAndNewlines)
                                 if !serverContent.isEmpty {
-                                    sawContent = true
                                     self.updateAssistantMessage(id: assistantMessageId, content: serverAssistant.content, isStreaming: true)
                                     if serverContent.count > lastContentLength {
+                                        // Content still growing — task obviously alive.
                                         lastContentLength = serverContent.count
                                         staleCount = 0
-                                    } else {
-                                        staleCount += 1
+                                        taskCheckFailures = 0
+                                        continue
                                     }
+                                    staleCount += 1
                                 }
-                                serverDone = !serverAssistant.isStreaming
                             }
                         } catch {
                             self.logger.warning("Polling failed: \(error.localizedDescription)")
                         }
 
-                        // ── Authoritative completion: server done flag ──
-                        if serverDone && sawContent {
-                            self.logger.info("Polling: server reports done — finalizing")
-                            await finalizePolling(latestConversation)
-                            return
-                        }
-                        if serverDone {
-                            // Done flag set but content not visible yet — give the
-                            // server a few extra polls to persist it before giving up.
-                            doneFlagPollCount += 1
-                            if doneFlagPollCount >= 3 {
-                                self.logger.info("Polling: server done with no content after \(doneFlagPollCount) polls — finalizing")
-                                await finalizePolling(latestConversation)
-                                return
-                            }
-                        }
-
                         // ── Task-registry check when content isn't growing ──
-                        // While content grows the task is obviously alive; only
-                        // consult the registry once tokens stop arriving.
-                        guard staleCount > 0 || !sawContent else { continue }
+                        // The server's done flag is NOT trusted here: it defaults
+                        // to true when omitted (MessageHistory parse) and can be
+                        // set before content is fully persisted. The registry is
+                        // authoritative — while it reports an active task the
+                        // model may be in a silent reasoning / tool phase (#157).
 
                         do {
                             let activeTaskIds = try await manager.apiClient.getTasksForChat(chatId: chatId)
@@ -5217,18 +5199,25 @@ final class ChatViewModel {
 
                     // Determine if the response is complete.
                     //
-                    // Primary signal: server's done flag (set when chatCompleted is processed).
-                    // Fallback signal: content-based detection — the response is structurally
-                    // complete when all tool-call blocks are closed. BUT closed tool blocks
-                    // alone do NOT mean finished: a reasoning model routinely closes its
-                    // tool-call block (web search) and then thinks again — silently — before
-                    // writing the final answer (issue #160). So the structural signal is only
-                    // trusted after the server's task registry confirms no task is running,
-                    // or the task API is confirmed unreachable for older servers.
+                    // Two candidate signals: the server's done flag, and structural
+                    // completeness (all tool-call blocks closed). NEITHER is trusted
+                    // alone:
+                    //   • The done flag defaults to TRUE when the server omits it on
+                    //     in-progress messages (MessageHistory parse uses `?? true`),
+                    //     so it can read as "finished" mid-generation.
+                    //   • A reasoning model routinely closes its tool-call block (web
+                    //     search) and then thinks again — silently — before writing the
+                    //     final answer (issue #160).
+                    // The authoritative completion state is the server task registry:
+                    // finalize only when it reports no active tasks. The done/structural
+                    // signals remain as the fallback once the registry is CONFIRMED
+                    // unreachable (5 consecutive failures ≈ older server), preserving
+                    // the slow-connection rescue for a dropped done:true socket event.
                     let serverDone = !lastAssistant.isStreaming
+                    let contentComplete = !serverContent.isEmpty && Self.toolCallResponseIsComplete(serverContent)
 
                     func finalizeRecovery() {
-                        self.logger.info("Recovery: finalizing — serverDone=\(serverDone) chars=\(serverContent.count)")
+                        self.logger.info("Recovery: finalizing — serverDone=\(serverDone) contentComplete=\(contentComplete) chars=\(serverContent.count)")
                         self.updateAssistantMessage(
                             id: assistantMessageId, content: lastAssistant.content, isStreaming: false)
                         let doneContent = lastAssistant.content
@@ -5236,12 +5225,12 @@ final class ChatViewModel {
                         self.cleanupStreaming()
                     }
 
-                    if serverDone && !serverContent.isEmpty {
-                        finalizeRecovery()
-                        return
-                    }
-
-                    if !serverContent.isEmpty && Self.toolCallResponseIsComplete(serverContent)
+                    // Skip entirely while the socket is actively delivering tokens —
+                    // the done/structural signals are mid-stream heuristics and the
+                    // registry shouldn't be hammered on every 5s poll during healthy
+                    // streaming. Only consult them once the socket never delivered
+                    // anything or has gone silent.
+                    if (serverDone || contentComplete) && !serverContent.isEmpty
                         && (!self.socketHasReceivedContent || socketSilent) {
                         do {
                             let activeTaskIds = try await manager.apiClient.getTasksForChat(chatId: chatId)
@@ -5251,13 +5240,13 @@ final class ChatViewModel {
                                 return
                             }
                             // Task still active — post-tool reasoning in progress; keep waiting.
-                            self.logger.debug("Recovery: tool blocks closed but task still active — waiting")
+                            self.logger.debug("Recovery: done/structural signal set but task still active — waiting")
                         } catch {
                             self.recoveryTaskCheckFailures += 1
-                            // Only trust the structural signal once the task API is
+                            // Only trust the done/structural signals once the task API is
                             // confirmed unreachable (5 consecutive failures ≈ older server).
                             if self.recoveryTaskCheckFailures >= 5 {
-                                self.logger.warning("Recovery: task-check unreachable, content structurally complete — finalizing")
+                                self.logger.warning("Recovery: task-check unreachable, done/structural signal set — finalizing")
                                 finalizeRecovery()
                                 return
                             }

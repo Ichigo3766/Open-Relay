@@ -529,7 +529,13 @@ struct MessageHistory: Sendable {
                 }()
 
                 // Build the details block matching ToolCallParser expectations
-                // Result goes both as `result` attribute (fast path) and as body (fallback)
+                // Result goes both as `result` attribute (fast path) and as body (fallback).
+                // The body is entity-encoded like the attribute: tool results are arbitrary
+                // web content (search snippets, page HTML) and a raw body can contain
+                // unbalanced `<details`/`</details>` sequences that corrupt the depth-aware
+                // block scanners (StreamingPipeline / ToolCallParser mis-track block
+                // boundaries and leak or swallow content — #160). Both parser paths in
+                // ToolCallParser decode entities, so rendering is unchanged.
                 let block: String
                 if resultText.isEmpty {
                     block = """
@@ -541,7 +547,7 @@ struct MessageHistory: Sendable {
                     block = """
                     <details type="tool_calls" id="\(itemId)" name="\(name)" done="\(doneAttr)" arguments="\(encodedArgs)" result="\(encodedResult)"\(embedsAttr)>
                     <summary>Tool Executed</summary>
-                    \(resultText)
+                    \(htmlEntityEncode(resultText))
                     </details>
                     """
                 }
@@ -556,10 +562,14 @@ struct MessageHistory: Sendable {
                         return text
                     }.joined()
                     if !reasoningText.isEmpty {
+                        // Entity-encode the body (see tool_calls branch above): model
+                        // reasoning can itself contain `<details` markup that would
+                        // otherwise corrupt the block scanners and the think-tag
+                        // preprocessor. parseReasoningBlock decodes entities on read.
                         let block = """
                         <details type="reasoning" done="true">
                         <summary>Thinking</summary>
-                        \(reasoningText)
+                        \(htmlEntityEncode(reasoningText))
                         </details>
                         """
                         parts.append(block)
