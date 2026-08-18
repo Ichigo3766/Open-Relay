@@ -477,13 +477,21 @@ final class AppDependencyContainer: ServiceContainer {
         // via its own requiresReauth check (clears token + routes to login correctly).
         // Firing this callback during .restoringSession would flash the login screen
         // spuriously on slow networks before restoreSession() has finished its work.
+        //
+        // BACKGROUND-RESUME FIX: Instead of immediately kicking the user to the login
+        // screen, first attempt background re-validation via the REST API. This handles
+        // the common case where a 401 fires from the socket reconnect on foreground
+        // return (the socket uses an expired token from before the long background)
+        // but the server will actually issue a fresh token when the REST endpoint is hit.
+        // validateSessionInBackground() has the correct retry logic:
+        //   - Genuine 401 from REST → clears token, shows login (correct sign-out)
+        //   - Transient network error → keeps user in app silently
+        //   - Success → refreshes currentUser and stays authenticated
         apiClient?.onAuthTokenInvalid = { [weak self] in
             Task { @MainActor in
                 guard let self else { return }
                 guard self.authViewModel.phase == .authenticated else { return }
-                self.authViewModel.currentUser = nil
-                self.authViewModel.phase = .authMethodSelection
-                self.authViewModel.errorMessage = "Your session has expired. Please sign in again."
+                await self.authViewModel.validateSessionInBackground()
             }
         }
 

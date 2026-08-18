@@ -8,10 +8,17 @@ struct VoiceCallView: View {
     @Environment(AppDependencyContainer.self) private var dependencies
     @Environment(\.theme) private var theme
     @Environment(\.dismiss) private var dismiss
-    @Environment(AppRouter.self) private var router
 
     /// Whether to start a new conversation for this call.
     var startNewConversation: Bool = false
+
+    /// Called when the user taps the minimize (chevron-down) button.
+    /// The presenter is responsible for hiding the sheet while keeping the call active.
+    var onMinimize: () -> Void = {}
+
+    /// Called when the user ends the call via the X or hang-up button.
+    /// The presenter is responsible for dismissing the sheet and cleaning up the view model.
+    var onDismiss: () -> Void = {}
 
     @AppStorage("sttLocale") private var sttLocale: String = ""
     @AppStorage("ttsVoiceIdentifier") private var ttsVoiceIdentifier: String = ""
@@ -137,7 +144,7 @@ struct VoiceCallView: View {
 
             // Minimize button — dismisses sheet, keeps call running
             Button {
-                router.minimizeVoiceCall()
+                onMinimize()
                 dismiss()
             } label: {
                 Image(systemName: "chevron.down")
@@ -152,7 +159,7 @@ struct VoiceCallView: View {
             Button {
                 Task {
                     await viewModel.endCall()
-                    router.dismissVoiceCall()
+                    onDismiss()
                     dismiss()
                 }
             } label: {
@@ -180,50 +187,69 @@ struct VoiceCallView: View {
     // MARK: - State Chip
 
     private var stateChip: some View {
-        HStack(spacing: 6) {
-            switch viewModel.callState {
-            case .connecting:
-                ProgressView()
-                    .tint(.white.opacity(0.6))
-                    .controlSize(.mini)
-                Text("Connecting")
-            case .listening:
-                Circle()
-                    .fill(Color.blue)
-                    .frame(width: 6, height: 6)
-                Text("Listening...")
-            case .processing:
-                ProgressView()
-                    .tint(.white.opacity(0.6))
-                    .controlSize(.mini)
-                Text("Thinking...")
-            case .speaking:
-                Circle()
-                    .fill(Color.green)
-                    .frame(width: 6, height: 6)
-                Text("Speaking")
-            case .paused:
-                Circle()
-                    .fill(Color.orange)
-                    .frame(width: 6, height: 6)
-                Text("Paused")
-            case .error:
-                Circle()
-                    .fill(Color.red)
-                    .frame(width: 6, height: 6)
-                Text("Error")
-            case .disconnected:
-                Text("Ended")
-            case .idle:
-                Text("Ready")
+        HStack(spacing: 8) {
+            // Muted badge — shown whenever mic is muted, regardless of underlying state
+            if viewModel.isMuted {
+                HStack(spacing: 5) {
+                    Image(systemName: "mic.slash.fill")
+                        .scaledFont(size: 10, weight: .semibold)
+                        .foregroundStyle(.red.opacity(0.9))
+                    Text("Muted")
+                        .scaledFont(size: 12, weight: .medium)
+                        .foregroundStyle(.red.opacity(0.9))
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 5)
+                .background(.red.opacity(0.12))
+                .clipShape(Capsule())
             }
+
+            // Underlying call state chip
+            HStack(spacing: 6) {
+                switch viewModel.callState {
+                case .connecting:
+                    ProgressView()
+                        .tint(.white.opacity(0.6))
+                        .controlSize(.mini)
+                    Text("Connecting")
+                case .listening:
+                    Circle()
+                        .fill(Color.blue)
+                        .frame(width: 6, height: 6)
+                    Text("Listening...")
+                case .processing:
+                    ProgressView()
+                        .tint(.white.opacity(0.6))
+                        .controlSize(.mini)
+                    Text("Thinking...")
+                case .speaking:
+                    Circle()
+                        .fill(Color.green)
+                        .frame(width: 6, height: 6)
+                    Text("Speaking")
+                case .paused:
+                    Circle()
+                        .fill(Color.orange)
+                        .frame(width: 6, height: 6)
+                    Text("Paused")
+                case .error:
+                    Circle()
+                        .fill(Color.red)
+                        .frame(width: 6, height: 6)
+                    Text("Error")
+                case .disconnected:
+                    Text("Ended")
+                case .idle:
+                    Text("Ready")
+                }
+            }
+            .scaledFont(size: 12, weight: .medium)
+            .foregroundStyle(.white.opacity(0.5))
+            .padding(.horizontal, 12)
+            .padding(.vertical, 5)
+            .background(.white.opacity(0.06))
+            .clipShape(Capsule())
         }
-        .scaledFont(size: 12, weight: .medium)
-        .foregroundStyle(.white.opacity(0.5))
-        .padding(.horizontal, 12)
-        .padding(.vertical, 5)
-        .background(.white.opacity(0.06))
-        .clipShape(Capsule())
     }
 
     // MARK: - Transcript

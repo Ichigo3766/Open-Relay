@@ -243,14 +243,21 @@ final class VoiceCallViewModel {
     }
 
     /// Toggles mute state.
+    /// Mute only silences the microphone — it does NOT stop TTS playback,
+    /// interrupt any in-progress response, or change the call state.
+    /// Unmuting restarts the mic only when the call is idle/listening;
+    /// if TTS is still playing the existing onComplete callback will restart it.
     func toggleMute() {
         isMuted.toggle()
         if isMuted {
-            ttsService.stop()
+            // Only silence the mic — leave TTS, streaming, and call state untouched
             stopActiveSTT()
-            callState = .paused
         } else {
-            Task { await startListening() }
+            // Only restart mic if we're not already speaking/processing a response.
+            // If speaking, ttsService.onComplete will call startListening() when done.
+            if callState != .speaking && callState != .processing {
+                Task { await startListening() }
+            }
         }
     }
 
@@ -457,12 +464,16 @@ final class VoiceCallViewModel {
 
         callKitManager.onMuteToggled = { [weak self] muted in
             Task { @MainActor [weak self] in
-                self?.isMuted = muted
+                guard let self else { return }
+                self.isMuted = muted
                 if muted {
-                    self?.stopActiveSTT()
-                    self?.ttsService.stop()
+                    // Hardware mute: only silence the mic, leave TTS and response pipeline running
+                    self.stopActiveSTT()
                 } else {
-                    await self?.startListening()
+                    // Only restart mic if not speaking/processing — onComplete handles the rest
+                    if self.callState != .speaking && self.callState != .processing {
+                        await self.startListening()
+                    }
                 }
             }
         }

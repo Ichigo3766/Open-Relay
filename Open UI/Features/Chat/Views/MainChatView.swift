@@ -163,6 +163,11 @@ struct MainChatView: View {
     /// during the drawer-open animation, which previously caused lag.
     @State private var showUpdateSheet = false
 
+    /// Controls the on-device TTS model download sheet shown before opening a voice call.
+    @State private var showModelDownloadSheet = false
+    /// Pending voice call action stored while the model download sheet is visible.
+    @State private var pendingVoiceCallAction: (() -> Void)?
+
     /// Whether title is being AI-generated.
     @State private var isGeneratingTitle = false
 
@@ -561,7 +566,11 @@ struct MainChatView: View {
                 }
             }) {
                 if let voiceCallVM = router.voiceCallViewModel {
-                    VoiceCallView(viewModel: voiceCallVM)
+                    VoiceCallView(
+                        viewModel: voiceCallVM,
+                        onMinimize: { router.minimizeVoiceCall() },
+                        onDismiss: { router.dismissVoiceCall() }
+                    )
                         .environment(dependencies)
                         .presentationDetents([.medium, .large])
                         .presentationDragIndicator(.hidden)
@@ -778,6 +787,36 @@ struct MainChatView: View {
                 .environment(dependencies)
                 .themed(with: dependencies.appearanceManager, accessibility: dependencies.accessibilityManager)
             }
+            // On-device TTS model download sheet — shown before a voice call when model is not ready
+            .sheet(isPresented: $showModelDownloadSheet, onDismiss: {
+                pendingVoiceCallAction = nil
+            }) {
+                modelDownloadSheetContent()
+            }
+    }
+
+    // MARK: - Model Download Sheet Content (extracted to avoid type-check timeout)
+
+    @ViewBuilder
+    private func modelDownloadSheetContent() -> some View {
+        VoiceCallModelDownloadSheet(
+            ttsService: dependencies.textToSpeechService,
+            onReady: {
+                showModelDownloadSheet = false
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+                    pendingVoiceCallAction?()
+                    pendingVoiceCallAction = nil
+                }
+            },
+            onCancel: {
+                showModelDownloadSheet = false
+                pendingVoiceCallAction = nil
+            }
+        )
+        .themed(with: dependencies.appearanceManager, accessibility: dependencies.accessibilityManager)
+        .presentationDetents([.height(420)])
+        .presentationDragIndicator(.hidden)
+        .presentationCornerRadius(24)
     }
 
     // MARK: - Rename Conversation Sheet (extracted for readability)
@@ -1100,7 +1139,13 @@ struct MainChatView: View {
                         modelName: modelName
                     )
                 }
-                router.presentVoiceCall(viewModel: voiceCallVM)
+                // Intercept: show download sheet if on-device model not yet ready
+                if dependencies.textToSpeechService.needsOnDeviceModelDownload {
+                    pendingVoiceCallAction = { router.presentVoiceCall(viewModel: voiceCallVM) }
+                    showModelDownloadSheet = true
+                } else {
+                    router.presentVoiceCall(viewModel: voiceCallVM)
+                }
             }
             .onReceive(NotificationCenter.default.publisher(for: .conversationListNeedsRefresh)) { _ in
                 Task {

@@ -222,6 +222,12 @@ struct ChatDetailView: View {
     /// Code preview from MarkdownView's eye button (fullscreen code view)
     @State private var codePreviewCode: String?
     @State private var codePreviewLanguage: String = ""
+    // MARK: Voice call model download intercept
+    /// True while the "download TTS model before voice call" sheet is visible.
+    @State private var showVoiceModelDownload = false
+    /// Holds the pre-configured VoiceCallViewModel while the download sheet is open,
+    /// so it can be passed to the router once the model is ready.
+    @State private var pendingVoiceCallVM: VoiceCallViewModel? = nil
 
     // MARK: Init
 
@@ -725,6 +731,25 @@ struct ChatDetailView: View {
             onDismissOverlays: { dismissAllPickers() }
         )
         .applyDeleteChatConfirmation(isPresented: $showDeleteChatConfirm, onDelete: performDeleteChat)
+        .sheet(isPresented: $showVoiceModelDownload) {
+            VoiceCallModelDownloadSheet(
+                ttsService: dependencies.textToSpeechService,
+                onReady: {
+                    showVoiceModelDownload = false
+                    if let vm = pendingVoiceCallVM {
+                        pendingVoiceCallVM = nil
+                        router.presentVoiceCall(viewModel: vm)
+                    }
+                },
+                onCancel: {
+                    showVoiceModelDownload = false
+                    pendingVoiceCallVM = nil
+                }
+            )
+            .presentationDetents([.height(420)])
+            .presentationDragIndicator(.hidden)
+            .presentationBackground(Color(white: 0.08))
+        }
     }
 
     // MARK: - Custom top bar (replaces system nav bar to avoid split-layer hide/show bug)
@@ -977,16 +1002,19 @@ struct ChatDetailView: View {
         .overlay(alignment: .top) { Divider().opacity(0.5) }
     }
 
-    @ViewBuilder
-    private func inputFieldArea(vm: ChatViewModel) -> some View {
+    private func inputFieldArea(vm: ChatViewModel) -> AnyView {
         @Bindable var vm = vm
 
+        // AnyView type-erasure breaks the massive nested generic tuple that SwiftUI
+        // @ViewBuilder builds from this function's many branches. Without it the
+        // compiler inlines every child view into one enormous type, which blows the
+        // thread stack at call time (EXC_BAD_ACCESS in the stack region).
         if isReadOnly {
             // ── Read-only mode: show banner instead of input field ──────────
-            readOnlyBanner
-        } else {
+            return AnyView(readOnlyBanner)
+        }
         // ── Normal mode: full input field ────────────────────────────────────
-        VStack(spacing: 0) {
+        return AnyView(VStack(spacing: 0) {
             // Picker overlays — rendered above the input field so input stays visible
             if let url = detectedWebURL {
                 webURLSuggestionPill(url: url)
@@ -1304,7 +1332,7 @@ struct ChatDetailView: View {
         .onChange(of: mentionedModel) { _, newModel in
             viewModel.mentionedModelId = newModel?.id
         }
-        } // end else (normal input mode)
+        ) // end AnyView(VStack)
     }
 
     private var photoPickerLabel: some View {
@@ -4287,7 +4315,17 @@ struct ChatDetailView: View {
                 modelName: viewModel.selectedModel?.name ?? "AI Assistant"
             )
         }
-        router.presentVoiceCall(viewModel: voiceCallVM)
+        // Gate on on-device model download before opening the call.
+        // If the user's chosen TTS engine needs an on-device model that isn't
+        // downloaded yet, show the download sheet first. Once the model is ready
+        // the sheet calls onReady → we present the voice call then.
+        let tts = dependencies.textToSpeechService
+        if tts.needsOnDeviceModelDownload {
+            pendingVoiceCallVM = voiceCallVM
+            showVoiceModelDownload = true
+        } else {
+            router.presentVoiceCall(viewModel: voiceCallVM)
+        }
     }
 
     private func toggleSpeech(for message: ChatMessage) {

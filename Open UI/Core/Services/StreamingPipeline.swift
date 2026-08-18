@@ -180,7 +180,6 @@ actor StreamingPipeline {
         let hasClosed: Bool
     }
     private var _toolCallFlagsCache: (contentCount: Int, flags: ToolCallBlockFlags)?
-    private var _reasoningFlagsCache: (contentCount: Int, hasClosed: Bool)?
     /// Cached result of `hasOpenLivePreviewFence`, keyed by utf8.count.
     private var _livePreviewFenceCache: (contentCount: Int, hasOpen: Bool)?
 
@@ -246,7 +245,6 @@ actor StreamingPipeline {
         frozenReasoningBoundaryOffset = 0
         frozenProseBoundaryOffset = 0
         _toolCallFlagsCache = nil
-        _reasoningFlagsCache = nil
         _livePreviewFenceCache = nil
         _cachedFrozenContent = (0, "")
         _cachedLiveTailFrozenProse = (0, "")
@@ -293,18 +291,6 @@ actor StreamingPipeline {
         // content isn't left invisible if the server completes without closing.
         if toolCallFlags(for: full).hasUnclosed {
             if !isFinishing { return }
-        }
-
-        // ── Closed reasoning fast-forward ─────────────────────────────────────
-        if hasClosedReasoningBlock(full) {
-            if let lastEnd = Self.lastReasoningDetailsEnd(in: full), displayedCount < lastEnd {
-                let endIdx = full.index(full.startIndex, offsetBy: lastEnd)
-                displayedCount = lastEnd
-                frozenReasoningBoundaryOffset = lastEnd
-                drainAccumulator = 0
-                publishSnapshot(displayContent: String(full[..<endIdx]))
-                return
-            }
         }
 
         // ── Closed tool call fast-forward ─────────────────────────────────────
@@ -646,73 +632,6 @@ actor StreamingPipeline {
         let flags = ToolCallBlockFlags(hasUnclosed: hasUnclosed, hasClosed: hasClosed)
         _toolCallFlagsCache = (count, flags)
         return flags
-    }
-
-    private func hasClosedReasoningBlock(_ content: String) -> Bool {
-        let count = content.utf8.count
-        if let cached = _reasoningFlagsCache, cached.contentCount == count {
-            return cached.hasClosed
-        }
-        guard content.contains("reasoning"), content.contains("</details>") else {
-            _reasoningFlagsCache = (count, false)
-            return false
-        }
-
-        var reasoningOpenCount = 0
-        var totalCloseCount = 0
-        var idx = content.startIndex
-        while idx < content.endIndex {
-            if content[idx] == "<" {
-                let detailsTag = "<details"
-                if content[idx...].hasPrefix(detailsTag) {
-                    let afterDetails = content.index(idx, offsetBy: detailsTag.count, limitedBy: content.endIndex) ?? content.endIndex
-                    var tagEnd = afterDetails
-                    while tagEnd < content.endIndex && content[tagEnd] != ">" {
-                        tagEnd = content.index(after: tagEnd)
-                    }
-                    let tagContent = String(content[idx..<tagEnd]).lowercased()
-                    if tagContent.contains("reasoning") { reasoningOpenCount += 1 }
-                    idx = tagEnd < content.endIndex ? content.index(after: tagEnd) : content.endIndex
-                    continue
-                }
-                let closeTag = "</details>"
-                if content[idx...].hasPrefix(closeTag) {
-                    totalCloseCount += 1
-                    idx = content.index(idx, offsetBy: closeTag.count, limitedBy: content.endIndex) ?? content.endIndex
-                    continue
-                }
-            }
-            idx = content.index(after: idx)
-        }
-        let hasClosed = reasoningOpenCount > 0 && totalCloseCount >= reasoningOpenCount
-        _reasoningFlagsCache = (count, hasClosed)
-        return hasClosed
-    }
-
-    private static func lastReasoningDetailsEnd(in content: String) -> Int? {
-        let closeTag = "</details>"
-        guard content.contains("reasoning"), content.contains(closeTag) else { return nil }
-        var closeEnds: [String.Index] = []
-        var sr = content.startIndex..<content.endIndex
-        while let r = content.range(of: closeTag, options: .caseInsensitive, range: sr) {
-            closeEnds.append(r.upperBound); sr = r.upperBound..<content.endIndex
-        }
-        var openStarts: [String.Index] = []
-        sr = content.startIndex..<content.endIndex
-        while let r = content.range(of: "<details", options: .caseInsensitive, range: sr) {
-            openStarts.append(r.lowerBound); sr = r.upperBound..<content.endIndex
-        }
-        guard !closeEnds.isEmpty && !openStarts.isEmpty else { return nil }
-        var lastEnd: String.Index? = nil
-        let pairCount = min(closeEnds.count, openStarts.count)
-        for i in 0..<pairCount {
-            if let tagEnd = content.range(of: ">", range: openStarts[i]..<content.endIndex) {
-                let tagText = String(content[openStarts[i]..<tagEnd.upperBound]).lowercased()
-                if tagText.contains("reasoning") { lastEnd = closeEnds[i] }
-            }
-        }
-        guard let e = lastEnd else { return nil }
-        return content.distance(from: content.startIndex, to: e)
     }
 
     private static func lastToolCallDetailsEnd(in content: String) -> Int? {

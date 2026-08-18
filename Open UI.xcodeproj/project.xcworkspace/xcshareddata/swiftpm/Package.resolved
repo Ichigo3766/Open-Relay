@@ -1,5 +1,5 @@
 {
-  "originHash" : "920dcfc180720d003e1ca8b9297711c8129b7be46fa4ab6be034c3952173cb1b",
+  "originHash" : "6def307630ac4332f13c5939f3d0fb1baa3b057964b40ea73addad224a4e2d7b",
   "pins" : [
     {
       "identity" : "beautiful-mermaid-swift",
@@ -142,7 +142,7 @@
       "location" : "https://github.com/apple/swift-collections",
       "state" : {
         "branch" : "main",
-        "revision" : "ff27e3678ddb895ebf917ce513f3105395078dae"
+        "revision" : "f3e778f17a438371c5b8c170f15c0d997bb417ee"
       }
     },
     {

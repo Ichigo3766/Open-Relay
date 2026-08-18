@@ -99,6 +99,12 @@ struct iPadMainChatView: View {
     /// Controls the admin console sheet presentation (admin users only).
     @State private var showAdminConsole = false
 
+    /// Controls the on-device TTS model download sheet before entering a voice call.
+    @State private var showModelDownloadSheet = false
+
+    /// Stores the voice call action to fire once the model finishes downloading.
+    @State private var pendingVoiceCallAction: (() -> Void)?
+
     /// Rename conversation state.
     @State private var renamingConversation: Conversation?
     @State private var renameText = ""
@@ -291,7 +297,13 @@ struct iPadMainChatView: View {
                     modelName: modelName
                 )
             }
-            router.presentVoiceCall(viewModel: voiceCallVM)
+            // Intercept: show download sheet if on-device model not yet ready
+            if dependencies.textToSpeechService.needsOnDeviceModelDownload {
+                pendingVoiceCallAction = { router.presentVoiceCall(viewModel: voiceCallVM) }
+                showModelDownloadSheet = true
+            } else {
+                router.presentVoiceCall(viewModel: voiceCallVM)
+            }
         }
         .onChange(of: activeChannelId) { _, newId in
             // When entering a channel, the server marks it as read via GET /channels/{id}.
@@ -393,6 +405,12 @@ struct iPadMainChatView: View {
             UserSettingsView()
                 .environment(dependencies)
                 .themed(with: dependencies.appearanceManager, accessibility: dependencies.accessibilityManager)
+        }
+        // On-device TTS model download sheet (shown before voice call when model not yet ready)
+        .sheet(isPresented: $showModelDownloadSheet, onDismiss: {
+            pendingVoiceCallAction = nil
+        }) {
+            modelDownloadSheetContent()
         }
         .overlay {
             if isExporting {
@@ -934,6 +952,29 @@ struct iPadMainChatView: View {
         .transition(.opacity)
     }
 
+    // MARK: - Model Download Sheet Content (extracted to avoid type-check timeout)
+    @ViewBuilder
+    private func modelDownloadSheetContent() -> some View {
+        VoiceCallModelDownloadSheet(
+            ttsService: dependencies.textToSpeechService,
+            onReady: {
+                showModelDownloadSheet = false
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+                    pendingVoiceCallAction?()
+                    pendingVoiceCallAction = nil
+                }
+            },
+            onCancel: {
+                showModelDownloadSheet = false
+                pendingVoiceCallAction = nil
+            }
+        )
+        .themed(with: dependencies.appearanceManager, accessibility: dependencies.accessibilityManager)
+        .presentationDetents([.height(420)])
+        .presentationDragIndicator(.hidden)
+        .presentationCornerRadius(24)
+    }
+
     private var deletingOverlay: some View {
         ZStack {
             Color.black.opacity(0.3).ignoresSafeArea()
@@ -1134,6 +1175,11 @@ struct iPadSidebarContent: View {
     @State private var drawerChatsDropActive = false
     @State private var showMoveSelectedToFolderSheet = false
     @State private var showUpdateSheet = false
+
+    /// Controls the on-device TTS model download sheet shown before opening a voice call.
+    @State private var showModelDownloadSheet = false
+    /// Pending voice call action stored while the model download sheet is visible.
+    @State private var pendingVoiceCallAction: (() -> Void)?
 
     /// Top-level section collapse states (shared with iPhone via same AppStorage keys).
     @AppStorage("sidebar_folders_expanded") private var foldersExpanded: Bool = true
@@ -2554,7 +2600,11 @@ private extension View {
                 }
             }) {
                 if let voiceCallVM = router.voiceCallViewModel {
-                    VoiceCallView(viewModel: voiceCallVM)
+                    VoiceCallView(
+                        viewModel: voiceCallVM,
+                        onMinimize: { router.minimizeVoiceCall() },
+                        onDismiss: { router.dismissVoiceCall() }
+                    )
                         .environment(dependencies)
                         .presentationDetents([.medium, .large])
                         .presentationDragIndicator(.hidden)

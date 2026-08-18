@@ -24,6 +24,10 @@ struct ChatListView: View {
     // Tracks whether the "Chats" header drop zone is highlighted
     @State private var chatsDropTargetActive: Bool = false
 
+    // On-device TTS model download sheet state
+    @State private var showModelDownloadSheet = false
+    @State private var pendingVoiceCallAction: (() -> Void)?
+
     private var isEmpty: Bool {
         viewModel.conversations.isEmpty && viewModel.folderViewModel.folders.isEmpty
     }
@@ -75,6 +79,29 @@ struct ChatListView: View {
             )
             .applyLifecycle(viewModel: viewModel, dependencies: dependencies)
             .applyAlertsAndDialogs(viewModel: viewModel, theme: theme)
+            // On-device TTS model download sheet (shown before voice call when model not yet ready)
+            .sheet(isPresented: $showModelDownloadSheet, onDismiss: {
+                pendingVoiceCallAction = nil
+            }) {
+                VoiceCallModelDownloadSheet(
+                    ttsService: dependencies.textToSpeechService,
+                    onReady: {
+                        showModelDownloadSheet = false
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+                            pendingVoiceCallAction?()
+                            pendingVoiceCallAction = nil
+                        }
+                    },
+                    onCancel: {
+                        showModelDownloadSheet = false
+                        pendingVoiceCallAction = nil
+                    }
+                )
+                .themed(with: dependencies.appearanceManager, accessibility: dependencies.accessibilityManager)
+                .presentationDetents([.height(420)])
+                .presentationDragIndicator(.hidden)
+                .presentationCornerRadius(24)
+            }
     }
 
     @ViewBuilder
@@ -190,7 +217,12 @@ struct ChatListView: View {
                 .accessibilityHint(Text("Create a new folder to organise chats"))
 
                 Button {
-                    router.presentSheet(.voiceCall())
+                    if dependencies.textToSpeechService.needsOnDeviceModelDownload {
+                        pendingVoiceCallAction = { router.presentSheet(.voiceCall()) }
+                        showModelDownloadSheet = true
+                    } else {
+                        router.presentSheet(.voiceCall())
+                    }
                 } label: {
                     Image(systemName: "phone.fill")
                 }
@@ -240,7 +272,12 @@ struct ChatListView: View {
                 .pressEffect()
 
                 Button {
-                    router.presentSheet(.voiceCall(startNewConversation: true))
+                    if dependencies.textToSpeechService.needsOnDeviceModelDownload {
+                        pendingVoiceCallAction = { router.presentSheet(.voiceCall(startNewConversation: true)) }
+                        showModelDownloadSheet = true
+                    } else {
+                        router.presentSheet(.voiceCall(startNewConversation: true))
+                    }
                 } label: {
                     SwiftUI.Label(String(localized: "Voice Call"), systemImage: "phone.fill")
                 }
@@ -554,6 +591,7 @@ private extension View {
                         viewModel: dependencies.makeVoiceCallViewModel(),
                         startNewConversation: startNew
                     )
+                    .environment(dependencies)
                 default:
                     EmptyView()
                 }

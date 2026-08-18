@@ -1402,7 +1402,17 @@ final class AuthViewModel {
     }
 
     /// Removes the cached user (called on sign out).
+    ///
+    /// IMPORTANT: Must delete the per-server key (used by `cacheCurrentUser()`) as well
+    /// as the legacy global key. Previously this only deleted the global key, which meant
+    /// the per-server cached user was never actually removed — causing the app to restore
+    /// the signed-out user optimistically on the next launch.
     func clearCachedUser() {
+        // Delete the per-server key (matches what cacheCurrentUser() writes)
+        if let serverURL = serverConfigStore.activeServer?.url {
+            KeychainService.shared.deleteToken(forServer: "cached_user_\(serverURL)")
+        }
+        // Also delete the legacy global key (for older installs / fallback path)
         KeychainService.shared.deleteToken(forServer: "cached_user_\(Self.cachedUserKey)")
         // Also clean up legacy UserDefaults entry if present
         UserDefaults.standard.removeObject(forKey: Self.cachedUserKey)

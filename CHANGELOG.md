@@ -1,5 +1,12 @@
 # Changelog
 
+## v5.3.6 — August 17, 2026
+
+### Bug Fixes
+- Fixed text getting stuck when a response involves multiple sequential blocks
+- Fixed crash when opening a Voice Call on macOS
+- Fixed login screen appearing after returning from a long background
+
 ## v5.3.5 — August 15, 2026
 
 ### Bug Fixes
