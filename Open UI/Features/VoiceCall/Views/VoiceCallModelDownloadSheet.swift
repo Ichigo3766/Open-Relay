@@ -155,12 +155,17 @@ struct VoiceCallModelDownloadSheet: View {
 // MARK: - Helper: Check if TTS needs a download before voice call
 
 extension TextToSpeechService {
-    /// Returns true if on-device TTS is required but the model is not yet downloaded/ready.
+    /// Returns true if on-device TTS is required but the model files are not yet present on disk.
     /// In this case the caller should show `VoiceCallModelDownloadSheet` instead of opening the call.
+    /// Uses disk size (not in-memory state) to avoid false positives on cold app starts where the
+    /// model is on disk but simply hasn't been loaded into memory yet.
     var needsOnDeviceModelDownload: Bool {
         let engine = preferredEngine
         guard engine == .kokoro || engine == .qwen3 || engine == .auto else { return false }
         guard kokoroService.isAvailable else { return false }
-        return kokoroService.state == .unloaded
+        switch kokoroService.config.activeModel {
+        case .kokoro: return StorageManager.shared.kokoroTTSModelSize() == 0
+        case .qwen3:  return StorageManager.shared.qwen3TTSModelSize() == 0
+        }
     }
 }

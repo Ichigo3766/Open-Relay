@@ -250,8 +250,14 @@ final class VoiceCallViewModel {
     func toggleMute() {
         isMuted.toggle()
         if isMuted {
-            // Only silence the mic — leave TTS, streaming, and call state untouched
+            // If we were listening and have a partial transcript, submit it so the
+            // request still goes through even though we're muting mid-listen.
+            let partialTranscript = activeCurrentTranscript
             stopActiveSTT()
+            if callState == .listening && !partialTranscript.isEmpty {
+                Task { await handleFinalTranscript(partialTranscript) }
+            }
+            // Otherwise just silence the mic — TTS/streaming keep running untouched.
         } else {
             // Only restart mic if we're not already speaking/processing a response.
             // If speaking, ttsService.onComplete will call startListening() when done.
@@ -659,9 +665,9 @@ final class VoiceCallViewModel {
         guard let chatViewModel else { return }
         guard !Task.isCancelled else { return }
 
-        if !isMuted {
-            ttsService.startStreamingTTS()
-        }
+        // Always start TTS regardless of mute state.
+        // Mute only silences the microphone — the user should still hear the AI response.
+        ttsService.startStreamingTTS()
 
         // Poll for streaming content — feed sentences to TTS pipeline as they arrive.
         //
@@ -691,9 +697,7 @@ final class VoiceCallViewModel {
 
             if newContent != lastContent {
                 lastContent = newContent
-                if !isMuted {
-                    ttsService.feedStreamingText(newContent)
-                }
+                ttsService.feedStreamingText(newContent)
             }
             try? await Task.sleep(for: .milliseconds(60))
         }
@@ -709,10 +713,9 @@ final class VoiceCallViewModel {
         // so reading from messages here is correct for final cleanup.
         if let finalMessage = chatViewModel.messages.last(where: { $0.role == .assistant }) {
             let finalContent = finalMessage.content
-
-            if !isMuted && !finalContent.isEmpty {
+            if !finalContent.isEmpty {
                 ttsService.finishStreamingTTS(finalText: finalContent)
-                // onComplete callback will call startListening() when TTS finishes
+                // onComplete callback will call startListening() when TTS finishes (if not muted)
             } else {
                 ttsService.stop()
                 if !isPaused && !isMuted {
