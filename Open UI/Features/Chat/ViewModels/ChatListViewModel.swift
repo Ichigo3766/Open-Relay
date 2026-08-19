@@ -102,9 +102,15 @@ final class ChatListViewModel {
 
     // MARK: - Computed Properties
 
-    /// Pinned conversations, shown in a dedicated section.
-    var pinnedConversations: [Conversation] {
-        filteredConversations.filter(\.pinned)
+    /// Pinned conversations fetched directly from `/api/v1/chats/pinned`.
+    /// This is an independent list — NOT a filtered subset of `conversations` —
+    /// so it correctly includes folder chats that are excluded from the main list.
+    var pinnedConversations: [Conversation] = [] {
+        didSet {
+            // Keep folderViewModel in sync so folder chat lists can exclude pinned IDs
+            // and avoid showing a pinned folder chat both in Pinned and inside its folder.
+            folderViewModel.pinnedChatIds = Set(pinnedConversations.map(\.id))
+        }
     }
 
     /// Non-pinned, non-archived conversations for time grouping.
@@ -114,15 +120,16 @@ final class ChatListViewModel {
 
     /// Conversations that are NOT inside any folder (shown in the main list).
     ///
-    /// Excludes any conversation whose ID appears in a folder's loaded chat list,
-    /// UNLESS the conversation is pinned — pinned chats always surface to the top
-    /// section regardless of folder membership.
+    /// Excludes any conversation whose ID appears in a folder's loaded chat list.
+    /// Pinned chats are now in their own independent `pinnedConversations` array
+    /// and do NOT need to be surfaced here.
     var unfolderedConversations: [Conversation] {
         let folderChatIds = Set(folderViewModel.folders.flatMap(\.chats).map(\.id))
+        let pinnedIds = Set(pinnedConversations.map(\.id))
         return conversations.filter {
-            // Pinned chats always show in the top section regardless of folder
-            $0.pinned ||
-            (($0.folderId == nil || $0.folderId!.isEmpty) && !folderChatIds.contains($0.id))
+            ($0.folderId == nil || $0.folderId!.isEmpty)
+                && !folderChatIds.contains($0.id)
+                && !pinnedIds.contains($0.id)
         }
     }
 
@@ -281,15 +288,14 @@ final class ChatListViewModel {
         backgroundFetchTask = nil
 
         do {
-            // Phase 1: page 1 + pinned IDs in parallel → instant UI
+            // Phase 1: page 1 + pinned conversations in parallel → instant UI
             async let page1Request = manager.fetchConversationsPage(page: 1)
-            async let pinnedRequest = manager.apiClient.getPinnedConversationIds()
+            async let pinnedRequest = manager.apiClient.getPinnedConversations()
 
-            let (page1, pinnedIds) = try await (page1Request, pinnedRequest)
+            let (page1, pinned) = try await (page1Request, pinnedRequest)
 
-            // Apply pinned flags to page 1
-            let page1WithPins = applyPinnedIds(pinnedIds, to: page1)
-            conversations = page1WithPins
+            conversations = page1
+            pinnedConversations = pinned
             isLoading = false
 
             // If page 1 was empty, we're done
@@ -297,13 +303,11 @@ final class ChatListViewModel {
 
             // Phase 2: background fetch of all remaining pages
             isFetchingAllPages = true
-            let capturedPinnedIds = pinnedIds
 
             backgroundFetchTask = Task {
                 await fetchRemainingPagesInBackground(
                     manager: manager,
-                    startingPage: 2,
-                    pinnedIds: capturedPinnedIds
+                    startingPage: 2
                 )
             }
 
@@ -326,14 +330,14 @@ final class ChatListViewModel {
         backgroundFetchTask = nil
 
         do {
-            // Phase 1: page 1 + pinned IDs in parallel
+            // Phase 1: page 1 + pinned conversations in parallel
             async let page1Request = manager.fetchConversationsPage(page: 1)
-            async let pinnedRequest = manager.apiClient.getPinnedConversationIds()
+            async let pinnedRequest = manager.apiClient.getPinnedConversations()
 
-            let (page1, pinnedIds) = try await (page1Request, pinnedRequest)
+            let (page1, pinned) = try await (page1Request, pinnedRequest)
 
-            let page1WithPins = applyPinnedIds(pinnedIds, to: page1)
-            conversations = page1WithPins
+            conversations = page1
+            pinnedConversations = pinned
             errorMessage = nil
             lastRefreshDate = Date()
             isRefreshing = false
@@ -342,13 +346,11 @@ final class ChatListViewModel {
 
             // Phase 2: background fetch remaining pages
             isFetchingAllPages = true
-            let capturedPinnedIds = pinnedIds
 
             backgroundFetchTask = Task {
                 await fetchRemainingPagesInBackground(
                     manager: manager,
-                    startingPage: 2,
-                    pinnedIds: capturedPinnedIds
+                    startingPage: 2
                 )
             }
 
@@ -365,6 +367,7 @@ final class ChatListViewModel {
         backgroundFetchTask?.cancel()
         backgroundFetchTask = nil
         conversations = []
+        pinnedConversations = []
         lastRefreshDate = nil
         folderViewModel.folders = []
     }
@@ -385,27 +388,25 @@ final class ChatListViewModel {
 
         do {
             async let page1Request = manager.fetchConversationsPage(page: 1)
-            async let pinnedRequest = manager.apiClient.getPinnedConversationIds()
+            async let pinnedRequest = manager.apiClient.getPinnedConversations()
 
-            let (page1, pinnedIds) = try await (page1Request, pinnedRequest)
-
-            let page1WithPins = applyPinnedIds(pinnedIds, to: page1)
+            let (page1, pinned) = try await (page1Request, pinnedRequest)
 
             // Merge page 1 into the existing list without truncating older data
-            let merged = mergeFreshPage(page1WithPins, into: conversations)
+            let merged = mergeFreshPage(page1, into: conversations)
 
             let changed = merged.map(\.id) != conversations.map(\.id)
-                || page1WithPins.contains { newConv in
+                || page1.contains { newConv in
                     conversations.first(where: { $0.id == newConv.id })?.title != newConv.title
-                }
-                || page1WithPins.contains { newConv in
-                    conversations.first(where: { $0.id == newConv.id })?.pinned != newConv.pinned
                 }
 
             if changed {
                 conversations = merged
-                logger.info("Silent refresh: merged \(page1WithPins.count) fresh into \(merged.count) total")
+                logger.info("Silent refresh: merged \(page1.count) fresh into \(merged.count) total")
             }
+
+            // Always update pinned from authoritative source
+            pinnedConversations = pinned
 
             errorMessage = nil
             lastRefreshDate = Date()
@@ -421,8 +422,7 @@ final class ChatListViewModel {
     /// Stops when any page in a batch returns empty (no more data).
     private func fetchRemainingPagesInBackground(
         manager: ConversationManager,
-        startingPage: Int,
-        pinnedIds: Set<String>
+        startingPage: Int
     ) async {
         var nextPage = startingPage
         var keepGoing = true
@@ -443,10 +443,7 @@ final class ChatListViewModel {
                 for page in batchPages {
                     group.addTask {
                         do {
-                            let convs = try await manager.fetchConversationsPage(
-                                page: page,
-                                pinnedIds: pinnedIds
-                            )
+                            let convs = try await manager.fetchConversationsPage(page: page)
                             return (page, convs)
                         } catch {
                             // On error, return empty so we stop at this page
@@ -496,17 +493,6 @@ final class ChatListViewModel {
     }
 
     // MARK: - Private Helpers
-
-    /// Applies a set of pinned IDs to a conversation array.
-    private func applyPinnedIds(_ pinnedIds: Set<String>, to conversations: [Conversation]) -> [Conversation] {
-        guard !pinnedIds.isEmpty else { return conversations }
-        return conversations.map { conv in
-            guard pinnedIds.contains(conv.id) else { return conv }
-            var pinned = conv
-            pinned.pinned = true
-            return pinned
-        }
-    }
 
     /// Merges a fresh page 1 into an existing full list.
     /// Fresh items are placed at the top; existing items not in the fresh page are kept.
@@ -627,6 +613,7 @@ final class ChatListViewModel {
         // Remove locally first
         let removed = conversations.first { $0.id == id }
         conversations.removeAll(where: { $0.id == id })
+        pinnedConversations.removeAll { $0.id == id }
 
         do {
             try await manager.deleteConversation(id: id)
@@ -643,80 +630,42 @@ final class ChatListViewModel {
 
     /// Toggles the pinned state of a conversation.
     ///
-    /// Handles folder chats correctly:
-    /// - **Pinning a folder chat:** adds it to `conversations` (with `pinned = true`) so it
-    ///   surfaces in the Pinned section. The chat remains in the folder on the server; we
-    ///   just surface it visually in `unfolderedConversations` because `pinned = true`
-    ///   satisfies the pass-through filter.
-    /// - **Unpinning a folder chat:** updates `pinned = false` in `conversations` and removes
-    ///   it so it no longer appears in the top section. It stays in the folder row as before.
+    /// Uses an optimistic update on `pinnedConversations` for instant UI feedback,
+    /// then calls the server and re-fetches the authoritative pinned list to confirm.
+    /// Reverts the optimistic update if the server call fails.
     func togglePin(conversation: Conversation) async {
         guard let manager else { return }
 
         let newPinned = !conversation.pinned
 
-        if let index = conversations.firstIndex(where: { $0.id == conversation.id }) {
-            // Chat is already in the conversations array — just flip the flag.
-            conversations[index].pinned = newPinned
-
-            // If we just unpinned it and it belongs to a folder, remove it from the
-            // flat conversations list so it doesn't appear in the unfoldered section.
-            if !newPinned, let folderId = conversations[index].folderId, !folderId.isEmpty {
-                conversations.remove(at: index)
-                // Make sure the folder's local chat list reflects it (reload if expanded)
-                if let folderIdx = folderViewModel.folders.firstIndex(where: { $0.id == folderId }),
-                   folderViewModel.folders[folderIdx].isExpanded {
-                    if !folderViewModel.folders[folderIdx].chats.contains(where: { $0.id == conversation.id }) {
-                        var restored = conversation
-                        restored.pinned = false
-                        folderViewModel.folders[folderIdx].chats.insert(restored, at: 0)
-                    } else {
-                        if let chatIdx = folderViewModel.folders[folderIdx].chats.firstIndex(where: { $0.id == conversation.id }) {
-                            folderViewModel.folders[folderIdx].chats[chatIdx].pinned = false
-                        }
-                    }
-                }
-            }
-        } else {
-            // Chat is NOT in the flat conversations array — it's a folder chat.
-            // Add it to conversations with pinned = true so it shows in the Pinned section.
+        // Optimistic update to pinnedConversations
+        if newPinned {
             var pinned = conversation
             pinned.pinned = true
-            conversations.insert(pinned, at: 0)
-
-            // Remove it from the folder's local chat list so it doesn't appear twice.
-            if let folderId = conversation.folderId,
-               let folderIdx = folderViewModel.folders.firstIndex(where: { $0.id == folderId }) {
-                folderViewModel.folders[folderIdx].chats.removeAll { $0.id == conversation.id }
-            }
+            pinnedConversations.insert(pinned, at: 0)
+        } else {
+            pinnedConversations.removeAll { $0.id == conversation.id }
         }
 
         do {
             try await manager.pinConversation(id: conversation.id, pinned: newPinned)
+            // Re-fetch authoritative list from server
+            pinnedConversations = (try? await manager.apiClient.getPinnedConversations()) ?? pinnedConversations
+
+            // If we just unpinned a folder chat, reload that folder's chat list
+            // so the chat reappears in the sidebar immediately.
+            if !newPinned, let folderId = conversation.folderId, !folderId.isEmpty {
+                await folderViewModel.refreshFolderChats(id: folderId)
+            }
         } catch {
             logger.error("Failed to toggle pin: \(error.localizedDescription)")
-
-            // Revert: undo everything we did above
+            // Revert optimistic update
             if newPinned {
-                // We were pinning — remove from conversations, restore to folder
-                conversations.removeAll { $0.id == conversation.id }
-                if let folderId = conversation.folderId,
-                   let folderIdx = folderViewModel.folders.firstIndex(where: { $0.id == folderId }),
-                   !folderViewModel.folders[folderIdx].chats.contains(where: { $0.id == conversation.id }) {
-                    folderViewModel.folders[folderIdx].chats.insert(conversation, at: 0)
-                }
+                pinnedConversations.removeAll { $0.id == conversation.id }
             } else {
-                // We were unpinning — re-insert into conversations with pinned = true
-                if !conversations.contains(where: { $0.id == conversation.id }) {
-                    conversations.insert(conversation, at: 0)
-                } else if let index = conversations.firstIndex(where: { $0.id == conversation.id }) {
-                    conversations[index].pinned = true
-                }
-                // Remove from folder list if we re-added it there
-                if let folderId = conversation.folderId,
-                   let folderIdx = folderViewModel.folders.firstIndex(where: { $0.id == folderId }) {
-                    folderViewModel.folders[folderIdx].chats.removeAll { $0.id == conversation.id }
-                }
+                var restored = conversation
+                restored.pinned = true
+                pinnedConversations.insert(restored, at: 0)
             }
         }
     }
@@ -732,6 +681,11 @@ final class ChatListViewModel {
         // Update locally first
         if let index = conversations.firstIndex(where: { $0.id == conversation.id }) {
             conversations[index].archived = newArchived
+        }
+
+        // If archiving, remove from pinned section immediately
+        if newArchived {
+            pinnedConversations.removeAll { $0.id == conversation.id }
         }
 
         do {
@@ -837,6 +791,7 @@ final class ChatListViewModel {
         // Remove locally first for responsiveness
         let removedConversations = conversations.filter { idsToDelete.contains($0.id) }
         conversations.removeAll { idsToDelete.contains($0.id) }
+        pinnedConversations.removeAll { idsToDelete.contains($0.id) }
         selectedConversationIds.removeAll()
         isSelectionMode = false
 
@@ -868,6 +823,7 @@ final class ChatListViewModel {
 
         let previousConversations = conversations
         conversations.removeAll()
+        pinnedConversations.removeAll()
 
         do {
             try await apiClient.archiveAllConversations()
@@ -905,6 +861,7 @@ final class ChatListViewModel {
 
         // Clear locally first for responsiveness
         conversations.removeAll()
+        pinnedConversations.removeAll()
         selectedConversationIds.removeAll()
         isSelectionMode = false
 

@@ -1,5 +1,13 @@
 # Changelog
 
+## v5.3.7 — August 19, 2026
+
+### Bug Fixes
+- Fixed pinned chats inside folders not appearing in the Pinned section.
+- Fixed iPad hamburger menu button not responding to taps when sidebar auto-hide mode is enabled
+
+## Previous Builds
+
 ## v5.3.6 — August 17, 2026
 
 ### Bug Fixes

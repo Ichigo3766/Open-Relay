@@ -230,7 +230,11 @@ struct DrawerFolderRow: View {
                 // Look up the live folder from the flat array so chats/subfolders
                 // reflect the latest server data (avoids stale value-type snapshots).
                 let liveFolder = folderVM.folders.first(where: { $0.id == folder.id }) ?? folder
-                let validChats = liveFolder.chats.filter { !$0.title.isEmpty }
+                // Exclude empty-titled chats AND pinned chats (pinned chats appear in the Pinned
+                // section above the folder list and must not duplicate inside the folder).
+                let validChats = liveFolder.chats.filter {
+                    !$0.title.isEmpty && !folderVM.pinnedChatIds.contains($0.id)
+                }
                 // Live child folders from the flat array — reactive to isExpanded changes
                 let liveChildren = folderVM.folders
                     .filter { $0.parentId == folder.id }

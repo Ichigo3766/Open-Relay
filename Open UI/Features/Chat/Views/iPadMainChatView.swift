@@ -655,6 +655,11 @@ struct iPadMainChatView: View {
             // MARK: Left-edge strip — swipe right to open (when drawer is closed)
             // Note: do NOT hide this based on isDraggingDrawer — removing it mid-gesture
             // cancels the DragGesture before onEnded fires, causing the drawer to open only ~5%.
+            //
+            // The strip is offset below the navigation bar (≈60pt for status bar + nav bar)
+            // so it does NOT intercept taps on the hamburger button in the toolbar. Without
+            // this offset the clear+contentShape layer sits on top of the toolbar and swallows
+            // taps before the Button underneath can fire.
             if !showDrawer {
                 Color.clear
                     .frame(width: 44)
@@ -688,6 +693,9 @@ struct iPadMainChatView: View {
                             }
                     )
                     .frame(maxWidth: .infinity, alignment: .leading)
+                    // Offset below the status bar + navigation bar so the clear hit-test
+                    // area does not block the hamburger button in the toolbar (~60pt).
+                    .padding(.top, 60)
             }
         }
     }

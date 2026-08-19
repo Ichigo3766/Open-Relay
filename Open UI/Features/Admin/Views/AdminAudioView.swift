@@ -107,7 +107,8 @@ struct AdminAudioView: View {
                         ("transformers", "Transformers (Local)"),
                         ("openai", "OpenAI"),
                         ("elevenlabs", "ElevenLabs"),
-                        ("azure", "Azure AI Speech")
+                        ("azure", "Azure AI Speech"),
+                        ("mistral", "MistralAI")
                     ]
                 )
 
@@ -119,6 +120,8 @@ struct AdminAudioView: View {
                     ttsElevenLabsFields
                 case "azure":
                     ttsAzureFields
+                case "mistral":
+                    ttsMistralFields
                 case "":
                     // Web API — show API Key field
                     Divider().padding(.leading, Spacing.md)
@@ -226,6 +229,24 @@ struct AdminAudioView: View {
         }
     }
 
+    // MARK: - TTS Mistral Fields
+
+    private var ttsMistralFields: some View {
+        Group {
+            Divider().padding(.leading, Spacing.md)
+            inlineTextFieldRow(title: "API Base URL", placeholder: "https://api.mistral.ai/v1", text: $viewModel.config.tts.mistralAPIBaseURL, keyboardType: .URL)
+
+            Divider().padding(.leading, Spacing.md)
+            inlineSecureRow(
+                title: "Mistral API Key",
+                placeholder: "API Key",
+                text: $viewModel.config.tts.mistralAPIKey,
+                isVisible: viewModel.showTTSMistralKey,
+                onToggleVisibility: { viewModel.showTTSMistralKey.toggle() }
+            )
+        }
+    }
+
     // MARK: - STT Section
 
     private var sttSection: some View {
@@ -299,6 +320,16 @@ struct AdminAudioView: View {
                 text: $viewModel.config.stt.openAIAPIKey,
                 isVisible: viewModel.showSTTOpenAIKey,
                 onToggleVisibility: { viewModel.showSTTOpenAIKey.toggle() }
+            )
+
+            Divider().padding(.leading, Spacing.md)
+            inlinePickerRow(
+                title: "Request Format",
+                selection: $viewModel.config.stt.openAIAPIRequestFormat,
+                options: [
+                    ("multipart", "Multipart Upload"),
+                    ("json", "JSON Base64")
+                ]
             )
         }
     }

@@ -223,7 +223,9 @@ struct FolderRow: View {
 
     @ViewBuilder
     private var expandedContent: some View {
-        if folder.chats.isEmpty {
+        // Exclude pinned chats — they're shown in the Pinned section above the folder list.
+        let visibleChats = folder.chats.filter { !folderVM.pinnedChatIds.contains($0.id) }
+        if visibleChats.isEmpty {
             HStack {
                 Spacer()
                 Text("No chats in this folder")
@@ -237,7 +239,7 @@ struct FolderRow: View {
             // Fixed height per row keeps total size predictable without off-screen measurement.
             // Row height: 8pt top padding + 20pt title + 16pt timestamp/accent line + 8pt bottom ≈ 52pt
             LazyVStack(spacing: 0) {
-                ForEach(folder.chats) { chat in
+                ForEach(visibleChats) { chat in
                     FolderChatRow(
                         conversation: chat,
                         folder: folder,

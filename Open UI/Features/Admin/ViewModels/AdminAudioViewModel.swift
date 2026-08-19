@@ -19,6 +19,7 @@ final class AdminAudioViewModel {
     // TTS
     var showTTSOpenAIKey = false
     var showTTSApiKey = false
+    var showTTSMistralKey = false
     // STT
     var showSTTOpenAIKey = false
     var showSTTDeepgramKey = false

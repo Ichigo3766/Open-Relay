@@ -44,6 +44,11 @@ final class FolderListViewModel {
     /// Non-nil when folders feature is confirmed disabled on this server.
     var featureDisabled: Bool = false
 
+    /// IDs of pinned conversations — used to exclude them from folder chat lists
+    /// so a pinned folder chat doesn't appear both in the Pinned section AND
+    /// inside its folder at the same time.
+    var pinnedChatIds: Set<String> = []
+
     /// ID of a folder currently highlighted as a drag drop target.
     var dragTargetFolderId: String?
 
@@ -277,6 +282,19 @@ final class FolderListViewModel {
             }
         } catch {
             logger.error("Failed to load chats for folder \(folder.id): \(error.localizedDescription)")
+        }
+    }
+
+    /// Force-reloads the chats inside a folder regardless of its expanded state.
+    /// Used after unpinning a folder chat so it reappears in the sidebar immediately.
+    func refreshFolderChats(id folderId: String) async {
+        guard let manager else { return }
+        guard let idx = folders.firstIndex(where: { $0.id == folderId }) else { return }
+        do {
+            let chats = try await manager.fetchChatsInFolder(folderId: folderId)
+            folders[idx].chats = chats
+        } catch {
+            logger.error("Failed to refresh chats for folder \(folderId): \(error.localizedDescription)")
         }
     }
 

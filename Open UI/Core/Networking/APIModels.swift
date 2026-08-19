@@ -1469,19 +1469,23 @@ struct AdminTTSConfig: Codable, Sendable {
     var azureSpeechRegion: String
     var azureSpeechBaseURL: String
     var azureSpeechOutputFormat: String
+    var mistralAPIKey: String
+    var mistralAPIBaseURL: String
 
     enum CodingKeys: String, CodingKey {
-        case openAIAPIBaseURL       = "OPENAI_API_BASE_URL"
-        case openAIAPIKey           = "OPENAI_API_KEY"
-        case openAIParams           = "OPENAI_PARAMS"
-        case apiKey                 = "API_KEY"
-        case engine                 = "ENGINE"
-        case model                  = "MODEL"
-        case voice                  = "VOICE"
-        case splitOn                = "SPLIT_ON"
-        case azureSpeechRegion      = "AZURE_SPEECH_REGION"
-        case azureSpeechBaseURL     = "AZURE_SPEECH_BASE_URL"
+        case openAIAPIBaseURL        = "OPENAI_API_BASE_URL"
+        case openAIAPIKey            = "OPENAI_API_KEY"
+        case openAIParams            = "OPENAI_PARAMS"
+        case apiKey                  = "API_KEY"
+        case engine                  = "ENGINE"
+        case model                   = "MODEL"
+        case voice                   = "VOICE"
+        case splitOn                 = "SPLIT_ON"
+        case azureSpeechRegion       = "AZURE_SPEECH_REGION"
+        case azureSpeechBaseURL      = "AZURE_SPEECH_BASE_URL"
         case azureSpeechOutputFormat = "AZURE_SPEECH_OUTPUT_FORMAT"
+        case mistralAPIKey           = "MISTRAL_API_KEY"
+        case mistralAPIBaseURL       = "MISTRAL_API_BASE_URL"
     }
 
     init(from decoder: Decoder) throws {
@@ -1504,6 +1508,8 @@ struct AdminTTSConfig: Codable, Sendable {
         azureSpeechRegion      = (try? c.decode(String.self, forKey: .azureSpeechRegion))      ?? ""
         azureSpeechBaseURL     = (try? c.decode(String.self, forKey: .azureSpeechBaseURL))     ?? ""
         azureSpeechOutputFormat = (try? c.decode(String.self, forKey: .azureSpeechOutputFormat)) ?? "audio-24khz-160kbitrate-mono-mp3"
+        mistralAPIKey           = (try? c.decode(String.self, forKey: .mistralAPIKey))           ?? ""
+        mistralAPIBaseURL       = (try? c.decode(String.self, forKey: .mistralAPIBaseURL))       ?? "https://api.mistral.ai/v1"
     }
 
     func encode(to encoder: Encoder) throws {
@@ -1525,19 +1531,23 @@ struct AdminTTSConfig: Codable, Sendable {
         try c.encode(azureSpeechRegion, forKey: .azureSpeechRegion)
         try c.encode(azureSpeechBaseURL, forKey: .azureSpeechBaseURL)
         try c.encode(azureSpeechOutputFormat, forKey: .azureSpeechOutputFormat)
+        try c.encode(mistralAPIKey, forKey: .mistralAPIKey)
+        try c.encode(mistralAPIBaseURL, forKey: .mistralAPIBaseURL)
     }
 
     init(
         openAIAPIBaseURL: String = "", openAIAPIKey: String = "", openAIParamsJSON: String = "{}",
         apiKey: String = "", engine: String = "", model: String = "", voice: String = "",
         splitOn: String = "punctuation", azureSpeechRegion: String = "",
-        azureSpeechBaseURL: String = "", azureSpeechOutputFormat: String = "audio-24khz-160kbitrate-mono-mp3"
+        azureSpeechBaseURL: String = "", azureSpeechOutputFormat: String = "audio-24khz-160kbitrate-mono-mp3",
+        mistralAPIKey: String = "", mistralAPIBaseURL: String = "https://api.mistral.ai/v1"
     ) {
         self.openAIAPIBaseURL = openAIAPIBaseURL; self.openAIAPIKey = openAIAPIKey
         self.openAIParamsJSON = openAIParamsJSON; self.apiKey = apiKey; self.engine = engine
         self.model = model; self.voice = voice; self.splitOn = splitOn
         self.azureSpeechRegion = azureSpeechRegion; self.azureSpeechBaseURL = azureSpeechBaseURL
         self.azureSpeechOutputFormat = azureSpeechOutputFormat
+        self.mistralAPIKey = mistralAPIKey; self.mistralAPIBaseURL = mistralAPIBaseURL
     }
 }
 
@@ -1545,6 +1555,7 @@ struct AdminTTSConfig: Codable, Sendable {
 struct AdminSTTConfig: Codable, Sendable {
     var openAIAPIBaseURL: String
     var openAIAPIKey: String
+    var openAIAPIRequestFormat: String   // "multipart" | "json"
     var engine: String
     var model: String
     var supportedContentTypes: [String]
@@ -1563,6 +1574,7 @@ struct AdminSTTConfig: Codable, Sendable {
     enum CodingKeys: String, CodingKey {
         case openAIAPIBaseURL           = "OPENAI_API_BASE_URL"
         case openAIAPIKey               = "OPENAI_API_KEY"
+        case openAIAPIRequestFormat     = "OPENAI_API_REQUEST_FORMAT"
         case engine                     = "ENGINE"
         case model                      = "MODEL"
         case supportedContentTypes      = "SUPPORTED_CONTENT_TYPES"
@@ -1583,6 +1595,7 @@ struct AdminSTTConfig: Codable, Sendable {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         openAIAPIBaseURL          = (try? c.decode(String.self, forKey: .openAIAPIBaseURL))          ?? ""
         openAIAPIKey              = (try? c.decode(String.self, forKey: .openAIAPIKey))              ?? ""
+        openAIAPIRequestFormat    = (try? c.decode(String.self, forKey: .openAIAPIRequestFormat))    ?? "multipart"
         engine                    = (try? c.decode(String.self, forKey: .engine))                    ?? ""
         model                     = (try? c.decode(String.self, forKey: .model))                     ?? ""
         supportedContentTypes     = (try? c.decode([String].self, forKey: .supportedContentTypes))   ?? []
@@ -1600,7 +1613,8 @@ struct AdminSTTConfig: Codable, Sendable {
     }
 
     init(
-        openAIAPIBaseURL: String = "", openAIAPIKey: String = "", engine: String = "",
+        openAIAPIBaseURL: String = "", openAIAPIKey: String = "",
+        openAIAPIRequestFormat: String = "multipart", engine: String = "",
         model: String = "", supportedContentTypes: [String] = [], whisperModel: String = "base",
         deepgramAPIKey: String = "", azureAPIKey: String = "", azureRegion: String = "",
         azureLocales: String = "", azureBaseURL: String = "", azureMaxSpeakers: String = "",
@@ -1608,6 +1622,7 @@ struct AdminSTTConfig: Codable, Sendable {
         mistralUseChatCompletions: Bool = false, noiseSuppression: Bool = false
     ) {
         self.openAIAPIBaseURL = openAIAPIBaseURL; self.openAIAPIKey = openAIAPIKey
+        self.openAIAPIRequestFormat = openAIAPIRequestFormat
         self.engine = engine; self.model = model; self.supportedContentTypes = supportedContentTypes
         self.whisperModel = whisperModel; self.deepgramAPIKey = deepgramAPIKey
         self.azureAPIKey = azureAPIKey; self.azureRegion = azureRegion

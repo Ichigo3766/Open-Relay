@@ -651,10 +651,7 @@ final class APIClient: @unchecked Sendable {
 
     // MARK: - Conversations
 
-    /// Fetches conversations including pinned status.
-    ///
-    /// The list endpoint's `ChatTitleIdResponse` doesn't include a `pinned` field,
-    /// so we parallel-fetch `/api/v1/chats/pinned` and merge the IDs in.
+    /// Fetches conversations (excluding folder chats).
     func getConversations(limit: Int? = nil, skip: Int? = nil) async throws -> [Conversation] {
         var queryItems: [URLQueryItem] = [
             URLQueryItem(name: "include_folders", value: "false"),
@@ -666,16 +663,10 @@ final class APIClient: @unchecked Sendable {
             queryItems.append(URLQueryItem(name: "page", value: "\(max(1, page))"))
         }
 
-        let capturedQueryItems = queryItems
-
-        async let conversationsRequest = network.requestRaw(
+        let (data, _) = try await network.requestRaw(
             path: "/api/v1/chats/",
-            queryItems: capturedQueryItems
+            queryItems: queryItems
         )
-        async let pinnedIdsRequest = getPinnedConversationIds()
-
-        let (data, _) = try await conversationsRequest
-        let pinnedIds = (try? await pinnedIdsRequest) ?? Set<String>()
 
         guard let array = try JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
             throw APIError.responseDecoding(
@@ -687,12 +678,7 @@ final class APIClient: @unchecked Sendable {
             )
         }
 
-        return array.compactMap { parseConversationSummary($0) }.map { conv in
-            guard !pinnedIds.isEmpty, pinnedIds.contains(conv.id) else { return conv }
-            var pinned = conv
-            pinned.pinned = true
-            return pinned
-        }
+        return array.compactMap { parseConversationSummary($0) }
     }
 
     /// Fetches a specific page of conversations.
@@ -729,15 +715,19 @@ final class APIClient: @unchecked Sendable {
         }
     }
 
-    /// Fetches pinned conversation IDs from the dedicated `/api/v1/chats/pinned` endpoint.
-    /// The list endpoint doesn't include pinned status in its response schema.
-    func getPinnedConversationIds() async throws -> Set<String> {
+    /// Fetches all pinned conversations from `/api/v1/chats/pinned` as full `Conversation` objects.
+    /// This is the canonical source of truth for the Pinned section — it includes folder chats
+    /// that are excluded from the regular paginated list.
+    func getPinnedConversations() async throws -> [Conversation] {
         let (data, _) = try await network.requestRaw(path: "/api/v1/chats/pinned")
         guard let array = try JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
             return []
         }
-        let ids = array.compactMap { $0["id"] as? String }
-        return Set(ids)
+        return array.compactMap { dict -> Conversation? in
+            guard var conv = parseConversationSummary(dict) else { return nil }
+            conv.pinned = true
+            return conv
+        }
     }
 
     func getConversation(id: String) async throws -> Conversation {
