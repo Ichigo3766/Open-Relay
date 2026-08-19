@@ -1,5 +1,13 @@
 # Changelog
 
+## v5.3.8 — August 19, 2026
+
+### Bug Fixes
+- Fixed follow-up suggestions disappearing ~2 seconds after appearing due to server sync overwriting them with an empty array.
+- Fixed follow-up suggestions not persisting when editing a message or switching between message versions.
+- Fixed follow-up suggestions never appearing after regenerating a response.
+- Fixed reasoning blocks displaying as raw HTML instead of rendering natively during streaming.
+
 ## v5.3.7 — August 19, 2026
 
 ### Bug Fixes

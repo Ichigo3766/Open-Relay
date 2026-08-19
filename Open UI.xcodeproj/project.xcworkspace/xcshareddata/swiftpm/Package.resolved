@@ -1,5 +1,5 @@
 {
-  "originHash" : "2e3744cb5a52aa08487a98712580c5fd1943e2e0b33038e73900c9757636a121",
+  "originHash" : "920dcfc180720d003e1ca8b9297711c8129b7be46fa4ab6be034c3952173cb1b",
   "pins" : [
     {
       "identity" : "beautiful-mermaid-swift",
@@ -61,7 +61,7 @@
       "location" : "https://github.com/Ichigo3766/MarkdownView.git",
       "state" : {
         "branch" : "main",
-        "revision" : "6a39f5127810b9fdeaa18f9b0e9d94bef1bb0d7a"
+        "revision" : "250578bfdc2c93f5f913050fb12e3dbbe2b54a77"
       }
     },
     {
@@ -142,7 +142,7 @@
       "location" : "https://github.com/apple/swift-collections",
       "state" : {
         "branch" : "main",
-        "revision" : "f3e778f17a438371c5b8c170f15c0d997bb417ee"
+        "revision" : "f425dffd5bf70fe2a880c5eb6568bbdcade9f4f5"
       }
     },
     {

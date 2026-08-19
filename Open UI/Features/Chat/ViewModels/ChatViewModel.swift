@@ -406,6 +406,8 @@ final class ChatViewModel {
                 if let error = msg.error { node.error = error }
                 if !msg.files.isEmpty { node.files = msg.files }
                 if let usage = msg.usage { node.usage = usage }
+                // Sync follow-ups so they survive rederiveMessages() calls
+                if !msg.followUps.isEmpty { node.followUps = msg.followUps }
             }
         }
     }
@@ -1272,7 +1274,13 @@ final class ChatViewModel {
                     conversation!.messages[localIdx].sources = serverMsg.sources
                 }
                 if local.followUps != serverMsg.followUps {
-                    conversation!.messages[localIdx].followUps = serverMsg.followUps
+                    // Never overwrite non-empty local follow-ups with an empty server array.
+                    // The server may not have persisted the follow-ups yet when the post-
+                    // completion metadata refresh runs (they arrive via socket event and may
+                    // be written to the server after the metadata fetch completes).
+                    if !serverMsg.followUps.isEmpty || local.followUps.isEmpty {
+                        conversation!.messages[localIdx].followUps = serverMsg.followUps
+                    }
                 }
                 if local.error != serverMsg.error {
                     conversation!.messages[localIdx].error = serverMsg.error
@@ -2285,7 +2293,14 @@ final class ChatViewModel {
             return
 
         case "chat:message:follow_ups":
-            if let msgId = messageId {
+            // Use top-level message_id if present; fall back to the most-recently
+            // completed self-initiated message. During regeneration the server may
+            // emit this event without a top-level message_id — the active handler
+            // uses a closure-captured ID, but the passive listener only sees the
+            // event payload. Without this fallback the follow-ups are silently
+            // dropped every time the passive path is the only one still alive.
+            let targetMsgId = messageId ?? lastCompletedSelfInitiatedMessageId
+            if let targetMsgId {
                 var followUps: [String] = []
                 if let payload {
                     followUps = payload["follow_ups"] as? [String]
@@ -2298,7 +2313,7 @@ final class ChatViewModel {
                 let trimmed = followUps.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
                     .filter { !$0.isEmpty }
                 if !trimmed.isEmpty {
-                    appendFollowUps(id: msgId, followUps: trimmed)
+                    appendFollowUps(id: targetMsgId, followUps: trimmed)
                 }
             }
             return
@@ -3650,6 +3665,17 @@ final class ChatViewModel {
     func regenerateResponse(messageId: String) async {
         guard !isStreaming || isExternallyStreaming else { return }
         guard conversation != nil else { return }
+
+        // Cancel any in-flight completion task from the previous stream.
+        // Without this, sendMessage's completionTask continues running its
+        // delayed polls (1.5 s, 2 s, 3 s, 5 s) and keeps capturedChatSub
+        // alive. Both the old and new subscriptions share the same socket
+        // session, so the old task receives follow-up events and routes them
+        // to the WRONG (old) assistant message ID — and its eventual
+        // capturedChatSub?.dispose() can tear down the new stream's socket
+        // delivery mid-flight.
+        completionTask?.cancel()
+        completionTask = nil
 
         // ── Tree-first regeneration (replicates OpenWebUI exactly) ──────────
         // 1. Look up the old assistant node in the history tree.
@@ -6803,7 +6829,13 @@ final class ChatViewModel {
     }
 
     private func appendFollowUps(id: String, followUps: [String]) {
-        guard let index = conversation?.messages.firstIndex(where: { $0.id == id }) else { return }
+        guard let index = conversation?.messages.firstIndex(where: { $0.id == id }) else {
+            // Still update the tree node even if not in the flat array
+            conversation?.history.updateNode(id: id) { node in
+                node.followUps = followUps
+            }
+            return
+        }
         // Use direct in-place mutation. The @Observable macro on ChatViewModel
         // tracks mutations to `conversation` itself — mutating through the
         // optional chain works because `conversation` is a var on an @Observable
@@ -6811,6 +6843,30 @@ final class ChatViewModel {
         // "setting value during update" crashes if a navigation event (e.g.,
         // new chat) fires concurrently.
         conversation?.messages[index].followUps = followUps
+
+        // Update the history tree node so follow-ups survive rederiveMessages() calls.
+        // Without this, rederiveMessages() rebuilds from the tree (which has followUps: [])
+        // and erases follow-ups after any edit/regenerate/version switch.
+        conversation?.history.updateNode(id: id) { node in
+            node.followUps = followUps
+        }
+
+        // Also propagate follow-ups to all SIBLING tree nodes (alternative versions
+        // generated by regeneration). Sibling nodes must also have follow-ups so they
+        // are correctly populated after a version switch (which calls rederiveMessages()
+        // and makes the sibling the main message). Without this, switching from
+        // version 2 → version 1 shows no follow-ups until the conversation is reloaded.
+        if let siblingIds = conversation?.history.siblings(of: id) {
+            for sibId in siblingIds where sibId != id {
+                // Only copy if the sibling doesn't already have its own follow-ups.
+                let sibHasFollowUps = (conversation?.history.nodes[sibId]?.followUps.isEmpty == false)
+                if !sibHasFollowUps {
+                    conversation?.history.updateNode(id: sibId) { node in
+                        node.followUps = followUps
+                    }
+                }
+            }
+        }
     }
 
     /// Refreshes conversation metadata (title, sources, follow-ups, files) from server.

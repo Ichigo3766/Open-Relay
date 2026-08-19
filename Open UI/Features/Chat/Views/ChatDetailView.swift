@@ -2093,8 +2093,10 @@ struct ChatDetailView: View {
         // (messages are append-only so indices are stable until a deletion).
         // Avoid mutating @State directly during view update — compute locally and
         // schedule the cache update for after the current render pass.
+        //
+        let lastMsgId = allMessages.last?.id ?? ""
         let indexMap: [String: Int]
-        if cachedIndexMap.count == total && !cachedIndexMap.isEmpty {
+        if cachedIndexMap.count == total && !cachedIndexMap.isEmpty && cachedIndexMap[lastMsgId] != nil {
             indexMap = cachedIndexMap
         } else {
             let freshMap = Dictionary(allMessages.enumerated().map { ($1.id, $0) },
@@ -2331,13 +2333,7 @@ struct ChatDetailView: View {
             }
 
             // ── Follow-up suggestions (last assistant message only) ──
-            let vIdxFU = activeVersionIndex[message.id] ?? -1
-            let displayFollowUps: [String] = {
-                if vIdxFU >= 0 && vIdxFU < message.versions.count {
-                    return message.versions[vIdxFU].followUps
-                }
-                return message.followUps
-            }()
+            let displayFollowUps: [String] = message.followUps
             AnimatedPresence(visible: isLastAssistant && !message.isStreaming && !displayFollowUps.isEmpty) {
                 if isLastAssistant && !message.isStreaming && !displayFollowUps.isEmpty {
                     followUpSuggestions(displayFollowUps)
