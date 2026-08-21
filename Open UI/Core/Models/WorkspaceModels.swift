@@ -1087,13 +1087,18 @@ struct ModelItem: Identifiable, Sendable {
 
         // Prefer info{} values, fall back to root for older endpoints
         self.isActive   = info["is_active"]   as? Bool   ?? json["is_active"]   as? Bool   ?? true
-        self.writeAccess = info["write_access"] as? Bool  ?? json["write_access"] as? Bool  ?? true
+        // Default write_access to false (not true) — non-owners must not see edit UI
+        self.writeAccess = info["write_access"] as? Bool  ?? json["write_access"] as? Bool  ?? false
         self.userId     = info["user_id"]     as? String ?? json["user_id"]     as? String ?? ""
         self.baseModelId = info["base_model_id"] as? String ?? json["base_model_id"] as? String
 
-        // isPublic: check access_grants for an entry with principal_id == "*" (same logic as web UI)
-        let grants = info["access_grants"] as? [[String: Any]] ?? []
-        self.isPublic = grants.contains { $0["principal_id"] as? String == "*" }
+        // isPublic: check access_grants for principal_id == "*" at BOTH info-level (list endpoint)
+        // and root-level (single-model endpoint) — the backend moves access_grants to root when
+        // write_access == true and paginates via /api/v1/models/list.
+        let infoGrants = info["access_grants"] as? [[String: Any]] ?? []
+        let rootGrants = json["access_grants"] as? [[String: Any]] ?? []
+        let allGrants  = infoGrants.isEmpty ? rootGrants : infoGrants
+        self.isPublic = allGrants.contains { $0["principal_id"] as? String == "*" }
 
         // meta lives at info.meta for /api/models; at root meta for /api/v1/models/base
         let infoMeta = info["meta"] as? [String: Any] ?? [:]

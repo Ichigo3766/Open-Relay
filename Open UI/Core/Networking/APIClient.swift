@@ -6,6 +6,8 @@ final class APIClient: @unchecked Sendable {
     let network: NetworkManager
     private let logger = Logger(subsystem: "com.openui", category: "API")
 
+    /// The role of the currently signed-in user ("admin", "user", etc.).
+    /// Set by DependencyContainer after login so parseModelArray can use it.
     /// Callback invoked when the auth token is rejected (401). Thread-safe via lock.
     private let _authCallbackLock = NSLock()
     private var _onAuthTokenInvalid: (() -> Void)?
@@ -2244,17 +2246,33 @@ final class APIClient: @unchecked Sendable {
 
     // MARK: - Workspace Models
 
-    /// GET /api/v1/models/list — workspace models (user-created only, not base models)
+    /// GET /api/v1/models/list — workspace models (user-created only, not base models).
+    /// The server paginates at 30 items/page (PAGE_ITEM_COUNT=30), so we loop through
+    /// all pages until we receive an empty items array or a flat (non-paginated) response.
     func listWorkspaceModels() async throws -> [ModelItem] {
-        let (data, _) = try await network.requestRaw(path: "/api/v1/models/list")
-        let json = try JSONSerialization.jsonObject(with: data)
-        let array: [[String: Any]]
-        if let dict = json as? [String: Any], let items = dict["items"] as? [[String: Any]] {
-            array = items
-        } else if let arr = json as? [[String: Any]] {
-            array = arr
-        } else { return [] }
-        return array.compactMap { ModelItem(json: $0) }
+        var allItems: [ModelItem] = []
+        var page = 1
+        while true {
+            let (data, _) = try await network.requestRaw(
+                path: "/api/v1/models/list",
+                queryItems: [URLQueryItem(name: "page", value: "\(page)")]
+            )
+            let json = try JSONSerialization.jsonObject(with: data)
+            if let dict = json as? [String: Any], let items = dict["items"] as? [[String: Any]] {
+                // Paginated response: {"items": [...], "total": N}
+                let parsed = items.compactMap { ModelItem(json: $0) }
+                allItems.append(contentsOf: parsed)
+                if parsed.isEmpty { break }
+                page += 1
+            } else if let arr = json as? [[String: Any]] {
+                // Flat (non-paginated) response — return all at once
+                allItems.append(contentsOf: arr.compactMap { ModelItem(json: $0) })
+                break
+            } else {
+                break
+            }
+        }
+        return allItems
     }
 
     /// GET /api/v1/models — ALL models for admin (includes base/provider models + workspace models)
@@ -3778,7 +3796,9 @@ final class APIClient: @unchecked Sendable {
             guard let id = raw["id"] as? String else { return nil }
             let name = raw["name"] as? String ?? id
 
-            // Skip models hidden by the admin (info.meta.hidden == true)
+            // Skip models hidden by the admin (info.meta.hidden == true) —
+            // hidden models are not shown in the chat model picker for any user,
+            // matching OpenWebUI web behaviour (Selector.svelte filters them for everyone).
             if let info = raw["info"] as? [String: Any],
                let meta = info["meta"] as? [String: Any],
                meta["hidden"] as? Bool == true {

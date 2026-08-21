@@ -180,6 +180,7 @@ actor StreamingPipeline {
         let hasClosed: Bool
     }
     private var _toolCallFlagsCache: (contentCount: Int, flags: ToolCallBlockFlags)?
+    private var _reasoningFlagsCache: (contentCount: Int, flags: ToolCallBlockFlags)?
     /// Cached result of `hasOpenLivePreviewFence`, keyed by utf8.count.
     private var _livePreviewFenceCache: (contentCount: Int, hasOpen: Bool)?
 
@@ -245,6 +246,7 @@ actor StreamingPipeline {
         frozenReasoningBoundaryOffset = 0
         frozenProseBoundaryOffset = 0
         _toolCallFlagsCache = nil
+        _reasoningFlagsCache = nil
         _livePreviewFenceCache = nil
         _cachedFrozenContent = (0, "")
         _cachedLiveTailFrozenProse = (0, "")
@@ -313,7 +315,7 @@ actor StreamingPipeline {
             if let lastEnd = Self.lastReasoningDetailsEnd(in: full), displayedCount < lastEnd {
                 let endIdx = full.index(full.startIndex, offsetBy: lastEnd)
                 displayedCount = lastEnd
-                frozenToolBoundaryOffset = max(frozenToolBoundaryOffset, lastEnd)
+                frozenReasoningBoundaryOffset = max(frozenReasoningBoundaryOffset, lastEnd)
                 drainAccumulator = 0
                 publishSnapshot(displayContent: String(full[..<endIdx]))
                 return
@@ -770,6 +772,11 @@ actor StreamingPipeline {
             return ToolCallBlockFlags(hasUnclosed: false, hasClosed: false)
         }
 
+        let count = content.utf8.count
+        if let cached = _reasoningFlagsCache, cached.contentCount == count {
+            return cached.flags
+        }
+
         var hasUnclosed = false
         var hasClosed = false
         var idx = content.startIndex
@@ -868,7 +875,9 @@ actor StreamingPipeline {
             }
         }
 
-        return ToolCallBlockFlags(hasUnclosed: hasUnclosed, hasClosed: hasClosed)
+        let flags = ToolCallBlockFlags(hasUnclosed: hasUnclosed, hasClosed: hasClosed)
+        _reasoningFlagsCache = (count, flags)
+        return flags
     }
 
     /// Depth-aware scan that finds the character offset just after the last closed

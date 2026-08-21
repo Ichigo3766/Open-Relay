@@ -310,16 +310,18 @@ struct ModelListView: View {
 
             Spacer()
 
-            // Active toggle
-            Button {
-                Haptics.play(.light)
-                Task { await toggleActive(id: model.id, manager: manager) }
-            } label: {
-                Image(systemName: model.isActive ? "checkmark.circle.fill" : "circle")
-                    .scaledFont(size: 20)
-                    .foregroundStyle(model.isActive ? theme.brandPrimary : theme.textTertiary)
+            // Active toggle — only for models the user owns/can write
+            if model.writeAccess {
+                Button {
+                    Haptics.play(.light)
+                    Task { await toggleActive(id: model.id, manager: manager) }
+                } label: {
+                    Image(systemName: model.isActive ? "checkmark.circle.fill" : "circle")
+                        .scaledFont(size: 20)
+                        .foregroundStyle(model.isActive ? theme.brandPrimary : theme.textTertiary)
+                }
+                .buttonStyle(.plain)
             }
-            .buttonStyle(.plain)
         }
         .padding(.vertical, Spacing.sm)
         .contentShape(Rectangle())
@@ -327,23 +329,27 @@ struct ModelListView: View {
             Task { await openEditor(for: model, manager: manager) }
         }
         .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-            Button(role: .destructive) {
-                deletingModel = model
-            } label: {
-                Label("Delete", systemImage: "trash")
+            if model.writeAccess {
+                Button(role: .destructive) {
+                    deletingModel = model
+                } label: {
+                    Label("Delete", systemImage: "trash")
+                }
             }
         }
         .swipeActions(edge: .leading, allowsFullSwipe: true) {
-            Button {
-                Haptics.play(.light)
-                Task { await toggleActive(id: model.id, manager: manager) }
-            } label: {
-                Label(
-                    model.isActive ? "Deactivate" : "Activate",
-                    systemImage: model.isActive ? "pause.circle" : "play.circle"
-                )
+            if model.writeAccess {
+                Button {
+                    Haptics.play(.light)
+                    Task { await toggleActive(id: model.id, manager: manager) }
+                } label: {
+                    Label(
+                        model.isActive ? "Deactivate" : "Activate",
+                        systemImage: model.isActive ? "pause.circle" : "play.circle"
+                    )
+                }
+                .tint(model.isActive ? .orange : theme.brandPrimary)
             }
-            .tint(model.isActive ? .orange : theme.brandPrimary)
         }
         .contextMenu {
             Button {
@@ -351,21 +357,25 @@ struct ModelListView: View {
             } label: {
                 Label("Edit", systemImage: "pencil")
             }
-            Button {
-                Haptics.play(.light)
-                Task { await toggleActive(id: model.id, manager: manager) }
-            } label: {
-                Label(
-                    model.isActive ? "Deactivate" : "Activate",
-                    systemImage: model.isActive ? "pause.circle" : "play.circle"
-                )
+            if model.writeAccess {
+                Button {
+                    Haptics.play(.light)
+                    Task { await toggleActive(id: model.id, manager: manager) }
+                } label: {
+                    Label(
+                        model.isActive ? "Deactivate" : "Activate",
+                        systemImage: model.isActive ? "pause.circle" : "play.circle"
+                    )
+                }
             }
             Divider()
-            Button {
-                Haptics.play(.light)
-                Task { await cloneModel(model, manager: manager) }
-            } label: {
-                Label("Clone", systemImage: "plus.square.on.square")
+            if model.writeAccess {
+                Button {
+                    Haptics.play(.light)
+                    Task { await cloneModel(model, manager: manager) }
+                } label: {
+                    Label("Clone", systemImage: "plus.square.on.square")
+                }
             }
             if dependencies.authViewModel.workspacePermissions.modelsExport {
                 Button {
@@ -375,11 +385,13 @@ struct ModelListView: View {
                     Label("Export", systemImage: "square.and.arrow.up")
                 }
             }
-            Divider()
-            Button(role: .destructive) {
-                deletingModel = model
-            } label: {
-                Label("Delete", systemImage: "trash")
+            if model.writeAccess {
+                Divider()
+                Button(role: .destructive) {
+                    deletingModel = model
+                } label: {
+                    Label("Delete", systemImage: "trash")
+                }
             }
         }
     }

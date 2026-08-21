@@ -674,6 +674,8 @@ final class AppDependencyContainer: ServiceContainer {
     /// follow-ups, tags, autocomplete) the admin has enabled globally.
     func fetchTaskConfig() async {
         guard let client = apiClient else { return }
+        // Sync the current user's role into APIClient so parseModelArray can
+        // filter hidden models correctly (admins see hidden models; users don't).
         do {
             taskConfig = try await client.getTaskConfig()
             // Push to ActiveChatStore so ChatViewModels can read it

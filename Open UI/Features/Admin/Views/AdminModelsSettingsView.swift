@@ -297,7 +297,7 @@ struct AdminModelsSettingsView: View {
             .scaleEffect(0.8)
             .frame(width: 44)
 
-            // ✏️ Edit button
+            // ✏️ Edit button — only enabled when the user has write access
             Button {
                 Task { await openEditor(for: model) }
             } label: {
@@ -308,12 +308,12 @@ struct AdminModelsSettingsView: View {
                 } else {
                     Image(systemName: "pencil")
                         .scaledFont(size: 15)
-                        .foregroundStyle(theme.textSecondary)
+                        .foregroundStyle(model.writeAccess ? theme.textSecondary : theme.textTertiary.opacity(0.4))
                         .frame(width: 32, height: 32)
                 }
             }
             .buttonStyle(.plain)
-            .disabled(isLoadingEditId != nil)
+            .disabled(isLoadingEditId != nil || !model.writeAccess)
 
             // ⋯ 3-dot menu
             Menu {

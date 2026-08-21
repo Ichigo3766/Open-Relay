@@ -159,13 +159,26 @@ final class AdminModelsSettingsViewModel {
         }
     }
 
+    /// Full admin model list: base models (merged with workspace records) PLUS
+    /// workspace custom models (those that have a base_model_id set).
+    /// Custom models are appended after base models, deduped by ID.
+    private func fetchMergedModels(api: APIClient) async throws -> [ModelItem] {
+        async let baseTask   = fetchMergedBaseModels(api: api)
+        async let customTask = api.listWorkspaceModels()
+        let (baseModels, allWorkspace) = try await (baseTask, customTask)
+        // Custom models are workspace entries that have a base_model_id (they are not raw base models)
+        let baseIds = Set(baseModels.map { $0.id })
+        let customModels = allWorkspace.filter { $0.baseModelId != nil && !baseIds.contains($0.id) }
+        return baseModels + customModels
+    }
+
     func loadAll() async {
         guard let api = apiClient else { return }
         isLoading = true
         errorMessage = nil
         defer { isLoading = false }
 
-        async let modelsTask      = fetchMergedBaseModels(api: api)
+        async let modelsTask      = fetchMergedModels(api: api)
         async let configTask      = api.getModelsConfig()
         async let suggestionsTask = api.getSuggestionsConfig()
         async let ollamaTask      = api.getOllamaConfig()
@@ -188,15 +201,21 @@ final class AdminModelsSettingsViewModel {
     func toggleModelVisibility(id: String) async {
         guard let api = apiClient else { return }
         do {
-            // Fetch the full workspace model detail
-            let detail = try await api.getWorkspaceModelDetail(id: id)
+            // Try to fetch the workspace record. Base models (Ollama, OpenAI, etc.) may not
+            // have a workspace record yet — if we get a 404/not-found error, create one first.
+            let detail: ModelDetail
+            do {
+                detail = try await api.getWorkspaceModelDetail(id: id)
+            } catch {
+                // No workspace record exists for this base model — create a minimal one
+                // so we can set its hidden flag, then re-fetch the new record.
+                let stub = ModelDetail(id: id, name: id, baseModelId: id)
+                _ = try await api.createWorkspaceModel(payload: stub.toCreatePayload())
+                detail = try await api.getWorkspaceModelDetail(id: id)
+            }
 
             // Build updated payload with hidden toggled
             var payload = detail.toUpdatePayload()
-
-            // We need to mutate info.meta.hidden inside the raw payload
-            // The update endpoint stores meta at the top-level "meta" key
-            // and hidden is nested inside info.meta in the response but sent via meta
             var meta = payload["meta"] as? [String: Any] ?? [:]
             let currentHidden = meta["hidden"] as? Bool ?? false
             meta["hidden"] = !currentHidden
@@ -205,7 +224,7 @@ final class AdminModelsSettingsViewModel {
 
             _ = try await api.updateWorkspaceModel(payload: payload)
             // Refresh list
-            models = try await fetchMergedBaseModels(api: api)
+            models = try await fetchMergedModels(api: api)
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -217,8 +236,8 @@ final class AdminModelsSettingsViewModel {
         guard let api = apiClient else { return }
         do {
             _ = try await api.toggleWorkspaceModel(id: id)
-            // Refresh list
-            models = try await fetchMergedBaseModels(api: api)
+            // Refresh list (include custom models so they stay visible after toggle)
+            models = try await fetchMergedModels(api: api)
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -233,7 +252,7 @@ final class AdminModelsSettingsViewModel {
                 userInfo: [NSLocalizedDescriptionKey: "Invalid JSON format for models import"])
         }
         try await api.importWorkspaceModels(models: array)
-        models = try await fetchMergedBaseModels(api: api)
+        models = try await fetchMergedModels(api: api)
     }
 
     func exportModels() async throws -> Data {
@@ -401,9 +420,9 @@ final class AdminModelsSettingsViewModel {
             if let bt = meta["builtinTools"] as? [String: Any] {
                 btTime = bt["time"] as? Bool ?? true
                 btMemory = bt["memory"] as? Bool ?? true
-                btChats = bt["chat_history"] as? Bool ?? true
+                btChats = bt["chats"] as? Bool ?? bt["chat_history"] as? Bool ?? true
                 btNotes = bt["notes"] as? Bool ?? true
-                btKnowledge = bt["knowledge_base"] as? Bool ?? true
+                btKnowledge = bt["knowledge"] as? Bool ?? bt["knowledge_base"] as? Bool ?? true
                 btChannels = bt["channels"] as? Bool ?? true
                 btWebSearch = bt["web_search"] as? Bool ?? true
                 btImageGeneration = bt["image_generation"] as? Bool ?? true

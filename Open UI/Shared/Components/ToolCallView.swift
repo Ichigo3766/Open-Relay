@@ -963,12 +963,33 @@ enum ToolCallParser {
             if let incompleteRegex = cachedRegex(#"(<details\s+[^>]*type\s*=\s*["']reasoning["'][^>]*>)([\s\S]*)$"#,
                 options: [.dotMatchesLineSeparators]) {
                 let nsResult = result as NSString
-                // Only act if there's an opening <details> without a matching </details>
-                // We check by counting opens vs closes for reasoning details
+                // Only act if there's an unclosed reasoning block.
+                //
+                // BUG FIX: The old code compared openCount (reasoning opens) against
+                // closeCount (ALL </details> tags globally). In a sequence like:
+                //   reasoning_1(closed) + tool_calls(closed) + reasoning_2(in-flight)
+                // openCount=2, closeCount=2 (one from reasoning_1, one from tool_calls),
+                // so 2 > 2 == false and Phase 3 never fires — reasoning_2 stays as
+                // raw HTML forever, causing the pipeline freeze to never release.
+                //
+                // Fix: count only COMPLETED reasoning blocks (open+close pairs) and
+                // compare against total reasoning opens. This is immune to the number
+                // of tool_calls </details> tags in the string.
                 let openCount = countOccurrences(of: #"<details\s+[^>]*type\s*=\s*["']reasoning["']"#, in: result)
-                let closeCount = countOccurrences(of: "</details>", in: result)
+                let completedCount: Int
+                if let completedRegex = cachedRegex(
+                    #"<details\s+[^>]*type\s*=\s*["']reasoning["'][^>]*>[\s\S]*?</details>"#,
+                    options: [.dotMatchesLineSeparators]
+                ) {
+                    completedCount = completedRegex.numberOfMatches(
+                        in: result,
+                        range: NSRange(result.startIndex..., in: result)
+                    )
+                } else {
+                    completedCount = 0
+                }
 
-                if openCount > closeCount {
+                if openCount > completedCount {
                     // Find the LAST unclosed opening tag
                     let allMatches = incompleteRegex.matches(
                         in: result,

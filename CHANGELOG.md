@@ -1,5 +1,19 @@
 # Changelog
 
+## v5.3.9 — August 21, 2026
+
+### Improvements
+- Admin Models screen now shows workspace custom models (e.g. models you've created from a base) alongside base models.
+
+### Bug Fixes
+- Fixed second (and subsequent) reasoning/thinking blocks not appearing during streaming.
+- Fixed admin model list only loading the first 30 models when more than 30 exist.
+- Fixed all users appearing to have edit access to models they don't own; edit button is now greyed out for read-only models.
+- Fixed "Hide Model" / "Show Model" failing for Ollama and other base models that don't yet have a workspace record.
+- Fixed admin model settings (built-in tools toggles) always resetting to default because the server key names didn't match what the app expected.
+- Fixed model public/private badge always showing "PRIVATE" due to access grants being checked in the wrong place.
+
+
 ## v5.3.8 — August 19, 2026
 
 ### Bug Fixes
