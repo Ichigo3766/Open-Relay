@@ -326,6 +326,21 @@ struct ChatInputField: View {
         .onChange(of: showToolsSheet) { _, isPresented in
             if isPresented { onToolsSheetPresented?() }
         }
+        // When tools finish loading, prune any starred IDs that no longer exist.
+        // This permanently removes orphaned favorites caused by deleted/removed tools
+        // so they never reappear in the quick-pills row.
+        .onChange(of: isLoadingTools) { _, isLoading in
+            guard !isLoading else { return }
+            let knownBuiltins: Set<String> = ["web", "image"]
+            let knownToolIds = Set(tools.map { $0.id })
+            let current = quickPillsData.components(separatedBy: ",").filter { !$0.isEmpty }
+            let pruned = current.filter { id in
+                knownBuiltins.contains(id) || knownToolIds.contains(id)
+            }
+            if pruned.count != current.count {
+                quickPillsData = pruned.joined(separator: ",")
+            }
+        }
         .animation(.easeOut(duration: 0.2), value: attachments.count)
         .sheet(item: $previewingAttachmentId) { wrapper in
             AttachmentPreviewSheet(attachments: $attachments, attachmentId: wrapper.id)
@@ -877,11 +892,15 @@ struct ChatInputField: View {
                     ))
                 }
             default:
-                // Show the pill even when tools haven't loaded yet (e.g. right after
-                // a new chat is created and the async loadTools() hasn't returned).
-                // Use the tool name if available, otherwise derive a readable label
-                // from the stored ID so the pill is always visible.
+                // Show the pill while tools are still loading (transient absence),
+                // but once loading is complete, only show it if the tool still exists.
+                // This removes orphaned favorites for tools that have been deleted.
                 let tool = tools.first(where: { $0.id == id })
+                if !isLoadingTools && tool == nil {
+                    // Tools finished loading and this ID isn't among them — it's an
+                    // orphan (tool was deleted/removed). Skip rendering the pill.
+                    continue
+                }
                 let displayName = tool?.name ?? id.replacingOccurrences(of: "_", with: " ").capitalized
                 let isSelected = selectedToolIds.contains(id)
                 pills.append(QuickPill(

@@ -428,6 +428,31 @@ final class APIClient: @unchecked Sendable {
         return []
     }
 
+    /// Fetches all models including ones marked as hidden — for use in the workspace
+    /// model editor base model picker, where admins need to see every enabled model
+    /// (including hidden ones) when creating or editing a workspace model.
+    /// Mirrors OpenWebUI's `getBaseModelItems()` which shows hidden models to admins.
+    func getModelsIncludingHidden() async throws -> [AIModel] {
+        let (data, _) = try await network.requestRaw(path: "/api/models")
+
+        guard let payload = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else {
+            if let array = try JSONSerialization.jsonObject(with: data) as? [[String: Any]] {
+                return parseModelArray(array, includeHidden: true)
+            }
+            return []
+        }
+
+        if let modelsArray = payload["data"] as? [[String: Any]] {
+            return parseModelArray(modelsArray, includeHidden: true)
+        }
+        if let modelsArray = payload["models"] as? [[String: Any]] {
+            return parseModelArray(modelsArray, includeHidden: true)
+        }
+
+        return []
+    }
+
     func getDefaultModel() async -> String? {
         do {
             let settings = try await getUserSettings()
@@ -1056,7 +1081,8 @@ final class APIClient: @unchecked Sendable {
         model: String?,
         systemPrompt: String? = nil,
         chatParams: ChatAdvancedParams? = nil,
-        title: String? = nil
+        title: String? = nil,
+        chatFiles: [ChatMessageFile] = []
     ) async throws {
         // Build the flat messages array from the current branch (for server compat)
         let flatMessages = history.createMessagesList()
@@ -1077,6 +1103,19 @@ final class APIClient: @unchecked Sendable {
             paramsDict["system"] = sp
         }
 
+        // Serialize chat-level files (mirrors OWUI `chat.files` in the save payload)
+        let filesArray: [[String: Any]] = chatFiles.compactMap { file -> [String: Any]? in
+            guard let url = file.url else { return nil }
+            var dict: [String: Any] = [
+                "type": file.type ?? "file",
+                "id": url,
+                "url": url
+            ]
+            if let name = file.name { dict["name"] = name }
+            if let ct = file.contentType { dict["content_type"] = ct }
+            return dict
+        }
+
         var chat: [String: Any] = [
             "id": "",
             "title": title ?? "",
@@ -1084,6 +1123,7 @@ final class APIClient: @unchecked Sendable {
             "params": paramsDict,
             "history": history.toServerDict(),
             "messages": messagesArray,
+            "files": filesArray,
             "tags": [String](),
             "timestamp": Int(Date().timeIntervalSince1970 * 1000)
         ]
@@ -1169,6 +1209,28 @@ final class APIClient: @unchecked Sendable {
             }
         }
         return []
+    }
+
+    /// Lightweight update of a chat's top-level `files` (and optional `params`) without
+    /// touching the message history. Mirrors OWUI's `saveControls()` → `updateChatById(token, id, { params, files })`.
+    /// `POST /api/v1/chats/{id}` with body `{ "chat": { "files": [...] } }`
+    @discardableResult
+    func updateChatControls(id: String, files: [ChatMessageFile]) async throws -> Bool {
+        let filesArray: [[String: Any]] = files.compactMap { file -> [String: Any]? in
+            guard let url = file.url else { return nil }
+            var dict: [String: Any] = ["url": url]
+            if let name = file.name { dict["name"] = name }
+            if let type_ = file.type { dict["type"] = type_ }
+            if let contentType = file.contentType { dict["content_type"] = contentType }
+            return dict
+        }
+        let body: [String: Any] = ["chat": ["files": filesArray]]
+        _ = try await network.requestRaw(
+            path: "/api/v1/chats/\(id)",
+            method: .post,
+            body: try JSONSerialization.data(withJSONObject: body)
+        )
+        return true
     }
 
     /// Updates a single task's status for the given chat.
@@ -3791,7 +3853,10 @@ final class APIClient: @unchecked Sendable {
 
     // MARK: - Private Helpers
 
-    private func parseModelArray(_ models: [[String: Any]]) -> [AIModel] {
+    /// - Parameter includeHidden: When `true`, models with `info.meta.hidden == true` are
+    ///   included in the result. Use this for the workspace model editor base model picker,
+    ///   where admins need to see all enabled models. Defaults to `false` (chat picker behaviour).
+    private func parseModelArray(_ models: [[String: Any]], includeHidden: Bool = false) -> [AIModel] {
         return models.compactMap { raw -> AIModel? in
             guard let id = raw["id"] as? String else { return nil }
             let name = raw["name"] as? String ?? id
@@ -3799,7 +3864,10 @@ final class APIClient: @unchecked Sendable {
             // Skip models hidden by the admin (info.meta.hidden == true) —
             // hidden models are not shown in the chat model picker for any user,
             // matching OpenWebUI web behaviour (Selector.svelte filters them for everyone).
-            if let info = raw["info"] as? [String: Any],
+            // Exception: the workspace model editor passes includeHidden: true so admins
+            // can select any enabled model as a base model (mirrors ModelEditor.svelte).
+            if !includeHidden,
+               let info = raw["info"] as? [String: Any],
                let meta = info["meta"] as? [String: Any],
                meta["hidden"] as? Bool == true {
                 return nil
@@ -4041,6 +4109,22 @@ final class APIClient: @unchecked Sendable {
             return ChatTask(id: taskId, content: content, status: status)
         } ?? []
 
+        // Parse top-level chat.files array — mirrors OWUI `chatFiles = chat?.files ?? []`.
+        // This is the persistent file list attached to the conversation, distinct from
+        // per-message files stored inside history nodes.
+        var chatFiles: [ChatMessageFile] = []
+        if let chat = json["chat"] as? [String: Any],
+           let rawFiles = chat["files"] as? [[String: Any]] {
+            chatFiles = rawFiles.compactMap { fileDict in
+                ChatMessageFile(
+                    type: fileDict["type"] as? String,
+                    url: fileDict["url"] as? String ?? fileDict["id"] as? String,
+                    name: fileDict["name"] as? String,
+                    contentType: fileDict["content_type"] as? String
+                )
+            }
+        }
+
         var conv = Conversation(
             id: id,
             title: title,
@@ -4055,7 +4139,8 @@ final class APIClient: @unchecked Sendable {
             shareId: shareId,
             folderId: folderId,
             tags: tags,
-            tasks: tasks
+            tasks: tasks,
+            files: chatFiles
         )
         conv.chatParams = chatParams
         return conv

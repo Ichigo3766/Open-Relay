@@ -936,6 +936,8 @@ struct RootView: View {
     @State private var showOnboarding = false
     @State private var showSettings = false
     @State private var hasAttemptedRestore = false
+    /// Controls the "Switch Server" sheet presented from the connection overlay.
+    @State private var showServerSwitcherSheet = false
 
     // Launch overlay — starts visible for any startup path that needs validation.
     // Set to true only when we begin from an authenticated/restoring phase (i.e. a
@@ -1114,11 +1116,53 @@ struct RootView: View {
         case .serverSwitcher:
             NavigationStack {
                 ScrollView {
-                    SavedServersView(viewModel: viewModel, showAddServerButton: true)
+                    SavedServersView(
+                        viewModel: viewModel,
+                        showAddServerButton: true,
+                        onDismiss: {
+                            // Return to the correct phase when the user taps X
+                            withAnimation(.spring(response: 0.4, dampingFraction: 0.85)) {
+                                if viewModel.currentUser != nil {
+                                    viewModel.phase = .authenticated
+                                } else if dependencies.serverConfigStore.activeServer != nil {
+                                    viewModel.phase = .authMethodSelection
+                                } else {
+                                    viewModel.phase = .serverConnection
+                                }
+                            }
+                        },
+                        canDismiss: viewModel.currentUser != nil
+                            || dependencies.serverConfigStore.activeServer != nil
+                    )
                 }
                 .background(Color(uiColor: .systemGroupedBackground).ignoresSafeArea())
                 .navigationTitle("Switch Server")
                 .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    // X button — lets the user bail out without switching servers
+                    if viewModel.currentUser != nil
+                        || dependencies.serverConfigStore.activeServer != nil {
+                        ToolbarItem(placement: .cancellationAction) {
+                            Button {
+                                withAnimation(.spring(response: 0.4, dampingFraction: 0.85)) {
+                                    if viewModel.currentUser != nil {
+                                        viewModel.phase = .authenticated
+                                    } else if dependencies.serverConfigStore.activeServer != nil {
+                                        viewModel.phase = .authMethodSelection
+                                    } else {
+                                        viewModel.phase = .serverConnection
+                                    }
+                                }
+                            } label: {
+                                Image(systemName: "xmark.circle.fill")
+                                    .symbolRenderingMode(.hierarchical)
+                                    .foregroundStyle(.secondary)
+                                    .font(.system(size: 20))
+                            }
+                            .accessibilityLabel("Close server switcher")
+                        }
+                    }
+                }
             }
         }
     }
@@ -1135,12 +1179,47 @@ struct RootView: View {
         }
         .overlay {
             // Connection lost overlay — blocks interaction when server/internet is down.
-            // Passes a "Switch Server" callback so the user is never stuck when the
-            // current server is down but other saved servers are available.
+            // The "Switch Server" button presents the switcher as a sheet so the user
+            // can browse options and dismiss without committing to a switch.
             ConnectionOverlayView(monitor: dependencies.connectionMonitor) {
-                withAnimation {
-                    viewModel.phase = .serverSwitcher
+                showServerSwitcherSheet = true
+            }
+        }
+        .sheet(isPresented: $showServerSwitcherSheet) {
+            // Server switcher as a dismissible sheet — swipe down or X to cancel.
+            // The sheet is self-contained: onDismiss closes the sheet; switching a
+            // server also closes the sheet and transitions the app phase.
+            NavigationStack {
+                ScrollView {
+                    SavedServersView(
+                        viewModel: viewModel,
+                        showAddServerButton: true,
+                        onDismiss: { showServerSwitcherSheet = false }
+                    )
                 }
+                .background(Color(uiColor: .systemGroupedBackground).ignoresSafeArea())
+                .navigationTitle("Switch Server")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button {
+                            showServerSwitcherSheet = false
+                        } label: {
+                            Image(systemName: "xmark.circle.fill")
+                                .symbolRenderingMode(.hierarchical)
+                                .foregroundStyle(.secondary)
+                                .font(.system(size: 20))
+                        }
+                        .accessibilityLabel("Dismiss server switcher")
+                    }
+                }
+            }
+        }
+        .onChange(of: viewModel.phase) { _, newPhase in
+            // Auto-close the overlay sheet once a server switch completes
+            // (phase transitions away from serverSwitcher → authenticated / authMethod)
+            if newPhase == .authenticated || newPhase == .authMethodSelection {
+                showServerSwitcherSheet = false
             }
         }
         .task {

@@ -694,9 +694,10 @@ struct ChatDetailView: View {
         }
         // In-app file preview using QuickLook (PDFs, images, docs, etc.)
         .quickLookPreview($previewFileURL)
-        // Chat advanced parameters sheet (slider icon in toolbar)
+        // Chat context / controls panel (slider icon in toolbar)
         .sheet(isPresented: $isShowingChatParams) {
-            ChatAdvancedParamsSheet(
+            ChatContextPanel(
+                viewModel: viewModel,
                 params: Binding(
                     get: { viewModel.conversation?.chatParams ?? viewModel.pendingChatParams ?? ChatAdvancedParams() },
                     set: { newParams in

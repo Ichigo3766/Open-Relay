@@ -14,6 +14,8 @@ struct SavedServersView: View {
     var showAddServerButton: Bool = true
     /// Optional dismiss action for sheet presentation.
     var onDismiss: (() -> Void)? = nil
+    /// Whether to show an X close button in the toolbar (for full-screen phase usage).
+    var canDismiss: Bool = false
 
     @Environment(AppDependencyContainer.self) private var dependencies
     @Environment(\.theme) private var theme
@@ -22,8 +24,17 @@ struct SavedServersView: View {
     @State private var isSwitching = false
     @State private var switchingServerId: String?
     @State private var switchingAccountId: String?
+    /// Per-server reachability check results: nil = not checked, true = reachable, false = unreachable
+    @State private var reachabilityState: [String: ReachabilityState] = [:]
     /// Sheet state for "Add New Server" — presented modally so the user can cancel.
     @State private var showAddServerSheet = false
+
+    /// Reachability check state for a single server row.
+    enum ReachabilityState {
+        case checking
+        case reachable
+        case unreachable(String)  // error message
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -103,6 +114,7 @@ struct SavedServersView: View {
                     isActive: isActive,
                     isSwitchingServer: switchingServerId == server.id && isSwitching,
                     switchingAccountId: $switchingAccountId,
+                    reachabilityState: reachabilityState[server.id],
                     onSwitchServer: {
                         Task { await handleSwitch(to: server) }
                     },
@@ -115,6 +127,9 @@ struct SavedServersView: View {
                     onDelete: {
                         serverToDelete = server
                         showDeleteConfirmation = true
+                    },
+                    onRetryReachability: {
+                        Task { await checkReachability(for: server) }
                     }
                 )
             }
@@ -161,14 +176,57 @@ struct SavedServersView: View {
         .padding(.bottom, Spacing.xl)
     }
 
+    // MARK: - Reachability Pre-flight
+
+    /// Performs a fast health check against `server` before committing a switch.
+    /// Updates `reachabilityState[server.id]` so the row can show feedback inline.
+    @discardableResult
+    private func checkReachability(for server: ServerConfig) async -> Bool {
+        reachabilityState[server.id] = .checking
+        let client = APIClient(serverConfig: server)
+        // Use any cached token for authentication
+        if let token = KeychainService.shared.getToken(forServer: server.url,
+                                                        userId: server.activeAccountId ?? "") {
+            client.updateAuthToken(token)
+        }
+        let healthy = await client.checkHealthFast(timeout: 5)
+        if healthy {
+            reachabilityState[server.id] = .reachable
+        } else {
+            reachabilityState[server.id] = .unreachable("Server unreachable — check your network or URL")
+        }
+        return healthy
+    }
+
     // MARK: - Switch Handler
 
     private func handleSwitch(to server: ServerConfig) async {
         guard !isSwitching else { return }
+
+        // For the currently active server, skip reachability check and just dismiss
+        let isActive = dependencies.serverConfigStore.activeServer?.id == server.id
+        if isActive {
+            onDismiss?()
+            return
+        }
+
+        // Pre-flight: check reachability before tearing down the current session
         isSwitching = true
         switchingServerId = server.id
+
+        let reachable = await checkReachability(for: server)
+
+        guard reachable else {
+            // Leave the row in the .unreachable state — user can tap "Retry"
+            isSwitching = false
+            switchingServerId = nil
+            return
+        }
+
+        // Server is reachable — proceed with switch
         onDismiss?()
         await viewModel.switchToServer(server)
+        reachabilityState[server.id] = nil
         isSwitching = false
         switchingServerId = nil
     }
@@ -185,6 +243,13 @@ struct SavedServersView: View {
             // Already on this server — just switch account
             await viewModel.switchToAccount(account)
         } else {
+            // Pre-flight reachability check before switching server
+            let reachable = await checkReachability(for: server)
+            guard reachable else {
+                switchingAccountId = nil
+                return
+            }
+
             // Switch server first, then switch to the specific account
             onDismiss?()
             await viewModel.switchToServer(server)
@@ -203,6 +268,10 @@ struct SavedServersView: View {
         let isActiveServer = dependencies.serverConfigStore.activeServer?.id == server.id
 
         if !isActiveServer {
+            // Pre-flight reachability check before switching server
+            let reachable = await checkReachability(for: server)
+            guard reachable else { return }
+
             // Switch to the server first
             onDismiss?()
             await viewModel.switchToServer(server)
@@ -219,10 +288,12 @@ private struct ServerRowView: View {
     let isActive: Bool
     let isSwitchingServer: Bool
     @Binding var switchingAccountId: String?
+    let reachabilityState: SavedServersView.ReachabilityState?
     let onSwitchServer: () -> Void
     let onSwitchToAccount: (SavedAccount) -> Void
     let onAddAccount: () -> Void
     let onDelete: () -> Void
+    let onRetryReachability: () -> Void
 
     @Environment(\.theme) private var theme
 
@@ -242,10 +313,27 @@ private struct ServerRowView: View {
         return "Not signed in"
     }
 
+    /// Whether a reachability check is in-flight for this row.
+    private var isCheckingReachability: Bool {
+        if case .checking = reachabilityState { return true }
+        return false
+    }
+
+    /// The unreachable error message, if any.
+    private var unreachableMessage: String? {
+        if case .unreachable(let msg) = reachabilityState { return msg }
+        return nil
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             // Server header row
             serverHeaderRow
+
+            // Inline reachability error banner
+            if let errorMsg = unreachableMessage {
+                reachabilityErrorBanner(message: errorMsg)
+            }
 
             // Saved accounts section
             if !server.savedAccounts.isEmpty {
@@ -263,12 +351,16 @@ private struct ServerRowView: View {
         }
         .background(
             RoundedRectangle(cornerRadius: CornerRadius.lg, style: .continuous)
-                .fill(isActive ? theme.brandPrimary.opacity(0.06) : theme.surfaceContainer)
+                .fill(unreachableMessage != nil
+                      ? theme.error.opacity(0.04)
+                      : (isActive ? theme.brandPrimary.opacity(0.06) : theme.surfaceContainer))
                 .overlay(
                     RoundedRectangle(cornerRadius: CornerRadius.lg, style: .continuous)
                         .strokeBorder(
-                            isActive ? theme.brandPrimary.opacity(0.3) : theme.cardBorder,
-                            lineWidth: isActive ? 1.5 : 0.5
+                            unreachableMessage != nil
+                                ? theme.error.opacity(0.3)
+                                : (isActive ? theme.brandPrimary.opacity(0.3) : theme.cardBorder),
+                            lineWidth: (unreachableMessage != nil || isActive) ? 1.5 : 0.5
                         )
                 )
         )
@@ -279,11 +371,17 @@ private struct ServerRowView: View {
 
     private var serverHeaderRow: some View {
         HStack(spacing: Spacing.md) {
-            // Status indicator
-            Circle()
-                .fill(statusColor)
-                .frame(width: 10, height: 10)
-                .accessibilityLabel(statusLabel)
+            // Status indicator — shows checking spinner when pre-flighting
+            if isCheckingReachability {
+                ProgressView()
+                    .controlSize(.mini)
+                    .frame(width: 10, height: 10)
+            } else {
+                Circle()
+                    .fill(unreachableMessage != nil ? theme.error : statusColor)
+                    .frame(width: 10, height: 10)
+                    .accessibilityLabel(statusLabel)
+            }
 
             // Server info
             VStack(alignment: .leading, spacing: Spacing.xxs) {
@@ -302,14 +400,18 @@ private struct ServerRowView: View {
             Spacer(minLength: 0)
 
             // Status pill
-            Text(statusLabel)
+            Text(unreachableMessage != nil ? "Unreachable" : statusLabel)
                 .scaledFont(size: 11, weight: .medium)
-                .foregroundStyle(isActive ? theme.success : theme.textTertiary)
+                .foregroundStyle(unreachableMessage != nil
+                                 ? theme.error
+                                 : (isActive ? theme.success : theme.textTertiary))
                 .padding(.horizontal, 8)
                 .padding(.vertical, 3)
                 .background(
                     Capsule()
-                        .fill(isActive ? theme.success.opacity(0.12) : theme.surfaceContainer)
+                        .fill(unreachableMessage != nil
+                              ? theme.error.opacity(0.1)
+                              : (isActive ? theme.success.opacity(0.12) : theme.surfaceContainer))
                 )
 
             // Delete button
@@ -323,6 +425,39 @@ private struct ServerRowView: View {
         }
         .padding(.horizontal, Spacing.md)
         .padding(.vertical, Spacing.sm)
+    }
+
+    // MARK: - Reachability Error Banner
+
+    private func reachabilityErrorBanner(message: String) -> some View {
+        HStack(spacing: Spacing.sm) {
+            Image(systemName: "wifi.exclamationmark")
+                .scaledFont(size: 12)
+                .foregroundStyle(theme.error)
+
+            Text(message)
+                .scaledFont(size: 12)
+                .foregroundStyle(theme.error)
+                .lineLimit(2)
+
+            Spacer(minLength: 0)
+
+            Button(action: onRetryReachability) {
+                Text("Retry")
+                    .scaledFont(size: 12, weight: .medium)
+                    .foregroundStyle(theme.brandPrimary)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 3)
+                    .background(
+                        Capsule()
+                            .fill(theme.brandPrimary.opacity(0.1))
+                    )
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(.horizontal, Spacing.md)
+        .padding(.vertical, Spacing.sm)
+        .background(theme.error.opacity(0.06))
     }
 
     // MARK: - Accounts List
@@ -435,21 +570,21 @@ private struct ServerRowView: View {
                 // No accounts — show "Connect" button
                 Button(action: onSwitchServer) {
                     HStack(spacing: Spacing.xs) {
-                        if isSwitchingServer {
+                        if isSwitchingServer || isCheckingReachability {
                             ProgressView()
                                 .controlSize(.small)
                         } else {
                             Image(systemName: "arrow.right.circle")
                                 .scaledFont(size: 13)
                         }
-                        Text("Connect")
+                        Text(isCheckingReachability ? "Checking…" : "Connect")
                             .scaledFont(size: 13, weight: .medium)
                     }
                     .foregroundStyle(theme.brandPrimary)
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, Spacing.sm)
                 }
-                .disabled(isSwitchingServer)
+                .disabled(isSwitchingServer || isCheckingReachability)
             } else {
                 // Has accounts — show "Add Another Account"
                 Button(action: onAddAccount) {

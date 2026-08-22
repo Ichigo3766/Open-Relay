@@ -1420,9 +1420,12 @@ struct ModelEditorView: View {
     private func fetchAvailableModels() async {
         guard let api = dependencies.apiClient else { return }
         isFetchingModels = true
-        logger.info("[BaseModelPicker] Fetching available models...")
+        logger.info("[BaseModelPicker] Fetching available models (including hidden for admin base model picker)...")
         do {
-            let models = try await api.getModels()
+            // Use getModelsIncludingHidden() so hidden models appear in the base model picker —
+            // admins need to be able to select any enabled model as a base, matching the web UI
+            // behaviour in ModelEditor.svelte where hidden models are visible to admins.
+            let models = try await api.getModelsIncludingHidden()
             availableModels = models
             logger.info("[BaseModelPicker] Fetched \(models.count) models")
             // Resolve display name for the current baseModelId

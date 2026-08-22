@@ -897,6 +897,9 @@ struct FunctionItem: Identifiable, Sendable {
     /// Whether this filter function has a per-message toggle (meta.toggle: true).
     /// When true, the filter should appear as a toggleable tool in the ToolsMenuSheet.
     var hasToggle: Bool
+    /// Whether this function exposes user-configurable valve settings.
+    /// Populated from `has_user_valves` in the server response.
+    var hasUserValves: Bool
 
     init?(json: [String: Any]) {
         guard let id = json["id"] as? String,
@@ -910,6 +913,7 @@ struct FunctionItem: Identifiable, Sendable {
         self.isActive = json["is_active"] as? Bool ?? true
         self.isGlobal = json["is_global"] as? Bool ?? false
         self.hasToggle = meta["toggle"] as? Bool ?? false
+        self.hasUserValves = json["has_user_valves"] as? Bool ?? false
         let manifest = meta["manifest"] as? [String: Any] ?? [:]
         self.version = manifest["version"] as? String
         self.authorName = manifest["author"] as? String

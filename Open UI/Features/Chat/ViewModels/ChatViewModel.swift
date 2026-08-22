@@ -167,6 +167,9 @@ final class ChatViewModel {
     /// Applied to `conversation.chatParams` as soon as the conversation is created.
     var pendingChatParams: ChatAdvancedParams?
     var availableTools: [ToolItem] = []
+    /// All functions (filter/action/pipe) with user valves, used by the Valves section
+    /// in the Controls panel. Populated lazily in loadTools() alongside availableTools.
+    var availableFunctions: [FunctionItem] = []
     var selectedToolIds: Set<String> = [] {
         didSet {
             // Track tools the user explicitly disabled (were in old set but not new)
@@ -194,6 +197,13 @@ final class ChatViewModel {
     var selectedReferenceChats: [ReferenceChatItem] = []
     /// Notes selected as context for the next message (injected as inline text, not file refs).
     var selectedNotes: [Note] = []
+    /// IDs of context items that the user has explicitly removed via the Controls panel.
+    /// `collectHistoryFileRefs` skips any stored file whose ID is in this set so the item
+    /// is not re-injected into future RAG requests even though it still lives in history.
+    var removedContextIds: Set<String> = []
+    /// Top-level files attached to this conversation (mirrors OWUI `chat.files`).
+    /// Loaded from `conversation.files` on open; persisted back via `syncConversationHistory`.
+    var chatFiles: [ChatMessageFile] = []
     var isLoadingTools: Bool = false
     /// Available terminal servers fetched from the backend.
     var availableTerminalServers: [TerminalServer] = []
@@ -436,7 +446,8 @@ final class ChatViewModel {
             model: modelId,
             systemPrompt: conv.systemPrompt,
             chatParams: conv.chatParams,
-            title: conv.title
+            title: conv.title,
+            chatFiles: chatFiles
         )
     }
 
@@ -977,6 +988,8 @@ final class ChatViewModel {
             deletedMessageIds = []
             // Populate tasks from the server conversation
             tasks = fetched.tasks
+            // Populate top-level chat files (mirrors OWUI `chatFiles = chat?.files ?? []`)
+            chatFiles = fetched.files
             // Always adopt the last-used model for existing chats.
             // Priority: last assistant message's model (the actual model used
             // most recently) > conversation-level model > fallback.
@@ -1692,6 +1705,19 @@ final class ChatViewModel {
             }
             // Write back to shared cache so subsequent VMs are pre-populated
             activeChatStore?.updateModelCache(models: availableModels, selectedId: selectedModelId)
+
+            // Evict model avatar cache entries so admin-changed avatars are
+            // picked up on the next render. Runs in the background — does not
+            // block the model load or the UI. Uses prefetchWithAuth so images
+            // are re-downloaded with the Bearer token immediately after eviction.
+            let avatarURLs = availableModels.compactMap { $0.resolveAvatarURL(baseURL: serverBaseURL) }
+            let authToken = manager.apiClient.network.authToken
+            Task {
+                for url in avatarURLs {
+                    await ImageCacheService.shared.evict(for: url)
+                }
+                await ImageCacheService.shared.prefetchWithAuth(urls: avatarURLs, authToken: authToken)
+            }
         } catch {
             logger.error("Failed to load models: \(error.localizedDescription)")
         }
@@ -1796,6 +1822,16 @@ final class ChatViewModel {
                         ))
                     }
                 }
+            }
+
+                // Also populate availableFunctions for the Controls panel Valves section.
+            // Fetch ALL active functions (not just toggle-filters) so the Valves section
+            // can show any tool/function that has user-configurable valve settings.
+            do {
+                let allFunctions = try await manager.apiClient.getFunctions()
+                availableFunctions = allFunctions.filter { $0.isActive && $0.hasUserValves }
+            } catch {
+                logger.debug("Failed to fetch functions for valves: \(error.localizedDescription)")
             }
 
             if !allItems.isEmpty {
@@ -1973,6 +2009,38 @@ final class ChatViewModel {
         guard !selectedReferenceChats.contains(where: { $0.id == item.id }) else { return }
         selectedReferenceChats.append(item)
         Haptics.play(.light)
+    }
+
+    // MARK: - Context Item Removal (Controls Panel)
+
+    /// Removes a knowledge item from the active context.
+    /// Adds the item's ID to `removedContextIds` so `collectHistoryFileRefs` skips
+    /// it in future RAG requests, preventing ghost-re-injection from history nodes.
+    func removeKnowledgeItem(_ item: KnowledgeItem) {
+        selectedKnowledgeItems.removeAll { $0.id == item.id }
+        removedContextIds.insert(item.id)
+    }
+
+    /// Removes a reference chat from the active context.
+    /// Adds the chat's ID to `removedContextIds` so it is not re-injected from history.
+    func removeReferenceChat(_ item: ReferenceChatItem) {
+        selectedReferenceChats.removeAll { $0.id == item.id }
+        removedContextIds.insert(item.id)
+    }
+
+    /// Removes a top-level chat file from this conversation and persists the removal to the server.
+    /// Adds the file ID to `removedContextIds` so it is not re-injected from history refs.
+    func removeFile(_ file: ChatMessageFile) {
+        chatFiles.removeAll { $0.url == file.url }
+        if let fileId = file.url {
+            removedContextIds.insert(fileId)
+        }
+        guard let chatId = conversationId ?? conversation?.id,
+              let manager else { return }
+        let currentFiles = chatFiles
+        Task {
+            try? await manager.apiClient.updateChatControls(id: chatId, files: currentFiles)
+        }
     }
 
     // MARK: - Prompt Slash Commands
@@ -6260,6 +6328,9 @@ final class ChatViewModel {
         for storedFile in allStoredFiles {
             guard let fileId = storedFile.url else { continue }
             guard !seenIds.contains(fileId) else { continue }
+            // Skip IDs that the user explicitly removed via the Controls panel.
+            // This prevents ghost re-injection from history nodes.
+            guard !removedContextIds.contains(fileId) else { continue }
             seenIds.insert(fileId)
 
             if storedFile.type == "note" {

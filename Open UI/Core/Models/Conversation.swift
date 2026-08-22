@@ -53,6 +53,13 @@ struct Conversation: Identifiable, Hashable, Sendable {
     /// Tasks created and managed by the model's built-in task management tools.
     var tasks: [ChatTask]
 
+    /// Top-level files attached to this conversation (mirrors OWUI `chat.files`).
+    ///
+    /// This is the **persistent** file list stored on the server alongside the chat —
+    /// not the per-message files array inside history nodes.  Open WebUI loads it as
+    /// `chatFiles = structuredClone(chatContent?.files ?? [])` in Chat.svelte.
+    var files: [ChatMessageFile]
+
     init(
         id: String = UUID().uuidString,
         title: String,
@@ -67,7 +74,8 @@ struct Conversation: Identifiable, Hashable, Sendable {
         shareId: String? = nil,
         folderId: String? = nil,
         tags: [String] = [],
-        tasks: [ChatTask] = []
+        tasks: [ChatTask] = [],
+        files: [ChatMessageFile] = []
     ) {
         self.id = id
         self.title = title
@@ -83,6 +91,7 @@ struct Conversation: Identifiable, Hashable, Sendable {
         self.folderId = folderId
         self.tags = tags
         self.tasks = tasks
+        self.files = files
     }
 
     /// Re-derives the flat `messages` array from the history tree.

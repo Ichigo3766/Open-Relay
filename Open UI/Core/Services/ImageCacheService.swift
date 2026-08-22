@@ -429,14 +429,18 @@ actor ImageCacheService {
 
     /// Evicts the cached image for a specific URL from both memory and disk.
     ///
-    /// Used to invalidate model avatars when models are refreshed, ensuring
-    /// admin-updated avatar images are re-fetched from the server.
+    /// Also removes the ETag/Last-Modified `.meta` sidecar so the next fetch
+    /// sends a full request instead of `If-None-Match`. Without this, evict +
+    /// re-fetch returns a 304 (image deleted, meta still present → disk miss →
+    /// nil), causing avatars to show the placeholder forever after a refresh.
     func evict(for url: URL) {
         let key = cacheKey(for: url)
         memoryCache.removeObject(forKey: key as NSString)
         if let directory = diskCacheDirectory {
             let fileURL = directory.appendingPathComponent(key)
+            let metaURL = directory.appendingPathComponent(key + ".meta")
             try? fileManager.removeItem(at: fileURL)
+            try? fileManager.removeItem(at: metaURL)
         }
     }
 
