@@ -1154,6 +1154,7 @@ struct ChatDetailView: View {
                 tools: vm.availableTools,
                 selectedToolIds: $vm.selectedToolIds,
                 isLoadingTools: vm.isLoadingTools,
+                toolsHaveLoaded: vm.toolsHaveLoaded,
                 terminalEnabled: vm.terminalEnabled,
                 isTerminalAvailable: !vm.availableTerminalServers.isEmpty && vm.isTerminalCapableForSelectedModel,
                 terminalServerName: vm.selectedTerminalServer?.displayName ?? "",

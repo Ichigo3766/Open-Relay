@@ -90,6 +90,9 @@ struct ChatInputField: View {
     var tools: [ToolItem]
     @Binding var selectedToolIds: Set<String>
     var isLoadingTools: Bool = false
+    /// True once tools have been fetched at least once from the server.
+    /// Used to distinguish "never fetched" (show pills) from "fetched and tool gone" (hide pill).
+    var toolsHaveLoaded: Bool = false
 
     // Terminal bindings
     var terminalEnabled: Bool = false
@@ -896,9 +899,11 @@ struct ChatInputField: View {
                 // but once loading is complete, only show it if the tool still exists.
                 // This removes orphaned favorites for tools that have been deleted.
                 let tool = tools.first(where: { $0.id == id })
-                if !isLoadingTools && tool == nil {
-                    // Tools finished loading and this ID isn't among them — it's an
+                if toolsHaveLoaded && tool == nil {
+                    // Tools have been fetched and this ID isn't among them — it's an
                     // orphan (tool was deleted/removed). Skip rendering the pill.
+                    // Note: we guard on toolsHaveLoaded (not !isLoadingTools) to
+                    // distinguish "never fetched yet" from "fetched and tool is gone".
                     continue
                 }
                 let displayName = tool?.name ?? id.replacingOccurrences(of: "_", with: " ").capitalized

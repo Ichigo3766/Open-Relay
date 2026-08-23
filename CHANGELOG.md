@@ -1,5 +1,14 @@
 # Changelog
 
+## v5.4.1 — August 23, 2026
+
+### Bug Fixes
+- Fixed admin users unable to edit models in Admin Console
+- Fixed starred tool quick-action pills disappearing on app launch and new chat
+
+
+## Previous Builds
+
 ## v5.4 — August 22, 2026
 
 ### What's New

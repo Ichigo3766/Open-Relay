@@ -205,6 +205,9 @@ final class ChatViewModel {
     /// Loaded from `conversation.files` on open; persisted back via `syncConversationHistory`.
     var chatFiles: [ChatMessageFile] = []
     var isLoadingTools: Bool = false
+    /// True once loadTools() has completed at least one fetch.
+    /// Distinguishes "never fetched yet" (false) from "fetched and tool is gone" (true).
+    var toolsHaveLoaded: Bool = false
     /// Available terminal servers fetched from the backend.
     var availableTerminalServers: [TerminalServer] = []
     /// Whether the user has enabled terminal for this chat session.
@@ -1837,7 +1840,13 @@ final class ChatViewModel {
             if !allItems.isEmpty {
                 availableTools = allItems
                 syncToolSelectionWithDefaults()
+                // Prune selectedToolIds of orphaned IDs (tools that no longer exist on server).
+                // Mirrors IntegrationsMenu.svelte line 108:
+                //   selectedToolIds = selectedToolIds.filter(id => Object.keys(tools).includes(id))
+                let knownIds = Set(allItems.map { $0.id })
+                selectedToolIds = selectedToolIds.filter { knownIds.contains($0) }
                 isLoadingTools = false
+                toolsHaveLoaded = true
                 return
             }
         } catch {
@@ -1857,7 +1866,10 @@ final class ChatViewModel {
         }
         availableTools = items
         syncToolSelectionWithDefaults()
+        let knownFallbackIds = Set(items.map { $0.id })
+        selectedToolIds = selectedToolIds.filter { knownFallbackIds.contains($0) }
         isLoadingTools = false
+        toolsHaveLoaded = true
     }
 
     /// Adds globally-enabled tools (server `is_active`) and model-assigned
