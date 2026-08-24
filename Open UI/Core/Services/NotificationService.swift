@@ -26,6 +26,9 @@ final class NotificationService: NSObject, @unchecked Sendable {
     /// Category for channel message notifications.
     static let channelMessageCategory = "CHANNEL_MESSAGE"
 
+    /// Category for streaming interrupted notifications.
+    static let streamingInterruptedCategory = "STREAMING_INTERRUPTED"
+
     /// Action to open the chat from a notification.
     static let openChatAction = "OPEN_CHAT"
 
@@ -44,20 +47,25 @@ final class NotificationService: NSObject, @unchecked Sendable {
     /// Set by ChatDetailView on appear/disappear. When a generation
     /// notification arrives for this conversation, it is suppressed
     /// since the user is already looking at it.
-    var activeConversationId: String?
+    /// nonisolated(unsafe) allows the willPresent delegate (nonisolated) to read
+    /// these values without hopping to the main actor, which would defer the
+    /// UNUserNotificationCenter completionHandler callback. These are only ever
+    /// written on the main thread; the worst-case torn read is a suppression
+    /// decision error, not a crash.
+    nonisolated(unsafe) var activeConversationId: String?
 
     /// The channel ID the user is currently viewing.
     /// Set by ChannelDetailView on appear/disappear. When a channel
     /// notification arrives for this channel, it is suppressed in foreground
     /// since the user is already looking at it.
-    var activeChannelId: String?
+    nonisolated(unsafe) var activeChannelId: String?
 
     /// When true, the next generation-complete notification bypasses the
     /// activeConversationId suppression check. Used by recoverFromBackgroundStreaming
     /// so the user always gets a banner when they return to the app after a
     /// response completed while they were away — even if they are currently
     /// looking at that chat.
-    var bypassActiveConversationSuppression: Bool = false
+    nonisolated(unsafe) var bypassActiveConversationSuppression: Bool = false
 
     /// Callback when user taps a notification action.
     var onOpenChat: ((String) -> Void)?
@@ -118,7 +126,19 @@ final class NotificationService: NSObject, @unchecked Sendable {
             options: []
         )
 
-        center.setNotificationCategories([generationCategory, voiceCallCategory, channelCategory])
+        let interruptedCategory = UNNotificationCategory(
+            identifier: Self.streamingInterruptedCategory,
+            actions: [openAction],
+            intentIdentifiers: [],
+            options: []
+        )
+
+        center.setNotificationCategories([
+            generationCategory,
+            voiceCallCategory,
+            channelCategory,
+            interruptedCategory
+        ])
 
         // Request permission if not yet determined, otherwise sync cached state
         let settings = await center.notificationSettings()
@@ -156,13 +176,16 @@ final class NotificationService: NSObject, @unchecked Sendable {
 
     /// Sends a local notification when a chat generation completes while the app is backgrounded.
     ///
+    /// Uses a stable per-conversation identifier (`"generation-<conversationId>"`) so that if
+    /// the background polling loop and the foreground recovery path both fire for the same
+    /// conversation, the second delivery **replaces** the first banner rather than creating a
+    /// duplicate. This is the correct UNUserNotificationCenter behaviour: posting to the same
+    /// identifier atomically replaces any pending or delivered notification with that ID.
+    ///
     /// - Parameters:
     ///   - conversationId: The ID of the conversation that completed.
     ///   - title: The conversation title.
     ///   - preview: A short preview of the generated response.
-    /// Sends a local notification when a chat generation completes.
-    /// This is `async` so callers (especially background tasks) can `await` it
-    /// and ensure the notification is delivered before iOS suspends the app.
     func notifyGenerationComplete(
         conversationId: String,
         title: String,
@@ -207,6 +230,10 @@ final class NotificationService: NSObject, @unchecked Sendable {
         content.userInfo = ["conversationId": conversationId]
         content.threadIdentifier = conversationId
 
+        // Increment the app badge count for each new generation notification.
+        // Uses our own UserDefaults counter because badgeCount() requires iOS 17+.
+        content.badge = Self.incrementBadgeCount() as NSNumber
+
         // Use trigger: nil (immediate delivery).
         // The 2-second delay was intended to let the user background the app
         // first, but it was the PRIMARY cause of missed notifications:
@@ -216,17 +243,61 @@ final class NotificationService: NSObject, @unchecked Sendable {
         // The willPresent delegate already handles foreground suppression — if
         // the user is still viewing the chat, it returns [] (no banner), so
         // there is no visual noise when the notification fires while in-app.
+        //
+        // STABLE IDENTIFIER: "generation-<conversationId>" (no timestamp).
+        // This ensures a second delivery for the same conversation replaces the
+        // first rather than stacking up as a duplicate banner. The previous
+        // approach used a unique ID per delivery ("generation-<id>-<timestamp>"),
+        // which meant background polling + foreground recovery could each fire a
+        // separate notification for the same completed response.
         let request = UNNotificationRequest(
-            identifier: "generation-\(conversationId)-\(Date().timeIntervalSince1970)",
+            identifier: "generation-\(conversationId)",
             content: content,
             trigger: nil
         )
 
         do {
             try await center.add(request)
-            logger.info("Generation notification scheduled for \(conversationId)")
+            logger.info("Generation notification delivered for \(conversationId)")
         } catch {
             logger.error("Failed to deliver generation notification: \(error.localizedDescription)")
+        }
+    }
+
+    // MARK: - Streaming Interrupted
+
+    /// Fires when the iOS background task budget expires while an AI response is still
+    /// in progress. Informs the user that their response was cut off and invites them
+    /// back into the app to retry or view the partial result.
+    ///
+    /// Unlike `notifyGenerationComplete`, this notification uses a DIFFERENT identifier
+    /// so it doesn't replace a successful completion notification if both fire (unlikely,
+    /// but possible in a race between expiration and normal completion).
+    func notifyStreamingInterrupted(conversationId: String, title: String) async {
+        let center = UNUserNotificationCenter.current()
+        let settings = await center.notificationSettings()
+        guard settings.authorizationStatus == .authorized else { return }
+
+        let content = UNMutableNotificationContent()
+        content.title = title
+        content.body = "Response was interrupted — tap to continue"
+        content.sound = .default
+        content.categoryIdentifier = Self.streamingInterruptedCategory
+        content.userInfo = ["conversationId": conversationId]
+        content.threadIdentifier = conversationId
+        content.interruptionLevel = .timeSensitive
+
+        let request = UNNotificationRequest(
+            identifier: "interrupted-\(conversationId)",
+            content: content,
+            trigger: nil
+        )
+
+        do {
+            try await center.add(request)
+            logger.info("Streaming interrupted notification delivered for \(conversationId)")
+        } catch {
+            logger.error("Failed to deliver interrupted notification: \(error.localizedDescription)")
         }
     }
 
@@ -326,15 +397,26 @@ final class NotificationService: NSObject, @unchecked Sendable {
         content.userInfo = ["channelId": channelId]
         content.threadIdentifier = "channel-\(channelId)"
 
+        // Increment app badge for each channel message too
+        content.badge = Self.incrementBadgeCount() as NSNumber
+
+        // Use a stable identifier keyed by channel + sender so rapid messages
+        // from the same person replace rather than stack up as a pile of banners.
+        // Using just "channel-<channelId>-<senderName>" means each sender in a
+        // channel gets their own slot — multiple senders each show one banner.
+        let stableSenderId = senderName
+            .lowercased()
+            .components(separatedBy: .whitespaces)
+            .joined(separator: "_")
         let request = UNNotificationRequest(
-            identifier: "channel-\(channelId)-\(Date().timeIntervalSince1970)",
+            identifier: "channel-\(channelId)-\(stableSenderId)",
             content: content,
             trigger: nil
         )
 
         do {
             try await center.add(request)
-            logger.info("Channel notification scheduled for \(channelId)")
+            logger.info("Channel notification delivered for \(channelId)")
         } catch {
             logger.error("Failed to deliver channel notification: \(error.localizedDescription)")
         }
@@ -378,26 +460,66 @@ final class NotificationService: NSObject, @unchecked Sendable {
         )
     }
 
-    // MARK: - Utility
+    // MARK: - Badge Management
 
-    /// Clears all delivered notifications.
-    func clearAll() {
-        UNUserNotificationCenter.current().removeAllDeliveredNotifications()
+    /// Local badge counter — incremented per notification delivery and cleared on tap or foreground.
+    /// We track this ourselves because `UNUserNotificationCenter.badgeCount()` requires iOS 17+
+    /// and `UIApplication.applicationIconBadgeNumber` requires the main thread.
+    private static let badgeCountKey = "notificationBadgeCount"
+
+    /// Returns the current tracked badge count.
+    nonisolated private static func currentBadgeCount() -> Int {
+        UserDefaults.standard.integer(forKey: badgeCountKey)
     }
 
-    /// Clears the badge count.
+    /// Increments the tracked badge count by 1 and returns the new value.
+    nonisolated private static func incrementBadgeCount() -> Int {
+        let newCount = currentBadgeCount() + 1
+        UserDefaults.standard.set(newCount, forKey: badgeCountKey)
+        return newCount
+    }
+
+    /// Resets the tracked badge count to 0 and clears the iOS icon badge.
     func clearBadge() {
-        UNUserNotificationCenter.current().setBadgeCount(0)
+        UserDefaults.standard.set(0, forKey: Self.badgeCountKey)
+        UNUserNotificationCenter.current().setBadgeCount(0) { [weak self] error in
+            if let error {
+                self?.logger.error("Failed to clear badge: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    // MARK: - Utility
+
+    /// Clears all delivered notifications and resets the badge.
+    func clearAll() {
+        UNUserNotificationCenter.current().removeAllDeliveredNotifications()
+        clearBadge()
     }
 }
 
 // MARK: - UNUserNotificationCenterDelegate
 
 extension NotificationService: UNUserNotificationCenterDelegate {
+
     /// Handle notification when app is in foreground.
-    /// Shows generation-complete notifications as banners so the user sees them
-    /// even if they're on a different screen within the app. Suppresses other
-    /// notification types (e.g., voice call ongoing) in foreground.
+    ///
+    /// This delegate method is called synchronously on a background thread — we must
+    /// call `completionHandler` as quickly as possible. We read the cached @MainActor
+    /// state via a synchronous check to avoid the latency penalty of dispatching back to
+    /// the main actor (which would defer the completion handler until the next run loop
+    /// cycle, making the notification appear stale or delayed).
+    ///
+    /// Because NotificationService is @MainActor and declared @unchecked Sendable, reading
+    /// `activeConversationId`, `activeChannelId`, and `bypassActiveConversationSuppression`
+    /// from a nonisolated context is technically a data race under strict concurrency.
+    /// We accept this with `nonisolated(unsafe)` backing storage (inherited from @Observable)
+    /// because:
+    ///   1. These are only ever mutated on the main thread.
+    ///   2. The worst outcome of a torn read is an occasional incorrect suppression decision —
+    ///      a minor cosmetic issue, not a crash or data corruption.
+    ///   3. The alternative (Task { @MainActor }) reliably calls completionHandler after the
+    ///      run loop, which Apple's documentation flags as undesirable for willPresent.
     nonisolated func userNotificationCenter(
         _ center: UNUserNotificationCenter,
         willPresent notification: UNNotification,
@@ -405,34 +527,46 @@ extension NotificationService: UNUserNotificationCenterDelegate {
     ) {
         let category = notification.request.content.categoryIdentifier
         let conversationId = notification.request.content.userInfo["conversationId"] as? String
+        let channelId = notification.request.content.userInfo["channelId"] as? String
 
-        // Use raw string to avoid main-actor isolation issue with the static property
-        if category == "GENERATION_COMPLETE" {
-            // Suppress if user is already viewing this conversation,
-            // UNLESS the bypass flag is set (recovery notification after returning from background).
-            Task { @MainActor in
-                if self.bypassActiveConversationSuppression {
-                    // One-shot bypass: clear the flag immediately after use
-                    self.bypassActiveConversationSuppression = false
-                    completionHandler([.banner, .sound])
-                } else if let conversationId, conversationId == self.activeConversationId {
-                    completionHandler([])
-                } else {
-                    completionHandler([.banner, .sound])
+        // Read the cached main-actor state synchronously. This is safe because:
+        // - These properties are only written on the main thread.
+        // - The read here is a single memory load per property (no compound operation).
+        // - We never write these properties from this method.
+        let currentConversationId = activeConversationId
+        let currentChannelId = activeChannelId
+        let bypass = bypassActiveConversationSuppression
+
+        switch category {
+        case Self.generationCompleteCategory:
+            if bypass {
+                // One-shot bypass: clear the flag on the main actor then show the banner
+                Task { @MainActor [weak self] in
+                    self?.bypassActiveConversationSuppression = false
                 }
+                completionHandler([.banner, .sound])
+            } else if let conversationId, conversationId == currentConversationId {
+                // User is already looking at this chat — suppress banner but update badge
+                completionHandler([.badge])
+            } else {
+                completionHandler([.banner, .sound, .badge])
             }
-        } else if category == "CHANNEL_MESSAGE" {
-            // Suppress if the user is already viewing that channel.
-            let channelId = notification.request.content.userInfo["channelId"] as? String
-            Task { @MainActor in
-                if let channelId, channelId == self.activeChannelId {
-                    completionHandler([])
-                } else {
-                    completionHandler([.banner, .sound])
-                }
+
+        case Self.channelMessageCategory:
+            if let channelId, channelId == currentChannelId {
+                // User is already viewing this channel — suppress
+                completionHandler([])
+            } else {
+                completionHandler([.banner, .sound, .badge])
             }
-        } else {
-            // Suppress other notifications when app is in foreground
+
+        case Self.streamingInterruptedCategory:
+            // Always show interrupted notifications — even if user is on that chat screen,
+            // they should know the response didn't complete. No badge — it's not new content.
+            completionHandler([.banner, .sound])
+
+        default:
+            // Suppress other notification types (e.g. voice call ongoing) in foreground
             completionHandler([])
         }
     }
@@ -445,16 +579,23 @@ extension NotificationService: UNUserNotificationCenterDelegate {
     ) {
         let actionId = response.actionIdentifier
         let conversationId = response.notification.request.content.userInfo["conversationId"] as? String
-
         let channelId = response.notification.request.content.userInfo["channelId"] as? String
         let category = response.notification.request.content.categoryIdentifier
 
         Task { @MainActor in
-            if actionId == Self.openChatAction || (actionId == UNNotificationDefaultActionIdentifier && category == "GENERATION_COMPLETE") {
+            // Clear badge when user taps a notification — they're now looking at the app
+            UNUserNotificationCenter.current().setBadgeCount(0) { _ in }
+
+            if actionId == Self.openChatAction
+                || (actionId == UNNotificationDefaultActionIdentifier
+                    && (category == Self.generationCompleteCategory
+                        || category == Self.streamingInterruptedCategory)) {
                 if let conversationId {
                     onOpenChat?(conversationId)
                 }
-            } else if actionId == Self.openChannelAction || (actionId == UNNotificationDefaultActionIdentifier && category == "CHANNEL_MESSAGE") {
+            } else if actionId == Self.openChannelAction
+                || (actionId == UNNotificationDefaultActionIdentifier
+                    && category == Self.channelMessageCategory) {
                 if let channelId {
                     onOpenChannel?(channelId)
                 }

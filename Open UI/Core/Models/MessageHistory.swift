@@ -446,14 +446,22 @@ struct MessageHistory: Sendable {
     /// ```
     ///
     /// Returns `nil` if the output array is empty or has no usable content.
+    ///
     static func reconstructContentFromOutput(_ outputArr: [[String: Any]]) -> String? {
-        // First pass: build a map of call_id → result text AND call_id → embeds
-        // from function_call_output items.
-        var outputByCallId: [String: String] = [:]
+        // ── Pass 1: build lookup maps from function_call_output items ──────────
+        //
+        // Index by BOTH call_id AND item id so we handle mismatches between
+        // what the server puts in function_call.call_id vs function_call_output.call_id
+        // (some providers use the call's `id` field as the output's `call_id`).
+        var outputByCallId: [String: String] = [:]   // keyed by call_id
+        var outputById:     [String: String] = [:]   // keyed by id (fallback)
         var embedsByCallId: [String: [String]] = [:]
+
         for item in outputArr {
-            guard (item["type"] as? String) == "function_call_output",
-                  let callId = item["call_id"] as? String else { continue }
+            guard (item["type"] as? String) == "function_call_output" else { continue }
+            let callId = item["call_id"] as? String ?? ""
+            let itemId = item["id"]      as? String ?? ""
+
             // Extract result text from output[].text
             if let outputItems = item["output"] as? [[String: Any]] {
                 let texts = outputItems.compactMap { o -> String? in
@@ -461,27 +469,28 @@ struct MessageHistory: Sendable {
                     return text
                 }
                 if !texts.isEmpty {
-                    outputByCallId[callId] = texts.joined(separator: "\n")
+                    let combined = texts.joined(separator: "\n")
+                    if !callId.isEmpty { outputByCallId[callId] = combined }
+                    if !itemId.isEmpty { outputById[itemId]     = combined }
                 }
             }
-            // Extract embeds — new server format stores Rich UI HTML here directly
-            // as a [String] array on the function_call_output item itself.
+
+            // Rich-UI HTML embeds stored on the output item
             if let embeds = item["embeds"] as? [String] {
                 let filtered = embeds.filter { !$0.isEmpty && !$0.contains("data-iv-build") }
-                if !filtered.isEmpty {
+                if !filtered.isEmpty, !callId.isEmpty {
                     embedsByCallId[callId] = filtered
                 }
             }
         }
 
-        // Second pass: build content string in order
+        // ── Pass 2: build content string in output-array order ────────────────
         var parts: [String] = []
         for item in outputArr {
             guard let type = item["type"] as? String else { continue }
 
             switch type {
             case "message":
-                // Plain text or final answer
                 guard let contentArr = item["content"] as? [[String: Any]] else { continue }
                 let textParts = contentArr.compactMap { piece -> String? in
                     guard (piece["type"] as? String) == "output_text",
@@ -489,37 +498,36 @@ struct MessageHistory: Sendable {
                     return text
                 }
                 let text = textParts.joined()
-                if !text.isEmpty {
-                    parts.append(text)
-                }
+                if !text.isEmpty { parts.append(text) }
 
             case "function_call":
-                // Tool call → reconstruct <details type="tool_calls"> block
                 guard let name = item["name"] as? String, !name.isEmpty else { continue }
-                let callId = item["call_id"] as? String ?? item["id"] as? String ?? ""
-                let itemId = item["id"] as? String ?? callId
-                let status = item["status"] as? String ?? "completed"
-                let isDone = (status == "completed")
+
+                // Resolve IDs — some providers use `id` as the output's `call_id`
+                let callId = item["call_id"] as? String ?? ""
+                let itemId = item["id"]      as? String ?? callId
+                let effectiveCallId = callId.isEmpty ? itemId : callId
+
+                let status  = item["status"] as? String ?? "completed"
+                let isDone  = (status == "completed")
                 let arguments = item["arguments"] as? String ?? ""
 
-                // HTML-entity encode arguments for use as an attribute value
-                let encodedArgs = htmlEntityEncode(arguments)
-                // Retrieve the matching result
-                let resultText = outputByCallId[callId] ?? ""
+                // Look up result with dual-index fallback
+                let resultText = outputByCallId[effectiveCallId]
+                    ?? outputByCallId[itemId]
+                    ?? outputById[effectiveCallId]
+                    ?? outputById[itemId]
+                    ?? ""
+
+                let encodedArgs   = htmlEntityEncode(arguments)
                 let encodedResult = htmlEntityEncode(resultText)
+                let doneAttr      = isDone ? "true" : "false"
 
-                let doneAttr = isDone ? "true" : "false"
-
-                // Build embeds attribute if this call produced Rich UI HTML embeds.
-                // The new server format stores them on the matching function_call_output
-                // item. We JSON-encode the array and HTML-entity-encode it so that
-                // parseEmbedsAttribute() in ToolCallParser can decode it unchanged.
+                // Build embeds attribute
                 let embedsAttr: String = {
-                    guard let embeds = embedsByCallId[callId], !embeds.isEmpty else { return "" }
-                    // JSON-encode the array: ["<html>...", ...]
+                    guard let embeds = embedsByCallId[effectiveCallId], !embeds.isEmpty else { return "" }
                     guard let jsonData = try? JSONSerialization.data(withJSONObject: embeds),
                           let jsonStr = String(data: jsonData, encoding: .utf8) else { return "" }
-                    // HTML-entity encode for safe embedding as an attribute value
                     let encoded = jsonStr
                         .replacingOccurrences(of: "&", with: "&amp;")
                         .replacingOccurrences(of: "\"", with: "&quot;")
@@ -528,8 +536,6 @@ struct MessageHistory: Sendable {
                     return " embeds=\"\(encoded)\""
                 }()
 
-                // Build the details block matching ToolCallParser expectations
-                // Result goes both as `result` attribute (fast path) and as body (fallback)
                 let block: String
                 if resultText.isEmpty {
                     block = """
@@ -548,16 +554,27 @@ struct MessageHistory: Sendable {
                 parts.append(block)
 
             case "reasoning":
-                // Reasoning block (e.g. from Gemini) → <details type="reasoning">
+                // Map reasoning items to <details type="reasoning"> blocks.
+                // In-progress reasoning blocks (status != "completed") are emitted
+                // with done="false" so StreamingPipeline can freeze the drain cursor
+                // while they're still building — preventing partial HTML leaking to
+                // the renderer.
+                let status    = item["status"] as? String ?? "completed"
+                let isComplete = (status == "completed")
+
                 if let contentArr = item["content"] as? [[String: Any]] {
                     let reasoningText = contentArr.compactMap { piece -> String? in
                         guard (piece["type"] as? String) == "output_text",
                               let text = piece["text"] as? String, !text.isEmpty else { return nil }
                         return text
                     }.joined()
-                    if !reasoningText.isEmpty {
+                    // Emit even for in-progress blocks (done="false") so the pipeline
+                    // can detect the unclosed block and freeze — matches existing behaviour
+                    // for tool_calls blocks.
+                    if !reasoningText.isEmpty || !isComplete {
+                        let doneVal = isComplete ? "true" : "false"
                         let block = """
-                        <details type="reasoning" done="true">
+                        <details type="reasoning" done="\(doneVal)">
                         <summary>Thinking</summary>
                         \(reasoningText)
                         </details>
@@ -567,7 +584,7 @@ struct MessageHistory: Sendable {
                 }
 
             default:
-                break  // Skip function_call_output (already consumed above) and unknown types
+                break  // function_call_output consumed in pass 1; unknown types skipped
             }
         }
 

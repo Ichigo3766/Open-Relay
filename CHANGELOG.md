@@ -1,5 +1,21 @@
 # Changelog
 
+## v5.4.2 — August 24, 2026
+
+### Improvements
+- Responses now show a notification when interrupted mid-stream (e.g. if the app was backgrounded too long), so you always know to tap back in and retry.
+- Channel message notifications no longer stack up as duplicates from the same person — each sender gets one banner that updates in place.
+- App badge now increments when responses or channel messages arrive, and clears when you tap a notification.
+
+### Bug Fixes
+- Fixed tool call responses being dropped when a model executes multiple tools concurrently.
+- Fixed a bug where content could appear doubled in responses that use the structured output format.
+- Fixed a bug where Socket.IO connection "user-join" handshake could silently leak memory if the app was backgrounded during the 5-second acknowledgement window.
+- Fixed a race condition in the Socket.IO polling transport where rapid reconnects could spawn two simultaneous polling loops, causing duplicate or dropped events.
+- Fixed the streaming URL session not being reset when switching servers, which could send requests to the wrong server after a switch.
+- Fixed a bug where the same AI response could fire two separate "response ready" notification banners (one from background polling and one from foreground recovery).
+
+
 ## v5.4.1 — August 23, 2026
 
 ### Bug Fixes

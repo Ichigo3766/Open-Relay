@@ -82,6 +82,12 @@ struct Open_UIApp: App {
     @Environment(\.scenePhase) private var scenePhase
 
     init() {
+        // Register BGTaskScheduler launch handlers FIRST — before anything else.
+        // Apple's requirement: handlers must be registered before applicationDidFinishLaunching
+        // returns. Calling this in a .task{} modifier or onAppear is too late; iOS silently
+        // marks any tasks that fired before registration as failed and never retries them.
+        BackgroundTaskService.shared.registerHandlers()
+
         // Limit the MLX Metal GPU buffer-recycling cache to 20 MB.
         //
         // By default, MLX sizes its cache to `recommendedMaxWorkingSetSize`, which
@@ -145,6 +151,19 @@ struct Open_UIApp: App {
                 .themed(with: dependencies.appearanceManager, accessibility: dependencies.accessibilityManager)
                 .onChange(of: scenePhase) { _, newPhase in
                     if newPhase == .active {
+                        // Re-arm background tasks on every foreground return.
+                        // The article's key lesson: re-arm on every lifecycle event so
+                        // iOS always has a fresh pending request to honor. Anchoring to
+                        // lastRun + interval (not now + interval) makes this a no-op
+                        // when the desired date hasn't changed.
+                        BackgroundTaskService.shared.scheduleAll()
+
+                        // Clear the app badge count whenever the user opens the app.
+                        // The badge is only cleared on notification tap otherwise, so
+                        // opening the app directly from the home screen would leave the
+                        // number stuck on the icon until the user tapped a notification.
+                        NotificationService.shared.clearBadge()
+
                         // Notify connection monitor that the app is in the foreground.
                         // This triggers an immediate health check + socket reconnect,
                         // cancelling any pending backoff timer so recovery is instant.
@@ -184,6 +203,12 @@ struct Open_UIApp: App {
                         }
                     }
                     if newPhase == .inactive || newPhase == .background {
+                        // Re-arm background tasks on every background transition too.
+                        // This is the most important re-arm callsite: submitting right
+                        // before the app suspends gives iOS a fresh pending request to
+                        // honor during the upcoming background period.
+                        BackgroundTaskService.shared.scheduleAll()
+
                         // Notify connection monitor + socket that we're backgrounding.
                         // Suppresses false "server down" overlays caused by the OS
                         // suspending network activity and cancels reconnect timers
@@ -246,9 +271,23 @@ struct Open_UIApp: App {
                     // the user hasn't been prompted yet.
                     await NotificationService.shared.setup()
 
-                    // Wire notification tap to router
+                    // Wire notification tap to navigate to the correct chat.
+                    // We use openUINavigateToChat (same as the openui://chat/<id> deep link)
+                    // rather than router.navigate(), because router.navigate() only pushes
+                    // onto the NavigationStack path which MainChatView/iPadMainChatView don't
+                    // observe for their local activeConversationId — tapping the notification
+                    // would bring the app to foreground but not open the right chat.
                     NotificationService.shared.onOpenChat = { conversationId in
-                        router.navigate(to: .chatDetail(conversationId: conversationId))
+                        // Persist so cold-start restore also lands in the right chat
+                        SharedDataService.shared.saveLastActiveConversationId(conversationId)
+                        // Small delay so the view hierarchy is fully mounted before the
+                        // notification fires (same pattern as all other deep-link posts)
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                            NotificationCenter.default.post(
+                                name: .openUINavigateToChat,
+                                object: conversationId
+                            )
+                        }
                     }
 
                     // Request Photos "add-only" permission at startup so that

@@ -331,7 +331,12 @@ final class SocketIOService: NSObject, @unchecked Sendable, URLSessionWebSocketD
                     self.handleEngineIOMessage(packet)
                 }
 
-                // Step 4: Start continuous receive loop
+                // Step 4: Start continuous receive loop.
+                // Cancel any previously-running loop BEFORE starting a new one.
+                // Without this, a reconnect would overwrite pollingReceiveTask,
+                // losing the handle to the old task — leaving two polling loops
+                // racing to read packets from the same session simultaneously.
+                self.pollingReceiveTask?.cancel()
                 self.pollingReceiveTask = Task { [weak self] in
                     await self?.pollingReceiveLoop(sid: sid)
                 }
@@ -555,32 +560,51 @@ final class SocketIOService: NSObject, @unchecked Sendable, URLSessionWebSocketD
               let jsonString = String(data: jsonData, encoding: .utf8)
         else { return nil }
 
-        return await withCheckedContinuation { continuation in
-            var didResume = false
-            let resumeLock = NSLock()
-            func resumeOnce(_ value: Any?) {
-                resumeLock.lock()
-                guard !didResume else { resumeLock.unlock(); return }
-                didResume = true
-                resumeLock.unlock()
-                continuation.resume(returning: value)
-            }
+        // Use withTaskCancellationHandler so that if the calling Task is cancelled
+        // (e.g. the app backgrounds and the caller is torn down), the pending ack
+        // is cleaned up and the continuation is resumed, preventing a continuation leak.
+        return await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                let resumeLock = OSAllocatedUnfairLock(initialState: false)
+                func resumeOnce(_ value: Any?) {
+                    let shouldResume = resumeLock.withLock { done -> Bool in
+                        guard !done else { return false }
+                        done = true
+                        return true
+                    }
+                    guard shouldResume else { return }
+                    continuation.resume(returning: value)
+                }
 
-            ackLock.lock()
-            pendingAcks[ackId] = { data in
-                resumeOnce(data)
-            }
-            ackLock.unlock()
+                ackLock.lock()
+                pendingAcks[ackId] = { data in
+                    resumeOnce(data)
+                }
+                ackLock.unlock()
 
-            // Socket.IO EVENT packet WITH ack ID: "42<ackId>[eventName, payload]"
-            send("42\(ackId)\(jsonString)")
+                // Socket.IO EVENT packet WITH ack ID: "42<ackId>[eventName, payload]"
+                send("42\(ackId)\(jsonString)")
 
-            DispatchQueue.main.asyncAfter(deadline: .now() + timeout) { [weak self] in
-                self?.ackLock.lock()
-                self?.pendingAcks.removeValue(forKey: ackId)
-                self?.ackLock.unlock()
-                resumeOnce(nil)
+                // Use Task.sleep instead of DispatchQueue.main.asyncAfter so the timeout
+                // fires reliably regardless of whether the main RunLoop is active (e.g.
+                // while the app is backgrounded). DispatchQueue.main.asyncAfter can be
+                // delayed or never fire when the main thread is suspended, leaving the
+                // Swift continuation alive forever — a guaranteed memory/resource leak.
+                Task { [weak self] in
+                    try? await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
+                    guard let self else { return }
+                    self.ackLock.lock()
+                    self.pendingAcks.removeValue(forKey: ackId)
+                    self.ackLock.unlock()
+                    resumeOnce(nil)
+                }
             }
+        } onCancel: { [weak self] in
+            // Task was cancelled — clean up the pending ack so it doesn't linger.
+            guard let self else { return }
+            self.ackLock.lock()
+            self.pendingAcks.removeValue(forKey: ackId)
+            self.ackLock.unlock()
         }
     }
 

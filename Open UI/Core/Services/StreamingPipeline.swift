@@ -107,6 +107,14 @@ actor StreamingPipeline {
     private var drainAccumulator: Double = 0
     private var isFinishing: Bool = false
 
+    // MARK: - Session generation counter
+    //
+    // Incremented every time resetState() is called (i.e. every begin/abort).
+    // Each drain tick captures the generation at its start; if it has changed
+    // by the time publishSnapshot is called the tick was orphaned by a reset
+    // or abort and its snapshot must be discarded.
+    private var sessionGeneration: Int = 0
+
     // MARK: - Dynamic drain constants
     //
     // The typewriter reveals content so that displayed text lags behind the server
@@ -225,6 +233,22 @@ actor StreamingPipeline {
         isFinishing = true
     }
 
+    /// Atomically update the final content AND mark the session as finishing.
+    ///
+    /// When the `done:true` event arrives, `updateContent` and `endStreaming` are
+    /// called back-to-back from the main actor. Both schedule Tasks on this actor.
+    /// If the finish Task runs before the content Task, the buffer update is dropped
+    /// (guarded by `!isFinishing`). This single call eliminates that race by setting
+    /// both in the same actor turn.
+    func setFinalContent(_ content: String) {
+        // Only update the buffer if not already finishing — prevents overwriting
+        // an aborted session that may have been reset between the Task dispatch
+        // and this actor call.
+        guard !isFinishing else { return }
+        buffer = content
+        isFinishing = true
+    }
+
     /// Immediately flush and stop. Used for abort / error paths.
     func abort() -> String {
         let result = buffer
@@ -237,6 +261,7 @@ actor StreamingPipeline {
     // MARK: - Internal reset
 
     private func resetState() {
+        sessionGeneration &+= 1   // wraps safely; O(1); guards orphaned drain ticks
         buffer = ""
         displayedCount = 0
         drainAccumulator = 0

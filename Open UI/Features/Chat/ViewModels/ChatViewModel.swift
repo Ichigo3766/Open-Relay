@@ -4794,27 +4794,62 @@ final class ChatViewModel {
         socketSessionId: String, effectiveChatId: String?,
         acc: ContentAccumulator
     ) {
-        // structured output format: content lives in `output` array.
-        // The server sends cumulative snapshots (each event contains the full
-        // output so far), so we use `replace` not `append`.
+        // ── Error check (fast-exit before any content processing) ─────────────
+        if let err = payload["error"] as? String, !err.isEmpty {
+            updateAssistantMessage(id: assistantMessageId, content: acc.content,
+                                    isStreaming: false, error: ChatMessageError(content: err))
+            cleanupStreaming()
+            return
+        }
+
+        // ── PATH 1: Structured output array (primary path for all modern OWUI) ─
         //
-        // Reconstruct the full content string (text + inline <details type="tool_calls">
-        // blocks + reasoning blocks) using the same helper as history parsing. This
-        // ensures tool call cards, preamble text, and final answer all render in order
-        // via the existing ToolCallParser — no separate status-pill logic needed.
+        // The server emits `output` as a CUMULATIVE SNAPSHOT on every tick —
+        // every event contains the full output array built so far, not a delta.
+        // Always use `acc.replace()`, never `acc.append()` for this path.
+        //
+        // This path handles: thinking blocks, tool calls, concurrent tool calls,
+        // prose, reasoning+tool+reasoning sequences, and the final done signal.
+        // Once we find a valid output array we handle everything here and RETURN —
+        // never fall through to the legacy choices/content paths to prevent
+        // double-application of content.
         if let outputArr = payload["output"] as? [[String: Any]] {
             if let reconstructed = MessageHistory.reconstructContentFromOutput(outputArr) {
                 acc.replace(reconstructed)
                 updateAssistantMessage(id: assistantMessageId, content: acc.content, isStreaming: true)
             }
+
+            // Merge any top-level metadata that may accompany the output array
+            if let rawSources = payload["sources"] as? [[String: Any]] ?? payload["citations"] as? [[String: Any]],
+               let sources = parseSources(rawSources) {
+                appendSources(id: assistantMessageId, sources: sources)
+            }
+
+            // Done signal — always check after processing output
+            if payload["done"] as? Bool == true {
+                logger.info("Received done:true (output path) – finalizing streaming")
+                finishStreamingSuccessfully(
+                    assistantMessageId: assistantMessageId,
+                    modelId: modelId,
+                    socketSessionId: socketSessionId,
+                    effectiveChatId: effectiveChatId,
+                    acc: acc
+                )
+            }
+            // ← CRITICAL: return here so legacy paths never fire on the same event
+            return
         }
 
-        // OpenAI choices format (legacy / non-agent models)
+        // ── PATH 2: OpenAI choices / delta format (legacy / direct LLM backends) ─
+        //
+        // Only reached when the event has NO `output` array — i.e. the server is
+        // forwarding raw OpenAI-style streaming chunks without the OWUI output wrapper.
+        // Delta tokens are true incremental tokens so `acc.append()` is correct here.
         if let choices = payload["choices"] as? [[String: Any]],
            let first = choices.first,
            let delta = first["delta"] as? [String: Any] {
             if let c = delta["content"] as? String, !c.isEmpty {
-                acc.append(c)
+                acc.append(c)   // ← true delta: append, not replace
                 updateAssistantMessage(id: assistantMessageId, content: acc.content, isStreaming: true)
             }
             if let toolCalls = delta["tool_calls"] as? [[String: Any]] {
@@ -4839,13 +4874,15 @@ final class ChatViewModel {
             }
         }
 
-        // Direct content field (legacy format)
-        if let content = payload["content"] as? String, !content.isEmpty {
+        // ── PATH 3: Plain content replace (legacy pipe models, no choices wrapper) ─
+        // Only reached when there is no `output` array AND no `choices` delta.
+        // These events contain a complete content snapshot so we replace, not append.
+        if payload["choices"] == nil, let content = payload["content"] as? String, !content.isEmpty {
             acc.replace(content)
             updateAssistantMessage(id: assistantMessageId, content: acc.content, isStreaming: true)
         }
 
-        // Top-level tool_calls (legacy format)
+        // Top-level tool_calls status pills (legacy format — no output array)
         if let toolCalls = payload["tool_calls"] as? [[String: Any]] {
             for call in toolCalls {
                 if let fn = call["function"] as? [String: Any],
@@ -4856,15 +4893,15 @@ final class ChatViewModel {
             }
         }
 
-        // Top-level sources
+        // Top-level sources (legacy / non-output path)
         if let rawSources = payload["sources"] as? [[String: Any]] ?? payload["citations"] as? [[String: Any]],
            let sources = parseSources(rawSources) {
             appendSources(id: assistantMessageId, sources: sources)
         }
 
-        // Done signal
+        // Done signal for legacy paths
         if payload["done"] as? Bool == true {
-            logger.info("Received done:true – finalizing streaming")
+            logger.info("Received done:true (legacy path) – finalizing streaming")
             finishStreamingSuccessfully(
                 assistantMessageId: assistantMessageId,
                 modelId: modelId,
@@ -4872,13 +4909,6 @@ final class ChatViewModel {
                 effectiveChatId: effectiveChatId,
                 acc: acc
             )
-        }
-
-        // Error in completion payload
-        if let err = payload["error"] as? String, !err.isEmpty {
-            updateAssistantMessage(id: assistantMessageId, content: acc.content,
-                                    isStreaming: false, error: ChatMessageError(content: err))
-            cleanupStreaming()
         }
     }
 

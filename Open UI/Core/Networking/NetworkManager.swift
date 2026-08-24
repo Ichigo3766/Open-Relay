@@ -500,6 +500,19 @@ final class NetworkManager: NSObject, Sendable {
         return SSEStream(bytes: bytes)
     }
 
+    /// Invalidates and clears the cached streaming session.
+    /// Call this when the server config changes (e.g. user switches servers) so the
+    /// next SSE request creates a fresh session pointed at the correct server with
+    /// the current auth token, rather than reusing a stale session from a prior server.
+    func invalidateStreamingSession() {
+        _streamingSessionLock.lock()
+        let old = _streamingSessionBacking
+        _streamingSessionBacking = nil
+        _streamingSessionLock.unlock()
+        old?.invalidateAndCancel()
+        logger.info("Streaming URLSession invalidated for server switch")
+    }
+
     /// Lock-protected lazy streaming session. Reused across all SSE requests to prevent leaks.
     private let _streamingSessionLock = NSLock()
     private var _streamingSessionBacking: URLSession?

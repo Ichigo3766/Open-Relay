@@ -162,6 +162,10 @@ final class StreamingContentStore {
     var drainCompletion: (@MainActor () -> Void)?
 
     /// Ends the streaming session gracefully.
+    ///
+    /// Uses `setFinalContent` to atomically update the buffer AND mark finishing
+    /// in a single actor call — preventing the race where a separate `finish()` Task
+    /// could run before the `append()` Task and cause the final content to be dropped.
     @discardableResult
     func endStreaming(onDrained: (@MainActor () -> Void)? = nil) -> StreamingResult {
         let result = StreamingResult(
@@ -173,7 +177,8 @@ final class StreamingContentStore {
         )
         drainCompletion = onDrained
         let p = pipeline
-        Task { await p?.finish() }
+        let finalContent = rawServerContent
+        Task { await p?.setFinalContent(finalContent) }
         return result
     }
 

@@ -6,6 +6,8 @@
 	<array>
 		<string>com.openui.streaming</string>
 		<string>com.openui.asr.transcription</string>
+		<string>com.openui.refresh</string>
+		<string>com.openui.processing</string>
 	</array>
 	<key>CADisableMinimumFrameDurationOnPhone</key>
 	<true/>
