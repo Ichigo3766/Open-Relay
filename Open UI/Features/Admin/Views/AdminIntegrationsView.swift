@@ -1079,6 +1079,17 @@ struct EditTerminalSheet: View {
                     }
                 }
 
+                // Availability
+                Section(header: Text("Availability")) {
+                    Toggle("Enable in Chats", isOn: $viewModel.editTermEnableInChats)
+                    Toggle("Enable in Automations", isOn: $viewModel.editTermEnableInAutomations)
+                    Picker("Scope", selection: $viewModel.editTermScope) {
+                        Text("Global").tag("global")
+                        Text("User").tag("user")
+                        Text("Admin").tag("admin")
+                    }
+                }
+
                 DisclosureGroup("Advanced", isExpanded: $showAdvanced) {
                     VStack(alignment: .leading, spacing: 4) {
                         Text("OpenAPI Spec").scaledFont(size: 12, weight: .medium).foregroundStyle(theme.textTertiary)
@@ -1197,6 +1208,17 @@ struct AddTerminalSheet: View {
                             }
                             .buttonStyle(.plain)
                         }
+                    }
+                }
+
+                // Availability
+                Section(header: Text("Availability")) {
+                    Toggle("Enable in Chats", isOn: $viewModel.addTermEnableInChats)
+                    Toggle("Enable in Automations", isOn: $viewModel.addTermEnableInAutomations)
+                    Picker("Scope", selection: $viewModel.addTermScope) {
+                        Text("Global").tag("global")
+                        Text("User").tag("user")
+                        Text("Admin").tag("admin")
                     }
                 }
             }

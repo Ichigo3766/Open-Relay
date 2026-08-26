@@ -108,6 +108,7 @@ final class ChatViewModel {
     /// Populated from the server on load and updated in real-time during streaming.
     var tasks: [ChatTask] = []
     var errorMessage: String?
+
     /// Bumped each time a regenerate begins. Observed by ChatDetailView to trigger scroll-to-bottom.
     var regenerateScrollToken: UUID = UUID()
     var inputText: String = ""
@@ -157,6 +158,36 @@ final class ChatViewModel {
     /// Whether message rating (thumbs up/down) is enabled on this server.
     /// Populated from BackendFeatures.enableMessageRating via ActiveChatStore.
     var messageRatingEnabled: Bool = false
+
+    // MARK: - Human-in-the-Loop State
+
+    /// Controls whether tool calls require user approval before execution.
+    /// - `"ask"`: pause and show ToolApprovalBanner for each call
+    /// - `"full"`: run tools automatically (default)
+    /// Persisted to conversation chatParams and user settings.
+    var toolApprovalMode: String = "full"
+
+    /// Whether the server admin has enabled tool-approval (HITL) permissions.
+    /// When `false`, the HITL UI is completely hidden.
+    var isToolPermissionsEnabled: Bool { activeChatStore?.enableToolPermissions == true }
+
+    /// The pending tool call awaiting approval, if any.
+    /// Populated by `scanForPendingToolActions()` whenever the output array changes.
+    var pendingToolApprovalCall: MessageHistory.PendingToolCallInfo?
+
+    /// True while a resolve (approve/deny) API call is in-flight.
+    var isResolvingToolCall: Bool = false
+
+    /// Pending ask_user prompt derived from saved conversation history.
+    /// Shown as a card above the input. No timeout — user can answer later.
+    var pendingAskUserPrompt: PendingAskUserPrompt?
+
+    /// Live ask_user prompt received via socket event during an active stream.
+    /// Has a countdown timer; expires by rejecting automatically.
+    var liveAskUserPrompt: PendingAskUserPrompt?
+
+    /// True while a resolve (answer/reject) API call is in-flight for ask_user.
+    var isResolvingAskUser: Bool = false
 
     /// Messages queued to send after the current stream completes.
     var messageQueue: [QueuedMessage] = []
@@ -461,12 +492,11 @@ final class ChatViewModel {
 
     var canSend: Bool {
         // When message queue is enabled and we're streaming, allow sending (will enqueue).
-        // Uploading attachments always block sending since we need the upload to complete first.
+        // Uploading attachments: allow send (A4 — text queues and auto-sends when all done).
         let notBlocked = (enableMessageQueue && isStreaming)
             || (!isStreaming
                 && !attachments.contains(where: { $0.type == .audio && $0.isTranscribing }))
         return notBlocked
-            && !attachments.contains(where: { $0.isUploading })
             && (!inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                 || !attachments.isEmpty)
     }
@@ -481,6 +511,10 @@ final class ChatViewModel {
     var hasUploadingAttachments: Bool {
         attachments.contains { $0.isUploading }
     }
+
+    /// Text that the user submitted while attachments were still uploading.
+    /// Cleared and auto-sent once all uploads complete (A4 — "Send While Uploading" queue).
+    var pendingTextAfterUpload: String? = nil
 
     var isNewConversation: Bool {
         conversationId == nil && conversation == nil
@@ -635,6 +669,15 @@ final class ChatViewModel {
                 }
 
                 logger.info("Attachment \(fileName) uploaded + processed: \(fileId)")
+
+                // A4: After each upload completes, check if all are done and auto-send pending text.
+                // We check on the MainActor (already here) after the successful upload.
+                let allDone = !self.attachments.contains(where: { $0.isUploading })
+                if allDone, let pendingText = self.pendingTextAfterUpload, !pendingText.isEmpty {
+                    self.pendingTextAfterUpload = nil
+                    self.logger.info("A4: all uploads done — auto-sending queued message")
+                    Task { await self.sendMessage(directText: pendingText) }
+                }
             } catch {
                 // Extract the clean server error message when available.
                 // APIClient.waitForFileProcessing throws APIError.httpError with
@@ -1028,6 +1071,10 @@ final class ChatViewModel {
         // when the user opens an existing chat. We don't persist per-chat feature state,
         // so starting fresh here is the correct behaviour (Bug 2 fix).
         userDisabledBuiltinFeatures = []
+        // Restore HITL mode from conversation params or user preference
+        restoreToolApprovalMode()
+        // Scan for any pending HITL actions in the loaded history
+        scanForPendingToolActions()
         isLoadingConversation = false
     }
 
@@ -2956,6 +3003,16 @@ final class ChatViewModel {
             return
         }
 
+        // A4: If any attachment is still uploading, queue the text and wait for all uploads
+        // to complete before auto-sending. Clear the input field immediately so the user
+        // can see the message is "pending". The upload completion handler will auto-send.
+        if attachments.contains(where: { $0.isUploading }) && !text.isEmpty {
+            pendingTextAfterUpload = text
+            inputText = ""
+            logger.info("A4: attachments uploading — queued '\(text.prefix(30))…' for auto-send on upload complete")
+            return
+        }
+
         guard let manager else { return }
         // Use mentioned model (@ override) if set, otherwise the chat's selected model
         guard let modelId = mentionedModelId ?? selectedModelId else {
@@ -4782,6 +4839,44 @@ final class ChatViewModel {
                     appendStatusUpdate(id: assistantMessageId, status: su)
                 }
 
+            case "request:user_input":
+                // Live ask_user request from server during streaming.
+                // Parse and store as `liveAskUserPrompt` so the AskUserCard appears above the input.
+                if let p = payload,
+                   let questions = p["questions"] as? [[String: Any]],
+                   !questions.isEmpty {
+                    let globalAllowOther = p["allow_other"] as? Bool ?? true
+                    let timeoutMs = p["timeout_ms"] as? Int
+                    let parsed: [AskUserQuestion] = questions.compactMap { qDict -> AskUserQuestion? in
+                        guard let id = qDict["id"] as? String, !id.isEmpty,
+                              let qText = qDict["question"] as? String, !qText.isEmpty,
+                              let optsArr = qDict["options"] as? [[String: Any]] else { return nil }
+                        let opts: [AskUserOption] = optsArr.compactMap { o -> AskUserOption? in
+                            guard let lbl = o["label"] as? String, !lbl.isEmpty,
+                                  let desc = o["description"] as? String else { return nil }
+                            return AskUserOption(label: lbl, description: desc)
+                        }
+                        guard !opts.isEmpty else { return nil }
+                        return AskUserQuestion(
+                            id: id, header: qDict["header"] as? String ?? "",
+                            question: qText, options: opts,
+                            allowOther: qDict["allow_other"] as? Bool ?? globalAllowOther
+                        )
+                    }
+                    if !parsed.isEmpty {
+                        // The call_id will be resolved when the user answers via the output array scan
+                        // For live requests we use the assistantMessageId as a placeholder;
+                        // the real callId comes from scanForPendingToolActions() after the output updates.
+                        liveAskUserPrompt = PendingAskUserPrompt(
+                            messageId: assistantMessageId,
+                            callId: "",   // updated by scanForPendingToolActions after output arrives
+                            questions: parsed,
+                            allowOther: globalAllowOther,
+                            timeoutMs: timeoutMs
+                        )
+                    }
+                }
+
             default:
                 break
             }
@@ -4819,14 +4914,33 @@ final class ChatViewModel {
                 updateAssistantMessage(id: assistantMessageId, content: acc.content, isStreaming: true)
             }
 
+            // Update the raw output on the history node so scanForPendingToolActions()
+            // can detect pending/ask_user calls in real-time during streaming.
+            if let conv = conversation, conv.history.nodes[assistantMessageId] != nil {
+                conversation?.history.nodes[assistantMessageId]?.output = outputArr
+                // Scan for HITL actions on every output update
+                scanForPendingToolActions()
+                // For live ask_user: update callId once we have the real output
+                if let livePrompt = liveAskUserPrompt, livePrompt.callId.isEmpty,
+                   let info = MessageHistory.findPendingAskUser(messageId: assistantMessageId, in: outputArr) {
+                    liveAskUserPrompt = PendingAskUserPrompt(
+                        messageId: livePrompt.messageId, callId: info.callId,
+                        questions: livePrompt.questions, allowOther: livePrompt.allowOther,
+                        timeoutMs: livePrompt.timeoutMs
+                    )
+                }
+            }
+
             // Merge any top-level metadata that may accompany the output array
             if let rawSources = payload["sources"] as? [[String: Any]] ?? payload["citations"] as? [[String: Any]],
                let sources = parseSources(rawSources) {
                 appendSources(id: assistantMessageId, sources: sources)
             }
 
+            let isDone = payload["done"] as? Bool == true
+
             // Done signal — always check after processing output
-            if payload["done"] as? Bool == true {
+            if isDone {
                 logger.info("Received done:true (output path) – finalizing streaming")
                 finishStreamingSuccessfully(
                     assistantMessageId: assistantMessageId,
@@ -5911,6 +6025,8 @@ final class ChatViewModel {
         // value is cached for when a capable model is selected later.
         Task { await fetchMemorySettingFromServer() }
         Task { await fetchMessageQueueSettingFromServer() }
+        // Fetch HITL tool permissions flag (once per session, cached in ActiveChatStore)
+        Task { await fetchToolPermissionsEnabled() }
         // Store the task so populateCommonRequestFields can await it before
         // building a request — prevents the race where params are read before
         // the fetch completes (which caused the system prompt to be ignored).
@@ -6040,6 +6156,10 @@ final class ChatViewModel {
             let params = try await apiClient.fetchUserDefaultParams()
             activeChatStore?.cachedUserDefaultParams = params
             logger.debug("User default params fetched from server (hasOverride=\(params.hasAnyOverride))")
+            // Re-run restoreToolApprovalMode so the server-stored tool_approval_mode
+            // takes effect immediately if no per-conversation override is set.
+            // This ensures changing the setting on the web syncs to the app on next load.
+            restoreToolApprovalMode()
         } catch {
             logger.debug("Failed to fetch user default params: \(error.localizedDescription)")
         }
@@ -6182,6 +6302,15 @@ final class ChatViewModel {
         }
         if let fc = selectedModel?.functionCallingMode, fc == "native" {
             params["function_calling"] = "native"
+        }
+        // Inject tool_approval_mode when the server has HITL permissions enabled.
+        // Automations, channel replies, and temporary chats always use "full" (server enforces this too).
+        if isToolPermissionsEnabled && !isTemporaryChat {
+            let chatIdStr = conversationId ?? conversation?.id ?? ""
+            let isChannel = chatIdStr.hasPrefix("channel:")
+            if !isChannel {
+                params["tool_approval_mode"] = toolApprovalMode
+            }
         }
         if !params.isEmpty { request.params = params }
 
@@ -7118,7 +7247,269 @@ final class ChatViewModel {
         }
     }
 
-    /// Builds a full messages array matching the web UI feedback snapshot format.
+    // MARK: - Human-in-the-Loop: Scan for Pending Actions
+
+    /// Scans conversation messages (newest-first) for pending HITL actions and
+    /// updates `pendingToolApprovalCall` and `pendingAskUserPrompt`.
+    /// Called after every output-array update: streaming events, history load, sync.
+    func scanForPendingToolActions() {
+        guard let conv = conversation else {
+            pendingToolApprovalCall = nil
+            pendingAskUserPrompt = nil
+            return
+        }
+        for message in conv.messages.reversed() {
+            guard message.role == .assistant,
+                  let node = conv.history.nodes[message.id],
+                  !node.output.isEmpty
+            else { continue }
+            let rawOutput = node.output
+
+            // Check for pending ask_user first (takes visual priority)
+            if let info = MessageHistory.findPendingAskUser(messageId: message.id, in: rawOutput),
+               let prompt = PendingAskUserPrompt.fromInfo(info) {
+                if liveAskUserPrompt?.callId != prompt.callId {
+                    pendingAskUserPrompt = prompt
+                }
+                pendingToolApprovalCall = nil
+                return
+            }
+            // Check for pending tool approval (only when HITL mode is "ask")
+            if toolApprovalMode == "ask",
+               let info = MessageHistory.findPendingApprovalCall(messageId: message.id, in: rawOutput) {
+                pendingToolApprovalCall = info
+                pendingAskUserPrompt = nil
+                return
+            }
+        }
+        pendingToolApprovalCall = nil
+        if liveAskUserPrompt == nil { pendingAskUserPrompt = nil }
+    }
+
+    /// Fetches and caches the `enableToolPermissions` server flag.
+    func fetchToolPermissionsEnabled() async {
+        guard let apiClient = manager?.apiClient else { return }
+        do {
+            let config = try await apiClient.getBackendConfig()
+            let enabled = config.features?.enableToolPermissions ?? false
+            activeChatStore?.enableToolPermissions = enabled
+        } catch {
+            logger.debug("[HITL] Failed to fetch tool permissions flag: \(error.localizedDescription)")
+        }
+    }
+
+    /// Loads/restores `toolApprovalMode` from conversation params or user settings.
+    /// Priority: per-conversation params > server user settings (cached) > UserDefaults.
+    func restoreToolApprovalMode() {
+        // 1. Per-conversation setting takes highest priority
+        if let convMode = conversation?.chatParams?.toolApprovalMode, !convMode.isEmpty {
+            toolApprovalMode = convMode == "ask" ? "ask" : "full"
+            return
+        }
+        // 2. Server user-level default (loaded by fetchUserDefaultParamsFromServer)
+        if let serverMode = activeChatStore?.cachedUserDefaultParams?.toolApprovalMode, !serverMode.isEmpty {
+            toolApprovalMode = serverMode == "ask" ? "ask" : "full"
+            UserDefaults.standard.set(toolApprovalMode, forKey: "toolApprovalMode")
+            return
+        }
+        // 3. Local UserDefaults (offline fallback)
+        let saved = UserDefaults.standard.string(forKey: "toolApprovalMode") ?? "full"
+        toolApprovalMode = saved == "ask" ? "ask" : "full"
+    }
+
+    // MARK: - Human-in-the-Loop: Resolve Actions
+
+    /// Approves the currently pending tool call.
+    func approveToolCall() async {
+        guard let pending = pendingToolApprovalCall,
+              let chatId = conversationId ?? conversation?.id,
+              let apiClient = manager?.apiClient else { return }
+        isResolvingToolCall = true
+        defer { isResolvingToolCall = false }
+        do {
+            _ = try await apiClient.resolveToolCall(
+                chatId: chatId, messageId: pending.messageId,
+                callId: pending.callId, action: "approve"
+            )
+            pendingToolApprovalCall = nil
+        } catch {
+            logger.error("[HITL] approveToolCall failed: \(error.localizedDescription)")
+            await reloadConversation()
+        }
+    }
+
+    /// Denies/rejects the currently pending tool call.
+    func rejectToolCall() async {
+        guard let pending = pendingToolApprovalCall,
+              let chatId = conversationId ?? conversation?.id,
+              let apiClient = manager?.apiClient else { return }
+        isResolvingToolCall = true
+        defer { isResolvingToolCall = false }
+        do {
+            _ = try await apiClient.resolveToolCall(
+                chatId: chatId, messageId: pending.messageId,
+                callId: pending.callId, action: "reject"
+            )
+            pendingToolApprovalCall = nil
+            await reloadConversation()
+        } catch {
+            logger.error("[HITL] rejectToolCall failed: \(error.localizedDescription)")
+            await reloadConversation()
+        }
+    }
+
+    /// Submits answers to a pending ask_user call.
+    func answerAskUser(
+        messageId: String, callId: String,
+        answers: [String: AskUserAnswerDraft],
+        timedOut: Bool = false
+    ) async {
+        guard let chatId = conversationId ?? conversation?.id,
+              let apiClient = manager?.apiClient else { return }
+        isResolvingAskUser = true
+        defer { isResolvingAskUser = false }
+        let payload: [String: Any] = answers.mapValues { $0.toServerPayload() }
+        do {
+            _ = try await apiClient.resolveToolCall(
+                chatId: chatId, messageId: messageId, callId: callId,
+                action: "answer",
+                answers: timedOut ? nil : payload,
+                timedOut: timedOut
+            )
+        } catch {
+            logger.error("[HITL] answerAskUser failed: \(error.localizedDescription)")
+            await reloadConversation()
+        }
+        liveAskUserPrompt = nil
+        pendingAskUserPrompt = nil
+    }
+
+    /// Rejects/cancels the currently pending ask_user call.
+    func rejectAskUser(messageId: String, callId: String) async {
+        guard let chatId = conversationId ?? conversation?.id,
+              let apiClient = manager?.apiClient else { return }
+        isResolvingAskUser = true
+        defer { isResolvingAskUser = false }
+        do {
+            _ = try await apiClient.resolveToolCall(
+                chatId: chatId, messageId: messageId, callId: callId, action: "reject"
+            )
+        } catch {
+            logger.error("[HITL] rejectAskUser failed: \(error.localizedDescription)")
+        }
+        liveAskUserPrompt = nil
+        pendingAskUserPrompt = nil
+        await reloadConversation()
+    }
+
+    /// Switches tool approval mode and persists the preference.
+    /// When switching to "full", auto-approves any pending calls.
+    ///
+    /// Mirrors web Chat.svelte `handleToolApprovalModeChange`:
+    /// 1. Updates `ui.params.tool_approval_mode` in user settings → default for all new chats
+    /// 2. Updates the current conversation's `params` lightweight (no history sync)
+    func handleToolApprovalModeChange(to mode: String) async {
+        let newMode = (mode == "ask") ? "ask" : "full"
+        toolApprovalMode = newMode
+        UserDefaults.standard.set(newMode, forKey: "toolApprovalMode")
+
+        // Update in-memory conversation params
+        var params = conversation?.chatParams ?? pendingChatParams ?? ChatAdvancedParams()
+        params.toolApprovalMode = newMode
+        if conversation != nil {
+            conversation?.chatParams = params
+        } else {
+            pendingChatParams = params
+        }
+
+        guard let apiClient = manager?.apiClient else { return }
+
+        // 1. Save as user-level default (mirrors web's updateUserSettings call).
+        //    This ensures new chats inherit the preference server-side.
+        Task {
+            do {
+                // Read current user settings, merge tool_approval_mode into ui.params
+                let current = try await apiClient.getUserSettings()
+                var existingUI = (current["ui"] as? [String: Any]) ?? [:]
+                var existingParams = (existingUI["params"] as? [String: Any]) ?? [:]
+                if newMode == "ask" {
+                    existingParams["tool_approval_mode"] = "ask"
+                } else {
+                    // "full" is the default — remove the key entirely so server falls back
+                    existingParams.removeValue(forKey: "tool_approval_mode")
+                }
+                existingUI["params"] = existingParams
+                try await apiClient.updateUserSettings(["ui": existingUI])
+                logger.debug("[HITL] Saved tool_approval_mode=\(newMode) to user settings")
+            } catch {
+                logger.warning("[HITL] Failed to save tool_approval_mode to user settings: \(error.localizedDescription)")
+            }
+        }
+
+        // 2. Save to the current conversation (lightweight params-only update).
+        //    Mirrors web's updateChatById(token, $chatId, { params }).
+        if !isTemporaryChat,
+           let chatId = conversationId ?? conversation?.id {
+            let chatIdStr = chatId
+            // Build the params dict to send — only include tool_approval_mode
+            var paramsDict: [String: Any] = [:]
+            if newMode == "ask" {
+                paramsDict["tool_approval_mode"] = "ask"
+            }
+            // Also include any existing chat params so we don't wipe them
+            if let existing = conversation?.chatParams {
+                let existingDict = existing.toRequestParams()
+                for (k, v) in existingDict where k != "tool_approval_mode" {
+                    paramsDict[k] = v
+                }
+                if newMode == "ask" {
+                    paramsDict["tool_approval_mode"] = "ask"
+                }
+            }
+            Task {
+                do {
+                    try await apiClient.updateChatParams(id: chatIdStr, params: paramsDict)
+                    logger.debug("[HITL] Saved tool_approval_mode=\(newMode) to chat \(chatIdStr)")
+                } catch {
+                    logger.warning("[HITL] Failed to save tool_approval_mode to chat: \(error.localizedDescription)")
+                }
+            }
+        }
+
+        if newMode == "full" {
+            await autoApproveAllPendingCalls()
+        } else {
+            scanForPendingToolActions()
+        }
+    }
+
+    /// Auto-approves all pending tool calls when switching to "full" mode.
+    private func autoApproveAllPendingCalls() async {
+        guard let conv = conversation,
+              let apiClient = manager?.apiClient else { return }
+        let chatId = conversationId ?? conv.id
+        for message in conv.messages.reversed() {
+            guard message.role == .assistant,
+                  let node = conv.history.nodes[message.id],
+                  !node.output.isEmpty,
+                  let info = MessageHistory.findPendingApprovalCall(
+                    messageId: message.id, in: node.output)
+            else { continue }
+            do {
+                _ = try await apiClient.resolveToolCall(
+                    chatId: chatId, messageId: info.messageId,
+                    callId: info.callId, action: "approve"
+                )
+            } catch {
+                logger.warning("[HITL] auto-approve failed: \(error.localizedDescription)")
+                await reloadConversation()
+                return
+            }
+            pendingToolApprovalCall = nil
+            return  // Server will emit events for the next pending call
+        }
+        pendingToolApprovalCall = nil
+    }
     private func buildSnapshotMessages(from conv: Conversation) -> [[String: Any]] {
         conv.messages.map { m -> [String: Any] in
             let childrenIds = conv.history.nodes[m.id]?.childrenIds ?? []

@@ -49,7 +49,7 @@ struct SourcesDetailSheet: View {
 
         return Button {
             if let url, let parsed = URL(string: url) {
-                UIApplication.shared.open(parsed)
+                openURL(parsed)
             }
         } label: {
             HStack(spacing: Spacing.sm) {

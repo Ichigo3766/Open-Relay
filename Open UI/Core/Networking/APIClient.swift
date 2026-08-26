@@ -379,6 +379,38 @@ final class APIClient: @unchecked Sendable {
         network.deleteAuthToken()
     }
 
+    // MARK: - API Key Management
+
+    /// Generates (or regenerates) a user API key.
+    /// POST /api/v1/auths/api_key → returns {"api_key": "sk-..."}
+    func generateApiKey() async throws -> String {
+        let json = try await network.requestJSON(
+            path: "/api/v1/auths/api_key",
+            method: .post
+        )
+        guard let key = json["api_key"] as? String, !key.isEmpty else {
+            throw APIError.responseDecoding(
+                underlying: NSError(domain: "APIError", code: -1,
+                    userInfo: [NSLocalizedDescriptionKey: "No api_key in response"]),
+                data: nil
+            )
+        }
+        return key
+    }
+
+    /// Fetches the current user API key.
+    /// GET /api/v1/auths/api_key → returns {"api_key": "sk-..."} or {"api_key": null}
+    func getApiKey() async throws -> String? {
+        let json = try await network.requestJSON(path: "/api/v1/auths/api_key")
+        return json["api_key"] as? String
+    }
+
+    /// Permanently deletes (revokes) the current user API key.
+    /// DELETE /api/v1/auths/api_key → returns true on success
+    func deleteApiKey() async throws {
+        try await network.requestVoid(path: "/api/v1/auths/api_key", method: .delete)
+    }
+
     func getCurrentUser() async throws -> User {
         // Use requestRaw + plain JSONDecoder (no .convertFromSnakeCase) so that
         // User's explicit CodingKeys (which use snake_case raw values like "date_of_birth",
@@ -1231,6 +1263,59 @@ final class APIClient: @unchecked Sendable {
             body: try JSONSerialization.data(withJSONObject: body)
         )
         return true
+    }
+
+    /// Lightweight update of a chat's `params` dict without touching message history.
+    ///
+    /// Mirrors the web client's `updateChatById(token, $chatId, { params })` call —
+    /// used to persist per-chat settings like `tool_approval_mode` without syncing
+    /// the full conversation history.
+    ///
+    /// `POST /api/v1/chats/{id}` with body `{ "chat": { "params": { ... } } }`
+    func updateChatParams(id: String, params: [String: Any]) async throws {
+        try await network.requestVoidJSON(
+            path: "/api/v1/chats/\(id)",
+            method: .post,
+            body: ["chat": ["params": params]]
+        )
+    }
+
+    // MARK: - Human-in-the-Loop: Tool Call Resolution
+
+    /// Resolves a paused (human-in-the-loop) tool call in a saved conversation.
+    ///
+    /// Mirrors the web client's `resolveChatMessageToolCall()` in `src/lib/apis/chats/index.ts`.
+    ///
+    /// - Parameters:
+    ///   - chatId: The conversation ID.
+    ///   - messageId: The assistant message ID that contains the pending tool call.
+    ///   - callId: The `call_id` of the specific `function_call` output item.
+    ///   - action: `"approve"` | `"reject"` | `"answer"` (ask_user only).
+    ///   - answers: Answer payload for `action == "answer"` — maps question ID to answer dict.
+    ///   - timedOut: `true` when the ask_user timeout elapsed with no answer.
+    /// - Returns: The raw server response dict (includes `task_ids`, `chat_id`, etc.).
+    @discardableResult
+    func resolveToolCall(
+        chatId: String,
+        messageId: String,
+        callId: String,
+        action: String,
+        answers: [String: Any]? = nil,
+        timedOut: Bool = false
+    ) async throws -> [String: Any] {
+        var body: [String: Any] = [
+            "call_id": callId,
+            "action": action
+        ]
+        if let answers { body["answers"] = answers }
+        if timedOut { body["timed_out"] = true }
+
+        let (data, _) = try await network.requestRaw(
+            path: "/api/v1/chats/\(chatId)/messages/\(messageId)/resolve",
+            method: .post,
+            body: try JSONSerialization.data(withJSONObject: body)
+        )
+        return (try? JSONSerialization.jsonObject(with: data) as? [String: Any]) ?? [:]
     }
 
     /// Updates a single task's status for the given chat.
@@ -3446,15 +3531,17 @@ final class APIClient: @unchecked Sendable {
         return try JSONDecoder().decode(Automation.self, from: data)
     }
 
-    func createAutomation(name: String, prompt: String, modelId: String, rrule: String) async throws -> Automation {
-        let bodyDict: [String: Any] = [
-            "name": name,
-            "data": [
-                "prompt": prompt,
-                "model_id": modelId,
-                "rrule": rrule
-            ] as [String: Any]
+    func createAutomation(name: String, prompt: String, modelId: String, rrule: String, channelId: String? = nil) async throws -> Automation {
+        var dataDict: [String: Any] = [
+            "prompt": prompt,
+            "model_id": modelId,
+            "rrule": rrule
         ]
+        // The server expects a nested `target` object: {type: "channel", channel_id: "..."}
+        if let channelId, !channelId.isEmpty {
+            dataDict["target"] = ["type": "channel", "channel_id": channelId] as [String: Any]
+        }
+        let bodyDict: [String: Any] = ["name": name, "data": dataDict]
         let bodyData = try JSONSerialization.data(withJSONObject: bodyDict)
         let (data, _) = try await network.requestRaw(
             path: "/api/v1/automations/create",
@@ -3514,6 +3601,36 @@ final class APIClient: @unchecked Sendable {
             path: "/api/v1/automations/\(id)/delete",
             method: .delete
         )
+    }
+
+    // MARK: - Tool Call Resolution (Human-in-the-Loop / Ask User)
+
+    /// Resolves a pending tool call (function_call item in a message's output array).
+    /// Used for:
+    ///   - Human-in-the-Loop approval: `action: "approve"` or `"reject"`
+    ///   - Ask User question cards:    `action: "answer"` with `answers` dict
+    ///
+    /// `POST /api/v1/chats/{chatId}/messages/{messageId}/resolve`
+    /// Body: `{ "call_id": "...", "action": "approve"|"reject"|"answer", "answers": {...}, "timed_out": bool }`
+    @discardableResult
+    func resolveChatMessageToolCall(
+        chatId: String,
+        messageId: String,
+        callId: String,
+        action: String,   // "approve" | "reject" | "answer"
+        answers: [String: Any]? = nil,
+        timedOut: Bool = false
+    ) async throws -> [String: Any] {
+        var body: [String: Any] = ["call_id": callId, "action": action]
+        if let answers { body["answers"] = answers }
+        if timedOut { body["timed_out"] = true }
+        let bodyData = try JSONSerialization.data(withJSONObject: body)
+        let (data, _) = try await network.requestRaw(
+            path: "/api/v1/chats/\(chatId)/messages/\(messageId)/resolve",
+            method: .post,
+            body: bodyData
+        )
+        return (try? JSONSerialization.jsonObject(with: data) as? [String: Any]) ?? [:]
     }
 
     // MARK: - Calendars

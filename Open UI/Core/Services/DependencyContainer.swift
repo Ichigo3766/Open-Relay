@@ -75,6 +75,11 @@ final class ActiveChatStore {
     /// Cleared on logout/server switch.
     var cachedMessageRatingEnabled: Bool? = nil
 
+    /// Whether the server admin has enabled tool-approval (human-in-the-loop) permissions.
+    /// Populated from `BackendConfig.features.enableToolPermissions` after the first config fetch.
+    /// Cleared on logout/server switch.
+    var enableToolPermissions: Bool = false
+
     /// Session-level cache for the user's default params (`ui.system` + `ui.params`).
     /// Populated by the first ChatViewModel that fetches user settings.
     /// Cleared on logout/server switch so the next session always fetches fresh.
@@ -214,6 +219,7 @@ final class ActiveChatStore {
         cachedUserDefaultParams = nil
         cachedPinnedModelIds = nil
         cachedMessageRatingEnabled = nil
+        enableToolPermissions = false
         cachedUserName = nil
         cachedUserEmail = nil
     }

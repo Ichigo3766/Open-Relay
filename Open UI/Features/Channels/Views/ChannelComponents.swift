@@ -122,9 +122,11 @@ struct UserModelPickerView: View {
     @Environment(\.theme) private var theme
     
     private var filteredMembers: [ChannelMember] {
-        if query.isEmpty { return Array(members.prefix(8)) }
+        // Sort channel members alphabetically so results are stable and predictable (A8).
+        let sorted = members.sorted { $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending }
+        if query.isEmpty { return Array(sorted.prefix(8)) }
         let q = query.lowercased()
-        return members.filter {
+        return sorted.filter {
             $0.displayName.lowercased().contains(q) || $0.email.lowercased().contains(q)
         }.prefix(8).map { $0 }
     }

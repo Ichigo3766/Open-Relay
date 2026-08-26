@@ -77,7 +77,7 @@ struct ChannelDetailView: View {
     // Error alerts (SEC-005 fix)
     @State private var showOperationError = false
     @State private var operationErrorMessage = ""
-    
+
     /// Optional reference to the parent list VM so we can zero the unread badge
     /// and suppress badge increments while this channel is actively viewed.
     var channelListVM: ChannelListViewModel?
@@ -420,7 +420,7 @@ struct ChannelDetailView: View {
             if url.scheme == "openui-channel", let channelId = url.host {
                 NotificationCenter.default.post(name: .navigateToChannel, object: channelId)
             } else {
-                UIApplication.shared.open(url)
+                openURL(url)
             }
         }
         .background {

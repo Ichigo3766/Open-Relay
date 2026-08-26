@@ -3,79 +3,6 @@ import SwiftUI
 
 // MARK: - Models
 
-/// A single item in the server changelog (an added feature, fix, etc.)
-struct ServerChangelogItem: Decodable, Sendable {
-    let title: String
-    let content: String
-    let raw: String?
-}
-
-/// One version entry from `/api/changelog`
-struct ServerChangelogEntry: Sendable {
-    let version: String
-    let date: String
-    let added: [ServerChangelogItem]
-    let fixed: [ServerChangelogItem]
-    let changed: [ServerChangelogItem]
-    let removed: [ServerChangelogItem]
-
-    /// Renders the changelog as clean markdown suitable for `MarkdownView`.
-    var markdownText: String {
-        var sections: [String] = []
-
-        func renderItem(_ item: ServerChangelogItem) -> String {
-            // `raw` is HTML (for the web browser) — never use it in a Markdown renderer.
-            // Use `title` + `content` which are always plain text.
-            //
-            // New format: title = "📜 Chat scroll position on load."
-            //             content = "Opening a chat conversation now reliably..."
-            //   → "* **📜 Chat scroll position on load.** Opening a chat..."
-            //
-            // Old format: title = ""
-            //             content = "🔇 Voice Mode mute control. Voice Mode now includes..."
-            //   The first sentence IS the title — split on first ". " and bold it.
-            //   → "* **🔇 Voice Mode mute control.** Voice Mode now includes..."
-
-            let trimmedTitle = item.title.trimmingCharacters(in: .whitespacesAndNewlines)
-            let trimmedContent = item.content.trimmingCharacters(in: .whitespacesAndNewlines)
-
-            if !trimmedTitle.isEmpty {
-                // Explicit title provided
-                if trimmedContent.isEmpty {
-                    return "* **\(trimmedTitle)**"
-                }
-                return "* **\(trimmedTitle)** \(trimmedContent)"
-            }
-
-            // No title — content starts with the title baked in as the first sentence.
-            // Split on the first ". " (period + space) to extract it.
-            if let dotRange = trimmedContent.range(of: ". ") {
-                let firstSentence = String(trimmedContent[trimmedContent.startIndex..<dotRange.lowerBound])
-                let rest = String(trimmedContent[dotRange.upperBound...])
-                return "* **\(firstSentence).** \(rest)"
-            }
-
-            // No period found — just show the whole thing as plain bullet
-            return "* \(trimmedContent)"
-        }
-
-        if !added.isEmpty {
-            sections.append("### What's New\n" + added.map(renderItem).joined(separator: "\n"))
-        }
-        if !changed.isEmpty {
-            sections.append("### Improvements\n" + changed.map(renderItem).joined(separator: "\n"))
-        }
-        if !fixed.isEmpty {
-            sections.append("### Bug Fixes\n" + fixed.map(renderItem).joined(separator: "\n"))
-        }
-        if !removed.isEmpty {
-            sections.append("### Removed\n" + removed.map(renderItem).joined(separator: "\n"))
-        }
-
-        return sections.joined(separator: "\n\n")
-    }
-}
-
 /// Passed to the sheet when a newer server version is detected.
 struct ServerUpdateInfo: Identifiable, Sendable {
     var id: String { version }
@@ -84,7 +11,10 @@ struct ServerUpdateInfo: Identifiable, Sendable {
     /// The full base URL of the server (e.g. "https://chat.abhiinnovate.com").
     /// Used to construct the favicon URL in the update sheet.
     let serverURL: String
-    let changelogs: [ServerChangelogEntry]
+    /// The full GitHub release changelog markdown for the new version.
+    /// Fetched from https://api.github.com/repos/open-webui/open-webui/releases/tags/v{version}
+    /// Commit/PR link references are stripped for a clean mobile display.
+    let changelogMarkdown: String?
 }
 
 // MARK: - Raw Decodable Wrappers
@@ -94,20 +24,15 @@ private struct VersionUpdatesResponse: Decodable {
     let latest: String
 }
 
-/// The changelog endpoint returns `{ "0.9.2": { ... }, "0.9.1": { ... } }`
-/// We decode it as a dictionary of raw entries.
-private struct RawChangelogEntry: Decodable {
-    let date: String?
-    let added: [ServerChangelogItem]?
-    let fixed: [ServerChangelogItem]?
-    let changed: [ServerChangelogItem]?
-    let removed: [ServerChangelogItem]?
+private struct GitHubRelease: Decodable {
+    let body: String?
 }
 
 // MARK: - ServerUpdateChecker
 
 /// Checks the connected Open WebUI server for a newer version using
-/// `/api/version/updates` and `/api/changelog`.
+/// `/api/version/updates`, then fetches the release changelog from the
+/// GitHub Releases API for that exact version.
 ///
 /// - Runs on every app launch (when authenticated).
 /// - Auto-shows the sheet only the FIRST time a new version is detected.
@@ -220,8 +145,8 @@ final class ServerUpdateChecker {
             return nil
         }
 
-        // 2. Fetch the top 3 changelogs (latest + recent history)
-        let changelogs = (try? await fetchChangelogs(upTo: latestVersion, from: apiClient)) ?? []
+        // 2. Fetch the changelog for this exact release from GitHub
+        let changelogMarkdown = await fetchGitHubChangelog(for: latestVersion)
 
         // Derive a friendly server name from the base URL
         let serverName = URL(string: apiClient.baseURL)?.host ?? apiClient.baseURL
@@ -230,45 +155,68 @@ final class ServerUpdateChecker {
             version: latestVersion,
             serverName: serverName,
             serverURL: apiClient.baseURL,
-            changelogs: changelogs
+            changelogMarkdown: changelogMarkdown
         )
     }
 
-    /// Fetches `/api/changelog`, sorts all versions descending by semver,
-    /// and returns the top 3 entries that are ≤ `latestVersion`.
-    private func fetchChangelogs(upTo latestVersion: String, from apiClient: APIClient) async throws -> [ServerChangelogEntry] {
-        let request = try apiClient.network.buildRequest(
-            path: "/api/changelog",
-            authenticated: true,
-            timeout: 10
-        )
-        let (data, response) = try await apiClient.network.session.data(for: request)
-        guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
-            return []
-        }
+    /// Fetches the release body markdown from GitHub for the given version tag.
+    /// Returns `nil` if the request fails or the release has no body.
+    private func fetchGitHubChangelog(for version: String) async -> String? {
+        // Normalize: GitHub tags are "v0.11.1", version strings may or may not have the "v" prefix
+        let tag = version.hasPrefix("v") ? version : "v\(version)"
+        let urlString = "https://api.github.com/repos/open-webui/open-webui/releases/tags/\(tag)"
+        guard let url = URL(string: urlString) else { return nil }
 
-        let allEntries = try JSONDecoder().decode([String: RawChangelogEntry].self, from: data)
+        var request = URLRequest(url: url, timeoutInterval: 10)
+        request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
+        request.setValue("2022-11-28", forHTTPHeaderField: "X-GitHub-Api-Version")
 
-        return allEntries
-            .filter { !isNewer(remote: $0.key, than: latestVersion) }
-            .sorted { isNewer(remote: $0.key, than: $1.key) }
-            .prefix(3)
-            .map { (version, raw) in
-                ServerChangelogEntry(
-                    version: version,
-                    date: raw.date ?? "",
-                    added: raw.added ?? [],
-                    fixed: raw.fixed ?? [],
-                    changed: raw.changed ?? [],
-                    removed: raw.removed ?? []
-                )
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
+                return nil
             }
+            let release = try JSONDecoder().decode(GitHubRelease.self, from: data)
+            guard let body = release.body, !body.isEmpty else { return nil }
+            return cleanedChangelog(body)
+        } catch {
+            return nil
+        }
+    }
+
+    /// Strips GitHub commit/PR link references from the changelog body so it reads
+    /// cleanly on mobile. For example:
+    ///   "...added feature. [Commit](https://...), [#123](https://...)"
+    ///   → "...added feature."
+    private func cleanedChangelog(_ markdown: String) -> String {
+        // Pattern: ", [Commit](url)" or ", [#1234](url)" or ", [#1234](url)" at end of bullet items
+        // Also handles "[Commit](url)" or "[#1234](url)" without leading comma
+        var result = markdown
+
+        // Remove ", [Commit](...)" patterns
+        result = result.replacingOccurrences(
+            of: #",?\s*\[Commit\]\(https?://[^)]+\)"#,
+            with: "",
+            options: .regularExpression
+        )
+        // Remove ", [#1234](...)" or ", [PR-title](...)" patterns pointing to github.com
+        result = result.replacingOccurrences(
+            of: #",?\s*\[#\d+\]\(https?://github\.com/[^)]+\)"#,
+            with: "",
+            options: .regularExpression
+        )
+
+        // Clean up any trailing whitespace left on lines after stripping
+        let lines = result.components(separatedBy: "\n")
+        let cleaned = lines.map { $0.replacingOccurrences(of: #"\s+$"#, with: "", options: .regularExpression) }
+        return cleaned.joined(separator: "\n")
     }
 
     /// Returns `true` if `remote` is strictly newer than `local` (semver comparison).
     private func isNewer(remote: String, than local: String) -> Bool {
-        let r = remote.split(separator: ".").compactMap { Int($0) }
-        let l = local.split(separator: ".").compactMap { Int($0) }
+        // Strip leading "v" if present
+        let r = remote.trimmingCharacters(in: .init(charactersIn: "v")).split(separator: ".").compactMap { Int($0) }
+        let l = local.trimmingCharacters(in: .init(charactersIn: "v")).split(separator: ".").compactMap { Int($0) }
         let maxLen = max(r.count, l.count)
         for i in 0..<maxLen {
             let rv = i < r.count ? r[i] : 0

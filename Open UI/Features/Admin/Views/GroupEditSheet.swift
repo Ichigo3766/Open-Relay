@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 // MARK: - Group Edit Sheet Tab
 
@@ -364,6 +365,8 @@ struct GroupEditSheet: View {
     }
 
     @State private var userSearch = ""
+    @State private var isShowingCSVImporter = false
+    @State private var csvImportResult: String? = nil
 
     private var filteredAllUsers: [AdminUser] {
         guard !userSearch.isEmpty else { return viewModel.allUsers }
@@ -374,33 +377,118 @@ struct GroupEditSheet: View {
     }
 
     private var usersSearchBar: some View {
-        HStack(spacing: Spacing.sm) {
-            Image(systemName: "magnifyingglass")
-                .scaledFont(size: 14)
-                .foregroundStyle(theme.textTertiary)
-            TextField("Search", text: $userSearch)
-                .scaledFont(size: 15)
-                .autocorrectionDisabled()
-                .textInputAutocapitalization(.never)
-            if !userSearch.isEmpty {
+        VStack(spacing: Spacing.sm) {
+            HStack(spacing: Spacing.sm) {
+                Image(systemName: "magnifyingglass")
+                    .scaledFont(size: 14)
+                    .foregroundStyle(theme.textTertiary)
+                TextField("Search", text: $userSearch)
+                    .scaledFont(size: 15)
+                    .autocorrectionDisabled()
+                    .textInputAutocapitalization(.never)
+                if !userSearch.isEmpty {
+                    Button {
+                        userSearch = ""
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .scaledFont(size: 14)
+                            .foregroundStyle(theme.textTertiary)
+                    }
+                }
+            }
+            .padding(.horizontal, Spacing.md)
+            .padding(.vertical, 10)
+            .background(theme.surfaceContainer)
+            .clipShape(RoundedRectangle(cornerRadius: CornerRadius.card, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: CornerRadius.card, style: .continuous)
+                    .strokeBorder(theme.cardBorder, lineWidth: 0.5)
+            )
+
+            // CSV import row
+            HStack(spacing: Spacing.sm) {
                 Button {
-                    userSearch = ""
+                    isShowingCSVImporter = true
                 } label: {
-                    Image(systemName: "xmark.circle.fill")
-                        .scaledFont(size: 14)
-                        .foregroundStyle(theme.textTertiary)
+                    Label("Import CSV", systemImage: "doc.text")
+                        .scaledFont(size: 13, weight: .medium)
+                        .foregroundStyle(theme.brandPrimary)
+                }
+                .buttonStyle(.plain)
+                .fileImporter(
+                    isPresented: $isShowingCSVImporter,
+                    allowedContentTypes: [.commaSeparatedText, .plainText],
+                    allowsMultipleSelection: false
+                ) { result in
+                    guard case .success(let urls) = result, let url = urls.first else { return }
+                    guard let group = viewModel.editingGroup else { return }
+                    Task {
+                        await importUsersFromCSV(url: url, groupId: group.id)
+                    }
+                }
+
+                if let msg = csvImportResult {
+                    Text(msg)
+                        .scaledFont(size: 12)
+                        .foregroundStyle(msg.hasPrefix("✅") ? Color.green : theme.error)
+                        .lineLimit(1)
+                }
+
+                Spacer()
+            }
+        }
+        .padding(.horizontal, Spacing.screenPadding)
+    }
+
+    /// Parses a CSV file for email addresses and adds matching users to the group.
+    /// CSV format: each line is an email address OR a row where one column is an email.
+    private func importUsersFromCSV(url: URL, groupId: String) async {
+        guard url.startAccessingSecurityScopedResource() else {
+            csvImportResult = "❌ Cannot access file"
+            return
+        }
+        defer { url.stopAccessingSecurityScopedResource() }
+
+        guard let content = try? String(contentsOf: url, encoding: .utf8) else {
+            csvImportResult = "❌ Cannot read file"
+            return
+        }
+
+        // Parse emails from the CSV — handle single-column or multi-column CSVs
+        let lines = content.components(separatedBy: .newlines)
+        var emails: [String] = []
+        for line in lines {
+            let cols = line.components(separatedBy: ",")
+            for col in cols {
+                let trimmed = col.trimmingCharacters(in: .whitespacesAndNewlines)
+                    .trimmingCharacters(in: CharacterSet(charactersIn: "\""))
+                if trimmed.contains("@") && trimmed.contains(".") {
+                    emails.append(trimmed.lowercased())
                 }
             }
         }
-        .padding(.horizontal, Spacing.md)
-        .padding(.vertical, 10)
-        .background(theme.surfaceContainer)
-        .clipShape(RoundedRectangle(cornerRadius: CornerRadius.card, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: CornerRadius.card, style: .continuous)
-                .strokeBorder(theme.cardBorder, lineWidth: 0.5)
-        )
-        .padding(.horizontal, Spacing.screenPadding)
+        emails = Array(Set(emails)) // deduplicate
+
+        if emails.isEmpty {
+            csvImportResult = "❌ No emails found in CSV"
+            return
+        }
+
+        // Match emails to known users and add them
+        let matchedUsers = viewModel.allUsers.filter { emails.contains($0.email.lowercased()) }
+        let newUsers = matchedUsers.filter { !viewModel.isMember($0) }
+
+        if newUsers.isEmpty {
+            csvImportResult = "✅ All matched users already members"
+            return
+        }
+
+        var addedCount = 0
+        for user in newUsers {
+            await viewModel.toggleMembership(user: user, groupId: groupId)
+            addedCount += 1
+        }
+        csvImportResult = "✅ Added \(addedCount) member\(addedCount == 1 ? "" : "s")"
     }
 
     private var usersTableHeader: some View {

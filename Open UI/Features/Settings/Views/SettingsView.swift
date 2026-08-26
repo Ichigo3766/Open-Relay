@@ -502,6 +502,7 @@ struct ChatSettingsView: View {
     @AppStorage("temporaryChatDefault") private var temporaryChatDefault = false
     @AppStorage("expandThinkingWhileStreaming") private var expandThinkingWhileStreaming = true
     @AppStorage("streamingAutoScroll") private var streamingAutoScroll = true
+    @AppStorage("useInAppBrowser") private var useInAppBrowser: Bool = true
     @AppStorage("citationShowDomain") private var citationShowDomain: Bool = true
     @AppStorage("renderUserMarkdown") private var renderUserMarkdown: Bool = false
     @AppStorage("renderAssistantMarkdown") private var renderAssistantMarkdown: Bool = true
@@ -605,6 +606,15 @@ struct ChatSettingsView: View {
                 Text("Thinking...")
             } footer: {
                 Text("When enabled, reasoning blocks expand automatically while the model is thinking and collapse once done. When disabled, they stay collapsed unless you tap to open them.")
+            }
+
+            Section {
+                Toggle("Open links in app", isOn: $useInAppBrowser)
+                    .tint(theme.brandPrimary)
+            } header: {
+                Text("Links")
+            } footer: {
+                Text("When enabled, tapping links and citations opens them in a built-in browser so you stay in the app. You can always tap Share → Open in Safari to switch to the full browser.")
             }
 
             Section {

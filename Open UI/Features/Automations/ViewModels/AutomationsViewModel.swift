@@ -120,9 +120,9 @@ final class AutomationsViewModel {
 
     // MARK: - Create
 
-    func createAutomation(name: String, prompt: String, modelId: String, rrule: String) async -> Automation? {
+    func createAutomation(name: String, prompt: String, modelId: String, rrule: String, channelId: String? = nil) async -> Automation? {
         do {
-            let created = try await apiClient.createAutomation(name: name, prompt: prompt, modelId: modelId, rrule: rrule)
+            let created = try await apiClient.createAutomation(name: name, prompt: prompt, modelId: modelId, rrule: rrule, channelId: channelId)
             automations.insert(created, at: 0)
             Haptics.play(.light)
             return created

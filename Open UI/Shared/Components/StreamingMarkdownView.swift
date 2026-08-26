@@ -1301,6 +1301,8 @@ private struct MarkdownInlineImageView: View {
                 Label("Open Link", systemImage: "link")
             }
         }
+        // Note: openURL here is @Environment(\.openURL) used for the Share sheet context menu.
+        // The in-app browser routing is handled via the global openURL(_:) helper for tap actions.
     }
 
     /// Presents a `UIActivityViewController` for sharing the given image.

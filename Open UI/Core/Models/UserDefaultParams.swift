@@ -49,6 +49,11 @@ struct UserDefaultParams: Codable, Sendable, Equatable {
     // MARK: Function calling
     var functionCalling: String?
 
+    // MARK: Tool Approval (Human-in-the-Loop)
+    /// User-level default for tool approval mode. Stored under `ui.params.tool_approval_mode`.
+    /// `"ask"` = require approval before each tool call; `"full"` / nil = run automatically.
+    var toolApprovalMode: String?
+
     // MARK: Format (Ollama)
     var format: String?
 
@@ -137,6 +142,7 @@ struct UserDefaultParams: Codable, Sendable, Equatable {
         if let v = p["reasoning_effort"] as? String, !v.isEmpty { reasoningEffort = v }
         if let v = p["stream_response"] as? Bool { streamResponse = v }
         if let v = p["function_calling"] as? String, !v.isEmpty { functionCalling = v }
+        if let v = p["tool_approval_mode"] as? String, !v.isEmpty { toolApprovalMode = v }
         if let v = p["format"] as? String, !v.isEmpty { format = v }
 
         if let v = p["stop"] as? [String], !v.isEmpty { stop = v }
@@ -161,7 +167,8 @@ struct UserDefaultParams: Codable, Sendable, Equatable {
         repeatLastN != nil || tfsZ != nil || repeatPenalty != nil ||
         numKeep != nil || numCtx != nil || numBatch != nil ||
         reasoningEffort != nil || streamResponse != nil ||
-        functionCalling != nil || format != nil ||
+        functionCalling != nil || toolApprovalMode == "ask" ||
+        format != nil ||
         thinkEnabled != nil || (thinkCustom != nil && !thinkCustom!.isEmpty) ||
         stop?.isEmpty == false
     }
@@ -194,6 +201,8 @@ struct UserDefaultParams: Codable, Sendable, Equatable {
         if let v = reasoningEffort, !v.isEmpty { p["reasoning_effort"] = v }
         if let v = streamResponse      { p["stream_response"] = v }
         if let v = functionCalling, !v.isEmpty { p["function_calling"] = v }
+        // tool_approval_mode: only send "ask" — "full" is the server default, no need to send it
+        if toolApprovalMode == "ask"    { p["tool_approval_mode"] = "ask" }
         if let v = format, !v.isEmpty  { p["format"] = v }
         if let v = stop, !v.isEmpty    { p["stop"] = v }
 

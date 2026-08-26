@@ -20,16 +20,23 @@ final class AdminInterfaceViewModel {
     /// Non-public model warning (shown as a toast).
     var modelWarning: String?
 
+    /// Default interface settings JSON string.
+    var defaultInterfaceSettingsJSON: String = "{}"
+    /// Error from loading/saving default interface settings.
+    var defaultInterfaceError: String?
+
     // MARK: - Private
 
     private weak var apiClient: APIClient?
+    private weak var activeChatStore: ActiveChatStore?
     private var rawModels: [AIModel] = []
     private let logger = Logger(subsystem: "com.openui", category: "AdminInterface")
 
     // MARK: - Configure
 
-    func configure(apiClient: APIClient?) {
+    func configure(apiClient: APIClient?, activeChatStore: ActiveChatStore? = nil) {
         self.apiClient = apiClient
+        self.activeChatStore = activeChatStore
     }
 
     // MARK: - Load
@@ -53,12 +60,35 @@ final class AdminInterfaceViewModel {
             rawModels = await modelsTask
             models = rawModels.map { (id: $0.id, name: $0.name) }
             logger.info("Loaded task config + chat config + \(self.models.count) models")
+            // Load default interface settings (fire-and-forget — don't block)
+            await loadDefaultInterfaceSettings(api: api)
         } catch {
             let apiError = APIError.from(error)
             self.error = apiError.errorDescription ?? "Failed to load task configuration."
             logger.error("Failed to load task config: \(error.localizedDescription)")
         }
         isLoading = false
+    }
+
+    private func loadDefaultInterfaceSettings(api: APIClient) async {
+        do {
+            // DEFAULT_INTERFACE_SETTINGS is stored under ui.default_interface_settings in the
+            // server config. Load it via GET /api/v1/configs/ui which returns the full ui config.
+            let json = try await api.network.requestJSON(path: "/api/v1/configs/ui")
+            // The value is nested under the "default_interface_settings" key
+            if let nested = json["default_interface_settings"],
+               let data = try? JSONSerialization.data(withJSONObject: nested, options: [.prettyPrinted]),
+               let str = String(data: data, encoding: .utf8) {
+                defaultInterfaceSettingsJSON = str
+            } else {
+                defaultInterfaceSettingsJSON = "{}"
+            }
+            defaultInterfaceError = nil
+        } catch {
+            // Endpoint may not exist on older servers — silently ignore
+            defaultInterfaceSettingsJSON = "{}"
+            logger.debug("Default interface settings endpoint unavailable: \(error.localizedDescription)")
+        }
     }
 
     // MARK: - Save
@@ -76,6 +106,14 @@ final class AdminInterfaceViewModel {
             }()
             config = try await taskSave
             chatConfig = await chatSave
+
+            // Propagate tool permissions flag to the active chat store immediately
+            // so the HITL Auto/Ask toggle becomes live in open chats without restart.
+            activeChatStore?.enableToolPermissions = chatConfig.enableToolPermissions
+
+            // Also save default interface settings if changed
+            await saveDefaultInterfaceSettings(api: api)
+
             success = true
             logger.info("Saved task config + chat config")
             Task {
@@ -88,6 +126,23 @@ final class AdminInterfaceViewModel {
             logger.error("Failed to save task config: \(error.localizedDescription)")
         }
         isSaving = false
+    }
+
+    private func saveDefaultInterfaceSettings(api: APIClient) async {
+        let trimmed = defaultInterfaceSettingsJSON.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, trimmed != "{}" else { return }
+        guard let data = trimmed.data(using: .utf8),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            defaultInterfaceError = "Invalid JSON"
+            return
+        }
+        do {
+            _ = try await api.network.requestJSON(path: "/api/v1/configs/interface", method: .post, body: json)
+            defaultInterfaceError = nil
+        } catch {
+            defaultInterfaceError = error.localizedDescription
+            logger.error("Failed to save default interface settings: \(error.localizedDescription)")
+        }
     }
 
     // MARK: - Public Model Validation

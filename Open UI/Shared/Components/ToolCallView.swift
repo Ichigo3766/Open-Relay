@@ -150,6 +150,9 @@ struct ToolCallData: Identifiable {
     let arguments: String?
     let result: String?
     let isDone: Bool
+    /// The raw `status` attribute from the output item, e.g. `"pending"`, `"completed"`,
+    /// `"rejected"`, `"failed"`. `nil` for older content that has no status attribute.
+    let status: String?
     /// Rich UI HTML embeds returned by the tool. Each string is a full HTML
     /// document to be rendered inline in the chat as an interactive webview.
     let embeds: [String]
@@ -157,6 +160,31 @@ struct ToolCallData: Identifiable {
     /// A display-friendly name (replaces underscores with spaces).
     var displayName: String {
         name.replacingOccurrences(of: "_", with: " ")
+    }
+
+    /// True when this is an `ask_user` call awaiting the user's answers.
+    var needsUserInput: Bool {
+        name == "ask_user" && status == "pending"
+    }
+
+    /// Whether this tool call resulted in an error.
+    ///
+    /// OpenWebUI marks failed tool calls by embedding an error indicator in the result.
+    /// Checks for common patterns: top-level `"error"` JSON key, `Error:` prefix,
+    /// `"status": "error"`, or an explicit `"success": false` field.
+    var isError: Bool {
+        guard isDone, let result, !result.isEmpty else { return false }
+        // Fast string checks before attempting JSON parse
+        let lower = result.lowercased()
+        // JSON error key: {"error": ...} or {"error":...}
+        if lower.contains("\"error\"") { return true }
+        // Explicit error prefix from Python exceptions
+        if result.hasPrefix("Error:") || result.hasPrefix("error:") { return true }
+        // Status field
+        if lower.contains("\"status\": \"error\"") || lower.contains("\"status\":\"error\"") { return true }
+        // Explicit failure flag
+        if lower.contains("\"success\": false") || lower.contains("\"success\":false") { return true }
+        return false
     }
 }
 
@@ -684,6 +712,7 @@ enum ToolCallParser {
         let id = extractAttribute("id", from: block) ?? UUID().uuidString
         let doneStr = extractAttribute("done", from: block)
         let isDone = doneStr == "true"
+        let status = extractAttribute("status", from: block)
         let arguments = extractAttribute("arguments", from: block)
         // Try the result="" attribute first. If absent (OpenWebUI stores the output
         // as the body between </summary> and </details>), fall back to body content.
@@ -712,6 +741,7 @@ enum ToolCallParser {
             arguments: decodeHTMLEntities(arguments),
             result: decodeHTMLEntities(result),
             isDone: isDone,
+            status: status,
             embeds: embeds
         )
     }
@@ -2382,44 +2412,62 @@ struct ToolCallView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            // ── Header (tappable to expand/collapse) ─────────────────────
-            Button {
-                withAnimation(.easeInOut(duration: 0.2)) {
-                    isExpanded.toggle()
-                }
-            } label: {
+            // ── Header (tappable to expand/collapse, unless awaiting user input) ────
+            if toolCall.needsUserInput {
+                // ask_user pending — non-interactive pill: spinner + "Input needed"
+                // The actual question card lives above the chat input (AskUserCard).
                 HStack(spacing: 8) {
-                    // Status indicator
-                    if toolCall.isDone {
-                        Image(systemName: "checkmark.circle.fill")
-                            .scaledFont(size: 14)
-                            .foregroundStyle(theme.success)
-                    } else {
-                        ProgressView()
-                            .controlSize(.mini)
-                            .tint(theme.brandPrimary)
-                    }
+                    ProgressView()
+                        .controlSize(.mini)
+                        .tint(theme.brandPrimary)
 
-                    // "View Result from tool_name" — matches Open WebUI web UI pattern
-                    (Text("View Result from ")
-                        .foregroundStyle(theme.textTertiary)
-                     + Text(toolCall.name)
-                        .foregroundStyle(theme.textPrimary)
-                        .fontWeight(.semibold))
+                    Text("Input needed")
                         .scaledFont(size: 13, weight: .medium)
+                        .foregroundStyle(theme.textSecondary)
                         .lineLimit(1)
-                        .truncationMode(.middle)
 
                     Spacer()
-
-                    Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
-                        .scaledFont(size: 10, weight: .semibold)
-                        .foregroundStyle(theme.textTertiary)
                 }
                 .padding(.vertical, 10)
-                .contentShape(Rectangle())
+            } else {
+                Button {
+                    withAnimation(.easeInOut(duration: 0.2)) {
+                        isExpanded.toggle()
+                    }
+                } label: {
+                    HStack(spacing: 8) {
+                        // Status indicator
+                        if toolCall.isDone {
+                            Image(systemName: toolCall.isError ? "xmark.circle.fill" : "checkmark.circle.fill")
+                                .scaledFont(size: 14)
+                                .foregroundStyle(toolCall.isError ? theme.error : theme.success)
+                        } else {
+                            ProgressView()
+                                .controlSize(.mini)
+                                .tint(theme.brandPrimary)
+                        }
+
+                        // "View Result from tool_name" — matches Open WebUI web UI pattern
+                        (Text("View Result from ")
+                            .foregroundStyle(theme.textTertiary)
+                         + Text(toolCall.name)
+                            .foregroundStyle(theme.textPrimary)
+                            .fontWeight(.semibold))
+                            .scaledFont(size: 13, weight: .medium)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+
+                        Spacer()
+
+                        Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
+                            .scaledFont(size: 10, weight: .semibold)
+                            .foregroundStyle(theme.textTertiary)
+                    }
+                    .padding(.vertical, 10)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
             }
-            .buttonStyle(.plain)
 
             // ── Body ─────────────────────────────────────────────────────
             AnimatedPresence(visible: isExpanded) {
@@ -2503,6 +2551,11 @@ private struct MixedToolCallGroup: View {
         toolItems.allSatisfy(\.isDone)
     }
 
+    /// True when ANY tool item in the group is an ask_user awaiting input.
+    private var hasNeedsInput: Bool {
+        toolItems.contains { $0.needsUserInput }
+    }
+
     /// Comma-separated unique tool names (order of first appearance).
     private var groupLabel: String {
         var seen = Set<String>()
@@ -2530,17 +2583,25 @@ private struct MixedToolCallGroup: View {
                             .tint(theme.brandPrimary)
                     }
 
-                    (Text("Explored ")
-                        .foregroundStyle(theme.textTertiary)
-                     + Text("\(toolItems.count) ")
-                        .foregroundStyle(theme.textPrimary)
-                        .fontWeight(.semibold)
-                     + Text(groupLabel)
-                        .foregroundStyle(theme.textPrimary)
-                        .fontWeight(.semibold))
-                        .scaledFont(size: 13, weight: .medium)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
+                    if hasNeedsInput && !allDone {
+                        // Show "Input needed" as the summary when ask_user is pending
+                        Text("Input needed")
+                            .scaledFont(size: 13, weight: .medium)
+                            .foregroundStyle(theme.textSecondary)
+                            .lineLimit(1)
+                    } else {
+                        (Text("Explored ")
+                            .foregroundStyle(theme.textTertiary)
+                         + Text("\(toolItems.count) ")
+                            .foregroundStyle(theme.textPrimary)
+                            .fontWeight(.semibold)
+                         + Text(groupLabel)
+                            .foregroundStyle(theme.textPrimary)
+                            .fontWeight(.semibold))
+                            .scaledFont(size: 13, weight: .medium)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    }
 
                     Spacer()
 
@@ -2908,6 +2969,7 @@ struct AssistantMessageContent: View {
                                 arguments: tc.arguments,
                                 result: tc.result,
                                 isDone: tc.isDone,
+                                status: tc.status,
                                 embeds: messageEmbeds
                             ))
                             mutableGroups[i] = .toolCalls(items)

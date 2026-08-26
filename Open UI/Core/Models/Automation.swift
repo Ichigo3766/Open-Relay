@@ -2,18 +2,49 @@ import Foundation
 
 // MARK: - Automation Data
 
+/// Target config for an automation — "chat" (default) or "channel".
+struct AutomationTarget: Codable, Sendable {
+    var type: String  // "chat" | "channel"
+    var channelId: String?
+
+    enum CodingKeys: String, CodingKey {
+        case type
+        case channelId = "channel_id"
+    }
+
+    init(type: String = "chat", channelId: String? = nil) {
+        self.type = type
+        self.channelId = channelId
+    }
+}
+
 /// The `data` payload embedded in an Automation.
 struct AutomationData: Codable, Sendable {
     var prompt: String
     var modelId: String
     var rrule: String
     var terminal: String?
+    /// When set, the automation is pointed at a channel instead of creating a new chat.
+    var target: AutomationTarget?
 
     enum CodingKeys: String, CodingKey {
         case prompt
         case modelId = "model_id"
         case rrule
         case terminal
+        case target
+    }
+
+    /// Convenience: the channel ID from the target, if this automation posts to a channel.
+    var channelId: String? {
+        get { target?.type == "channel" ? target?.channelId : nil }
+        set {
+            if let id = newValue, !id.isEmpty {
+                target = AutomationTarget(type: "channel", channelId: id)
+            } else {
+                target = nil
+            }
+        }
     }
 }
 

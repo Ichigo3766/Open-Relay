@@ -173,6 +173,15 @@ struct ChatInputField: View {
     var onQueueEdit: ((UUID) -> Void)? = nil
     var onQueueDelete: ((UUID) -> Void)? = nil
 
+    // MARK: - Tool Permissions (Human-in-the-Loop)
+    /// Whether the server admin has enabled Tool Permissions.
+    /// When true a "Tool Permissions" entry appears in the + sheet.
+    var isToolPermissionsEnabled: Bool = false
+    /// Current tool approval mode, passed through to `ToolsMenuSheet`.
+    var toolApprovalMode: String = "full"
+    /// Called when the user changes the mode in the + sheet.
+    var onToolApprovalModeChange: ((String) -> Void)? = nil
+
     @Environment(\.theme) private var theme
     @Environment(\.accessibilityScale) private var accessibilityScale
     @FocusState private var isFocused: Bool
@@ -321,9 +330,13 @@ struct ChatInputField: View {
                 onFilesSelected: onFilesSelected,
                 photoPicker: photoPicker,
                 onOpenToolUserValves: onOpenToolUserValves,
+                isNotesEnabled: true,
                 skills: skills,
                 selectedSkillIds: $selectedSkillIds,
-                isLoadingSkills: isLoadingSkills
+                isLoadingSkills: isLoadingSkills,
+                isToolPermissionsEnabled: isToolPermissionsEnabled,
+                toolApprovalMode: toolApprovalMode,
+                onToolApprovalModeChange: onToolApprovalModeChange
             )
         }
         .onChange(of: showToolsSheet) { _, isPresented in

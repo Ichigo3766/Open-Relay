@@ -13,6 +13,15 @@ struct PrivacySecurityView: View {
     @State private var showDisableBiometricsConfirm = false
     @State private var excludeModelsFromBackup: Bool = StorageManager.excludeModelsFromBackup
 
+    // API Key state
+    @State private var currentApiKey: String? = nil
+    @State private var isLoadingApiKey = false
+    @State private var isGeneratingApiKey = false
+    @State private var isDeletingApiKey = false
+    @State private var showApiKeyCopied = false
+    @State private var showDeleteApiKeyConfirm = false
+    @State private var apiKeyError: String? = nil
+
     // Observe the shared LocationManager so the UI refreshes when auth status changes
     private var locationManager: LocationManager { LocationManager.shared }
 
@@ -33,6 +42,11 @@ struct PrivacySecurityView: View {
                 // Location
                 SettingsSection(header: "Location") {
                     locationRow
+                }
+
+                // API Key Management
+                SettingsSection(header: "API Key") {
+                    apiKeySection
                 }
 
                 // Data Management
@@ -331,6 +345,214 @@ struct PrivacySecurityView: View {
         } catch {
             exportError = error.localizedDescription
         }
+    }
+}
+
+// MARK: - API Key Section
+
+extension PrivacySecurityView {
+
+    /// The API Key section — shows the current key (masked), with Generate and Delete actions.
+    @ViewBuilder
+    var apiKeySection: some View {
+        VStack(spacing: 0) {
+            // Current key row
+            HStack(spacing: 12) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 8)
+                        .fill(Color.orange.opacity(0.15))
+                        .frame(width: 32, height: 32)
+                    Image(systemName: "key.fill")
+                        .scaledFont(size: 13, weight: .medium)
+                        .foregroundStyle(Color.orange)
+                }
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("API Key")
+                        .scaledFont(size: 15)
+                        .foregroundStyle(theme.textPrimary)
+                    if isLoadingApiKey {
+                        Text("Loading…")
+                            .scaledFont(size: 12)
+                            .foregroundStyle(theme.textTertiary)
+                    } else if let key = currentApiKey, !key.isEmpty {
+                        Text(maskedKey(key))
+                            .scaledFont(size: 12, design: .monospaced)
+                            .foregroundStyle(theme.textSecondary)
+                    } else {
+                        Text("No API key — tap Generate to create one")
+                            .scaledFont(size: 12)
+                            .foregroundStyle(theme.textTertiary)
+                    }
+                }
+
+                Spacer()
+
+                // Copy button (only shown when key exists)
+                if let key = currentApiKey, !key.isEmpty {
+                    Button {
+                        UIPasteboard.general.string = key
+                        Haptics.notify(.success)
+                        showApiKeyCopied = true
+                        Task {
+                            try? await Task.sleep(nanoseconds: 2_000_000_000)
+                            showApiKeyCopied = false
+                        }
+                    } label: {
+                        Image(systemName: showApiKeyCopied ? "checkmark" : "doc.on.doc")
+                            .scaledFont(size: 14, weight: .medium)
+                            .foregroundStyle(showApiKeyCopied ? Color.green : theme.brandPrimary)
+                            .frame(width: 32, height: 32)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 10)
+
+            // Error message if any
+            if let error = apiKeyError {
+                Divider().padding(.leading, 16)
+                HStack(spacing: 8) {
+                    Image(systemName: "exclamationmark.circle.fill")
+                        .scaledFont(size: 12)
+                        .foregroundStyle(theme.error)
+                    Text(error)
+                        .scaledFont(size: 12)
+                        .foregroundStyle(theme.error)
+                        .lineLimit(2)
+                    Spacer()
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 8)
+            }
+
+            Divider().padding(.leading, 16)
+
+            // Generate button row
+            HStack(spacing: 12) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 8)
+                        .fill(theme.brandPrimary.opacity(0.12))
+                        .frame(width: 32, height: 32)
+                    if isGeneratingApiKey {
+                        ProgressView().controlSize(.small).tint(theme.brandPrimary)
+                    } else {
+                        Image(systemName: "arrow.clockwise")
+                            .scaledFont(size: 13, weight: .medium)
+                            .foregroundStyle(theme.brandPrimary)
+                    }
+                }
+
+                Text(currentApiKey != nil ? "Regenerate API Key" : "Generate API Key")
+                    .scaledFont(size: 15)
+                    .foregroundStyle(theme.brandPrimary)
+
+                Spacer()
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 10)
+            .contentShape(Rectangle())
+            .onTapGesture {
+                guard !isGeneratingApiKey else { return }
+                Task { await generateApiKey() }
+            }
+
+            // Delete button row (only when key exists)
+            if currentApiKey != nil {
+                Divider().padding(.leading, 16)
+
+                HStack(spacing: 12) {
+                    ZStack {
+                        RoundedRectangle(cornerRadius: 8)
+                            .fill(theme.error.opacity(0.12))
+                            .frame(width: 32, height: 32)
+                        if isDeletingApiKey {
+                            ProgressView().controlSize(.small).tint(theme.error)
+                        } else {
+                            Image(systemName: "trash")
+                                .scaledFont(size: 13, weight: .medium)
+                                .foregroundStyle(theme.error)
+                        }
+                    }
+
+                    Text("Revoke API Key")
+                        .scaledFont(size: 15)
+                        .foregroundStyle(theme.error)
+
+                    Spacer()
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 10)
+                .contentShape(Rectangle())
+                .onTapGesture {
+                    guard !isDeletingApiKey else { return }
+                    showDeleteApiKeyConfirm = true
+                }
+                .confirmationDialog(
+                    "Revoke API Key?",
+                    isPresented: $showDeleteApiKeyConfirm,
+                    titleVisibility: .visible
+                ) {
+                    Button("Revoke API Key", role: .destructive) {
+                        Task { await deleteApiKey() }
+                    }
+                    Button("Cancel", role: .cancel) {}
+                } message: {
+                    Text("This will immediately invalidate your API key. Any apps using it will stop working.")
+                }
+            }
+        }
+        .task {
+            await loadApiKey()
+        }
+    }
+
+    private func loadApiKey() async {
+        guard let api = dependencies.apiClient else { return }
+        isLoadingApiKey = true
+        apiKeyError = nil
+        currentApiKey = try? await api.getApiKey()
+        isLoadingApiKey = false
+    }
+
+    private func generateApiKey() async {
+        guard let api = dependencies.apiClient else { return }
+        isGeneratingApiKey = true
+        apiKeyError = nil
+        do {
+            let newKey = try await api.generateApiKey()
+            currentApiKey = newKey
+            Haptics.notify(.success)
+        } catch {
+            let apiErr = APIError.from(error)
+            apiKeyError = apiErr.errorDescription ?? "Failed to generate API key."
+        }
+        isGeneratingApiKey = false
+    }
+
+    private func deleteApiKey() async {
+        guard let api = dependencies.apiClient else { return }
+        isDeletingApiKey = true
+        apiKeyError = nil
+        do {
+            try await api.deleteApiKey()
+            currentApiKey = nil
+            Haptics.notify(.success)
+        } catch {
+            let apiErr = APIError.from(error)
+            apiKeyError = apiErr.errorDescription ?? "Failed to revoke API key."
+        }
+        isDeletingApiKey = false
+    }
+
+    /// Returns a masked version of the key showing first 8 and last 4 chars.
+    private func maskedKey(_ key: String) -> String {
+        guard key.count > 12 else { return String(repeating: "•", count: key.count) }
+        let prefix = String(key.prefix(8))
+        let suffix = String(key.suffix(4))
+        let dots = String(repeating: "•", count: min(16, key.count - 12))
+        return "\(prefix)\(dots)\(suffix)"
     }
 }
 

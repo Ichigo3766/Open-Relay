@@ -114,6 +114,9 @@ struct BackendConfig: Codable, Sendable {
         let enableCodeInterpreter: Bool?
         let enableWebsocket: Bool?
         let enableMessageRating: Bool?
+        /// Whether the server has tool-approval (human-in-the-loop) permissions enabled.
+        /// Maps to `chat.tool_permissions.enable` in the server config.
+        let enableToolPermissions: Bool?
 
         // Backward compat aliases
         var authTrustedHeaderAuth: Bool? { authTrustedHeader }
@@ -140,6 +143,7 @@ struct BackendConfig: Codable, Sendable {
             case enableCodeInterpreter = "enable_code_interpreter"
             case enableWebsocket = "enable_websocket"
             case enableMessageRating = "enable_message_rating"
+            case enableToolPermissions = "enable_tool_permissions"
         }
 
         init(from decoder: Decoder) throws {
@@ -163,6 +167,7 @@ struct BackendConfig: Codable, Sendable {
             enableCodeInterpreter = try container.decodeIfPresent(Bool.self, forKey: .enableCodeInterpreter)
             enableWebsocket = try container.decodeIfPresent(Bool.self, forKey: .enableWebsocket)
             enableMessageRating = try container.decodeIfPresent(Bool.self, forKey: .enableMessageRating)
+            enableToolPermissions = try container.decodeIfPresent(Bool.self, forKey: .enableToolPermissions)
         }
     }
 
@@ -585,6 +590,9 @@ struct TaskConfig: Sendable {
 struct AdminTaskConfig: Codable, Sendable {
     var taskModel: String
     var taskModelExternal: String
+    /// Generation parameters for the task model. Only non-nil values are sent to the server.
+    /// `null` per key = "Default" (absent from dict). Matches web `configuredParams()` stripping.
+    var taskModelParams: [String: Any]
     var enableTitleGeneration: Bool
     var enableFollowUpGeneration: Bool
     var enableTagsGeneration: Bool
@@ -605,6 +613,7 @@ struct AdminTaskConfig: Codable, Sendable {
     enum CodingKeys: String, CodingKey {
         case taskModel = "TASK_MODEL"
         case taskModelExternal = "TASK_MODEL_EXTERNAL"
+        case taskModelParams = "TASK_MODEL_PARAMS"
         case enableTitleGeneration = "ENABLE_TITLE_GENERATION"
         case enableFollowUpGeneration = "ENABLE_FOLLOW_UP_GENERATION"
         case enableTagsGeneration = "ENABLE_TAGS_GENERATION"
@@ -626,6 +635,7 @@ struct AdminTaskConfig: Codable, Sendable {
     init() {
         taskModel = ""
         taskModelExternal = ""
+        taskModelParams = [:]
         enableTitleGeneration = true
         enableFollowUpGeneration = true
         enableTagsGeneration = true
@@ -642,6 +652,65 @@ struct AdminTaskConfig: Codable, Sendable {
         toolsFunctionCallingPromptTemplate = ""
         enableVoiceModePrompt = true
         voiceModePromptTemplate = ""
+    }
+
+    // Custom decoder: TASK_MODEL_PARAMS can be a JSON dict or null from the server.
+    // Custom decoder: TASK_MODEL_PARAMS arrives as a dict or null from the server.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        taskModel = (try? c.decode(String.self, forKey: .taskModel)) ?? ""
+        taskModelExternal = (try? c.decode(String.self, forKey: .taskModelExternal)) ?? ""
+        // TASK_MODEL_PARAMS arrives as a dict or null — decode directly to [String: Any]
+        if let paramsObj = try? c.decode([String: AnyCodable].self, forKey: .taskModelParams) {
+            taskModelParams = paramsObj.compactMapValues { $0.value }
+        } else {
+            taskModelParams = [:]
+        }
+        enableTitleGeneration = (try? c.decode(Bool.self, forKey: .enableTitleGeneration)) ?? true
+        enableFollowUpGeneration = (try? c.decode(Bool.self, forKey: .enableFollowUpGeneration)) ?? true
+        enableTagsGeneration = (try? c.decode(Bool.self, forKey: .enableTagsGeneration)) ?? true
+        enableAutocompleteGeneration = (try? c.decode(Bool.self, forKey: .enableAutocompleteGeneration)) ?? false
+        autocompleteGenerationInputMaxLength = (try? c.decode(Int.self, forKey: .autocompleteGenerationInputMaxLength)) ?? 256
+        autocompleteGenerationPromptTemplate = (try? c.decode(String.self, forKey: .autocompleteGenerationPromptTemplate)) ?? ""
+        enableSearchQueryGeneration = (try? c.decode(Bool.self, forKey: .enableSearchQueryGeneration)) ?? true
+        enableRetrievalQueryGeneration = (try? c.decode(Bool.self, forKey: .enableRetrievalQueryGeneration)) ?? true
+        titleGenerationPromptTemplate = (try? c.decode(String.self, forKey: .titleGenerationPromptTemplate)) ?? ""
+        followUpGenerationPromptTemplate = (try? c.decode(String.self, forKey: .followUpGenerationPromptTemplate)) ?? ""
+        tagsGenerationPromptTemplate = (try? c.decode(String.self, forKey: .tagsGenerationPromptTemplate)) ?? ""
+        queryGenerationPromptTemplate = (try? c.decode(String.self, forKey: .queryGenerationPromptTemplate)) ?? ""
+        imagePromptGenerationPromptTemplate = (try? c.decode(String.self, forKey: .imagePromptGenerationPromptTemplate)) ?? ""
+        toolsFunctionCallingPromptTemplate = (try? c.decode(String.self, forKey: .toolsFunctionCallingPromptTemplate)) ?? ""
+        enableVoiceModePrompt = (try? c.decode(Bool.self, forKey: .enableVoiceModePrompt)) ?? true
+        voiceModePromptTemplate = (try? c.decode(String.self, forKey: .voiceModePromptTemplate)) ?? ""
+    }
+
+    // Custom encoder: send only non-null values to the server (matches web configuredParams()).
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(taskModel, forKey: .taskModel)
+        try c.encode(taskModelExternal, forKey: .taskModelExternal)
+        // Encode only non-null values — matches web configuredParams() stripping nulls
+        if taskModelParams.isEmpty {
+            try c.encodeNil(forKey: .taskModelParams)
+        } else {
+            try c.encode(taskModelParams.mapValues { AnyCodable($0) }, forKey: .taskModelParams)
+        }
+        try c.encode(enableTitleGeneration, forKey: .enableTitleGeneration)
+        try c.encode(enableFollowUpGeneration, forKey: .enableFollowUpGeneration)
+        try c.encode(enableTagsGeneration, forKey: .enableTagsGeneration)
+        try c.encode(enableAutocompleteGeneration, forKey: .enableAutocompleteGeneration)
+        try c.encode(autocompleteGenerationInputMaxLength, forKey: .autocompleteGenerationInputMaxLength)
+        try c.encode(autocompleteGenerationPromptTemplate, forKey: .autocompleteGenerationPromptTemplate)
+        try c.encode(enableSearchQueryGeneration, forKey: .enableSearchQueryGeneration)
+        try c.encode(enableRetrievalQueryGeneration, forKey: .enableRetrievalQueryGeneration)
+        try c.encode(titleGenerationPromptTemplate, forKey: .titleGenerationPromptTemplate)
+        try c.encode(followUpGenerationPromptTemplate, forKey: .followUpGenerationPromptTemplate)
+        try c.encode(tagsGenerationPromptTemplate, forKey: .tagsGenerationPromptTemplate)
+        try c.encode(queryGenerationPromptTemplate, forKey: .queryGenerationPromptTemplate)
+        try c.encode(imagePromptGenerationPromptTemplate, forKey: .imagePromptGenerationPromptTemplate)
+        try c.encode(toolsFunctionCallingPromptTemplate, forKey: .toolsFunctionCallingPromptTemplate)
+        try c.encode(enableVoiceModePrompt, forKey: .enableVoiceModePrompt)
+        try c.encode(voiceModePromptTemplate, forKey: .voiceModePromptTemplate)
     }
 }
 
@@ -913,6 +982,9 @@ struct AdminChatConfig: Codable, Sendable {
     var contextCompactionTokenCap: Int
     var contextCompactionRetentionPercentage: Int
     var contextCompactionPromptTemplate: String
+    /// Enables the Tool Permissions (human-in-the-loop) feature for all users.
+    /// Maps to `chat.tool_permissions.enable` on the server.
+    var enableToolPermissions: Bool
 
     enum CodingKeys: String, CodingKey {
         case enableContextCompaction           = "ENABLE_CONTEXT_COMPACTION"
@@ -921,6 +993,7 @@ struct AdminChatConfig: Codable, Sendable {
         case contextCompactionTokenCap         = "CONTEXT_COMPACTION_TOKEN_CAP"
         case contextCompactionRetentionPercentage = "CONTEXT_COMPACTION_RETENTION_PERCENTAGE"
         case contextCompactionPromptTemplate   = "CONTEXT_COMPACTION_PROMPT_TEMPLATE"
+        case enableToolPermissions             = "ENABLE_TOOL_PERMISSIONS"
     }
 
     init(from decoder: Decoder) throws {
@@ -931,6 +1004,7 @@ struct AdminChatConfig: Codable, Sendable {
         contextCompactionTokenCap         = (try? c.decode(Int.self,    forKey: .contextCompactionTokenCap))         ?? 80000
         contextCompactionRetentionPercentage = (try? c.decode(Int.self, forKey: .contextCompactionRetentionPercentage)) ?? 40
         contextCompactionPromptTemplate   = (try? c.decode(String.self, forKey: .contextCompactionPromptTemplate))   ?? ""
+        enableToolPermissions             = (try? c.decode(Bool.self,   forKey: .enableToolPermissions))             ?? false
     }
 
     init(
@@ -939,7 +1013,8 @@ struct AdminChatConfig: Codable, Sendable {
         contextCompactionTokenThreshold: Int = 80000,
         contextCompactionTokenCap: Int = 80000,
         contextCompactionRetentionPercentage: Int = 40,
-        contextCompactionPromptTemplate: String = ""
+        contextCompactionPromptTemplate: String = "",
+        enableToolPermissions: Bool = false
     ) {
         self.enableContextCompaction = enableContextCompaction
         self.contextCompactionModel = contextCompactionModel
@@ -947,6 +1022,7 @@ struct AdminChatConfig: Codable, Sendable {
         self.contextCompactionTokenCap = contextCompactionTokenCap
         self.contextCompactionRetentionPercentage = contextCompactionRetentionPercentage
         self.contextCompactionPromptTemplate = contextCompactionPromptTemplate
+        self.enableToolPermissions = enableToolPermissions
     }
 }
 
@@ -1982,6 +2058,12 @@ struct TerminalServerConnection: Codable, Sendable {
     var key: String?
     var auth_type: String?
     var config: TerminalServerConnectionConfig?
+    /// Whether this terminal server is available in chat sessions.
+    var enable_in_chats: Bool?
+    /// Whether this terminal server is available in automations.
+    var enable_in_automations: Bool?
+    /// Scope of the terminal server ("global" | "user" | "admin").
+    var scope: String?
 
     init(
         id: String? = "",
@@ -1991,7 +2073,10 @@ struct TerminalServerConnection: Codable, Sendable {
         path: String? = "/openapi.json",
         key: String? = "",
         auth_type: String? = "bearer",
-        config: TerminalServerConnectionConfig? = TerminalServerConnectionConfig()
+        config: TerminalServerConnectionConfig? = TerminalServerConnectionConfig(),
+        enable_in_chats: Bool? = true,
+        enable_in_automations: Bool? = true,
+        scope: String? = "global"
     ) {
         self.id = id
         self.name = name
@@ -2001,6 +2086,9 @@ struct TerminalServerConnection: Codable, Sendable {
         self.key = key
         self.auth_type = auth_type
         self.config = config
+        self.enable_in_chats = enable_in_chats
+        self.enable_in_automations = enable_in_automations
+        self.scope = scope
     }
 
     var displayName: String {
@@ -2081,6 +2169,8 @@ struct RetrievalConfig: Codable, Sendable {
 
     // Tika
     var tikaServerURL: String
+    /// Which version of the Tika server to use ("3" or "4"). New in OpenWebUI v0.12+.
+    var tikaServerVersion: String
 
     // Docling
     var doclingServerURL: String
@@ -2145,6 +2235,15 @@ struct RetrievalConfig: Codable, Sendable {
     var fileImageCompressionWidth: Int?
     var fileImageCompressionHeight: Int?
 
+    // Knowledge file retention
+    var enableKnowledgeFileRetention: Bool
+
+    // RAG CSV shape summary
+    var enableRagCsvSummary: Bool
+
+    // RAG metadata max value chars (nil = no limit)
+    var ragMetadataMaxValueChars: Int?
+
     // Integration
     var enableGoogleDriveIntegration: Bool
     var enableOneDriveIntegration: Bool
@@ -2160,6 +2259,7 @@ struct RetrievalConfig: Codable, Sendable {
         case externalDocumentLoaderURL = "EXTERNAL_DOCUMENT_LOADER_URL"
         case externalDocumentLoaderAPIKey = "EXTERNAL_DOCUMENT_LOADER_API_KEY"
         case tikaServerURL = "TIKA_SERVER_URL"
+        case tikaServerVersion = "TIKA_SERVER_VERSION"
         case doclingServerURL = "DOCLING_SERVER_URL"
         case doclingAPIKey = "DOCLING_API_KEY"
         case doclingParams = "DOCLING_PARAMS"
@@ -2207,6 +2307,9 @@ struct RetrievalConfig: Codable, Sendable {
         case fileMaxCount = "FILE_MAX_COUNT"
         case fileImageCompressionWidth = "FILE_IMAGE_COMPRESSION_WIDTH"
         case fileImageCompressionHeight = "FILE_IMAGE_COMPRESSION_HEIGHT"
+        case enableKnowledgeFileRetention = "ENABLE_KNOWLEDGE_FILE_RETENTION"
+        case enableRagCsvSummary = "ENABLE_RAG_CSV_SUMMARY"
+        case ragMetadataMaxValueChars = "RAG_METADATA_MAX_VALUE_CHARS"
         case enableGoogleDriveIntegration = "ENABLE_GOOGLE_DRIVE_INTEGRATION"
         case enableOneDriveIntegration = "ENABLE_ONEDRIVE_INTEGRATION"
         case web
@@ -2222,6 +2325,7 @@ struct RetrievalConfig: Codable, Sendable {
         externalDocumentLoaderURL = (try? c.decode(String.self, forKey: .externalDocumentLoaderURL)) ?? ""
         externalDocumentLoaderAPIKey = (try? c.decode(String.self, forKey: .externalDocumentLoaderAPIKey)) ?? ""
         tikaServerURL = (try? c.decode(String.self, forKey: .tikaServerURL)) ?? ""
+        tikaServerVersion = (try? c.decode(String.self, forKey: .tikaServerVersion)) ?? "3"
         doclingServerURL = (try? c.decode(String.self, forKey: .doclingServerURL)) ?? ""
         doclingAPIKey = (try? c.decode(String.self, forKey: .doclingAPIKey)) ?? ""
         // DOCLING_PARAMS can be an object — serialize to string
@@ -2293,6 +2397,10 @@ struct RetrievalConfig: Codable, Sendable {
         fileImageCompressionWidth = try? c.decode(Int.self, forKey: .fileImageCompressionWidth)
         fileImageCompressionHeight = try? c.decode(Int.self, forKey: .fileImageCompressionHeight)
 
+        enableKnowledgeFileRetention = (try? c.decode(Bool.self, forKey: .enableKnowledgeFileRetention)) ?? false
+        enableRagCsvSummary = (try? c.decode(Bool.self, forKey: .enableRagCsvSummary)) ?? false
+        ragMetadataMaxValueChars = try? c.decode(Int.self, forKey: .ragMetadataMaxValueChars)
+
         enableGoogleDriveIntegration = (try? c.decode(Bool.self, forKey: .enableGoogleDriveIntegration)) ?? false
         enableOneDriveIntegration = (try? c.decode(Bool.self, forKey: .enableOneDriveIntegration)) ?? false
 
@@ -2308,6 +2416,7 @@ struct RetrievalConfig: Codable, Sendable {
         try c.encode(externalDocumentLoaderURL, forKey: .externalDocumentLoaderURL)
         try c.encode(externalDocumentLoaderAPIKey, forKey: .externalDocumentLoaderAPIKey)
         try c.encode(tikaServerURL, forKey: .tikaServerURL)
+        try c.encode(tikaServerVersion, forKey: .tikaServerVersion)
         try c.encode(doclingServerURL, forKey: .doclingServerURL)
         try c.encode(doclingAPIKey, forKey: .doclingAPIKey)
         // Encode DOCLING_PARAMS as JSON object
@@ -2367,6 +2476,9 @@ struct RetrievalConfig: Codable, Sendable {
         try c.encode(fileMaxCount, forKey: .fileMaxCount)
         try c.encode(fileImageCompressionWidth, forKey: .fileImageCompressionWidth)
         try c.encode(fileImageCompressionHeight, forKey: .fileImageCompressionHeight)
+        try c.encode(enableKnowledgeFileRetention, forKey: .enableKnowledgeFileRetention)
+        try c.encode(enableRagCsvSummary, forKey: .enableRagCsvSummary)
+        try c.encode(ragMetadataMaxValueChars, forKey: .ragMetadataMaxValueChars)
         try c.encode(enableGoogleDriveIntegration, forKey: .enableGoogleDriveIntegration)
         try c.encode(enableOneDriveIntegration, forKey: .enableOneDriveIntegration)
         try c.encode(web, forKey: .web)
@@ -2380,6 +2492,7 @@ struct RetrievalConfig: Codable, Sendable {
         externalDocumentLoaderURL = ""
         externalDocumentLoaderAPIKey = ""
         tikaServerURL = ""
+        tikaServerVersion = "3"
         doclingServerURL = ""
         doclingAPIKey = ""
         doclingParams = "{}"
@@ -2427,6 +2540,9 @@ struct RetrievalConfig: Codable, Sendable {
         fileMaxCount = nil
         fileImageCompressionWidth = nil
         fileImageCompressionHeight = nil
+        enableKnowledgeFileRetention = false
+        enableRagCsvSummary = false
+        ragMetadataMaxValueChars = nil
         enableGoogleDriveIntegration = false
         enableOneDriveIntegration = false
         web = WebSearchConfig()

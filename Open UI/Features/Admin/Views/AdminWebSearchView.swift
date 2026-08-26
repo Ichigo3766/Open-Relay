@@ -264,6 +264,9 @@ struct AdminWebSearchView: View {
             inlineTextFieldRow(title: "API URL", placeholder: "http://...", text: $viewModel.retrievalConfig.web.perplexitySearchAPIURL)
             inlineTextFieldRow(title: "Model", placeholder: "Enter Model", text: $viewModel.retrievalConfig.web.perplexitySearchModel)
 
+        case "openserp":
+            inlineTextFieldRow(title: "Base URL", placeholder: "http://localhost:5001", text: $viewModel.retrievalConfig.web.openSerpBaseURL, keyboardType: .URL)
+
         case "DDGS":
             inlineTextFieldRow(title: "Proxy", placeholder: "http://...", text: $viewModel.retrievalConfig.web.ddgsProxy)
 
@@ -414,6 +417,7 @@ struct AdminWebSearchView: View {
             (value: "external", label: "External"),
             (value: "yandex", label: "Yandex"),
             (value: "youcom", label: "You.com"),
+            (value: "openserp", label: "OpenSERP"),
         ]
     }
 

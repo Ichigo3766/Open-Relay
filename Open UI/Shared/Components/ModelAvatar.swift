@@ -90,6 +90,10 @@ struct UserAvatar: View {
 
     @Environment(\.theme) private var theme
 
+    /// Tracks whether the image failed to load so we fall back to initials/icon
+    /// instead of showing the shimmer placeholder forever.
+    @State private var imageLoadFailed: Bool = false
+
     /// Decodes the `dataURIString` into a UIImage synchronously.
     /// Returns nil if string is not a valid data URI or decoding fails.
     private var dataURIImage: UIImage? {
@@ -110,7 +114,7 @@ struct UserAvatar: View {
                 .frame(width: size, height: size)
                 .clipShape(Circle())
                 .accessibilityLabel(Text(name ?? String(localized: "User")))
-        } else if let imageURL {
+        } else if let imageURL, !imageLoadFailed {
             CachedAsyncImage(
                 url: imageURL,
                 authToken: authToken,
@@ -128,6 +132,18 @@ struct UserAvatar: View {
                     .shimmer()
             }
             .accessibilityLabel(Text(name ?? String(localized: "User")))
+            // Detect load failure: if after a reasonable timeout `loadedImage` is still nil,
+            // fall back to the initials/icon view instead of showing shimmer forever.
+            .task(id: imageURL) {
+                // Allow up to 8 seconds for the image to load (disk + network).
+                // CachedAsyncImage itself has a 150ms scroll-debounce + network fetch.
+                // If no image appears by then, the URL is probably dead/deleted.
+                try? await Task.sleep(nanoseconds: 8_000_000_000)
+                // Only flag failure if still no cached image after waiting
+                if ImageCacheService.shared.cachedImageSync(for: imageURL) == nil {
+                    imageLoadFailed = true
+                }
+            }
         } else {
             initialsView
         }

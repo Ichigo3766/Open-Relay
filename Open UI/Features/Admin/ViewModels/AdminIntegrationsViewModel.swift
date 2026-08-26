@@ -87,6 +87,9 @@ final class AdminIntegrationsViewModel {
     var editTermKey = ""
     var editTermShowKey = false
     var editTermPath = "/openapi.json"
+    var editTermEnableInChats = true
+    var editTermEnableInAutomations = true
+    var editTermScope = "global"
 
     var isSavingEditedTerminal = false
     var showDeleteTerminalConfirmation = false
@@ -102,6 +105,9 @@ final class AdminIntegrationsViewModel {
     var addTermKey = ""
     var addTermShowKey = false
     var addTermPath = "/openapi.json"
+    var addTermEnableInChats = true
+    var addTermEnableInAutomations = true
+    var addTermScope = "global"
 
     var isSavingAddTerminal = false
 
@@ -393,6 +399,9 @@ final class AdminIntegrationsViewModel {
         addTermKey = ""
         addTermShowKey = false
         addTermPath = "/openapi.json"
+        addTermEnableInChats = true
+        addTermEnableInAutomations = true
+        addTermScope = "global"
         isShowingAddTerminal = true
     }
 
@@ -408,7 +417,10 @@ final class AdminIntegrationsViewModel {
             path: addTermPath,
             key: addTermKey,
             auth_type: addTermAuthType,
-            config: TerminalServerConnectionConfig()
+            config: TerminalServerConnectionConfig(),
+            enable_in_chats: addTermEnableInChats,
+            enable_in_automations: addTermEnableInAutomations,
+            scope: addTermScope
         )
 
         terminalServersConfig.TERMINAL_SERVER_CONNECTIONS.append(conn)
@@ -429,6 +441,9 @@ final class AdminIntegrationsViewModel {
         editTermKey = conn.key ?? ""
         editTermShowKey = false
         editTermPath = conn.path ?? "/openapi.json"
+        editTermEnableInChats = conn.enable_in_chats ?? true
+        editTermEnableInAutomations = conn.enable_in_automations ?? true
+        editTermScope = conn.scope ?? "global"
     }
 
     func saveTerminalEdit() async {
@@ -443,6 +458,9 @@ final class AdminIntegrationsViewModel {
         conn.auth_type = editTermAuthType
         conn.key = editTermKey
         conn.path = editTermPath
+        conn.enable_in_chats = editTermEnableInChats
+        conn.enable_in_automations = editTermEnableInAutomations
+        conn.scope = editTermScope
 
         terminalServersConfig.TERMINAL_SERVER_CONNECTIONS[idx] = conn
         await saveTerminalServersConfig(api: api)

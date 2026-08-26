@@ -38,6 +38,7 @@ private enum AttachDestination: Hashable {
     case knowledge
     case referenceChats
     case skills
+    case toolPermissions
 }
 
 // MARK: - Tools Menu Sheet
@@ -90,6 +91,16 @@ struct ToolsMenuSheet: View {
     var skills: [SkillItem] = []
     @Binding var selectedSkillIds: [String]
     var isLoadingSkills: Bool = false
+
+    // MARK: - Tool Permissions (Human-in-the-Loop)
+    /// Whether the server admin has enabled the Tool Permissions feature.
+    /// When true a "Tool Permissions" row appears at the top of the sheet, mirroring
+    /// `InputMenu.svelte` in the web UI.
+    var isToolPermissionsEnabled: Bool = false
+    /// Current tool approval mode: `"full"` (auto-run) or `"ask"` (require approval).
+    var toolApprovalMode: String = "full"
+    /// Called when the user picks a new mode in the Tool Permissions sub-page.
+    var onToolApprovalModeChange: ((String) -> Void)? = nil
 
     @Environment(\.theme) private var theme
     @Environment(\.dismiss) private var dismiss
@@ -224,6 +235,8 @@ struct ToolsMenuSheet: View {
                 isLoadingSkills: isLoadingSkills,
                 onDone: { dismiss() }
             )
+        case .toolPermissions:
+            toolPermissionsPage
         }
     }
 
@@ -343,6 +356,18 @@ struct ToolsMenuSheet: View {
 
     private var attachChevronRows: some View {
         VStack(spacing: Spacing.xs) {
+            // Tool Permissions — shown at the top when the server admin has enabled it.
+            // Mirrors InputMenu.svelte: shown above Upload Files when toolPermissionsEnabled.
+            if isToolPermissionsEnabled {
+                let modeLabel = toolApprovalMode == "ask" ? "Ask for approval" : "Full access"
+                attachNavRow(
+                    icon: "shield.lefthalf.filled",
+                    title: "Tool Permissions",
+                    subtitle: modeLabel,
+                    destination: .toolPermissions,
+                    isAvailable: true
+                )
+            }
             // Attach Files
             attachNavRow(
                 icon: "doc.badge.plus",
@@ -538,6 +563,115 @@ struct ToolsMenuSheet: View {
         .accessibilityLabel(title)
         .accessibilityValue(isOn.wrappedValue ? "On" : "Off")
         .accessibilityAddTraits(.isToggle)
+    }
+
+    // MARK: - Tool Permissions Sub-Page
+
+    /// The sub-page shown when the user taps "Tool Permissions" in the main sheet.
+    /// Matches the web `InputMenu.svelte` `tab === 'tool_permissions'` panel.
+    private var toolPermissionsPage: some View {
+        VStack(spacing: 0) {
+            // Drag handle
+            sheetHandle
+                .padding(.top, Spacing.sm)
+                .padding(.bottom, Spacing.xs)
+
+            VStack(alignment: .leading, spacing: Spacing.xs) {
+                Text("Tool Permissions")
+                    .scaledFont(size: 18, weight: .semibold)
+                    .foregroundStyle(theme.textPrimary)
+                    .padding(.horizontal, Spacing.md)
+                    .padding(.top, Spacing.sm)
+                    .padding(.bottom, Spacing.xs)
+
+                Text("Control whether tools run automatically or wait for your approval before each call.")
+                    .scaledFont(size: 13)
+                    .foregroundStyle(theme.textSecondary)
+                    .padding(.horizontal, Spacing.md)
+                    .padding(.bottom, Spacing.sm)
+
+                // Option rows
+                toolPermissionOptionRow(
+                    value: "full",
+                    label: "Full access",
+                    description: "Run tools without asking for approval.",
+                    icon: "bolt.fill"
+                )
+                .padding(.horizontal, Spacing.md)
+
+                toolPermissionOptionRow(
+                    value: "ask",
+                    label: "Ask for approval",
+                    description: "Stop before each tool call until you allow or deny it.",
+                    icon: "hand.raised.fill"
+                )
+                .padding(.horizontal, Spacing.md)
+            }
+
+            Spacer()
+        }
+        .background(theme.background)
+        .navigationTitle("")
+        .navigationBarTitleDisplayMode(.inline)
+        .navigationBarBackButtonHidden(false)
+        .toolbarBackground(.hidden, for: .navigationBar)
+    }
+
+    @ViewBuilder
+    private func toolPermissionOptionRow(
+        value: String,
+        label: String,
+        description: String,
+        icon: String
+    ) -> some View {
+        let isSelected = toolApprovalMode == value
+        Button {
+            Haptics.play(.light)
+            onToolApprovalModeChange?(value)
+            navPath.removeLast()
+        } label: {
+            HStack(spacing: Spacing.sm) {
+                // Icon glyph
+                toolGlyph(systemImage: icon, isSelected: isSelected)
+
+                VStack(alignment: .leading, spacing: Spacing.xs) {
+                    Text(label)
+                        .scaledFont(size: 14, weight: isSelected ? .semibold : .medium)
+                        .foregroundStyle(theme.textPrimary)
+                    Text(description)
+                        .scaledFont(size: 12, weight: .medium)
+                        .foregroundStyle(theme.textSecondary)
+                        .lineLimit(2)
+                }
+
+                Spacer()
+
+                // Checkmark for the active option — matches web's SVG checkmark
+                if isSelected {
+                    Image(systemName: "checkmark")
+                        .scaledFont(size: 12, weight: .semibold)
+                        .foregroundStyle(theme.accentColor)
+                }
+            }
+            .padding(Spacing.sm)
+            .background(
+                isSelected
+                    ? theme.accentColor.opacity(theme.isDark ? 0.12 : 0.08)
+                    : theme.surfaceContainer.opacity(theme.isDark ? 0.32 : 0.12)
+            )
+            .clipShape(RoundedRectangle(cornerRadius: CornerRadius.input, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: CornerRadius.input, style: .continuous)
+                    .strokeBorder(
+                        isSelected
+                            ? theme.accentColor.opacity(0.35)
+                            : theme.cardBorder.opacity(0.55),
+                        lineWidth: 0.5
+                    )
+            )
+        }
+        .buttonStyle(.plain)
+        .animation(MicroAnimation.snappy, value: isSelected)
     }
 
     // MARK: - Built-in Tools Section

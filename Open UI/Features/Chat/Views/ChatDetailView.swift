@@ -1138,6 +1138,45 @@ struct ChatDetailView: View {
                 ))
             }
 
+            // MARK: - Human-in-the-Loop: Ask User Card
+            // Shown above the input when the model has called ask_user and is waiting.
+            // Priority: live socket prompt (has timeout) > saved history prompt (no timeout).
+            if let askPrompt = vm.liveAskUserPrompt ?? vm.pendingAskUserPrompt {
+                AskUserCard(
+                    questions: askPrompt.questions,
+                    allowOther: askPrompt.allowOther,
+                    timeoutMs: vm.liveAskUserPrompt != nil ? askPrompt.timeoutMs : nil,
+                    onSubmit: { answers in
+                        let msgId = askPrompt.messageId
+                        let cId = askPrompt.callId
+                        Task { await viewModel.answerAskUser(
+                            messageId: msgId, callId: cId,
+                            answers: answers, timedOut: false
+                        )}
+                    },
+                    onCancel: {
+                        let msgId = askPrompt.messageId
+                        let cId = askPrompt.callId
+                        Task { await viewModel.rejectAskUser(messageId: msgId, callId: cId) }
+                    }
+                )
+                .disabled(vm.isResolvingAskUser)
+            }
+
+            // MARK: - Human-in-the-Loop: Tool Approval Banner
+            // Shown above the input when a tool call is paused waiting for user approval.
+            if vm.toolApprovalMode == "ask",
+               let pending = vm.pendingToolApprovalCall,
+               !vm.isTemporaryChat {
+                ToolApprovalBanner(
+                    toolName: pending.toolName,
+                    arguments: pending.arguments,
+                    isResolving: vm.isResolvingToolCall,
+                    onApprove: { Task { await viewModel.approveToolCall() } },
+                    onDeny: { Task { await viewModel.rejectToolCall() } }
+                )
+            }
+
             ChatInputField(
                 text: $vm.inputText,
                 attachments: $vm.attachments,
@@ -1291,7 +1330,12 @@ struct ChatDetailView: View {
                 messageQueue: vm.messageQueue,
                 onQueueSendNow: { id in viewModel.sendQueuedMessageNow(id: id) },
                 onQueueEdit: { id in viewModel.editQueuedMessage(id: id) },
-                onQueueDelete: { id in viewModel.deleteQueuedMessage(id: id) }
+                onQueueDelete: { id in viewModel.deleteQueuedMessage(id: id) },
+                isToolPermissionsEnabled: vm.isToolPermissionsEnabled && !vm.isTemporaryChat,
+                toolApprovalMode: vm.toolApprovalMode,
+                onToolApprovalModeChange: { mode in
+                    Task { await viewModel.handleToolApprovalModeChange(to: mode) }
+                }
             )
         }
         .background(theme.background)
@@ -6112,7 +6156,7 @@ private extension View {
                     // with credentials injected, not a Safari 401.
                     downloadAndShareURL(url)
                 } else {
-                    UIApplication.shared.open(url)
+                    openURL(url)
                 }
             }
             // Handle sendPrompt bridge calls from InlineVisualizerView.

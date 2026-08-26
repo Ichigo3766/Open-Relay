@@ -102,6 +102,9 @@ struct WebSearchConfig: Codable, Sendable {
     var perplexitySearchAPIURL: String
     var perplexitySearchModel: String
 
+    // OpenSERP
+    var openSerpBaseURL: String
+
     // DDGS
     var ddgsProxy: String
 
@@ -174,6 +177,7 @@ struct WebSearchConfig: Codable, Sendable {
         case perplexitySearchAPIKey = "PERPLEXITY_SEARCH_API_KEY"
         case perplexitySearchAPIURL = "PERPLEXITY_SEARCH_API_URL"
         case perplexitySearchModel = "PERPLEXITY_SEARCH_MODEL"
+        case openSerpBaseURL = "OPENSERP_BASE_URL"
         case ddgsProxy = "DDGS_PROXY"
         case webLoaderEngine = "WEB_LOADER_ENGINE"
         case playwrightWSURL = "PLAYWRIGHT_WS_URL"
@@ -243,6 +247,7 @@ struct WebSearchConfig: Codable, Sendable {
         perplexitySearchAPIKey = (try? c.decode(String.self, forKey: .perplexitySearchAPIKey)) ?? ""
         perplexitySearchAPIURL = (try? c.decode(String.self, forKey: .perplexitySearchAPIURL)) ?? ""
         perplexitySearchModel = (try? c.decode(String.self, forKey: .perplexitySearchModel)) ?? ""
+        openSerpBaseURL = (try? c.decode(String.self, forKey: .openSerpBaseURL)) ?? ""
         ddgsProxy = (try? c.decode(String.self, forKey: .ddgsProxy)) ?? ""
         webLoaderEngine = (try? c.decode(String.self, forKey: .webLoaderEngine)) ?? ""
         playwrightWSURL = (try? c.decode(String.self, forKey: .playwrightWSURL)) ?? ""
@@ -280,6 +285,7 @@ struct WebSearchConfig: Codable, Sendable {
         youSearchAPIKey = ""
         ollamaCloudAPIKey = ""; ollamaCloudAPIURL = ""; ollamaCloudModel = ""
         perplexitySearchAPIKey = ""; perplexitySearchAPIURL = ""; perplexitySearchModel = ""
+        openSerpBaseURL = ""
         ddgsProxy = ""
         webLoaderEngine = ""; playwrightWSURL = ""; playwrightTimeout = 60000
         firecrawlLoaderAPIKey = ""; firecrawlLoaderAPIBaseURL = "https://api.firecrawl.dev"

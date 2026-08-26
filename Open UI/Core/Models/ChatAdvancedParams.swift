@@ -77,6 +77,13 @@ struct ChatAdvancedParams: Codable, Sendable, Equatable {
     // MARK: Function calling
     var functionCalling: String?   // "native" | nil
 
+    // MARK: Tool Approval (Human-in-the-Loop)
+    /// Controls whether tools require user approval before execution.
+    /// - `"ask"`: pause and require user approval for each tool call
+    /// - `"full"`: run tools automatically (default)
+    /// - `nil`: use server/user default
+    var toolApprovalMode: String?  // "ask" | "full" | nil
+
     // MARK: Format (Ollama)
     var format: String?
 
@@ -167,6 +174,9 @@ struct ChatAdvancedParams: Codable, Sendable, Equatable {
         // Function calling
         if let v = params["function_calling"] as? String, !v.isEmpty { functionCalling = v }
 
+        // Tool approval mode (human-in-the-loop)
+        if let v = params["tool_approval_mode"] as? String, !v.isEmpty { toolApprovalMode = v }
+
         // Format
         if let v = params["format"] as? String, !v.isEmpty { format = v }
 
@@ -191,7 +201,8 @@ struct ChatAdvancedParams: Codable, Sendable, Equatable {
         repeatLastN != nil || tfsZ != nil || repeatPenalty != nil ||
         numKeep != nil || numCtx != nil || numBatch != nil ||
         reasoningEffort != nil || streamResponse != nil ||
-        functionCalling != nil || format != nil ||
+        functionCalling != nil || toolApprovalMode != nil ||
+        format != nil ||
         thinkEnabled != nil || (thinkCustom != nil && !thinkCustom!.isEmpty)
     }
 
@@ -224,6 +235,7 @@ struct ChatAdvancedParams: Codable, Sendable, Equatable {
         if let v = reasoningEffort, !v.isEmpty { p["reasoning_effort"] = v }
         if let v = streamResponse      { p["stream_response"] = v }
         if let v = functionCalling, !v.isEmpty { p["function_calling"] = v }
+        if let v = toolApprovalMode, !v.isEmpty { p["tool_approval_mode"] = v }
         if let v = format, !v.isEmpty  { p["format"] = v }
 
         // think: 4-state

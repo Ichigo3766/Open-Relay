@@ -503,13 +503,14 @@ struct MessageHistory: Sendable {
             case "function_call":
                 guard let name = item["name"] as? String, !name.isEmpty else { continue }
 
+                let status = item["status"] as? String ?? "completed"
+
                 // Resolve IDs — some providers use `id` as the output's `call_id`
                 let callId = item["call_id"] as? String ?? ""
                 let itemId = item["id"]      as? String ?? callId
                 let effectiveCallId = callId.isEmpty ? itemId : callId
 
-                let status  = item["status"] as? String ?? "completed"
-                let isDone  = (status == "completed")
+                let isDone  = (status == "completed" || status == "failed" || status == "rejected")
                 let arguments = item["arguments"] as? String ?? ""
 
                 // Look up result with dual-index fallback
@@ -522,6 +523,8 @@ struct MessageHistory: Sendable {
                 let encodedArgs   = htmlEntityEncode(arguments)
                 let encodedResult = htmlEntityEncode(resultText)
                 let doneAttr      = isDone ? "true" : "false"
+                // Pass status through so the renderer can display pending/rejected states visually
+                let statusAttr    = " status=\"\(status)\""
 
                 // Build embeds attribute
                 let embedsAttr: String = {
@@ -539,13 +542,13 @@ struct MessageHistory: Sendable {
                 let block: String
                 if resultText.isEmpty {
                     block = """
-                    <details type="tool_calls" id="\(itemId)" name="\(name)" done="\(doneAttr)" arguments="\(encodedArgs)"\(embedsAttr)>
+                    <details type="tool_calls" id="\(itemId)" name="\(name)" done="\(doneAttr)"\(statusAttr) arguments="\(encodedArgs)"\(embedsAttr)>
                     <summary>Tool Executed</summary>
                     </details>
                     """
                 } else {
                     block = """
-                    <details type="tool_calls" id="\(itemId)" name="\(name)" done="\(doneAttr)" arguments="\(encodedArgs)" result="\(encodedResult)"\(embedsAttr)>
+                    <details type="tool_calls" id="\(itemId)" name="\(name)" done="\(doneAttr)"\(statusAttr) arguments="\(encodedArgs)" result="\(encodedResult)"\(embedsAttr)>
                     <summary>Tool Executed</summary>
                     \(resultText)
                     </details>
@@ -590,6 +593,81 @@ struct MessageHistory: Sendable {
 
         guard !parts.isEmpty else { return nil }
         return parts.joined(separator: "\n\n")
+    }
+
+    // MARK: - Human-in-the-Loop: Pending Tool Action Scanning
+
+    /// A pending approval-required tool call found in a message's output array.
+    struct PendingToolCallInfo {
+        let messageId: String
+        let callId: String
+        let toolName: String
+        let arguments: String
+    }
+
+    /// A pending ask_user call found in a message's output array.
+    struct PendingAskUserInfo {
+        let messageId: String
+        let callId: String
+        let arguments: [String: Any]   // The parsed ask_user arguments dict
+    }
+
+    /// Scans a message's `output` array for the first tool call requiring approval
+    /// (`status == "pending"` or `status == "requires_approval"`, not `ask_user`).
+    static func findPendingApprovalCall(
+        messageId: String,
+        in outputArr: [[String: Any]]
+    ) -> PendingToolCallInfo? {
+        let resolvedIds: Set<String> = Set(outputArr.compactMap { item -> String? in
+            guard (item["type"] as? String) == "function_call_output",
+                  let cid = item["call_id"] as? String, !cid.isEmpty else { return nil }
+            return cid
+        })
+        for item in outputArr {
+            guard (item["type"] as? String) == "function_call",
+                  let name = item["name"] as? String, !name.isEmpty,
+                  name != "ask_user"
+            else { continue }
+            let st = item["status"] as? String ?? ""
+            guard st == "pending" || st == "requires_approval" else { continue }
+            let cid = item["call_id"] as? String ?? item["id"] as? String ?? ""
+            guard !cid.isEmpty, !resolvedIds.contains(cid) else { continue }
+            return PendingToolCallInfo(
+                messageId: messageId, callId: cid,
+                toolName: name, arguments: item["arguments"] as? String ?? "{}"
+            )
+        }
+        return nil
+    }
+
+    /// Scans a message's `output` array for a pending `ask_user` call.
+    static func findPendingAskUser(
+        messageId: String,
+        in outputArr: [[String: Any]]
+    ) -> PendingAskUserInfo? {
+        let resolvedIds: Set<String> = Set(outputArr.compactMap { item -> String? in
+            guard (item["type"] as? String) == "function_call_output",
+                  let cid = item["call_id"] as? String, !cid.isEmpty else { return nil }
+            return cid
+        })
+        for item in outputArr {
+            guard (item["type"] as? String) == "function_call",
+                  (item["name"] as? String) == "ask_user",
+                  (item["status"] as? String) == "pending"
+            else { continue }
+            let cid = item["call_id"] as? String ?? item["id"] as? String ?? ""
+            guard !cid.isEmpty, !resolvedIds.contains(cid) else { continue }
+            let rawArgs = item["arguments"] as? String ?? "{}"
+            let argsDict: [String: Any]
+            if let d = rawArgs.data(using: .utf8),
+               let p = try? JSONSerialization.jsonObject(with: d) as? [String: Any] {
+                argsDict = p
+            } else {
+                argsDict = [:]
+            }
+            return PendingAskUserInfo(messageId: messageId, callId: cid, arguments: argsDict)
+        }
+        return nil
     }
 
     /// HTML-entity encodes a string for safe use as an XML/HTML attribute value.
