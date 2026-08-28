@@ -4555,6 +4555,12 @@ final class APIClient: @unchecked Sendable {
 
         let model = msg["model"] as? String ?? msg["modelName"] as? String
         let attachmentIds = msg["attachment_ids"] as? [String] ?? []
+        // Server's `done` flag on the message — indicates generation has finished.
+        // Absent/true means done (not streaming); explicit false means still in-progress.
+        // This must be threaded into `isStreaming` below so callers (e.g. the streaming
+        // recovery poll) can reliably detect an in-progress response instead of always
+        // seeing `isStreaming == false` regardless of server state.
+        let msgDone = msg["done"] as? Bool ?? true
 
         var error: ChatMessageError?
         if let errObj = msg["error"] as? [String: Any] {
@@ -4688,6 +4694,7 @@ final class APIClient: @unchecked Sendable {
             content: content,
             timestamp: timestamp,
             model: model,
+            isStreaming: !msgDone,
             attachmentIds: attachmentIds,
             files: files,
             sources: sources,

@@ -168,6 +168,11 @@ struct MainChatView: View {
     /// Pending voice call action stored while the model download sheet is visible.
     @State private var pendingVoiceCallAction: (() -> Void)?
 
+    // MARK: Photo picker (window-level)
+    // Owned here so AnimatedPhotoPicker renders outside ChatDetailView's
+    // safeAreaInset-shrunk ZStack and can truly cover the full screen.
+    @State private var showAnimatedPhotoPicker = false
+
     /// Whether title is being AI-generated.
     @State private var isGeneratingTitle = false
 
@@ -504,6 +509,27 @@ struct MainChatView: View {
                     )
                     .frame(maxWidth: .infinity, alignment: .trailing)
             }
+
+            // ── Layer 4: AnimatedPhotoPicker at window level ──────────────────
+            // Rendered here — outside the NavigationStack and its safeAreaInset
+            // modifiers — so the panel can cover the full physical screen including
+            // the input bar and home indicator region.
+            AnimatedPhotoPicker(
+                isPresented: showAnimatedPhotoPicker,
+                onConfirm: { assets in
+                    // Deliver the selected assets to whichever ChatDetailView is active.
+                    // ChatDetailView observes this notification and calls processSelectedPHAssets.
+                    NotificationCenter.default.post(
+                        name: .openUIPhotoPickerConfirm,
+                        object: nil,
+                        userInfo: ["assets": assets]
+                    )
+                    showAnimatedPhotoPicker = false
+                },
+                onDismiss: {
+                    showAnimatedPhotoPicker = false
+                }
+            )
         }
     }
 
@@ -1404,6 +1430,7 @@ struct MainChatView: View {
             .onToggleDrawer { toggleDrawer() }
             .onNewChat { startNewChat() }
             .onOpenFileBrowser { openFileBrowserAnimated() }
+            .onPhotoPickerRequest { showAnimatedPhotoPicker = true }
             .id(conversationId)
         } else if let folderWorkspaceId = activeFolderWorkspaceId {
             // Folder workspace: new chat screen locked to this folder.
@@ -1422,6 +1449,7 @@ struct MainChatView: View {
             .onToggleDrawer { toggleDrawer() }
             .onNewChat { startNewChat() }
             .onOpenFileBrowser { openFileBrowserAnimated() }
+            .onPhotoPickerRequest { showAnimatedPhotoPicker = true }
             .id("folder-workspace-\(folderWorkspaceId)-\(newChatGeneration)")
             .onAppear {
                 // Set folder context on the VM so new chats are created in this folder
@@ -1442,6 +1470,7 @@ struct MainChatView: View {
             .onToggleDrawer { toggleDrawer() }
             .onNewChat { startNewChat() }
             .onOpenFileBrowser { openFileBrowserAnimated() }
+            .onPhotoPickerRequest { showAnimatedPhotoPicker = true }
             .id("new-chat-\(newChatGeneration)")
         }
     }
@@ -1464,7 +1493,7 @@ struct MainChatView: View {
             if listViewModel.isSelectionMode {
                 selectionModeHeader
             } else {
-                searchBar
+                drawerHeader
             }
 
             // Conversation list grouped by time
@@ -1490,11 +1519,7 @@ struct MainChatView: View {
                     let channelsEnabled = dependencies.authViewModel.featurePermissions.channels
                         && (dependencies.authViewModel.backendConfig?.features?.enableChannels ?? true)
                     if (foldersEnabled && !folderVM.featureDisabled && !folderVM.folders.isEmpty) || (channelsEnabled && !channelListVM.channels.isEmpty) {
-                        Rectangle()
-                            .fill(theme.textTertiary.opacity(0.15))
-                            .frame(height: 1)
-                            .padding(.horizontal, Spacing.md)
-                            .padding(.vertical, Spacing.sm)
+                        sidebarDivider
                     }
 
                     // ── CHANNELS SECTION (shown only when enabled on server) ──
@@ -1507,38 +1532,27 @@ struct MainChatView: View {
                             }
                             Haptics.play(.light)
                         } label: {
-                            HStack(spacing: 6) {
-                                Image(systemName: "chevron.down")
-                                    .scaledFont(size: 8, weight: .bold, context: .list)
-                                    .foregroundStyle(theme.textTertiary)
-                                    .rotationEffect(.degrees(channelsExpanded ? 0 : -90))
-                                    .animation(MicroAnimation.snappy, value: channelsExpanded)
-
-                                Image(systemName: "bubble.left.and.bubble.right")
-                                    .scaledFont(size: 10, weight: .semibold, context: .list)
-                                    .foregroundStyle(theme.textTertiary)
-                                Text("Channels")
-                                    .scaledFont(size: 12, weight: .medium, context: .list)
-                                    .fontWeight(.bold)
-                                    .foregroundStyle(theme.textTertiary)
-                                    .textCase(.uppercase)
-                                    .tracking(0.5)
-                                Spacer()
-
-                                // Create new channel directly (always visible)
-                                Button {
-                                    closeDrawer()
-                                    showCreateChannel = true
-                                } label: {
-                                    Image(systemName: "plus.bubble")
-                                        .scaledFont(size: 13, context: .list)
-                                        .foregroundStyle(theme.textTertiary)
+                            drawerSectionLabel(
+                                title: "Channels",
+                                icon: "bubble.left.and.bubble.right",
+                                isExpanded: channelsExpanded,
+                                trailingButton: {
+                                    AnyView(
+                                        Button {
+                                            closeDrawer()
+                                            showCreateChannel = true
+                                        } label: {
+                                            Image(systemName: "plus")
+                                                .scaledFont(size: 11, weight: .semibold, context: .list)
+                                                .foregroundStyle(theme.textTertiary)
+                                                .frame(width: 22, height: 22)
+                                                .background(theme.surfaceContainer)
+                                                .clipShape(Circle())
+                                        }
+                                        .buttonStyle(.plain)
+                                    )
                                 }
-                                .buttonStyle(.plain)
-                            }
-                            .padding(.horizontal, Spacing.md)
-                            .padding(.vertical, Spacing.sm)
-                            .contentShape(Rectangle())
+                            )
                         }
                         .buttonStyle(.plain)
 
@@ -1548,7 +1562,7 @@ struct MainChatView: View {
                                     .scaledFont(size: 13, context: .list)
                                     .foregroundStyle(theme.textTertiary)
                                     .padding(.horizontal, Spacing.md)
-                                    .padding(.vertical, 4)
+                                    .padding(.vertical, 6)
                             } else {
                                 // DMs first
                                 if !channelListVM.dmChannels.isEmpty {
@@ -1577,11 +1591,7 @@ struct MainChatView: View {
                     } // end if channelsEnabled
 
                     // ── DIVIDER between Channels & Chats ──────────────
-                    Rectangle()
-                        .fill(theme.textTertiary.opacity(0.15))
-                        .frame(height: 1)
-                        .padding(.horizontal, Spacing.md)
-                        .padding(.vertical, Spacing.sm)
+                    sidebarDivider
 
                     // ── CHATS SECTION (entire section is a drop zone) ─
                     // Compute once — groupedConversations is O(n) + DateFormatter usage;
@@ -1600,34 +1610,12 @@ struct MainChatView: View {
                                 }
                                 Haptics.play(.light)
                             } label: {
-                                HStack(spacing: 6) {
-                                    Image(systemName: "chevron.down")
-                                        .scaledFont(size: 8, weight: .bold, context: .list)
-                                        .foregroundStyle(drawerChatsDropActive ? theme.brandPrimary : theme.textTertiary)
-                                        .rotationEffect(.degrees(chatsExpanded ? 0 : -90))
-                                        .animation(MicroAnimation.snappy, value: chatsExpanded)
-
-                                    Image(systemName: "bubble.left.and.text.bubble.right")
-                                        .scaledFont(size: 10, weight: .semibold, context: .list)
-                                        .foregroundStyle(drawerChatsDropActive ? theme.brandPrimary : theme.textTertiary)
-                                    Text("Chats")
-                                        .scaledFont(size: 12, weight: .medium, context: .list)
-                                        .fontWeight(.bold)
-                                        .foregroundStyle(drawerChatsDropActive ? theme.brandPrimary : theme.textTertiary)
-                                        .textCase(.uppercase)
-                                        .tracking(0.5)
-                                    if drawerChatsDropActive {
-                                        Text("Drop here")
-                                            .scaledFont(size: 12, weight: .medium, context: .list)
-                                            .foregroundStyle(theme.brandPrimary)
-                                            .transition(.opacity)
-                                    }
-                                    Spacer()
-                                }
-                                .padding(.horizontal, Spacing.md)
-                                .padding(.top, Spacing.sm)
-                                .padding(.bottom, Spacing.xs)
-                                .contentShape(Rectangle())
+                                drawerSectionLabel(
+                                    title: drawerChatsDropActive ? "Drop here" : "Chats",
+                                    icon: "bubble.left.and.text.bubble.right",
+                                    isExpanded: chatsExpanded,
+                                    tintOverride: drawerChatsDropActive ? theme.brandPrimary : nil
+                                )
                             }
                             .buttonStyle(.plain)
 
@@ -1645,7 +1633,7 @@ struct MainChatView: View {
                                         if !collapsedSections.contains("Pinned") {
                                             ForEach(pinnedChats) { conversation in
                                                 drawerConversationRow(conversation)
-                                                    .frame(minHeight: 36)
+                                                    .frame(minHeight: 44)
                                             }
                                         }
                                     }
@@ -1666,7 +1654,7 @@ struct MainChatView: View {
                                         if !isCollapsed {
                                             ForEach(group.1) { conversation in
                                                 drawerConversationRow(conversation)
-                                                    .frame(minHeight: 36)
+                                                    .frame(minHeight: 44)
                                             }
                                         }
                                     }
@@ -1724,6 +1712,334 @@ struct MainChatView: View {
             }
         }
         .background(theme.background)
+        .overlay(alignment: .trailing) {
+            Rectangle()
+                .fill(theme.isDark ? Color.white.opacity(0.06) : Color.black.opacity(0.08))
+                .frame(width: 0.5)
+                .ignoresSafeArea()
+        }
+    }
+
+    // MARK: - Drawer Header (Clean Action Bar + Animated Search)
+
+    /// Simplified header: just action buttons (no user name/server URL) + animated search pill.
+    /// User identity lives exclusively in the bottom bar.
+    @State private var isSearchFocused: Bool = false
+
+    private var drawerHeader: some View {
+        VStack(spacing: 0) {
+            // Action row: server icon (left), new chat + chat-management menu (right)
+            HStack(spacing: 8) {
+                // Server favicon — tapping opens Settings
+                Button {
+                    closeDrawer()
+                    showSettings = true
+                } label: {
+                    serverFaviconView
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Server Settings")
+
+                Spacer()
+
+                // Update badge
+                if dependencies.updateChecker.pendingUpdate != nil || dependencies.serverUpdateChecker.pendingUpdate != nil {
+                    Button {
+                        showUpdateSheet = true
+                    } label: {
+                        ZStack(alignment: .topTrailing) {
+                            Image(systemName: "arrow.down.circle.fill")
+                                .scaledFont(size: 16, weight: .medium)
+                                .foregroundStyle(theme.brandPrimary)
+                            Circle()
+                                .fill(Color.red)
+                                .frame(width: 7, height: 7)
+                                .offset(x: 2, y: -2)
+                        }
+                        .frame(width: 36, height: 36)
+                        .contentShape(Rectangle())
+                    }
+                    .transition(.scale.combined(with: .opacity))
+                    .sheet(isPresented: $showUpdateSheet) {
+                        CombinedUpdateSheet(
+                            appUpdate: dependencies.updateChecker.pendingUpdate,
+                            serverUpdate: dependencies.serverUpdateChecker.pendingUpdate,
+                            onDismiss: {
+                                dependencies.updateChecker.dismissUpdate()
+                                dependencies.serverUpdateChecker.dismissUpdate()
+                            }
+                        )
+                        .themed(with: dependencies.appearanceManager, accessibility: dependencies.accessibilityManager)
+                    }
+                }
+
+                // New Chat
+                Button {
+                    closeDrawer()
+                    startNewChat()
+                } label: {
+                    Image(systemName: "square.and.pencil")
+                        .scaledFont(size: 16, weight: .medium)
+                        .foregroundStyle(theme.textSecondary)
+                        .frame(width: 36, height: 36)
+                        .contentShape(Rectangle())
+                }
+                .accessibilityLabel("New Chat")
+
+                // Chat management menu (select, archive, delete, archived/shared chats)
+                Menu {
+                    if !listViewModel.conversations.isEmpty {
+                        Button {
+                            withAnimation(.easeInOut(duration: 0.2)) { listViewModel.toggleSelectionMode() }
+                        } label: {
+                            Label("Select Chats", systemImage: "checkmark.circle")
+                        }
+                        Button {
+                            listViewModel.showArchiveAllConfirmation = true
+                        } label: {
+                            Label("Archive All", systemImage: "archivebox")
+                        }
+                        Button(role: .destructive) {
+                            showDeleteAllConfirmation = true
+                        } label: {
+                            Label("Delete All", systemImage: "trash")
+                        }
+                        Divider()
+                    }
+                    Button {
+                        closeDrawer(); showArchivedChats = true
+                    } label: {
+                        Label("Archived Chats", systemImage: "archivebox")
+                    }
+                    Button {
+                        closeDrawer(); showSharedChats = true
+                    } label: {
+                        Label("Shared Chats", systemImage: "link.circle")
+                    }
+                } label: {
+                    Image(systemName: "ellipsis.circle")
+                        .scaledFont(size: 16, weight: .medium)
+                        .foregroundStyle(theme.textSecondary)
+                        .frame(width: 36, height: 36)
+                        .contentShape(Rectangle())
+                }
+            }
+            .padding(.horizontal, Spacing.md)
+            .padding(.top, 14)
+            .padding(.bottom, 10)
+
+            // Animated search pill
+            sidebarSearchPill
+        }
+    }
+
+    // MARK: - Server Favicon View
+
+    @ViewBuilder
+    private var serverFaviconView: some View {
+        let baseURL = dependencies.apiClient?.baseURL ?? ""
+        let authToken = dependencies.apiClient?.network.authToken
+
+        Group {
+            if !baseURL.isEmpty,
+               let faviconURL = URL(string: "\(baseURL)/favicon.ico") {
+                AsyncImage(url: faviconURL) { phase in
+                    switch phase {
+                    case .success(let image):
+                        image
+                            .resizable()
+                            .scaledToFill()
+                    default:
+                        Image("AppIconImage")
+                            .resizable()
+                            .scaledToFill()
+                    }
+                }
+            } else {
+                Image("AppIconImage")
+                    .resizable()
+                    .scaledToFill()
+            }
+        }
+        .frame(width: 28, height: 28)
+        .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                .strokeBorder(theme.isDark ? Color.white.opacity(0.1) : Color.black.opacity(0.08), lineWidth: 0.5)
+        )
+    }
+
+    // MARK: - Sidebar Search Pill (Animated)
+
+    private var sidebarSearchPill: some View {
+        HStack(spacing: 8) {
+            // Magnifying glass — shifts to brandPrimary when focused or searching
+            Image(systemName: "magnifyingglass")
+                .scaledFont(size: 13, weight: .medium, context: .list)
+                .foregroundStyle(
+                    (isSearchFocused || !listViewModel.searchText.isEmpty)
+                        ? theme.brandPrimary
+                        : theme.textTertiary
+                )
+                .animation(.easeInOut(duration: 0.2), value: isSearchFocused)
+
+            TextField("Search conversations…", text: $listViewModel.searchText) { focused in
+                withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
+                    isSearchFocused = focused
+                }
+            }
+            .scaledFont(size: 14, context: .list)
+            .foregroundStyle(theme.textPrimary)
+            .tint(theme.brandPrimary)
+
+            // Clear button — appears when there's text
+            if !listViewModel.searchText.isEmpty {
+                Button {
+                    withAnimation(.spring(response: 0.3, dampingFraction: 0.75)) {
+                        listViewModel.searchText = ""
+                    }
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .scaledFont(size: 14, context: .list)
+                        .foregroundStyle(theme.textTertiary)
+                }
+                .transition(.asymmetric(
+                    insertion: .scale(scale: 0.7).combined(with: .opacity),
+                    removal: .scale(scale: 0.7).combined(with: .opacity)
+                ))
+            }
+
+            // Filter icon (idle) OR cancel (searching)
+            if isSearchFocused || !listViewModel.searchText.isEmpty {
+                Button {
+                    withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
+                        listViewModel.searchText = ""
+                        isSearchFocused = false
+                        UIApplication.shared.sendAction(
+                            #selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
+                    }
+                } label: {
+                    Text("Cancel")
+                        .scaledFont(size: 14, weight: .medium, context: .list)
+                        .foregroundStyle(theme.brandPrimary)
+                }
+                .transition(.asymmetric(
+                    insertion: .move(edge: .trailing).combined(with: .opacity),
+                    removal: .move(edge: .trailing).combined(with: .opacity)
+                ))
+            } else {
+                Menu {
+                    if !listViewModel.conversations.isEmpty {
+                        Button {
+                            withAnimation(.easeInOut(duration: 0.2)) { listViewModel.toggleSelectionMode() }
+                        } label: {
+                            Label("Select Chats", systemImage: "checkmark.circle")
+                        }
+                        Button {
+                            listViewModel.showArchiveAllConfirmation = true
+                        } label: {
+                            Label("Archive All", systemImage: "archivebox")
+                        }
+                        Button(role: .destructive) {
+                            showDeleteAllConfirmation = true
+                        } label: {
+                            Label("Delete All", systemImage: "trash")
+                        }
+                        Divider()
+                    }
+                    Button {
+                        closeDrawer(); showArchivedChats = true
+                    } label: {
+                        Label("Archived Chats", systemImage: "archivebox")
+                    }
+                    Button {
+                        closeDrawer(); showSharedChats = true
+                    } label: {
+                        Label("Shared Chats", systemImage: "link.circle")
+                    }
+                } label: {
+                    Image(systemName: "slider.horizontal.3")
+                        .scaledFont(size: 13, weight: .medium, context: .list)
+                        .foregroundStyle(theme.textTertiary)
+                }
+                .transition(.asymmetric(
+                    insertion: .opacity,
+                    removal: .opacity
+                ))
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 9)
+        .background(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(
+                    (isSearchFocused || !listViewModel.searchText.isEmpty)
+                        ? theme.surfaceContainer
+                        : theme.surfaceContainer.opacity(0.6)
+                )
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .strokeBorder(
+                    (isSearchFocused || !listViewModel.searchText.isEmpty)
+                        ? theme.brandPrimary.opacity(0.35)
+                        : Color.clear,
+                    lineWidth: 1
+                )
+        )
+        .animation(.spring(response: 0.35, dampingFraction: 0.8), value: isSearchFocused)
+        .animation(.spring(response: 0.35, dampingFraction: 0.8), value: listViewModel.searchText.isEmpty)
+        .padding(.horizontal, Spacing.md)
+        .padding(.bottom, Spacing.sm)
+    }
+
+    // MARK: - Sidebar Divider
+
+    private var sidebarDivider: some View {
+        Rectangle()
+            .fill(theme.textTertiary.opacity(0.1))
+            .frame(height: 1)
+            .padding(.horizontal, Spacing.md)
+            .padding(.vertical, 6)
+    }
+
+    // MARK: - Drawer Section Label (reusable header for collapsible sections)
+
+    @ViewBuilder
+    private func drawerSectionLabel(
+        title: String,
+        icon: String,
+        isExpanded: Bool,
+        tintOverride: Color? = nil,
+        trailingButton: (() -> AnyView)? = nil
+    ) -> some View {
+        let labelColor = tintOverride ?? theme.textTertiary
+        HStack(spacing: 6) {
+            Image(systemName: "chevron.down")
+                .scaledFont(size: 9, weight: .bold, context: .list)
+                .foregroundStyle(labelColor)
+                .rotationEffect(.degrees(isExpanded ? 0 : -90))
+                .animation(MicroAnimation.snappy, value: isExpanded)
+
+            Image(systemName: icon)
+                .scaledFont(size: 10, weight: .semibold, context: .list)
+                .foregroundStyle(labelColor)
+
+            Text(title)
+                .scaledFont(size: 11, weight: .bold, context: .list)
+                .foregroundStyle(labelColor)
+                .textCase(.uppercase)
+                .tracking(0.6)
+
+            Spacer()
+
+            if let trailingButton {
+                trailingButton()
+            }
+        }
+        .padding(.horizontal, Spacing.md)
+        .padding(.vertical, Spacing.sm)
+        .contentShape(Rectangle())
     }
 
     // MARK: - Selection Mode Header

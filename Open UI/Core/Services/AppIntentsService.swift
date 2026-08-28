@@ -186,6 +186,8 @@ extension Notification.Name {
     static let openUICameraChat  = Notification.Name("com.openui.widget.cameraChat")
     static let openUIPhotosChat  = Notification.Name("com.openui.widget.photosChat")
     static let openUIFileChat    = Notification.Name("com.openui.widget.fileChat")
+    // Photo picker confirmed at window level — userInfo["assets"] = [PHAsset]
+    static let openUIPhotoPickerConfirm = Notification.Name("com.openui.photoPicker.confirm")
     // Widget deep link — open create-channel sheet
     static let openUINewChannel  = Notification.Name("com.openui.widget.newChannel")
     // Widget deep link — start a new chat AND auto-focus the input field (show keyboard)

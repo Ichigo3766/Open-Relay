@@ -411,6 +411,13 @@ final class ChatViewModel {
     /// sync when the background duration was trivially short.
     @ObservationIgnored nonisolated(unsafe) private var backgroundEnteredAt: Date?
 
+    /// True if the app moved to the background while a stream was in progress for
+    /// this view-model. Reset to false at the start of every new stream so that
+    /// in-app completions never produce a badge/notification.
+    /// Only set to true by the didEnterBackgroundNotification observer, which is
+    /// already guarded by `guard self.isStreaming else { return }`.
+    private var wasBackgroundedDuringThisStream: Bool = false
+
     /// The current auth token for authenticated image requests (model avatars).
     var serverAuthToken: String? {
         manager?.apiClient.network.authToken
@@ -1567,6 +1574,10 @@ final class ChatViewModel {
             Task { @MainActor in
                 self.backgroundEnteredAt = Date()
                 guard self.isStreaming else { return }
+                // Mark that the stream was active when the app went to background.
+                // sendCompletionNotificationIfNeeded uses this to skip the badge/notification
+                // when the stream completed entirely while the app was in the foreground.
+                self.wasBackgroundedDuringThisStream = true
                 self.startBackgroundCompletionPolling()
             }
         }
@@ -2580,6 +2591,16 @@ final class ChatViewModel {
         case "message", "chat:message", "replace":
             contentDelta = payload?["content"] as? String
             isReplace = true
+        case "response:completion":
+            // New OWUI streaming architecture: per-token text deltas arrive as
+            // response:completion { data: { type: "response.output_text.delta", delta: "token" } }.
+            // These are TRUE incremental deltas — append, never replace.
+            if let innerType = payload?["type"] as? String,
+               innerType == "response.output_text.delta",
+               let delta = payload?["delta"] as? String, !delta.isEmpty {
+                contentDelta = delta
+                isReplace = false  // true delta — must append, NOT replace
+            }
         case "chat:completion":
             // structured output: reconstruct full content string (text + tool call
             // <details> blocks) from the output array, using the same helper as history
@@ -2695,9 +2716,25 @@ final class ChatViewModel {
         // Handle done signal (when no content in the event)
         if type == "chat:completion", let payload, payload["done"] as? Bool == true {
             let msgId = messageId ?? streamingStore.streamingMessageId
-            let finalContent = externalStreamAccumulatedContent.isEmpty
-                ? (msgId.flatMap { id in conversation?.messages.first(where: { $0.id == id })?.content } ?? "")
-                : externalStreamAccumulatedContent
+
+            // Prefer the authoritative final output array from the done event —
+            // reconstruct the full text (with tool blocks) from it. Fall back to
+            // the accumulated delta content, then whatever the message already has.
+            var finalContent: String
+            if let outputArr = payload["output"] as? [[String: Any]],
+               let reconstructed = MessageHistory.reconstructContentFromOutput(outputArr),
+               !reconstructed.isEmpty {
+                finalContent = reconstructed
+                // Update the raw output on the history node for tool-call rendering
+                if let msgId, let conv = conversation, conv.history.nodes[msgId] != nil {
+                    conversation?.history.nodes[msgId]?.output = outputArr
+                }
+            } else if !externalStreamAccumulatedContent.isEmpty {
+                finalContent = externalStreamAccumulatedContent
+            } else {
+                finalContent = msgId.flatMap { id in conversation?.messages.first(where: { $0.id == id })?.content } ?? ""
+            }
+
             isExternallyStreaming = false
             isSyncingExternalStream = false
             externalStreamAccumulatedContent = ""
@@ -3291,7 +3328,6 @@ final class ChatViewModel {
 
         isStreaming = true
         hasFinishedStreaming = false
-        socketHasReceivedContent = false
         selfInitiatedStream = true
         streamingSessionId += 1
         // Clear the replay-block for the previous completed message — a new
@@ -3299,6 +3335,9 @@ final class ChatViewModel {
         // want to accidentally block events for future messages that might
         // reuse this ID (extremely unlikely but defensive).
         lastCompletedSelfInitiatedMessageId = nil
+        // Reset the background flag — this new stream hasn't been backgrounded yet.
+        // It will only be set to true if the user backgrounds the app while streaming.
+        wasBackgroundedDuringThisStream = false
 
         // Start model-switch polling if a switchStatusURL is configured.
         // Stopped automatically when the first SSE token arrives or streaming ends.
@@ -4662,6 +4701,37 @@ final class ChatViewModel {
                     return
                 }
             }
+            // ── Fast-path: response:completion (new OWUI streaming architecture) ──
+            // OpenWebUI now sends per-token incremental deltas as `response:completion`
+            // events instead of per-token `chat:completion` events. The `data.data`
+            // payload is a Responses-API-style event where `type` ends in `.delta`
+            // and `delta` is the raw new token string (NOT the full accumulated text).
+            // We handle the output_text delta here in the fast-path (same background
+            // thread, zero main-actor hops per token) and let non-delta sub-types fall
+            // through to the normal @MainActor dispatch below.
+            if type == "response:completion" {
+                let innerPayload = data["data"] as? [String: Any]
+                let innerType = innerPayload?["type"] as? String ?? ""
+                if innerType == "response.output_text.delta" {
+                    let delta = innerPayload?["delta"] as? String ?? ""
+                    if !delta.isEmpty {
+                        acc.append(delta)
+                        return
+                    }
+                }
+                // reasoning text delta — append to accumulator so thinking blocks
+                // stream visibly (they are included in the final output reconstruct too)
+                if innerType == "response.reasoning_text.delta" {
+                    // Do NOT append reasoning deltas to the visible acc — they are
+                    // internal chain-of-thought and will be included in the final
+                    // output array reconstruction at done:true.  Just return so we
+                    // don't schedule a needless @MainActor task.
+                    return
+                }
+                // All other response:completion sub-types (item.added, item.done,
+                // function_call_arguments.delta, etc.) fall through to @MainActor
+                // dispatch where handleResponseCompletion() will process them.
+            }
             // For all other event types, dispatch to main actor normally
             Task { @MainActor in
                 self.handleChatEvent(
@@ -4798,6 +4868,18 @@ final class ChatViewModel {
                                       modelId: modelId, socketSessionId: socketSessionId,
                                       effectiveChatId: effectiveChatId, acc: acc)
 
+            case "response:completion":
+                // New OWUI streaming architecture: per-token deltas arrive as
+                // response:completion events with a Responses-API-style inner payload.
+                // output_text.delta is handled in the fast-path above (zero @MainActor
+                // hops per token). The cases that reach here are non-delta events:
+                // item.added, item.done, function_call_arguments.delta, etc.
+                if let innerPayload = payload {
+                    handleResponseCompletion(innerPayload, assistantMessageId: assistantMessageId,
+                                             modelId: modelId, socketSessionId: socketSessionId,
+                                             effectiveChatId: effectiveChatId, acc: acc)
+                }
+
             case "chat:message:delta", "message", "event:message:delta":
                 let content = payload?["content"] as? String ?? ""
                 if !content.isEmpty {
@@ -4897,11 +4979,16 @@ final class ChatViewModel {
             return
         }
 
-        // ── PATH 1: Structured output array (primary path for all modern OWUI) ─
+        // ── PATH 1: Structured output array (final authoritative snapshot) ────
         //
-        // The server emits `output` as a CUMULATIVE SNAPSHOT on every tick —
-        // every event contains the full output array built so far, not a delta.
-        // Always use `acc.replace()`, never `acc.append()` for this path.
+        // In the new OWUI streaming architecture, `chat:completion` events with an
+        // `output` array are sent ONLY at stream end (done:true) or on tool-approval
+        // pauses (done:false). Per-token deltas now arrive as `response:completion`
+        // events handled upstream, so this path fires once at completion.
+        //
+        // The output array is the AUTHORITATIVE final snapshot — always use
+        // `acc.replace()` so any delta-accumulated text is superseded by the
+        // complete, server-authoritative version (including tool call <details> blocks).
         //
         // This path handles: thinking blocks, tool calls, concurrent tool calls,
         // prose, reasoning+tool+reasoning sequences, and the final done signal.
@@ -4911,7 +4998,10 @@ final class ChatViewModel {
         if let outputArr = payload["output"] as? [[String: Any]] {
             if let reconstructed = MessageHistory.reconstructContentFromOutput(outputArr) {
                 acc.replace(reconstructed)
-                updateAssistantMessage(id: assistantMessageId, content: acc.content, isStreaming: true)
+                // Removed redundant updateAssistantMessage call — acc.replace() already
+                // fires acc.onUpdate which calls streamingStore.updateContent().
+                // Calling updateAssistantMessage here causes a duplicate pipeline.append()
+                // which can race with setFinalContent() at done:true.
             }
 
             // Update the raw output on the history node so scanForPendingToolActions()
@@ -5024,6 +5114,82 @@ final class ChatViewModel {
                 acc: acc
             )
         }
+    }
+
+    // MARK: - response:completion handler (new OWUI streaming architecture)
+
+    /// Handles `response:completion` socket events — the new OpenWebUI streaming
+    /// architecture where every in-flight token arrives as a Responses-API-style
+    /// incremental delta rather than a cumulative `chat:completion` snapshot.
+    ///
+    /// ## Event taxonomy
+    ///
+    /// | Inner `type`                              | Action                                    |
+    /// |-------------------------------------------|-------------------------------------------|
+    /// | `response.output_text.delta`              | Fast-pathed BEFORE this function (acc.append in socket handler) |
+    /// | `response.reasoning_text.delta`           | Fast-pathed / ignored (internal CoT)      |
+    /// | `response.function_call_arguments.delta`  | Ignored — no visible content              |
+    /// | `response.output_item.added`              | Show tool-call status pill if function_call |
+    /// | `response.output_item.done`               | Mark tool-call completed in status        |
+    /// | `response.output_text.done`               | No-op — full text arrives in chat:completion done |
+    /// | `response.completed`                      | No-op — wait for chat:completion done     |
+    /// | anything else ending in `.done`           | No-op                                     |
+    ///
+    /// The authoritative stream termination signal is still `chat:completion {done:true}`
+    /// which carries the full final `output` array. This function never calls
+    /// `finishStreamingSuccessfully` — it only updates intermediate UI state.
+    private func handleResponseCompletion(
+        _ innerPayload: [String: Any],
+        assistantMessageId: String, modelId: String,
+        socketSessionId: String, effectiveChatId: String?,
+        acc: ContentAccumulator
+    ) {
+        guard !hasFinishedStreaming else { return }
+
+        let innerType = innerPayload["type"] as? String ?? ""
+
+        // ── output_text.delta ────────────────────────────────────────────────
+        // This is the hot path for streaming tokens. It is already handled by
+        // the fast-path in registerSocketHandlers (no @MainActor hop per token).
+        // If it somehow reaches here (e.g. empty delta that wasn't filtered),
+        // just append and return.
+        if innerType == "response.output_text.delta" {
+            let delta = innerPayload["delta"] as? String ?? ""
+            if !delta.isEmpty {
+                acc.append(delta)
+                updateAssistantMessage(id: assistantMessageId, content: acc.content, isStreaming: true)
+            }
+            return
+        }
+
+        // ── function_call tool-call status pill ─────────────────────────────
+        // When a function_call item is added to the output, show a live
+        // "Calling <tool>…" status update so the user sees tool activity.
+        if innerType == "response.output_item.added" {
+            if let item = innerPayload["item"] as? [String: Any],
+               (item["type"] as? String) == "function_call",
+               let name = item["name"] as? String, !name.isEmpty {
+                appendStatusUpdate(id: assistantMessageId,
+                    status: ChatStatusUpdate(action: name, description: "Calling \(name)…", done: false))
+            }
+            return
+        }
+
+        if innerType == "response.output_item.done" {
+            if let item = innerPayload["item"] as? [String: Any],
+               (item["type"] as? String) == "function_call",
+               let name = item["name"] as? String, !name.isEmpty {
+                appendStatusUpdate(id: assistantMessageId,
+                    status: ChatStatusUpdate(action: name, description: "\(name) completed", done: true))
+            }
+            return
+        }
+
+        // ── All other sub-types (.delta for other fields, .done, .completed) ─
+        // These carry no visible content changes — the final authoritative
+        // output arrives via chat:completion {done:true, output:[...]} which
+        // is handled by handleChatCompletion → PATH 1.
+        // No action needed; return silently.
     }
 
     /// Handles channel events (secondary streaming channel).
@@ -5311,23 +5477,21 @@ final class ChatViewModel {
     /// Extracted recovery poll logic (called by the recovery timer).
     ///
     /// ## Completion detection
-    /// We intentionally do NOT rely on `lastAssistant.isStreaming` (the server's `done` flag)
-    /// as the sole signal because that flag is only set when the app calls `chatCompleted` —
-    /// which only happens AFTER the app receives `done:true` from the socket.  On a slow
-    /// connection the `done:true` socket event can be delayed or dropped, creating a circular
-    /// dependency where neither side ever marks the response as finished.
+    /// The server's `done` flag on the assistant message is now a reliable signal:
+    /// `GET /api/v1/chats/{id}` overlays any in-progress response (from its Redis-backed
+    /// response-stream cache) onto the message with `done: false` explicitly set while
+    /// generation is active, and only writes `done: true` to the database once generation
+    /// has truly finished. `ChatMessage.isStreaming` is derived from this flag during
+    /// parsing (see `MessageHistory.createMessagesList()` / `APIClient.parseSingleMessage()`),
+    /// so `!lastAssistant.isStreaming` is now a trustworthy "server says complete" signal.
     ///
-    /// Instead we use **content-based completion detection**: the server always persists the
-    /// full response content once generation finishes, regardless of whether `chatCompleted`
-    /// was sent.  A response is considered complete when:
-    ///   1. The server explicitly sets `done = true` (`!lastAssistant.isStreaming`), OR
-    ///   2. The content is non-empty AND all tool-call `<details>` blocks are closed
-    ///      (i.e. generation finished but `chatCompleted` was never sent due to dropped event).
-    ///
-    /// For the give-up threshold we no longer reset `emptyPollCount` based on tool statuses —
-    /// that reset was the mechanism that caused the timer to loop indefinitely when a
-    /// `done:true` socket event was dropped.  Instead we let `emptyPollCount` increment
-    /// freely and trust the content-stability check above to finalize first.
+    /// We keep a content-based fallback (`toolCallResponseIsComplete`) for the case where
+    /// the `done:true` write is somehow delayed or dropped, but — because that heuristic
+    /// trivially returns `true` for ANY partial plain-text answer (no tool-call blocks means
+    /// "nothing to check, therefore complete") — it must NEVER be trusted on its own while
+    /// the socket is actively delivering tokens. It only kicks in once content has gone
+    /// stable across consecutive polls (no growth), which means generation has genuinely
+    /// stopped producing output.
     private func runRecoveryPoll(assistantMessageId: String, chatId: String?) {
         Task { @MainActor in
             guard self.isStreaming, !self.hasFinishedStreaming else {
@@ -5364,13 +5528,19 @@ final class ChatViewModel {
 
                     // Determine if the response is complete.
                     //
-                    // Primary signal: server's done flag (set when chatCompleted is processed).
-                    // Fallback signal: content-based detection — the response is structurally
-                    // complete when all tool-call blocks are closed, regardless of the done flag.
-                    // This catches the slow-connection case where the done:true socket event
-                    // was delayed or dropped and chatCompleted was never sent.
+                    // Primary signal: server's `done` flag, now reliably derived from the
+                    // response-stream overlay (see doc comment above) — trust it directly.
                     let serverDone = !lastAssistant.isStreaming
-                    let contentComplete = !serverContent.isEmpty && Self.toolCallResponseIsComplete(serverContent)
+
+                    // Fallback signal: content-based detection is ONLY safe to use once the
+                    // server's content has stopped growing across polls (i.e. content is
+                    // stable). Without the stability gate, `toolCallResponseIsComplete`
+                    // would trivially fire on the very first poll for any plain-text answer
+                    // that simply hasn't finished yet — the exact bug that caused streams to
+                    // be cut off prematurely mid-generation.
+                    let contentStable = polledContentLength > 0 && polledContentLength == self.lastRecoveryPollContentLength
+                    let contentComplete = !serverContent.isEmpty && contentStable
+                        && Self.toolCallResponseIsComplete(serverContent)
 
                     if (serverDone || contentComplete) && !serverContent.isEmpty {
                         self.logger.info("Recovery: finalizing — serverDone=\(serverDone) contentComplete=\(contentComplete) chars=\(serverContent.count)")
@@ -5517,7 +5687,20 @@ final class ChatViewModel {
         let notificationsEnabled = UserDefaults.standard.object(forKey: "notificationsEnabled") as? Bool ?? true
         guard notificationsEnabled else { return }
 
-        // Always schedule the notification. The UNUserNotificationCenterDelegate
+        // Only fire a notification (and increment the badge) when the app was actually
+        // backgrounded during this stream. If the user stayed in the app the entire time
+        // and the response finished while they were watching, there's no need to badge the
+        // icon — they already saw the response. The background observer sets this flag
+        // (only when isStreaming == true), so it's only true for genuine background runs.
+        // The recoverFromBackgroundStreaming() path bypasses this guard by setting
+        // bypassActiveConversationSuppression, which is fine — those cases the user
+        // definitely was backgrounded.
+        if !wasBackgroundedDuringThisStream
+            && !NotificationService.shared.bypassActiveConversationSuppression {
+            return
+        }
+
+        // Schedule the notification. The UNUserNotificationCenterDelegate
         // (willPresent) handles foreground suppression — if the user is viewing
         // this conversation, it returns [] (no banner). This avoids stale
         // UIApplication.shared.connectedScenes state when called from background tasks.

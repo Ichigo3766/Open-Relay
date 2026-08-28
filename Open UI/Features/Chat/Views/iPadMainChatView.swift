@@ -116,6 +116,11 @@ struct iPadMainChatView: View {
     @State private var isExporting = false
     @State private var exportError: String?
 
+    // MARK: Photo picker (window-level)
+    // Owned here so AnimatedPhotoPicker renders outside ChatDetailView's
+    // safeAreaInset-shrunk ZStack and can truly cover the full screen.
+    @State private var showAnimatedPhotoPicker = false
+
     /// Share chat sheet state.
     @State private var sharingConversation: Conversation?
 
@@ -697,6 +702,22 @@ struct iPadMainChatView: View {
                     // area does not block the hamburger button in the toolbar (~60pt).
                     .padding(.top, 60)
             }
+
+            // ── Layer 4: AnimatedPhotoPicker at window level ──────────────────
+            AnimatedPhotoPicker(
+                isPresented: showAnimatedPhotoPicker,
+                onConfirm: { assets in
+                    NotificationCenter.default.post(
+                        name: .openUIPhotoPickerConfirm,
+                        object: nil,
+                        userInfo: ["assets": assets]
+                    )
+                    showAnimatedPhotoPicker = false
+                },
+                onDismiss: {
+                    showAnimatedPhotoPicker = false
+                }
+            )
         }
     }
 
@@ -905,6 +926,7 @@ struct iPadMainChatView: View {
             .onDeleteChat { startNewChat() }
             .onNewChat { startNewChat() }
             .onToggleDrawer(toggleDrawerAction)
+            .onPhotoPickerRequest { showAnimatedPhotoPicker = true }
             .id(conversationId)
         } else if let folderWorkspaceId = activeFolderWorkspaceId {
             let vm = dependencies.activeChatStore.viewModel(for: nil)
@@ -913,6 +935,7 @@ struct iPadMainChatView: View {
             ChatDetailView(viewModel: vm, folderWorkspace: folder)
                 .onNewChat { startNewChat() }
                 .onToggleDrawer(toggleDrawerAction)
+                .onPhotoPickerRequest { showAnimatedPhotoPicker = true }
                 .id("folder-workspace-\(folderWorkspaceId)-\(newChatGeneration)")
                 .onAppear {
                     let folderDetail = listViewModel.folderViewModel.activeFolderDetail
@@ -926,6 +949,7 @@ struct iPadMainChatView: View {
             ChatDetailView(viewModel: dependencies.activeChatStore.viewModel(for: nil))
                 .onNewChat { startNewChat() }
                 .onToggleDrawer(toggleDrawerAction)
+                .onPhotoPickerRequest { showAnimatedPhotoPicker = true }
                 .id("new-chat-\(newChatGeneration)")
         }
     }
@@ -1213,7 +1237,7 @@ struct iPadSidebarContent: View {
             if listViewModel.isSelectionMode {
                 selectionModeHeader
             } else {
-                sidebarSearchBar
+                sidebarHeader
             }
 
             // Conversation list
@@ -1239,11 +1263,7 @@ struct iPadSidebarContent: View {
                     let channelsEnabled = dependencies.authViewModel.featurePermissions.channels
                         && (dependencies.authViewModel.backendConfig?.features?.enableChannels ?? true)
                     if (foldersEnabled && !folderVM.featureDisabled && !folderVM.folders.isEmpty) || (channelsEnabled && !channelListVM.channels.isEmpty) {
-                        Rectangle()
-                            .fill(theme.textTertiary.opacity(0.12))
-                            .frame(height: 1)
-                            .padding(.horizontal, Spacing.md)
-                            .padding(.vertical, Spacing.sm)
+                        sidebarDivider
                     }
 
                     // Channels section (shown only when enabled on server)
@@ -1253,11 +1273,7 @@ struct iPadSidebarContent: View {
 
                     // Divider between channels and chats
                     if channelsEnabled && !channelListVM.channels.isEmpty {
-                        Rectangle()
-                            .fill(theme.textTertiary.opacity(0.12))
-                            .frame(height: 1)
-                            .padding(.horizontal, Spacing.md)
-                            .padding(.vertical, Spacing.sm)
+                        sidebarDivider
                     }
 
                     // Chats section
@@ -1278,6 +1294,12 @@ struct iPadSidebarContent: View {
             }
         }
         .background(theme.background)
+        .overlay(alignment: .trailing) {
+            Rectangle()
+                .fill(theme.isDark ? Color.white.opacity(0.06) : Color.black.opacity(0.08))
+                .frame(width: 0.5)
+                .ignoresSafeArea()
+        }
         // Sidebar has no text inputs that need keyboard avoidance — ignore
         // keyboard safe area so the sidebar layout doesn't shift when a
         // floating keyboard appears/disappears or changes size on iPad.
@@ -1356,35 +1378,189 @@ struct iPadSidebarContent: View {
         .toolbarBackground(.hidden, for: .navigationBar)
     }
 
-    // MARK: - Search Bar
+    // MARK: - Sidebar Header (New Elegant Design)
 
-    private var sidebarSearchBar: some View {
-        HStack(spacing: Spacing.sm) {
+    private var sidebarHeader: some View {
+        VStack(spacing: 0) {
+            // Top row: avatar/name + action buttons
+            HStack(spacing: 8) {
+                // User avatar — tap → Settings, long-press → Account Picker
+                ZStack(alignment: .bottomTrailing) {
+                    UserAvatar(
+                        size: 34,
+                        imageURL: {
+                            guard let userId = dependencies.authViewModel.currentUser?.id,
+                                  let baseURL = dependencies.apiClient?.baseURL,
+                                  !userId.isEmpty, !baseURL.isEmpty else { return nil }
+                            let v = dependencies.authViewModel.profileImageVersion
+                            return URL(string: "\(baseURL)/api/v1/users/\(userId)/profile/image?v=\(v)")
+                        }(),
+                        name: dependencies.authViewModel.currentUser?.displayName ?? "User",
+                        authToken: dependencies.apiClient?.network.authToken,
+                        dataURIString: dependencies.authViewModel.currentUser?.profileImageURL
+                    )
+                    Circle()
+                        .fill(Color.green)
+                        .frame(width: 9, height: 9)
+                        .overlay(Circle().stroke(theme.sidebarBackground, lineWidth: 1.5))
+                        .offset(x: 2, y: 2)
+                }
+                .contentShape(Rectangle())
+                .onLongPressGesture(minimumDuration: 0.5) {
+                    Haptics.play(.medium)
+                    dependencies.authViewModel.showAccountPicker = true
+                }
+                .simultaneousGesture(TapGesture().onEnded {
+                    showSettings = true
+                })
+
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(dependencies.authViewModel.currentUser?.displayName ?? "User")
+                        .scaledFont(size: 14, weight: .semibold)
+                        .foregroundStyle(theme.textPrimary)
+                        .lineLimit(1)
+                    if let serverName = dependencies.apiClient?.baseURL
+                        .replacingOccurrences(of: "https://", with: "")
+                        .replacingOccurrences(of: "http://", with: "")
+                        .components(separatedBy: "/").first {
+                        Text(serverName)
+                            .scaledFont(size: 10)
+                            .foregroundStyle(theme.textTertiary)
+                            .lineLimit(1)
+                    }
+                }
+                .contentShape(Rectangle())
+                .onTapGesture { showSettings = true }
+
+                Spacer()
+
+                // New Chat button
+                Button(action: onNewChat) {
+                    Image(systemName: "square.and.pencil")
+                        .scaledFont(size: 14, weight: .semibold)
+                        .foregroundStyle(theme.brandPrimary)
+                        .frame(width: 32, height: 32)
+                        .background(theme.brandPrimary.opacity(0.1))
+                        .clipShape(Circle())
+                }
+                .accessibilityLabel("New Chat")
+
+                // More menu
+                Menu {
+                    if dependencies.authViewModel.featurePermissions.memories {
+                        Button { showMemories = true } label: {
+                            Label("Memories", systemImage: "brain.head.profile")
+                        }
+                    }
+                    if dependencies.authViewModel.hasAnyWorkspaceAccess {
+                        Button { showWorkspace = true } label: {
+                            Label("Workspace", systemImage: "square.grid.2x2")
+                        }
+                    }
+                    if dependencies.authViewModel.featurePermissions.notes
+                        && (dependencies.authViewModel.backendConfig?.features?.enableNotes ?? true) {
+                        Button { showNotes = true } label: {
+                            Label("Notes", systemImage: "note.text")
+                        }
+                    }
+                    if dependencies.authViewModel.featurePermissions.calendar {
+                        Button { showCalendar = true } label: {
+                            Label("Calendar", systemImage: "calendar")
+                        }
+                    }
+                    if dependencies.authViewModel.featurePermissions.automations
+                        && (dependencies.authViewModel.backendConfig?.features?.enableAutomations ?? true) {
+                        Button { showAutomations = true } label: {
+                            Label("Automations", systemImage: "clock.arrow.circlepath")
+                        }
+                    }
+                    Button { showUserSettings = true } label: {
+                        Label("My Defaults", systemImage: "slider.horizontal.3")
+                    }
+                    Divider()
+                    Button { showSettings = true } label: {
+                        Label("Settings", systemImage: "gearshape")
+                    }
+                    if dependencies.authViewModel.currentUser?.role == .admin {
+                        Button { showAdminConsole = true } label: {
+                            Label("Admin Console", systemImage: "shield.lefthalf.filled")
+                        }
+                    }
+                } label: {
+                    Image(systemName: "ellipsis")
+                        .scaledFont(size: 12, weight: .semibold)
+                        .foregroundStyle(theme.textSecondary)
+                        .frame(width: 32, height: 32)
+                        .background(theme.surfaceContainer)
+                        .clipShape(Circle())
+                }
+            }
+            .padding(.horizontal, Spacing.md)
+            .padding(.top, Spacing.md)
+            .padding(.bottom, 10)
+
+            // Search pill
+            sidebarSearchPill
+        }
+    }
+
+    // MARK: - Sidebar Search Pill
+
+    private var sidebarSearchPill: some View {
+        HStack(spacing: 8) {
             Image(systemName: "magnifyingglass")
-                .scaledFont(size: 13, context: .list)
-                .foregroundStyle(theme.textTertiary)
+                .scaledFont(size: 12, weight: .medium, context: .list)
+                .foregroundStyle(listViewModel.searchText.isEmpty ? theme.textTertiary : theme.brandPrimary)
+                .animation(.easeInOut(duration: 0.15), value: listViewModel.searchText.isEmpty)
 
             TextField("Search conversations…", text: $listViewModel.searchText)
-                .scaledFont(size: 14, context: .list)
+                .scaledFont(size: 13, context: .list)
                 .foregroundStyle(theme.textPrimary)
+                .tint(theme.brandPrimary)
 
             if !listViewModel.searchText.isEmpty {
                 Button {
-                    listViewModel.searchText = ""
+                    withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
+                        listViewModel.searchText = ""
+                    }
                 } label: {
                     Image(systemName: "xmark.circle.fill")
                         .scaledFont(size: 13, context: .list)
                         .foregroundStyle(theme.textTertiary)
                 }
+                .transition(.scale.combined(with: .opacity))
             }
         }
+        .padding(.horizontal, 11)
+        .padding(.vertical, 8)
+        .background(theme.surfaceContainer.opacity(0.7))
+        .clipShape(RoundedRectangle(cornerRadius: 11, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 11, style: .continuous)
+                .strokeBorder(
+                    listViewModel.searchText.isEmpty ? Color.clear : theme.brandPrimary.opacity(0.3),
+                    lineWidth: 1
+                )
+        )
+        .animation(.easeInOut(duration: 0.2), value: listViewModel.searchText.isEmpty)
         .padding(.horizontal, Spacing.md)
-        .padding(.vertical, 9)
-        .background(theme.surfaceContainer.opacity(0.6))
-        .clipShape(RoundedRectangle(cornerRadius: CornerRadius.md, style: .continuous))
-        .padding(.horizontal, Spacing.md)
-        .padding(.top, Spacing.sm)
-        .padding(.bottom, Spacing.xs)
+        .padding(.bottom, Spacing.sm)
+    }
+
+    // MARK: - Sidebar Divider
+
+    private var sidebarDivider: some View {
+        Rectangle()
+            .fill(theme.textTertiary.opacity(0.1))
+            .frame(height: 1)
+            .padding(.horizontal, Spacing.md)
+            .padding(.vertical, 6)
+    }
+
+    // MARK: - Search Bar (kept for backwards compatibility)
+
+    private var sidebarSearchBar: some View {
+        sidebarSearchPill
     }
 
     // MARK: - Selection Mode Header

@@ -139,51 +139,67 @@ enum TTSTextPreprocessor {
 
     // MARK: - Streaming TTS Extraction (Character-Offset Based)
 
+    // --- Fix A: track offset in RAW-text space, not cleaned-text space ---
+    //
+    // Previously, `alreadySpokenLength` was an offset into the *cleaned* string
+    // produced by prepareForSpeech(wholeText).  Because prepareForSpeech is not
+    // idempotent across a growing input (number expansion, bullet-to-sentence
+    // injection, and whitespace normalisation all shift character positions as new
+    // tokens arrive), the offset from call N was reused as an offset into the
+    // cleaned string from call N+1 — producing a 1-character gap at every chunk
+    // boundary (the reported "one character missing, dot appended" bug).
+    //
+    // The fix: `alreadySpokenLength` now records how many RAW characters of the
+    // original accumulated text have already been spoken.  Each call:
+    //   1. Slices the raw tail  rawText[alreadySpokenLength...]  — stable across calls
+    //   2. Finds a sentence-end boundary inside the RAW tail via findLastSentenceEnd
+    //      (sentence terminators are preserved verbatim by prepareForSpeech)
+    //   3. Cleans only that fixed raw slice (same input every time → same output)
+    //   4. Returns  alreadySpokenLength + rawSafeCut  — a pure raw-space advance
+
     static func extractNewSpeakableChunks(
-        from text: String,
-        alreadySpokenLength: Int
+        from rawText: String,
+        alreadySpokenLength: Int    // raw-text character count already spoken
     ) -> (chunks: [String], newSpokenLength: Int) {
-        let cleaned = prepareForSpeech(text)
+        guard rawText.count > alreadySpokenLength else { return ([], alreadySpokenLength) }
+
+        // 1. Slice only the unprocessed raw tail.
+        let rawStartIdx = rawText.index(rawText.startIndex, offsetBy: alreadySpokenLength)
+        let rawTail = String(rawText[rawStartIdx...])
+
+        // 2. Find the last safe sentence-end in the RAW tail.
+        //    Sentence terminators (.!?:,) survive prepareForSpeech unchanged, so the
+        //    raw boundary is just as valid as a cleaned-string boundary.
+        let safeCutInTail = findLastSentenceEnd(in: rawTail)
+        guard safeCutInTail > 0 else { return ([], alreadySpokenLength) }
+
+        // 3. Clean the fixed raw slice (always the same input → always the same output).
+        let rawCutIdx = rawTail.index(rawTail.startIndex, offsetBy: safeCutInTail)
+        let rawSlice  = String(rawTail[..<rawCutIdx])
+        let cleaned   = prepareForSpeech(rawSlice)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
         guard !cleaned.isEmpty else { return ([], alreadySpokenLength) }
 
-        let safeEndIndex = findLastSentenceEnd(in: cleaned)
-
-        guard safeEndIndex > alreadySpokenLength else {
-            return ([], alreadySpokenLength)
-        }
-
-        let startIdx = cleaned.index(cleaned.startIndex, offsetBy: alreadySpokenLength)
-        let endIdx = cleaned.index(cleaned.startIndex, offsetBy: safeEndIndex)
-        let newText = String(cleaned[startIdx..<endIdx])
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-
-        guard !newText.isEmpty else {
-            return ([], alreadySpokenLength)
-        }
-
-        let chunks = splitIntoSentences(newText)
-        return (chunks, safeEndIndex)
+        // 4. Split and return; advance the raw pointer.
+        let chunks = splitIntoSentences(cleaned)
+        return (chunks, alreadySpokenLength + safeCutInTail)
     }
 
     static func extractFinalChunks(
-        from text: String,
-        alreadySpokenLength: Int
+        from rawText: String,
+        alreadySpokenLength: Int    // raw-text character count already spoken
     ) -> (chunks: [String], newSpokenLength: Int) {
-        let cleaned = prepareForSpeech(text)
-        guard !cleaned.isEmpty, cleaned.count > alreadySpokenLength else {
-            return ([], alreadySpokenLength)
-        }
+        guard rawText.count > alreadySpokenLength else { return ([], alreadySpokenLength) }
 
-        let startIdx = cleaned.index(cleaned.startIndex, offsetBy: alreadySpokenLength)
-        let remaining = String(cleaned[startIdx...])
+        // Slice the remaining raw tail, clean it, and speak everything.
+        let rawStartIdx = rawText.index(rawText.startIndex, offsetBy: alreadySpokenLength)
+        let rawSlice    = String(rawText[rawStartIdx...])
+        let cleaned     = prepareForSpeech(rawSlice)
             .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !cleaned.isEmpty else { return ([], rawText.count) }
 
-        guard !remaining.isEmpty else {
-            return ([], cleaned.count)
-        }
-
-        let chunks = splitIntoSentences(remaining)
-        return (chunks, cleaned.count)
+        let chunks = splitIntoSentences(cleaned)
+        return (chunks, rawText.count)
     }
 
     private static func findLastSentenceEnd(in text: String) -> Int {
@@ -252,7 +268,11 @@ enum TTSTextPreprocessor {
         var result = text
 
         // --- Headers → standalone sentences ---
-        result = regexReplace(result, pattern: "(?m)^#{1,6}\\s+(.+?)([.!?])?\\s*$") { match in
+        // Fix B: (?=\n) lookahead — only match lines that are followed by a newline
+        // (i.e. complete lines).  The partial last line of a streaming buffer has no
+        // trailing newline and must NOT be punctuated; doing so would create a false
+        // sentence-end boundary and cause findLastSentenceEnd to cut mid-word.
+        result = regexReplace(result, pattern: "(?m)^#{1,6}\\s+(.+?)([.!?])?\\s*(?=\\n)") { match in
             let content = match.groups[0]
             let existingPunct = match.groups[1]
             return existingPunct.isEmpty ? "\(content)." : "\(content)\(existingPunct)"
@@ -262,19 +282,21 @@ enum TTSTextPreprocessor {
         result = regexReplace(result, pattern: "(?m)^\\|.*\\|\\s*$", with: "")
 
         // --- Remove task list checkboxes ---
-        result = regexReplace(result, pattern: "(?m)^[\\-*+]\\s+\\[[ xX]\\]\\s+(.+)") { match in
+        // Fix B: only complete lines (followed by \n)
+        result = regexReplace(result, pattern: "(?m)^[\\-*+]\\s+\\[[ xX]\\]\\s+(.+)(?=\\n)") { match in
             let content = match.groups[0]
             let last = content.last
             return (last == "." || last == "!" || last == "?" || last == ":") ? content : "\(content)."
         }
 
         // --- Standalone bold lines acting as section headings → sentence boundary ---
-        result = regexReplace(result, pattern: "(?m)^\\*\\*(.+?)([.!?])?\\*\\*\\s*$") { match in
+        // Fix B: only complete lines (followed by \n)
+        result = regexReplace(result, pattern: "(?m)^\\*\\*(.+?)([.!?])?\\*\\*\\s*(?=\\n)") { match in
             let content = match.groups[0]
             let existingPunct = match.groups[1]
             return existingPunct.isEmpty ? "\(content)." : "\(content)\(existingPunct)"
         }
-        result = regexReplace(result, pattern: "(?m)^__(.+?)([.!?])?__\\s*$") { match in
+        result = regexReplace(result, pattern: "(?m)^__(.+?)([.!?])?__\\s*(?=\\n)") { match in
             let content = match.groups[0]
             let existingPunct = match.groups[1]
             return existingPunct.isEmpty ? "\(content)." : "\(content)\(existingPunct)"
@@ -349,14 +371,17 @@ enum TTSTextPreprocessor {
         result = regexReplace(result, pattern: "(?m)^>\\s*", with: "")
 
         // --- Bullet points → standalone sentences ---
-        result = regexReplace(result, pattern: "(?m)^[\\-*+]\\s+(.+)") { match in
+        // Fix B: only complete lines (followed by \n) — partial last-line bullets
+        // must NOT be punctuated or they create a false sentence-end cut point.
+        result = regexReplace(result, pattern: "(?m)^[\\-*+]\\s+(.+)(?=\\n)") { match in
             let content = match.groups[0]
             let last = content.last
             return (last == "." || last == "!" || last == "?" || last == ":") ? content : "\(content)."
         }
 
         // --- Numbered lists → standalone sentences ---
-        result = regexReplace(result, pattern: "(?m)^\\d+\\.\\s+(.+)") { match in
+        // Fix B: only complete lines (followed by \n)
+        result = regexReplace(result, pattern: "(?m)^\\d+\\.\\s+(.+)(?=\\n)") { match in
             let content = match.groups[0]
             let last = content.last
             return (last == "." || last == "!" || last == "?" || last == ":") ? content : "\(content)."

@@ -465,7 +465,7 @@ final class NotificationService: NSObject, @unchecked Sendable {
     /// Local badge counter — incremented per notification delivery and cleared on tap or foreground.
     /// We track this ourselves because `UNUserNotificationCenter.badgeCount()` requires iOS 17+
     /// and `UIApplication.applicationIconBadgeNumber` requires the main thread.
-    private static let badgeCountKey = "notificationBadgeCount"
+    nonisolated private static let badgeCountKey = "notificationBadgeCount"
 
     /// Returns the current tracked badge count.
     nonisolated private static func currentBadgeCount() -> Int {

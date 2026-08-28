@@ -1,5 +1,19 @@
 # Changelog
 
+## v5.5.1 — August 27, 2026
+
+### What's New
+- Added custom photo picker
+
+### Improvements
+- Allow OpenWebUI's new streaming architecture that now sends tokens as `response:completion` delta events which the app was silently discarding.
+
+### Bug Fixes
+- Fixed assistant messages not appearing when sending new messages after clearing chat history or continuing responses
+- Fixed TTS related issues with sentence breaking.
+- Fixed app icon showing a badge number after every message even when the response finished while you were still in the app — the badge now only appears when you go to the home screen while a response is still streaming.
+
+
 ## v5.5 — August 26, 2026
 
 ### What's New

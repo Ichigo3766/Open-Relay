@@ -1,5 +1,5 @@
 {
-  "originHash" : "920dcfc180720d003e1ca8b9297711c8129b7be46fa4ab6be034c3952173cb1b",
+  "originHash" : "bf8cd64a992582c904b1b198622f465abbc43fe0b6d1cad5a2ab31d39da56181",
   "pins" : [
     {
       "identity" : "beautiful-mermaid-swift",
@@ -52,16 +52,7 @@
       "location" : "https://github.com/nicklockwood/LRUCache",
       "state" : {
         "branch" : "main",
-        "revision" : "cb5b2bd0da83ad29c0bec762d39f41c8ad0eaf3e"
-      }
-    },
-    {
-      "identity" : "markdownview",
-      "kind" : "remoteSourceControl",
-      "location" : "https://github.com/Ichigo3766/MarkdownView.git",
-      "state" : {
-        "branch" : "main",
-        "revision" : "250578bfdc2c93f5f913050fb12e3dbbe2b54a77"
+        "revision" : "f0570e943ea4445d258113ba73f50cb2b7e564ac"
       }
     },
     {
@@ -142,7 +133,7 @@
       "location" : "https://github.com/apple/swift-collections",
       "state" : {
         "branch" : "main",
-        "revision" : "f425dffd5bf70fe2a880c5eb6568bbdcade9f4f5"
+        "revision" : "57cf0d71d73b9fe5098f3158c47b2eeec1f1a98f"
       }
     },
     {

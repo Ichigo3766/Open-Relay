@@ -290,6 +290,7 @@ struct MessageHistory: Sendable {
                 content: node.content,
                 timestamp: node.timestamp,
                 model: node.model,
+                isStreaming: !node.done,
                 files: node.files,
                 sources: node.sources,
                 statusHistory: node.statusHistory,

@@ -357,7 +357,7 @@ struct ChatInputField: View {
                 quickPillsData = pruned.joined(separator: ",")
             }
         }
-        .animation(.easeOut(duration: 0.2), value: attachments.count)
+        .animation(.spring(response: 0.4, dampingFraction: 0.78), value: attachments.count)
         .sheet(item: $previewingAttachmentId) { wrapper in
             AttachmentPreviewSheet(attachments: $attachments, attachmentId: wrapper.id)
         }
@@ -1174,8 +1174,10 @@ struct ChatInputField: View {
                 ForEach(attachments) { attachment in
                     attachmentTile(attachment)
                         .transition(.asymmetric(
-                            insertion: .scale(scale: 0.8).combined(with: .opacity),
-                            removal: .scale(scale: 0.8).combined(with: .opacity)
+                            insertion: .scale(scale: 0.5, anchor: .bottomLeading)
+                                .combined(with: .opacity),
+                            removal: .scale(scale: 0.7, anchor: .bottomLeading)
+                                .combined(with: .opacity)
                         ))
                 }
             }

@@ -197,6 +197,7 @@ struct ChatDetailView: View {
     @State private var selectedPhotos: [PhotosPickerItem] = []
     @State private var showFilePicker = false
     @State private var showPhotosPicker = false
+    @State private var showAnimatedPhotoPicker = false
     @State private var showAudioPicker = false
     @State private var showCameraPicker = false
     @State private var showWebURLAlert = false
@@ -331,6 +332,28 @@ struct ChatDetailView: View {
         return copy
     }
 
+    /// Called when the photo attachment button is tapped — lets the parent render
+    /// AnimatedPhotoPicker at the window level, above all safeAreaInset constraints.
+    /// When nil the photo button sets showAnimatedPhotoPicker directly (legacy path).
+    private var photoPickerRequestAction: (() -> Void)?
+
+    func onPhotoPickerRequest(_ action: @escaping () -> Void) -> ChatDetailView {
+        var copy = self
+        copy.photoPickerRequestAction = action
+        return copy
+    }
+
+    /// Called by the parent after the user confirms a photo selection in the
+    /// parent-level AnimatedPhotoPicker. Passes PHAssets back to ChatDetailView
+    /// so it can upload them via processSelectedPHAssets.
+    private var photoPickerConfirmAction: (([PHAsset]) -> Void)?
+
+    func onPhotoPickerConfirm(_ action: @escaping ([PHAsset]) -> Void) -> ChatDetailView {
+        var copy = self
+        copy.photoPickerConfirmAction = action
+        return copy
+    }
+
     // MARK: - Body
 
     var body: some View {
@@ -359,6 +382,23 @@ struct ChatDetailView: View {
             }
 
             messageListArea
+
+            // Animated photo picker — legacy inline fallback used only when
+            // the parent view has NOT set photoPickerRequestAction (e.g. in
+            // contexts where ChatDetailView is presented without a MainChatView
+            // parent). When photoPickerRequestAction IS set the parent renders
+            // the picker at the window level, above all safeAreaInset frames.
+            if photoPickerRequestAction == nil {
+                AnimatedPhotoPicker(
+                    isPresented: showAnimatedPhotoPicker,
+                    onConfirm: { assets in
+                        Task { await processSelectedPHAssets(assets) }
+                    },
+                    onDismiss: {
+                        showAnimatedPhotoPicker = false
+                    }
+                )
+            }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         // Custom top bar replaces the system navigation bar entirely.
@@ -725,10 +765,13 @@ struct ChatDetailView: View {
         .applyWidgetAndPickerHandlers(
             showCameraPicker: $showCameraPicker,
             showPhotosPicker: $showPhotosPicker,
+            showAnimatedPhotoPicker: $showAnimatedPhotoPicker,
             showFilePicker: $showFilePicker,
             selectedPhotos: $selectedPhotos,
             codePreviewCode: $codePreviewCode,
             codePreviewLanguage: $codePreviewLanguage,
+            photoPickerRequestAction: photoPickerRequestAction,
+            onProcessPhotos: { assets in await processSelectedPHAssets(assets) },
             onDismissOverlays: { dismissAllPickers() }
         )
         .applyDeleteChatConfirmation(isPresented: $showDeleteChatConfirm, onDelete: performDeleteChat)
@@ -1300,7 +1343,13 @@ struct ChatDetailView: View {
                     }
                 },
                 onFileAttachment: { showFilePicker = true },
-                onPhotoAttachment: { showPhotosPicker = true },
+                onPhotoAttachment: {
+                    if let request = photoPickerRequestAction {
+                        request()
+                    } else {
+                        showAnimatedPhotoPicker = true
+                    }
+                },
                 onCameraCapture: { showCameraPicker = true },
                 onWebAttachment: { showWebURLAlert = true },
                 // Voice call — gated by permissions.chat.call
@@ -4140,6 +4189,7 @@ struct ChatDetailView: View {
         showCameraPicker = false
         showFilePicker = false
         showPhotosPicker = false
+        showAnimatedPhotoPicker = false
         showAudioPicker = false
         showWebURLAlert = false
     }
@@ -4862,6 +4912,42 @@ for item in items {
                 }
             } catch {
                 viewModel.errorMessage = error.localizedDescription
+            }
+        }
+    }
+
+    /// Process PHAssets selected from the AnimatedPhotoPicker.
+    /// Loads full-res data via PHImageManager and creates ChatAttachment objects
+    /// with thumbnails, then immediately starts uploading each one.
+    private func processSelectedPHAssets(_ assets: [PHAsset]) async {
+        for asset in assets {
+            await withCheckedContinuation { cont in
+                let opts = PHImageRequestOptions()
+                opts.deliveryMode = .highQualityFormat
+                opts.isNetworkAccessAllowed = true
+                opts.isSynchronous = false
+
+                PHImageManager.default().requestImageDataAndOrientation(
+                    for: asset, options: opts
+                ) { data, _, _, _ in
+                    guard let data else { cont.resume(); return }
+                    let image = UIImage(data: data)
+                    let thumbnail = image.map { Image(uiImage: $0) }
+                    let resized = FileAttachmentService.downsampleForUpload(data: data, image: image)
+                    let attachment = ChatAttachment(
+                        type: .image,
+                        name: "Photo_\(Int(Date.now.timeIntervalSince1970)).jpg",
+                        thumbnail: thumbnail,
+                        data: resized
+                    )
+                    DispatchQueue.main.async {
+                        withAnimation(.spring(response: 0.35, dampingFraction: 0.78)) {
+                            viewModel.attachments.append(attachment)
+                        }
+                        viewModel.uploadAttachmentImmediately(attachmentId: attachment.id)
+                    }
+                    cont.resume()
+                }
             }
         }
     }
@@ -6009,10 +6095,13 @@ private extension View {
     func applyWidgetAndPickerHandlers(
         showCameraPicker: Binding<Bool>,
         showPhotosPicker: Binding<Bool>,
+        showAnimatedPhotoPicker: Binding<Bool>,
         showFilePicker: Binding<Bool>,
         selectedPhotos: Binding<[PhotosPickerItem]>,
         codePreviewCode: Binding<String?>,
         codePreviewLanguage: Binding<String>,
+        photoPickerRequestAction: (() -> Void)? = nil,
+        onProcessPhotos: @escaping ([PHAsset]) async -> Void = { _ in },
         onDismissOverlays: @escaping () -> Void
     ) -> some View {
         self
@@ -6029,10 +6118,18 @@ private extension View {
                 showCameraPicker.wrappedValue = true
             }
             .onReceive(NotificationCenter.default.publisher(for: .openUIPhotosChat)) { _ in
-                showPhotosPicker.wrappedValue = true
+                if let request = photoPickerRequestAction {
+                    request()
+                } else {
+                    showAnimatedPhotoPicker.wrappedValue = true
+                }
             }
             .onReceive(NotificationCenter.default.publisher(for: .openUIFileChat)) { _ in
                 showFilePicker.wrappedValue = true
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .openUIPhotoPickerConfirm)) { notification in
+                guard let assets = notification.userInfo?["assets"] as? [PHAsset] else { return }
+                Task { await onProcessPhotos(assets) }
             }
             .photosPicker(
                 isPresented: showPhotosPicker,

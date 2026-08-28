@@ -241,6 +241,8 @@ final class BackgroundTaskService {
                 logger.warning("BGAppRefreshTask: too many pending requests")
             case .unavailable:
                 break // Simulator or restricted environment — expected
+            case .immediateRunIneligible:
+                break // Only returned for BGContinuedProcessingTaskRequest — not used here
             @unknown default:
                 logger.warning("BGAppRefreshTask submit error: \(error.localizedDescription)")
             }
@@ -278,6 +280,8 @@ final class BackgroundTaskService {
                 logger.warning("BGProcessingTask: too many pending requests")
             case .unavailable:
                 break
+            case .immediateRunIneligible:
+                break // Only returned for BGContinuedProcessingTaskRequest — not used here
             @unknown default:
                 logger.warning("BGProcessingTask submit error: \(error.localizedDescription)")
             }

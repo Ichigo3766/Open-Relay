@@ -96,7 +96,7 @@ final class SocketIOService: NSObject, @unchecked Sendable, URLSessionWebSocketD
     /// when emitting. Invoked when the server responds with `43<id>[...]`.
     private var pendingAcks: [Int: (Any?) -> Void] = [:]
     private var nextAckId = 0
-    private let ackLock = NSLock()
+    private let ackLock = OSAllocatedUnfairLock<Void>(initialState: ())
 
 
     /// Number of reconnections since creation.
@@ -549,12 +549,10 @@ final class SocketIOService: NSObject, @unchecked Sendable, URLSessionWebSocketD
             payload.append(data)
         }
 
-        let ackId: Int = {
-            ackLock.lock()
-            defer { ackLock.unlock() }
+        let ackId: Int = ackLock.withLock {
             nextAckId += 1
             return nextAckId
-        }()
+        }
 
         guard let jsonData = try? JSONSerialization.data(withJSONObject: payload),
               let jsonString = String(data: jsonData, encoding: .utf8)
@@ -576,11 +574,11 @@ final class SocketIOService: NSObject, @unchecked Sendable, URLSessionWebSocketD
                     continuation.resume(returning: value)
                 }
 
-                ackLock.lock()
-                pendingAcks[ackId] = { data in
-                    resumeOnce(data)
+                ackLock.withLock {
+                    pendingAcks[ackId] = { data in
+                        resumeOnce(data)
+                    }
                 }
-                ackLock.unlock()
 
                 // Socket.IO EVENT packet WITH ack ID: "42<ackId>[eventName, payload]"
                 send("42\(ackId)\(jsonString)")
@@ -593,26 +591,20 @@ final class SocketIOService: NSObject, @unchecked Sendable, URLSessionWebSocketD
                 Task { [weak self] in
                     try? await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
                     guard let self else { return }
-                    self.ackLock.lock()
-                    self.pendingAcks.removeValue(forKey: ackId)
-                    self.ackLock.unlock()
+                    self.ackLock.withLock { self.pendingAcks.removeValue(forKey: ackId) }
                     resumeOnce(nil)
                 }
             }
         } onCancel: { [weak self] in
             // Task was cancelled — clean up the pending ack so it doesn't linger.
             guard let self else { return }
-            self.ackLock.lock()
-            self.pendingAcks.removeValue(forKey: ackId)
-            self.ackLock.unlock()
+            self.ackLock.withLock { self.pendingAcks.removeValue(forKey: ackId) }
         }
     }
 
     /// Invokes and removes the pending ack callback for the given ID, if present.
     private func resolveAck(_ ackId: Int, data: Any?) {
-        ackLock.lock()
-        let callback = pendingAcks.removeValue(forKey: ackId)
-        ackLock.unlock()
+        let callback = ackLock.withLock { pendingAcks.removeValue(forKey: ackId) }
         callback?(data)
     }
 

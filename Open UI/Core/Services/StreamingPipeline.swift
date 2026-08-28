@@ -128,9 +128,9 @@ actor StreamingPipeline {
     // simply to keep the typewriter effect perceptible while not making the user
     // wait for content that is already fully available on the server.
 
-    /// Target drain latency in frames. At 60 Hz ≈ 133 ms of lag.
-    /// Keeps a short but perceptible typewriter effect on fast models.
-    private let targetLatencyFrames: Double = 8
+    /// Target drain latency in frames. At 60 Hz ≈ 667 ms of lag.
+    /// Builds up a backlog of 2-3 server bursts to ensure continuous smooth drain.
+    private let targetLatencyFrames: Double = 40
 
     /// Shorter latency used once the server has finished sending.
     /// Drains any remaining buffer quickly so the user isn't waiting.
@@ -141,15 +141,15 @@ actor StreamingPipeline {
     /// chars/sec — enough to keep a smooth visible trickle across a 100ms gap.
     private let minRatePerFrame: Double = 1.5
 
-    /// Maximum chars/frame cap — 15 chars/frame × 60 Hz = 900 chars/sec,
-    /// enough to reveal a fast model's output without visible lag.
-    private let maxRatePerFrame: Double = 15.0
+    /// Maximum chars/frame cap — 80 chars/frame × 60 Hz = 4800 chars/sec,
+    /// enough to quickly drain accumulated backlog while maintaining smooth flow.
+    private let maxRatePerFrame: Double = 80.0
 
     /// Perceptual keep-back: reserve chars so the drain never fully empties the
     /// buffer mid-stream (avoids the "catch-up then pause" stutter when the server
-    /// briefly stalls). Raised from 2 → 8 to absorb a ~50ms pause at 150 chars/sec.
+    /// briefly stalls). Set to 60 to absorb multiple server burst gaps smoothly.
     /// Disabled when isFinishing (we want to drain to zero).
-    private let tailReserve: Int = 8
+    private let tailReserve: Int = 60
 
     // MARK: - EMA smoothing for drain rate
 
@@ -157,8 +157,8 @@ actor StreamingPipeline {
     /// across brief server pauses. Without EMA, a single tick where buffered drops to
     /// near-zero craters the rate to minRatePerFrame and causes visible stutter.
     ///
-    /// α = 0.25: strong smoothing (75% of rate comes from history, 25% from this tick).
-    private let emaAlpha: Double = 0.25
+    /// α = 0.15: strong smoothing (85% of rate comes from history, 15% from this tick).
+    private let emaAlpha: Double = 0.15
     /// Running EMA of buffered char count. Initialised to 0; warms up within ~4 frames.
     private var bufferedEMA: Double = 0
 
@@ -327,6 +327,12 @@ actor StreamingPipeline {
                 displayedCount = lastEnd
                 frozenToolBoundaryOffset = lastEnd
                 drainAccumulator = 0
+                // Pre-warm EMA so post-fast-forward prose drains at full rate immediately.
+                // Without this, bufferedEMA starts at 0 and takes 4+ frames to warm up,
+                // causing only 1-2 chars/frame (90 chars/sec) to drain initially — appearing
+                // as a visible "pause" after the tool call block appears.
+                let remainingAfterBlock = full.count - lastEnd
+                bufferedEMA = Double(remainingAfterBlock)
                 publishSnapshot(displayContent: String(full[..<endIdx]))
                 return
             }
@@ -342,6 +348,9 @@ actor StreamingPipeline {
                 displayedCount = lastEnd
                 frozenReasoningBoundaryOffset = max(frozenReasoningBoundaryOffset, lastEnd)
                 drainAccumulator = 0
+                // Pre-warm EMA for reasoning blocks (same as tool_calls above).
+                let remainingAfterBlock = full.count - lastEnd
+                bufferedEMA = Double(remainingAfterBlock)
                 publishSnapshot(displayContent: String(full[..<endIdx]))
                 return
             }
