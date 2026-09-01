@@ -1629,7 +1629,9 @@ final class ChatViewModel {
                     do {
                         let refreshed = try await manager.fetchConversation(id: chatId)
                         if let serverAssistant = refreshed.messages.last(where: { $0.role == .assistant }),
-                           !serverAssistant.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                           !serverAssistant.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                           !serverAssistant.isStreaming {
+                            // Server has content AND marks the message as done — truly finished.
                             self.logger.info("Background expiry: server completed, firing notification")
                             self.adoptServerMessages(serverConversation: refreshed)
                             await self.sendCompletionNotificationIfNeeded(content: serverAssistant.content)
@@ -1666,15 +1668,24 @@ final class ChatViewModel {
 
                 do {
                     let refreshed = try await manager.fetchConversation(id: chatId)
-                    if let serverAssistant = refreshed.messages.last(where: { $0.role == .assistant }),
-                       !serverAssistant.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                        self.logger.info("Background poll: server completed (\(serverAssistant.content.count) chars)")
-                        self.adoptServerMessages(serverConversation: refreshed)
-                        await self.sendCompletionNotificationIfNeeded(content: serverAssistant.content)
-                        self.cleanupStreaming()
-                        self.endBackgroundTask()
-                        NotificationCenter.default.post(name: .conversationListNeedsRefresh, object: nil)
-                        return
+                    if let serverAssistant = refreshed.messages.last(where: { $0.role == .assistant }) {
+                        let content = serverAssistant.content.trimmingCharacters(in: .whitespacesAndNewlines)
+                        if !content.isEmpty && !serverAssistant.isStreaming {
+                            // Server has content AND the message is marked done — generation finished.
+                            self.logger.info("Background poll: server completed (\(content.count) chars)")
+                            self.adoptServerMessages(serverConversation: refreshed)
+                            await self.sendCompletionNotificationIfNeeded(content: content)
+                            self.cleanupStreaming()
+                            self.endBackgroundTask()
+                            NotificationCenter.default.post(name: .conversationListNeedsRefresh, object: nil)
+                            return
+                        }
+                        // Server has partial content but isStreaming is still true — generation
+                        // is still in progress. Update the local message so the user sees
+                        // progress on return, but do NOT finalize streaming.
+                        if !content.isEmpty, let localIdx = self.conversation?.messages.lastIndex(where: { $0.role == .assistant }) {
+                            self.conversation?.messages[localIdx].content = content
+                        }
                     }
                 } catch {
                     self.logger.warning("Background poll failed: \(error.localizedDescription)")
@@ -1703,10 +1714,15 @@ final class ChatViewModel {
             guard let serverAssistant = serverConversation.messages.last(where: { $0.role == .assistant }) else { return }
 
             let serverContent = serverAssistant.content.trimmingCharacters(in: .whitespacesAndNewlines)
+            // serverAssistant.isStreaming == true means done:false on the server — still generating.
+            // We must check BOTH that there is content AND that the server considers it done.
+            // Checking only content emptiness is wrong: the server writes partial content to the
+            // assistant message early (within the first second), so a non-empty content check
+            // alone would prematurely finalize a response that is still being generated.
 
-            // If server has content, the generation completed while we were backgrounded
-            if !serverContent.isEmpty {
-                logger.info("Foreground recovery: server has completed content (\(serverContent.count) chars, \(serverAssistant.files.count) files)")
+            if !serverContent.isEmpty && !serverAssistant.isStreaming {
+                // Server has content and marks the message as done — generation truly finished.
+                logger.info("Foreground recovery: server completed (\(serverContent.count) chars, \(serverAssistant.files.count) files)")
 
                 // Adopt server state fully (includes files from tool calls)
                 adoptServerMessages(serverConversation: serverConversation)
@@ -1740,10 +1756,18 @@ final class ChatViewModel {
                         await self.syncWithServer()
                     }
                 }
+            } else if !serverContent.isEmpty {
+                // Server has partial content but isStreaming is still true — generation is
+                // still in progress. Update the local message with whatever has arrived so
+                // the user sees progress, but do NOT finalize streaming. The socket
+                // reconnection / recovery timer will handle final completion.
+                logger.info("Foreground recovery: generation still in progress (\(serverContent.count) chars) — keeping stream active")
+                if let localIdx = conversation?.messages.lastIndex(where: { $0.role == .assistant }) {
+                    conversation?.messages[localIdx].content = serverContent
+                }
             }
-            // If server content is still empty, streaming may still be in progress.
-            // The existing socket handlers / recovery timer will handle it when
-            // the socket reconnects.
+            // If server content is empty, streaming has just started and nothing has
+            // arrived yet — the socket reconnection will deliver tokens normally.
         } catch {
             logger.warning("Foreground recovery failed: \(error.localizedDescription)")
         }
@@ -5179,8 +5203,15 @@ final class ChatViewModel {
             if let item = innerPayload["item"] as? [String: Any],
                (item["type"] as? String) == "function_call",
                let name = item["name"] as? String, !name.isEmpty {
+                // response.output_item.done fires when the MODEL has finished writing the
+                // function call request (arguments are now complete). The tool has NOT yet
+                // executed — the server is about to call the tool (e.g. generate an image,
+                // run a web search), which can take 15-20+ seconds for expensive tools.
+                // Keep the status pill as done:false (spinner) so the user sees the tool
+                // is still processing. The pill will be force-completed by cleanupStreaming()
+                // once chat:completion {done:true} arrives with the final output.
                 appendStatusUpdate(id: assistantMessageId,
-                    status: ChatStatusUpdate(action: name, description: "\(name) completed", done: true))
+                    status: ChatStatusUpdate(action: name, description: "Running \(name)…", done: false))
             }
             return
         }
@@ -5542,7 +5573,17 @@ final class ChatViewModel {
                     let contentComplete = !serverContent.isEmpty && contentStable
                         && Self.toolCallResponseIsComplete(serverContent)
 
-                    if (serverDone || contentComplete) && !serverContent.isEmpty {
+                    // Guard: if there's still an in-progress tool call (done="false" on a
+                    // tool_calls block), the tool is still executing — do NOT finalize.
+                    // The server writes done:true on the message node as soon as the LLM
+                    // finishes writing tokens, but the tool itself (image gen, web search,
+                    // etc.) runs AFTER that and can take 15-60+ seconds.
+                    // The passive socket listener will deliver the real completion event
+                    // when the tool result arrives, so we just need to wait here.
+                    let hasInProgressToolCall = serverContent.contains("done=\"false\"")
+                        && serverContent.contains("tool_calls")
+
+                    if (serverDone || contentComplete) && !serverContent.isEmpty && !hasInProgressToolCall {
                         self.logger.info("Recovery: finalizing — serverDone=\(serverDone) contentComplete=\(contentComplete) chars=\(serverContent.count)")
                         self.updateAssistantMessage(
                             id: assistantMessageId, content: lastAssistant.content, isStreaming: false)
@@ -5601,26 +5642,45 @@ final class ChatViewModel {
                         self.logger.debug("Recovery: task still active (\(activeTaskIds.count) task(s)) — content=\(currentServerContentLength) chars, waiting")
                         self.emptyPollCount = 0
                     } else {
-                        // Server says the task is finished — do a final conversation fetch
-                        // and finalize so we display the complete response immediately.
-                        self.logger.info("Recovery: server task finished (empty task list) — performing final sync")
-                        if let refreshed = try? await manager.fetchConversation(id: chatId),
-                           let lastAssistant = refreshed.messages.last(where: { $0.role == .assistant }) {
-                            self.updateAssistantMessage(
-                                id: assistantMessageId,
-                                content: lastAssistant.content,
-                                isStreaming: false)
-                            let doneContent = lastAssistant.content
-                            Task { await self.sendCompletionNotificationIfNeeded(content: doneContent) }
+                        // Server says the LLM task is finished — BUT the task registry only
+                        // tracks the LLM generation coroutine, NOT the tool execution itself.
+                        // When the model writes a function call (e.g. generate_image), the LLM
+                        // task completes immediately and is removed from the registry. The tool
+                        // (image gen, web search, code exec) runs as a separate operation and
+                        // can take 15-60+ seconds to return a result.
+                        //
+                        // Guard: if the current content still has an in-progress tool call
+                        // (done="false" on a tool_calls block), the tool is still executing
+                        // on the server — do NOT finalize yet, keep polling.
+                        let currentContent = self.conversation?.messages
+                            .last(where: { $0.role == .assistant })?.content ?? ""
+                        let hasInProgressToolCall = currentContent.contains("done=\"false\"")
+                            && currentContent.contains("tool_calls")
+                        if hasInProgressToolCall {
+                            self.logger.debug("Recovery: task list empty but tool still executing (done=false in content) — waiting")
+                            self.emptyPollCount = 0   // reset so we never time out while tool is running
+                            // Do NOT finalize — keep polling until the tool result arrives
                         } else {
-                            let giveUpContent = self.conversation?.messages.last(where: { $0.role == .assistant })?.content ?? ""
-                            self.updateAssistantMessage(
-                                id: assistantMessageId,
-                                content: giveUpContent,
-                                isStreaming: false)
-                            Task { await self.sendCompletionNotificationIfNeeded(content: giveUpContent) }
+                            // Server says the task is finished and no in-progress tool calls — finalize.
+                            self.logger.info("Recovery: server task finished (empty task list) — performing final sync")
+                            if let refreshed = try? await manager.fetchConversation(id: chatId),
+                               let lastAssistant = refreshed.messages.last(where: { $0.role == .assistant }) {
+                                self.updateAssistantMessage(
+                                    id: assistantMessageId,
+                                    content: lastAssistant.content,
+                                    isStreaming: false)
+                                let doneContent = lastAssistant.content
+                                Task { await self.sendCompletionNotificationIfNeeded(content: doneContent) }
+                            } else {
+                                let giveUpContent = self.conversation?.messages.last(where: { $0.role == .assistant })?.content ?? ""
+                                self.updateAssistantMessage(
+                                    id: assistantMessageId,
+                                    content: giveUpContent,
+                                    isStreaming: false)
+                                Task { await self.sendCompletionNotificationIfNeeded(content: giveUpContent) }
+                            }
+                            self.cleanupStreaming()
                         }
-                        self.cleanupStreaming()
                     }
                 } catch {
                     // Task-check network error — count consecutive failures

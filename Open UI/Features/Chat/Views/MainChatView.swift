@@ -1633,7 +1633,7 @@ struct MainChatView: View {
                                         if !collapsedSections.contains("Pinned") {
                                             ForEach(pinnedChats) { conversation in
                                                 drawerConversationRow(conversation)
-                                                    .frame(minHeight: 44)
+                                                    .frame(minHeight: 36)
                                             }
                                         }
                                     }
@@ -1654,7 +1654,7 @@ struct MainChatView: View {
                                         if !isCollapsed {
                                             ForEach(group.1) { conversation in
                                                 drawerConversationRow(conversation)
-                                                    .frame(minHeight: 44)
+                                                    .frame(minHeight: 36)
                                             }
                                         }
                                     }
@@ -1741,37 +1741,6 @@ struct MainChatView: View {
                 .accessibilityLabel("Server Settings")
 
                 Spacer()
-
-                // Update badge
-                if dependencies.updateChecker.pendingUpdate != nil || dependencies.serverUpdateChecker.pendingUpdate != nil {
-                    Button {
-                        showUpdateSheet = true
-                    } label: {
-                        ZStack(alignment: .topTrailing) {
-                            Image(systemName: "arrow.down.circle.fill")
-                                .scaledFont(size: 16, weight: .medium)
-                                .foregroundStyle(theme.brandPrimary)
-                            Circle()
-                                .fill(Color.red)
-                                .frame(width: 7, height: 7)
-                                .offset(x: 2, y: -2)
-                        }
-                        .frame(width: 36, height: 36)
-                        .contentShape(Rectangle())
-                    }
-                    .transition(.scale.combined(with: .opacity))
-                    .sheet(isPresented: $showUpdateSheet) {
-                        CombinedUpdateSheet(
-                            appUpdate: dependencies.updateChecker.pendingUpdate,
-                            serverUpdate: dependencies.serverUpdateChecker.pendingUpdate,
-                            onDismiss: {
-                                dependencies.updateChecker.dismissUpdate()
-                                dependencies.serverUpdateChecker.dismissUpdate()
-                            }
-                        )
-                        .themed(with: dependencies.appearanceManager, accessibility: dependencies.accessibilityManager)
-                    }
-                }
 
                 // New Chat
                 Button {

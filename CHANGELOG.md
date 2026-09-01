@@ -1,5 +1,16 @@
 # Changelog
 
+## v5.5.2 — September 1, 2026
+
+### Improvements
+- Tightened conversation row spacing in the sidebar.
+- Removed the duplicate update notification icon from the top of the sidebar
+
+### Bug Fixes
+- Fixed tool call cards showing a checkmark immediately when the model writes the call request
+- Fixed responses finishing prematurely during long-running tool calls — the recovery timer no longer treats an empty task list as "done" when there is still an in-progress tool call waiting for a result.
+- Fixed responses being marked as finished when returning from the background too quickly
+
 ## v5.5.1 — August 27, 2026
 
 ### What's New

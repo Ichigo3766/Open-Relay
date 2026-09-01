@@ -504,22 +504,40 @@ struct MessageHistory: Sendable {
             case "function_call":
                 guard let name = item["name"] as? String, !name.isEmpty else { continue }
 
-                let status = item["status"] as? String ?? "completed"
+                let status = item["status"] as? String ?? ""
 
                 // Resolve IDs — some providers use `id` as the output's `call_id`
                 let callId = item["call_id"] as? String ?? ""
                 let itemId = item["id"]      as? String ?? callId
                 let effectiveCallId = callId.isEmpty ? itemId : callId
 
-                let isDone  = (status == "completed" || status == "failed" || status == "rejected")
                 let arguments = item["arguments"] as? String ?? ""
 
-                // Look up result with dual-index fallback
+                // Look up result with dual-index fallback.
+                // IMPORTANT: resultText must be resolved BEFORE isDone so we can use
+                // its presence as the primary done signal (matching OpenWebUI exactly).
                 let resultText = outputByCallId[effectiveCallId]
                     ?? outputByCallId[itemId]
                     ?? outputById[effectiveCallId]
                     ?? outputById[itemId]
                     ?? ""
+
+                // A tool call is done when:
+                //   • the result has arrived (function_call_output exists in the array), OR
+                //   • it hit a terminal failure state (failed / incomplete / rejected)
+                //
+                // Critically: status="completed" means the CALL WAS DISPATCHED — the tool
+                // is now executing on the server (e.g. generating an image). It does NOT
+                // mean the result is ready. Only the presence of a function_call_output
+                // item (resultText non-empty) indicates the tool has truly finished.
+                //
+                // This matches OpenWebUI's structuredOutput.ts exactly:
+                //   const isDone = !!resultItem || status === 'failed' || status === 'incomplete';
+                //   const isExecuting = !isDone && status === 'completed';
+                let isDone = !resultText.isEmpty
+                          || status == "failed"
+                          || status == "incomplete"
+                          || status == "rejected"
 
                 let encodedArgs   = htmlEntityEncode(arguments)
                 let encodedResult = htmlEntityEncode(resultText)
