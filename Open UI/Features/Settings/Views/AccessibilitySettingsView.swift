@@ -324,7 +324,7 @@ struct AccessibilitySettingsView: View {
 
                 Spacer()
 
-                Text("\(Int(round(value.wrappedValue * 100)))%")
+                Text(Double(value.wrappedValue).formatted(.percent.precision(.fractionLength(0))))
                     .font(.system(size: 14, weight: .semibold, design: .monospaced))
                     .foregroundStyle(theme.brandPrimary)
                     .frame(minWidth: 44, alignment: .trailing)

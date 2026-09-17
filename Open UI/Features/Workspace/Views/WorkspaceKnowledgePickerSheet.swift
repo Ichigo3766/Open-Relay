@@ -177,7 +177,7 @@ struct WorkspaceKnowledgePickerSheet: View {
                 ProgressView(value: uploadProgress)
                     .tint(theme.brandPrimary)
                     .padding(.horizontal, 40)
-                Text("Uploading file… \(Int(uploadProgress * 100))%")
+                Text("Uploading file… \(uploadProgress.formatted(.percent.precision(.fractionLength(0))))")
                     .scaledFont(size: 14)
                     .foregroundStyle(theme.textSecondary)
             }

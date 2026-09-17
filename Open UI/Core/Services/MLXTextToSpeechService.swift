@@ -276,7 +276,7 @@ final class OnDeviceTTSService {
 
     func unloadModel() {
         stop()
-        #if canImport(MLXAudioTTS)
+        #if canImport(MLXAudioTTS) && !targetEnvironment(simulator)
         model = nil
         multilingualProcessor = nil
         loadedModel = nil
@@ -387,7 +387,7 @@ final class OnDeviceTTSService {
     /// Stops generation AND unloads the model to release all GPU resources.
     func stopAndUnload() {
         stop()
-        #if canImport(MLXAudioTTS)
+        #if canImport(MLXAudioTTS) && !targetEnvironment(simulator)
         model = nil
         loadedModel = nil
         Memory.clearCache()

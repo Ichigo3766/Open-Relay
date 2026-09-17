@@ -326,13 +326,18 @@ struct MainChatView: View {
                     .navigationBarTitleDisplayMode(.inline)
                     .toolbarBackground(.hidden, for: .navigationBar)
             }
-            // Left-edge swipe to open drawer still works in landscape
+            // Left-edge overlay — 20 pt wide strip for swipe-to-open in landscape.
+            // Same rationale as portrait: dedicated overlay blocks all input instantly
+            // the moment a drag is recognised, giving the "content freezes" feel.
+            // Also handles taps so touches on the left half of the hamburger button
+            // (which overlaps this zone) still open the drawer.
             .overlay(alignment: .leading) {
                 if !showDrawer && !isDraggingFileBrowser {
                     Color.clear
                         .frame(width: 20)
                         .frame(maxHeight: .infinity)
                         .contentShape(Rectangle())
+                        .onTapGesture { toggleDrawer() }
                         .gesture(
                             DragGesture(minimumDistance: 12, coordinateSpace: .local)
                                 .onChanged { value in
@@ -576,15 +581,18 @@ struct MainChatView: View {
             } // end if isTerminalActiveInCurrentChat
 
 
-            // MARK: Left edge overlay — exclusively captures left-edge swipe to open drawer.
-            // Mirrors the right-edge file browser strip exactly. Only shown when drawer is
-            // closed and file browser is not being dragged. This completely decouples the
-            // open-drawer gesture from the NavigationStack, eliminating scroll-view conflicts.
+            // MARK: Left-edge overlay — 20 pt wide strip that exclusively captures left-edge
+            // swipe-from-edge to open the drawer. Being a dedicated overlay (not simultaneousGesture)
+            // means the moment a drag is recognized it blocks all input beneath — buttons, text
+            // selection, scroll views — so the content freezes instantly as the drawer slides in.
+            // Also handles taps so that touches on the left half of the hamburger button
+            // (which overlaps this zone) still open the drawer reliably.
             if !showDrawer && !isDraggingFileBrowser {
                 Color.clear
                     .frame(width: 20)
                     .frame(maxHeight: .infinity)
                     .contentShape(Rectangle())
+                    .onTapGesture { toggleDrawer() }
                     .gesture(
                         DragGesture(minimumDistance: 12, coordinateSpace: .local)
                             .onChanged { value in

@@ -35,7 +35,7 @@ struct VoiceCallModelDownloadSheet: View {
         switch modelState {
         case .downloading:
             if downloadProgress > 0 {
-                return "Downloading… \(Int(downloadProgress * 100))%"
+                return "Downloading… \(downloadProgress.formatted(.percent.precision(.fractionLength(0))))"
             } else {
                 return "Starting download…"
             }

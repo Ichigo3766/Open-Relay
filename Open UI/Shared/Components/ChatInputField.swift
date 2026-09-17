@@ -294,7 +294,9 @@ struct ChatInputField: View {
             }
         }
         .padding(.top, Spacing.xs)
-        .padding(.bottom, Spacing.sm)
+        // Focused: keep Spacing.sm so the composer lifts clear of the keyboard.
+        // Unfocused: keep a fixed 8pt gap so the pill never clips into the home indicator.
+        .padding(.bottom, 0)
         .animation(.spring(response: 0.3, dampingFraction: 0.8), value: isDictating)
         .animation(.spring(response: 0.3, dampingFraction: 0.8), value: dictationService?.state == .processing)
         // Widget deep link — focus the text field and show keyboard when
@@ -485,20 +487,23 @@ struct ChatInputField: View {
                     .padding(.bottom, 8)
             }
         }
+        // Solid adaptive background — dark surface in dark mode, warm fill in light.
+        // Materials (.ultraThinMaterial) render too bright/grey on dark backgrounds.
         .background(composerBackground)
         .clipShape(RoundedRectangle(cornerRadius: composerCornerRadius, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: composerCornerRadius, style: .continuous)
                 .strokeBorder(composerBorderColor, lineWidth: 0.5)
         )
-        // Subtle shadow — upward only, no competing directions
+        // Shadow scaled for mode: light mode needs more spread to convey elevation
+        // without the blur depth that dark mode's glass provides.
         .shadow(
             color: theme.isDark
                 ? Color.black.opacity(isFocused ? 0.3 : 0.2)
-                : Color.black.opacity(isFocused ? 0.1 : 0.06),
-            radius: 8,
+                : Color.black.opacity(isFocused ? 0.14 : 0.08),
+            radius: theme.isDark ? 8 : 14,
             x: 0,
-            y: 2
+            y: theme.isDark ? 2 : 3
         )
         .gesture(composerExpandGesture)
         .animation(.spring(response: 0.35, dampingFraction: 0.78), value: composerIsExpanded)

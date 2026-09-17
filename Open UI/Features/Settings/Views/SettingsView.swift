@@ -995,7 +995,7 @@ struct TTSSettingsView: View {
                         HStack {
                             Text("Speed")
                             Spacer()
-                            Text("\(Int(speechRate * 100))%")
+                            Text(speechRate.formatted(.percent.precision(.fractionLength(0))))
                                 .scaledFont(size: 12, weight: .medium)
                                 .foregroundStyle(theme.brandPrimary)
                         }

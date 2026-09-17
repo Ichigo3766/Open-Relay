@@ -56,6 +56,11 @@ private final class PumpRef {
     /// expand Task has been dispatched, cleared when that Task completes.
     /// Stored on PumpRef (not @State) so setting it never triggers a SwiftUI body re-eval.
     var pendingDownwardExpand = false
+    /// True ONLY while the user's finger is physically on the screen (.interacting phase).
+    /// Stored on PumpRef (not @State) so it is immediately readable from onScrollGeometryChange
+    /// without waiting for a SwiftUI @State propagation cycle. This eliminates the race where
+    /// the geometry callback reads a stale isFingerDriving (@State) value at the start of a touch.
+    var isFingerScrolling: Bool = false
 }
 
 // MARK: - Chat Detail View
@@ -133,6 +138,7 @@ struct ChatDetailView: View {
     /// Whether streaming responses should automatically scroll the chat to the bottom.
     /// Enabled by default (matches existing behaviour). Users can disable in Chat Behavior settings.
     @AppStorage("streamingAutoScroll") private var streamingAutoScroll = true
+    @AppStorage("suggestionsEnabled") private var suggestionsEnabled = true
 
     // MARK: Message pagination (sliding window — memory optimization)
     /// The ending index (exclusive) of the visible message window.
@@ -150,6 +156,10 @@ struct ChatDetailView: View {
     @State private var showCopiedToast = false
     @State private var activeActionMessageId: String?
     @State private var activeVersionIndex: [String: Int] = [:]
+    /// Holds the cleaned text of a message the user wants to share.
+    /// Set on Share button tap; cleared on sheet dismiss. Uses ShareableText wrapper so
+    /// .sheet(item:) can identify it without requiring String: Identifiable.
+    @State private var shareMessageText: ShareableText? = nil
 
     // MARK: Action event handling (dynamic input/confirmation/notification)
 
@@ -417,25 +427,21 @@ struct ChatDetailView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        // Custom top bar replaces the system navigation bar entirely.
+        // Custom top bar floats over the scroll content as an overlay.
+        // Using overlay (instead of safeAreaInset) means the bar occupies zero
+        // layout space — when navBarHidden is true and opacity reaches 0, there
+        // is nothing visible and no reserved gap. Content scrolls freely into
+        // the top of the screen.
         //
-        // CRITICAL: The safeAreaInset height must NEVER change — it is the source
-        // of viewState_containerHeight (via the scroll geometry callback). If the
-        // inset collapses when navBarHidden flips true, containerHeight changes,
-        // which changes the minHeight VStack, which causes the content to jump
-        // (the jitter seen at the bottom edge).
-        //
-        // Solution: always reserve the full bar height in the safeAreaInset.
-        // Hide the bar purely visually using offset + opacity — the layout
-        // footprint stays constant at all times so the scroll view geometry
-        // never changes when the bar hides or shows.
-        .safeAreaInset(edge: .top, spacing: 0) {
+        // The scroll view's top content inset (via .padding(.top) inside the VStack)
+        // keeps the first message below the bar when it is visible. The bar fades
+        // out and the scroll view's containerHeight never changes — no jitter.
+        .overlay(alignment: .top) {
             customTopBar
+                // Dissolve-into-top effect: fade out + subtle upward drift.
                 .opacity(navBarHidden ? 0 : 1)
-                .offset(y: navBarHidden ? -56 : 0)
-                // DO NOT use .frame(height:) here — that would collapse the
-                // reserved safeAreaInset space and change containerHeight.
-                .animation(.easeInOut(duration: 0.22), value: navBarHidden)
+                .offset(y: navBarHidden ? -20 : 0)
+                .animation(.easeOut(duration: 0.25), value: navBarHidden)
         }
         .safeAreaInset(edge: .bottom, spacing: 0) {
             if editingMessageId != nil {
@@ -754,6 +760,14 @@ struct ChatDetailView: View {
         .sheet(item: $downloadedFileURL) { url in
             ShareSheetView(activityItems: [url])
         }
+        // Share sheet for assistant message text (Share button in action row).
+        // Presenting plain String via ShareableText wrapper so .sheet(item:) works
+        // correctly without a SwiftUI identity ambiguity. On iPad, UIActivityViewController
+        // auto-presents as a popover anchored to the key window centre — no sourceView
+        // configuration needed because we're not using a UIButton anchor.
+        .sheet(item: $shareMessageText) { shareable in
+            ShareSheetView(activityItems: [shareable.text])
+        }
         // User-configurable valves sheet (gear icon on tool rows in ToolsMenuSheet)
         .sheet(item: $toolUserValvesKind) { kind in
             UserValvesSheet(kind: kind)
@@ -853,7 +867,7 @@ struct ChatDetailView: View {
         }
         .padding(.horizontal, Spacing.sm)
         .padding(.vertical, 8)
-        .background(theme.background)
+        .background(theme.background.opacity(0.75))
     }
 
     /// All trailing action icons grouped into a single rounded-rect pill, matching the original design.
@@ -1417,7 +1431,7 @@ struct ChatDetailView: View {
                 }
             )
         }
-        .background(theme.background)
+        .background(Color.clear)
         .animation(.easeOut(duration: 0.2), value: vm.isShowingKnowledgePicker)
         .animation(.easeOut(duration: 0.15), value: vm.selectedKnowledgeItems.count)
         .animation(.easeOut(duration: 0.15), value: vm.selectedReferenceChats.count)
@@ -1566,6 +1580,55 @@ struct ChatDetailView: View {
         .blur(radius: (isContentReady || initialConversationId == nil) ? 0 : 8)
         .animation(.easeOut(duration: 0.2), value: isContentReady)
 
+        // ── Top edge fade (dissolves into the nav bar) ────────────────────────
+        // Transparent at the scroll-content edge → opaque at the nav-bar boundary.
+        // .ignoresSafeArea() extends it into the status-bar / nav-bar safe area.
+        .overlay(alignment: .top) {
+            if !viewModel.messages.isEmpty || viewModel.isLoadingConversation {
+                LinearGradient(
+                    stops: [
+                        .init(color: theme.background.opacity(0), location: 0),
+                        .init(color: theme.background.opacity(0.6), location: 0.4),
+                        .init(color: theme.background, location: 1)
+                    ],
+                    startPoint: .bottom,
+                    endPoint: .top
+                )
+                .frame(height: 90)
+                .ignoresSafeArea()
+                .allowsHitTesting(false)
+            }
+        }
+
+
+
+        // ── Bottom edge fade (dissolves content into the void) ───────────────
+        // Uses a mask instead of a colored overlay so content pixels themselves
+        // fade to transparent — no ghost text, no banding, no gaps. The mask
+        // is a VStack: fully-opaque middle fills the entire view, then an
+        // alpha gradient at the bottom fades from opaque → clear using a smooth
+        // ease-out curve with extra stops for a fluid "swallowed" effect.
+        .mask(
+            VStack(spacing: 0) {
+                // Full-height opaque region (everything above the fade zone)
+                Rectangle()
+                    .fill(Color.black)
+                // Bottom dissolve — content alpha fades to zero
+                LinearGradient(
+                    stops: [
+                        .init(color: .black, location: 0),
+                        .init(color: .black.opacity(0.85), location: 0.25),
+                        .init(color: .black.opacity(0.55), location: 0.50),
+                        .init(color: .black.opacity(0.22), location: 0.75),
+                        .init(color: .clear, location: 1)
+                    ],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+                .frame(height: 44)
+            }
+        )
+
         // FAB overlay — attached pill group: ↑ (top half) + ↓ (bottom half) when scrolled away from bottom.
         // Both appear together as one unit. ↑ is hidden when already at the very top.
         .overlay(alignment: .bottomTrailing) {
@@ -1691,7 +1754,7 @@ struct ChatDetailView: View {
                 // can never recover on its own — the user would be locked out of
                 // the menu for the entire stream. Force it visible here so the
                 // hamburger, model selector, and trailing controls stay reachable.
-                withAnimation(.easeInOut(duration: 0.2)) { navBarHidden = false }
+                withAnimation(.easeOut(duration: 0.25)) { navBarHidden = false }
             }
             if !newStreaming && oldStreaming {
                 // Stream just ended — record the timestamp so the scroll pump can
@@ -1738,7 +1801,11 @@ struct ChatDetailView: View {
                 // (4 skeleton rows → N message rows) that happened even under opacity 0.
                 messagesList
             }
-        .padding(.top, 8)
+        // Top padding: reserve space for the floating nav bar overlay so messages
+        // start below it. Uses safeAreaInsets to account for status bar height +
+        // nav bar height (padding.vertical 8 × 2 + icon ~18pt ≈ 34pt).
+        // The extra 8pt provides a comfortable gap between the bar and first message.
+        .padding(.top, 42)
         .padding(.bottom, 8)
         .frame(maxWidth: iPadMaxContentWidth)
         .frame(maxWidth: .infinity)
@@ -1753,14 +1820,24 @@ struct ChatDetailView: View {
         // Tapping anywhere in the empty chat area (below messages in short conversations)
         // should dismiss the keyboard. .scrollDismissesKeyboard(.interactively) only fires
         // on a scroll gesture — a plain tap is ignored when the content is shorter than the
-        // container. contentShape(Rectangle()) extends the hit-test to the full frame so the
-        // onTapGesture fires over empty space too; child views (bubbles, links) still receive
-        // their own gestures because SwiftUI lets subview gestures win over parent gestures.
-        .contentShape(Rectangle())
-        .onTapGesture {
-            UIApplication.shared.sendAction(
-                #selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
-        }
+        // container.
+        //
+        // IMPORTANT: We must NOT place contentShape(Rectangle()) + onTapGesture directly on
+        // the VStack. Doing so causes SwiftUI to intercept the touch event before it reaches
+        // UIKit-backed text views (the Markdown renderer's UITextView). This means citation
+        // and web-link taps never reach the UIKit hit-testing layer and silently fail.
+        //
+        // Fix: attach the tap to a Color.clear *background* layer instead. The background
+        // sits behind the content in z-order, so UIKit views (bubbles, links) get first-touch
+        // priority. Only taps that fall through to the empty background dismiss the keyboard.
+        .background {
+            Color.clear
+                .contentShape(Rectangle())
+                .onTapGesture {
+                    UIApplication.shared.sendAction(
+                        #selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
+                }
+            }
         }
         .scrollContentBackground(.hidden)
         .background(ScrollViewHorizontalLock())
@@ -1827,6 +1904,10 @@ struct ChatDetailView: View {
             // so that inertia deceleration + bottom-bounce recovery never trigger jittery
             // nav-bar hide/show or false isScrolledUp trips at the bottom edge.
             isFingerDriving = (newPhase == .interacting)
+            // Mirror to PumpRef so onScrollGeometryChange can read it immediately without
+            // waiting for a SwiftUI @State propagation cycle (which can be 1-2 frames late,
+            // causing the nav bar to miss the very first geometry callback of a scroll).
+            _pumpRef.isFingerScrolling = (newPhase == .interacting)
         }
         // ── Direct finger break-out ──────────────────────────────────────────
         // When the glide animation is running the scroll phase is `.animating`,
@@ -1887,6 +1968,20 @@ struct ChatDetailView: View {
             // this fired on nearly every frame, causing full body re-evals at 120Hz. At >30pt
             // it only fires when the content height changes substantially (new rows appear,
             // keyboard appears/disappears, etc.), which is rare during a live scroll.
+            // Post-render height correction (issue #194): when async Markdown expands
+            // content after the initial scroll-settle (e.g. placeholder heights resolving),
+            // the prior numeric offset no longer represents the bottom. Re-snap only when
+            // we were already following the bottom — preserves user scrolling and
+            // question-jump navigation, and leaves streaming to its own pump.
+            if contentHeight > oldSnap.contentSize.height + 1,
+               contentHeight > containerHeight,
+               !isScrolledUp,
+               !isUserDriving,
+               !viewModel.isStreaming,
+               userMessageJumpIndex == nil {
+                scrollPosition.scrollTo(edge: .bottom)
+            }
+
             // Growth tracking still uses the raw value for accuracy.
             if contentHeight > viewState_contentHeight {
                 _pumpRef.lastContentGrowthAt = Date()
@@ -1960,17 +2055,20 @@ struct ChatDetailView: View {
                 _pumpRef.lastNavBarOffsetY = newOffset.y
 
                 // Only respond to genuine finger-contact drags, not inertia or streaming pump.
-                if !navSuppressed && isFingerDriving && !viewModel.isStreaming {
+                // Use _pumpRef.isFingerScrolling (not @State isFingerDriving) so we read
+                // the value immediately — @State has a 1-2 frame propagation delay that
+                // causes the first geometry callback of a new touch to see a stale false.
+                if !navSuppressed && _pumpRef.isFingerScrolling && !viewModel.isStreaming {
                     if distanceFromBottom > 80 {
                         if navDelta > 1 && !navBarHidden {
-                            withAnimation(.easeInOut(duration: 0.2)) { navBarHidden = true }
+                            withAnimation(.easeOut(duration: 0.25)) { navBarHidden = true }
                         } else if navDelta < -1 && navBarHidden {
-                            withAnimation(.easeInOut(duration: 0.2)) { navBarHidden = false }
+                            withAnimation(.easeOut(duration: 0.25)) { navBarHidden = false }
                         }
                     } else {
                         // Near/at bottom with finger scrolling upward — show bar
                         if navDelta < -1 && navBarHidden {
-                            withAnimation(.easeInOut(duration: 0.2)) { navBarHidden = false }
+                            withAnimation(.easeOut(duration: 0.25)) { navBarHidden = false }
                         }
                     }
                 }
@@ -2564,7 +2662,7 @@ struct ChatDetailView: View {
             }
 
             // ── Follow-up suggestions (last assistant message only) ──
-            let displayFollowUps: [String] = message.followUps
+            let displayFollowUps: [String] = suggestionsEnabled ? message.followUps : []
             AnimatedPresence(visible: isLastAssistant && !message.isStreaming && !displayFollowUps.isEmpty) {
                 if isLastAssistant && !message.isStreaming && !displayFollowUps.isEmpty {
                     followUpSuggestions(displayFollowUps)
@@ -3443,6 +3541,15 @@ struct ChatDetailView: View {
             .buttonStyle(CompactActionButtonStyle())
             .accessibilityLabel("Copy")
 
+            // Share — opens iOS share sheet with the clean message text.
+            // Always visible alongside Copy so sharing a complete answer is
+            // as direct and discoverable as copying it.
+            Button { shareMessage(message) } label: {
+                compactActionIcon(icon: "square.and.arrow.up", isActive: false)
+            }
+            .buttonStyle(CompactActionButtonStyle())
+            .accessibilityLabel("Share")
+
             // Edit assistant message — gated by permissions.chat.edit
             // Mirrors WebUI's editMessage(id, { content }, false): updates content
             // in-place without creating a new branch or triggering regeneration.
@@ -4078,16 +4185,31 @@ struct ChatDetailView: View {
             LazyVGrid(columns: columns, spacing: Spacing.sm) {
                 ForEach(Array(imageFiles.enumerated()), id: \.element) { _, file in
                     if let fileUrl = file.url, !fileUrl.isEmpty {
-                        let fileId: String = {
-                            if !fileUrl.contains("/") { return fileUrl }
-                            let parts = fileUrl.split(separator: "/")
-                            if let idx = parts.firstIndex(of: "files"), idx + 1 < parts.count {
-                                return String(parts[idx + 1])
-                            }
-                            return fileUrl
-                        }()
-                        AuthenticatedImageView(fileId: fileId, apiClient: dependencies.apiClient)
+                        if fileUrl.hasPrefix("data:image/"), let imageURL = URL(string: fileUrl) {
+                            // Gemini image generation returns a base64 data URI directly in
+                            // the file's url field. Route through MarkdownInlineImageView
+                            // which already handles data:image/ and imgcache:// decoding
+                            // off-main-thread with caching and fullscreen/share support.
+                            MarkdownInlineImageView(
+                                imageURL: imageURL,
+                                altText: file.name ?? "Generated Image",
+                                linkURL: nil
+                            )
                             .clipShape(RoundedRectangle(cornerRadius: CornerRadius.md, style: .continuous))
+                        } else {
+                            // Standard server-hosted file: extract UUID from
+                            // /api/v1/files/{uuid}/content and fetch via API.
+                            let fileId: String = {
+                                if !fileUrl.contains("/") { return fileUrl }
+                                let parts = fileUrl.split(separator: "/")
+                                if let idx = parts.firstIndex(of: "files"), idx + 1 < parts.count {
+                                    return String(parts[idx + 1])
+                                }
+                                return fileUrl
+                            }()
+                            AuthenticatedImageView(fileId: fileId, apiClient: dependencies.apiClient)
+                                .clipShape(RoundedRectangle(cornerRadius: CornerRadius.md, style: .continuous))
+                        }
                     }
                 }
             }
@@ -5036,6 +5158,30 @@ struct ChatDetailView: View {
         }
     }
 
+    /// Prepares the clean text of a message for sharing and presents the iOS share sheet.
+    /// Uses the same stripping logic as copyMessage: removes hidden reasoning blocks,
+    /// collapses excess whitespace, and appends readable source links.
+    private func shareMessage(_ message: ChatMessage) {
+        var clean = message.content
+        // Strip hidden reasoning/tool-call <details> blocks — same as copyMessage.
+        if let re = try? NSRegularExpression(pattern: #"<details[^>]*>.*?</details>"#, options: [.dotMatchesLineSeparators]) {
+            clean = re.stringByReplacingMatches(in: clean, range: NSRange(clean.startIndex..., in: clean), withTemplate: "")
+        }
+        clean = clean
+            .replacingOccurrences(of: "\n\n\n+", with: "\n\n", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        // Append human-readable source links so the shared text is self-contained.
+        if !message.sources.isEmpty {
+            clean += "\n\nSources:"
+            for (i, src) in message.sources.enumerated() {
+                clean += "\n[\(i+1)] \(src.resolvedURL ?? src.title ?? "Source \(i+1)")"
+            }
+        }
+        guard !clean.isEmpty else { return }
+        shareMessageText = ShareableText(text: clean)
+        Haptics.play(.light)
+    }
+
     // MARK: - Attachment Processing
 
 private func processSelectedPhotos(_ items: [PhotosPickerItem]) async {
@@ -5800,28 +5946,68 @@ struct UserMessageContentView: View {
                 // handles all standard inline syntax while preserving newlines and
                 // whitespace, which is important inside a compact user bubble.
                 // Falls back to plain text if parsing fails.
-                if let attributed = try? AttributedString(
-                    markdown: content,
-                    options: AttributedString.MarkdownParsingOptions(
-                        interpretedSyntax: .inlineOnlyPreservingWhitespace
-                    )
-                ) {
-                    Text(attributed)
-                        .scaledFont(size: 15, context: .content)
-                        .fixedSize(horizontal: false, vertical: true)
-                } else {
-                    Text(content)
-                        .scaledFont(size: 15, context: .content)
-                        .fixedSize(horizontal: false, vertical: true)
+                //
+                // For very long content we chunk into ~1,800-char pieces so that
+                // no single Text view becomes enormous (same budget as MarkdownView's
+                // LTXLabel chunking — prevents blank / invisible text in large bubbles).
+                let chunks = UserMessageContentView.chunkText(content)
+                VStack(alignment: .trailing, spacing: 0) {
+                    ForEach(Array(chunks.enumerated()), id: \.offset) { _, chunk in
+                        if let attributed = try? AttributedString(
+                            markdown: chunk,
+                            options: AttributedString.MarkdownParsingOptions(
+                                interpretedSyntax: .inlineOnlyPreservingWhitespace
+                            )
+                        ) {
+                            Text(attributed)
+                                .scaledFont(size: 15, context: .content)
+                                .fixedSize(horizontal: false, vertical: true)
+                        } else {
+                            Text(chunk)
+                                .scaledFont(size: 15, context: .content)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
                 }
             } else {
                 SkillTaggedTextView(segments: segs)
             }
         } else {
-            Text(content)
-                .scaledFont(size: 15, context: .content)
-                .fixedSize(horizontal: false, vertical: true)
+            // Plain text path — also chunk large content to avoid an enormous
+            // single Text view that can render blank for very long messages.
+            let chunks = UserMessageContentView.chunkText(content)
+            VStack(alignment: .trailing, spacing: 0) {
+                ForEach(Array(chunks.enumerated()), id: \.offset) { _, chunk in
+                    Text(chunk)
+                        .scaledFont(size: 15, context: .content)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
         }
+    }
+
+    /// Splits `text` into chunks of at most ~1,800 characters, breaking at the
+    /// last whitespace or newline within the budget so words are never cut mid-word.
+    /// Short text (≤ budget) is returned as-is in a single-element array.
+    static func chunkText(_ text: String, budget: Int = 1800) -> [String] {
+        guard text.count > budget else { return [text] }
+        var chunks: [String] = []
+        var remaining = text[...]
+        while !remaining.isEmpty {
+            var end = remaining.index(remaining.startIndex, offsetBy: budget, limitedBy: remaining.endIndex) ?? remaining.endIndex
+            // Prefer to break at a newline first, then whitespace, so multi-paragraph
+            // messages chunk at natural paragraph boundaries.
+            if end != remaining.endIndex {
+                if let nl = remaining[..<end].lastIndex(of: "\n") {
+                    end = remaining.index(after: nl)
+                } else if let ws = remaining[..<end].lastIndex(where: \.isWhitespace) {
+                    end = remaining.index(after: ws)
+                }
+            }
+            chunks.append(String(remaining[..<end]))
+            remaining = remaining[end...]
+        }
+        return chunks
     }
 }
 
@@ -6068,13 +6254,6 @@ private struct ScrollViewHorizontalLock: UIViewRepresentable {
                     scrollView.showsHorizontalScrollIndicator = false
                     scrollView.isDirectionalLockEnabled = true
 
-                    // iOS 26: disable the Liquid Glass scroll-edge effect (frosty blur
-                    // that appears at the top when content scrolls under the nav bar).
-                    // iOS 26 "Liquid Glass" frosty blur at scroll edges.
-                    // edgeEffectEnabled is not yet in the public SDK headers,
-                    // so we use KVC to set it at runtime.
-                    scrollView.setValue(false, forKey: "edgeEffectEnabled")
-
                     // Bug 3: KVO snaps contentOffset.x to 0.
                     // Threshold raised from 0.5 pt to 2 pt to avoid false positives
                     // from floating-point rounding during programmatic scroll animations.
@@ -6208,6 +6387,26 @@ private extension View {
                     .allowsHitTesting(false)
                 }
             }
+    }
+}
+
+// MARK: - chatComposerBar (Type-Checker Relief)
+//
+// On iOS 26+ replaces .safeAreaInset(edge: .bottom) with .safeAreaBar so that
+// the scroll view gets the native "soft" bottom edge effect (content fades behind
+// the composer instead of cutting off at a hard opaque boundary).
+// Extracted into a View extension so the #available check doesn't add to
+// ChatDetailView's type-checker expression complexity.
+private extension View {
+    @ViewBuilder
+    func chatComposerBar<Content: View>(@ViewBuilder content: () -> Content) -> some View {
+        if #available(iOS 26.0, *) {
+            self.safeAreaBar(edge: .bottom, spacing: 0, content: content)
+                .scrollEdgeEffectStyle(.soft, for: .bottom)
+                .scrollEdgeEffectHidden(true, for: .top)
+        } else {
+            self.safeAreaInset(edge: .bottom, spacing: 0, content: content)
+        }
     }
 }
 
@@ -6458,6 +6657,18 @@ extension URL: @retroactive Identifiable {
 
 extension String: @retroactive Identifiable {
     public var id: String { self }
+}
+
+// MARK: - ShareableText
+
+/// A thin Identifiable wrapper around a plain String, used as the item type
+/// for `.sheet(item: $shareMessageText)` so SwiftUI can track sheet identity
+/// without relying on the `String: Identifiable` retroactive conformance below.
+/// Each tap of the Share button creates a new instance (new UUID = new identity),
+/// which guarantees the sheet re-presents even if the same text is shared twice.
+struct ShareableText: Identifiable {
+    let id = UUID()
+    let text: String
 }
 
 // MARK: - Action Event UI Models

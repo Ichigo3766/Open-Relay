@@ -883,7 +883,7 @@ struct USpecChartView: View {
                 .foregroundStyle(by: .value("Category", d.label))
                 .annotation(position: .overlay, alignment: .center) {
                     if d.pct >= 0.08 {
-                        Text("\(d.label)\n\(Int(round(d.pct * 100)))%")
+                        Text("\(d.label)\n\(d.pct.formatted(.percent.precision(.fractionLength(0))))")
                             .scaledFont(size: 10, weight: .semibold)
                             .multilineTextAlignment(.center)
                     }

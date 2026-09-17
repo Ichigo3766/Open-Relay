@@ -1066,7 +1066,7 @@ struct StreamingMarkdownView: View {
 /// When the image URL is a `data:image/...;base64,...` URI, the Base64 payload
 /// is decoded directly into a `UIImage` — no network call is made.
 /// Remote `http`/`https` images go through `CachedAsyncImage` as before.
-private struct MarkdownInlineImageView: View {
+struct MarkdownInlineImageView: View {
     let imageURL: URL
     let altText: String
     let linkURL: URL?

@@ -396,6 +396,7 @@ final class ChatViewModel {
     private(set) var serverBaseURL: String = ""
     @ObservationIgnored nonisolated(unsafe) private var foregroundObserver: NSObjectProtocol?
     @ObservationIgnored nonisolated(unsafe) private var backgroundObserver: NSObjectProtocol?
+    @ObservationIgnored nonisolated(unsafe) private var configurationObservers: [NSObjectProtocol] = []
     @ObservationIgnored nonisolated(unsafe) private var backgroundTaskId: UIBackgroundTaskIdentifier = .invalid
     /// Separate background task assertion for on-device ASR transcription.
     /// Independent from backgroundTaskId (which covers streaming completion).
@@ -747,6 +748,8 @@ final class ChatViewModel {
         self.activeChatStore = store
         self.asrService = asr
         isConfigured = true
+        configurationObservers.forEach { NotificationCenter.default.removeObserver($0) }
+        configurationObservers.removeAll()
         setupRetryAttachmentObserver()
         setupMemorySettingObserver()
         setupMessageQueueSettingObserver()
@@ -762,7 +765,7 @@ final class ChatViewModel {
     /// `uploadAttachmentImmediately` so the status cycles back through
     /// uploading → processing → completed/error without requiring a new configure().
     private func setupRetryAttachmentObserver() {
-        NotificationCenter.default.addObserver(
+        let observer = NotificationCenter.default.addObserver(
             forName: .retryAttachmentUpload,
             object: nil,
             queue: .main
@@ -778,6 +781,7 @@ final class ChatViewModel {
                 self.uploadAttachmentImmediately(attachmentId: attachmentId)
             }
         }
+        configurationObservers.append(observer)
     }
 
     /// Registers an observer for `.memorySettingChanged` so that when the user
@@ -789,7 +793,7 @@ final class ChatViewModel {
     /// pick up the correct value from the session cache instead of the stale `false`
     /// that was set when the session started with memory disabled.
     private func setupMemorySettingObserver() {
-        NotificationCenter.default.addObserver(
+        let observer = NotificationCenter.default.addObserver(
             forName: .memorySettingChanged,
             object: nil,
             queue: .main
@@ -804,6 +808,7 @@ final class ChatViewModel {
                 self.activeChatStore?.cachedMemorySetting = newValue
             }
         }
+        configurationObservers.append(observer)
     }
 
     /// Observes `.functionsConfigChanged` to re-resolve actions/filters for the
@@ -812,7 +817,7 @@ final class ChatViewModel {
     /// filter IDs update in the chat UI without requiring a model picker open
     /// or app restart.
     private func setupFunctionsConfigObserver() {
-        NotificationCenter.default.addObserver(
+        let observer = NotificationCenter.default.addObserver(
             forName: .functionsConfigChanged,
             object: nil,
             queue: .main
@@ -824,10 +829,11 @@ final class ChatViewModel {
                 self.logger.info("Functions config changed — re-resolved actions/filters for current model")
             }
         }
+        configurationObservers.append(observer)
     }
 
     private func setupMessageQueueSettingObserver() {
-        NotificationCenter.default.addObserver(
+        let observer = NotificationCenter.default.addObserver(
             forName: .messageQueueSettingChanged,
             object: nil,
             queue: .main
@@ -841,6 +847,7 @@ final class ChatViewModel {
                 self.activeChatStore?.cachedMessageQueueSetting = newValue
             }
         }
+        configurationObservers.append(observer)
     }
 
     // MARK: - Audio Transcription (Navigation-Persistent)
@@ -1606,6 +1613,7 @@ final class ChatViewModel {
     }
 
     deinit {
+        configurationObservers.forEach { NotificationCenter.default.removeObserver($0) }
         let fgObserver = foregroundObserver
         let bgObserver = backgroundObserver
         if let fgObserver {
