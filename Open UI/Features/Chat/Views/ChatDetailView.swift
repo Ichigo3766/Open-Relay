@@ -427,23 +427,14 @@ struct ChatDetailView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        // Custom top bar floats over the scroll content as an overlay.
-        // Using overlay (instead of safeAreaInset) means the bar occupies zero
-        // layout space — when navBarHidden is true and opacity reaches 0, there
-        // is nothing visible and no reserved gap. Content scrolls freely into
-        // the top of the screen.
-        //
-        // The scroll view's top content inset (via .padding(.top) inside the VStack)
-        // keeps the first message below the bar when it is visible. The bar fades
-        // out and the scroll view's containerHeight never changes — no jitter.
-        .overlay(alignment: .top) {
+        .chatChromeBar(edge: .top) {
             customTopBar
                 // Dissolve-into-top effect: fade out + subtle upward drift.
                 .opacity(navBarHidden ? 0 : 1)
                 .offset(y: navBarHidden ? -20 : 0)
                 .animation(.easeOut(duration: 0.25), value: navBarHidden)
         }
-        .safeAreaInset(edge: .bottom, spacing: 0) {
+        .chatChromeBar(edge: .bottom) {
             if editingMessageId != nil {
                 editInputBar
                     // In landscape (HStack split layout) iOS does not propagate keyboard
@@ -461,6 +452,20 @@ struct ChatDetailView: View {
                     // manual keyboard avoidance. All other cases rely on normal iOS propagation.
                     .padding(.bottom, (verticalSizeClass == .compact && viewModel.terminalEnabled && viewModel.selectedTerminalServer != nil) ? keyboard.height : 0)
             }
+        }
+        .overlay {
+            GeometryReader { geometry in
+                Rectangle()
+                    .fill(usesGlassChrome ? AnyShapeStyle(.ultraThinMaterial) : AnyShapeStyle(theme.background))
+                    .overlay(theme.background.opacity(usesGlassChrome && theme.isDark ? 0.8 : 0))
+                    .mask(LinearGradient(stops: [
+                        .init(color: .black, location: 0.45),
+                        .init(color: usesGlassChrome ? .clear : .black, location: 1)
+                    ], startPoint: .top, endPoint: .bottom))
+                    .frame(height: geometry.safeAreaInsets.top)
+                    .offset(y: -geometry.safeAreaInsets.top)
+            }
+            .allowsHitTesting(false)
         }
         .navigationBarHidden(true)
         // Configure the view model synchronously on first appearance so that the
@@ -851,8 +856,11 @@ struct ChatDetailView: View {
                 } label: {
                     Image(systemName: "line.3.horizontal")
                         .scaledFont(size: 18, weight: .medium, context: .ui)
+                        .frame(width: 40, height: 40)
+                        .contentShape(Circle())
                 }
                 .buttonStyle(.plain)
+                .chatControlGlass(in: Circle(), fallback: theme.surfaceContainer)
                 .accessibilityLabel("Menu")
             }
 
@@ -866,8 +874,10 @@ struct ChatDetailView: View {
             trailingActionsPill
         }
         .padding(.horizontal, Spacing.sm)
-        .padding(.vertical, 8)
-        .background(theme.background.opacity(0.75))
+        .padding(.bottom, 8)
+        .background {
+            if #unavailable(iOS 26.0) { theme.background }
+        }
     }
 
     /// All trailing action icons grouped into a single rounded-rect pill, matching the original design.
@@ -881,81 +891,53 @@ struct ChatDetailView: View {
                 }
             }
 
-            // Chat parameters
-            pillIconButton(
-                icon: "slider.horizontal.3",
-                tint: (viewModel.conversation?.chatParams != nil || viewModel.pendingChatParams != nil) ? theme.brandPrimary : nil,
-                accessibilityLabel: "Chat parameters"
-            ) {
-                Haptics.play(.light)
-                isShowingChatParams = true
-            }
-
-            // Temporary chat toggle (new chats only)
-            if viewModel.messages.isEmpty {
-                pillIconButton(
-                    icon: viewModel.isTemporaryChat ? "eye.slash.fill" : "eye",
-                    tint: viewModel.isTemporaryChat ? theme.warning : nil,
-                    accessibilityLabel: viewModel.isTemporaryChat ? "Temporary chat on" : "Temporary chat off"
-                ) {
-                    withAnimation(MicroAnimation.snappy) { viewModel.isTemporaryChat.toggle() }
-                    Haptics.play(.light)
-                }
-            }
-
-            // Save temporary chat (active temp chats with messages)
-            if viewModel.isTemporaryChat && !viewModel.messages.isEmpty {
+            Menu {
                 Button {
-                    Haptics.play(.medium)
-                    Task { await viewModel.saveTemporaryChat() }
+                    Haptics.play(.light)
+                    isShowingChatParams = true
                 } label: {
-                    ZStack {
-                        if viewModel.isSavingTemporaryChat {
-                            ProgressView()
-                                .progressViewStyle(.circular)
-                                .scaleEffect(0.7)
-                                .tint(theme.brandPrimary)
-                        } else {
-                            ZStack {
-                                Circle()
-                                    .strokeBorder(style: StrokeStyle(lineWidth: 1.5, dash: [3, 2]))
-                                    .foregroundStyle(theme.brandPrimary)
-                                    .frame(width: 16, height: 16)
-                                Image(systemName: "checkmark")
-                                    .scaledFont(size: 8, weight: .bold)
-                                    .foregroundStyle(theme.brandPrimary)
-                            }
-                        }
-                    }
-                    .frame(width: 40, height: 40)
+                    Label("Chat Settings", systemImage: "slider.horizontal.3")
                 }
-                .buttonStyle(.plain)
-                .contentShape(Rectangle())
-                .disabled(viewModel.isSavingTemporaryChat)
-                .accessibilityLabel("Save as permanent chat")
-            }
 
-            // Overflow menu
-            if viewModel.conversation != nil || !viewModel.messages.isEmpty {
-                Menu {
-                    if viewModel.conversation != nil {
-                        Button(role: .destructive) {
-                            showDeleteChatConfirm = true
-                        } label: {
-                            Label("Delete Chat", systemImage: "trash")
-                        }
+                if viewModel.messages.isEmpty {
+                    Button {
+                        withAnimation(MicroAnimation.snappy) { viewModel.isTemporaryChat.toggle() }
+                        Haptics.play(.light)
+                    } label: {
+                        Label(viewModel.isTemporaryChat ? "Turn Off Temporary Chat" : "Turn On Temporary Chat",
+                              systemImage: viewModel.isTemporaryChat ? "eye.slash.fill" : "eye")
                     }
-                } label: {
-                    Image(systemName: "ellipsis")
-                        .scaledFont(size: 16, weight: .medium)
-                        .foregroundStyle(theme.textSecondary)
-                        .frame(width: 40, height: 40)
                 }
-                .buttonStyle(.plain)
-                .contentShape(Rectangle())
+
+                if viewModel.isTemporaryChat && !viewModel.messages.isEmpty {
+                    Button {
+                        Haptics.play(.medium)
+                        Task { await viewModel.saveTemporaryChat() }
+                    } label: {
+                        Label(viewModel.isSavingTemporaryChat ? "Saving…" : "Save as permanent chat",
+                              systemImage: "checkmark.circle")
+                    }
+                    .disabled(viewModel.isSavingTemporaryChat)
+                }
+
+                if viewModel.conversation != nil {
+                    Button(role: .destructive) {
+                        showDeleteChatConfirm = true
+                    } label: {
+                        Label("Delete Chat", systemImage: "trash")
+                    }
+                }
+            } label: {
+                Image(systemName: "ellipsis")
+                    .scaledFont(size: 16, weight: .medium)
+                    .foregroundStyle(theme.textSecondary)
+                    .frame(width: 40, height: 40)
             }
+            .buttonStyle(.plain)
+            .contentShape(Rectangle())
+            .accessibilityLabel("More chat actions")
         }
-        .background(theme.surfaceContainer, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
+        .chatControlGlass(in: RoundedRectangle(cornerRadius: 22, style: .continuous), fallback: theme.surfaceContainer)
     }
 
     /// Icon button for use inside the trailing grouped pill.
@@ -1020,14 +1002,7 @@ struct ChatDetailView: View {
                     }
                     .padding(.horizontal, 10)
                     .padding(.vertical, 6)
-                    .background(
-                        RoundedRectangle(cornerRadius: 12, style: .continuous)
-                            .fill(theme.cardBackground.opacity(0.9))
-                    )
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 12, style: .continuous)
-                            .strokeBorder(theme.cardBorder.opacity(0.5), lineWidth: 0.5)
-                    )
+                    .chatControlGlass(in: RoundedRectangle(cornerRadius: 12, style: .continuous), fallback: theme.cardBackground.opacity(0.9))
                 }
                 .buttonStyle(.plain)
                 .sheet(isPresented: $isShowingModelSelectorSheet) {
@@ -1580,55 +1555,6 @@ struct ChatDetailView: View {
         .blur(radius: (isContentReady || initialConversationId == nil) ? 0 : 8)
         .animation(.easeOut(duration: 0.2), value: isContentReady)
 
-        // ── Top edge fade (dissolves into the nav bar) ────────────────────────
-        // Transparent at the scroll-content edge → opaque at the nav-bar boundary.
-        // .ignoresSafeArea() extends it into the status-bar / nav-bar safe area.
-        .overlay(alignment: .top) {
-            if !viewModel.messages.isEmpty || viewModel.isLoadingConversation {
-                LinearGradient(
-                    stops: [
-                        .init(color: theme.background.opacity(0), location: 0),
-                        .init(color: theme.background.opacity(0.6), location: 0.4),
-                        .init(color: theme.background, location: 1)
-                    ],
-                    startPoint: .bottom,
-                    endPoint: .top
-                )
-                .frame(height: 90)
-                .ignoresSafeArea()
-                .allowsHitTesting(false)
-            }
-        }
-
-
-
-        // ── Bottom edge fade (dissolves content into the void) ───────────────
-        // Uses a mask instead of a colored overlay so content pixels themselves
-        // fade to transparent — no ghost text, no banding, no gaps. The mask
-        // is a VStack: fully-opaque middle fills the entire view, then an
-        // alpha gradient at the bottom fades from opaque → clear using a smooth
-        // ease-out curve with extra stops for a fluid "swallowed" effect.
-        .mask(
-            VStack(spacing: 0) {
-                // Full-height opaque region (everything above the fade zone)
-                Rectangle()
-                    .fill(Color.black)
-                // Bottom dissolve — content alpha fades to zero
-                LinearGradient(
-                    stops: [
-                        .init(color: .black, location: 0),
-                        .init(color: .black.opacity(0.85), location: 0.25),
-                        .init(color: .black.opacity(0.55), location: 0.50),
-                        .init(color: .black.opacity(0.22), location: 0.75),
-                        .init(color: .clear, location: 1)
-                    ],
-                    startPoint: .top,
-                    endPoint: .bottom
-                )
-                .frame(height: 44)
-            }
-        )
-
         // FAB overlay — attached pill group: ↑ (top half) + ↓ (bottom half) when scrolled away from bottom.
         // Both appear together as one unit. ↑ is hidden when already at the very top.
         .overlay(alignment: .bottomTrailing) {
@@ -1791,6 +1717,11 @@ struct ChatDetailView: View {
         }
     }
 
+    private var usesGlassChrome: Bool {
+        if #available(iOS 26.0, *) { return true }
+        return false
+    }
+
     private var scrollContent: some View {
         ScrollView {
             VStack(spacing: 0) {
@@ -1801,11 +1732,7 @@ struct ChatDetailView: View {
                 // (4 skeleton rows → N message rows) that happened even under opacity 0.
                 messagesList
             }
-        // Top padding: reserve space for the floating nav bar overlay so messages
-        // start below it. Uses safeAreaInsets to account for status bar height +
-        // nav bar height (padding.vertical 8 × 2 + icon ~18pt ≈ 34pt).
-        // The extra 8pt provides a comfortable gap between the bar and first message.
-        .padding(.top, 42)
+        .padding(.top, 8)
         .padding(.bottom, 8)
         .frame(maxWidth: iPadMaxContentWidth)
         .frame(maxWidth: .infinity)
@@ -1840,6 +1767,7 @@ struct ChatDetailView: View {
             }
         }
         .scrollContentBackground(.hidden)
+        .scrollClipDisabled(usesGlassChrome)
         .background(ScrollViewHorizontalLock())
         .scrollIndicators(.hidden)
         .scrollDismissesKeyboard(editingMessageId != nil ? .never : (viewModel.isStreaming ? .immediately : .interactively))
@@ -6390,22 +6318,25 @@ private extension View {
     }
 }
 
-// MARK: - chatComposerBar (Type-Checker Relief)
-//
-// On iOS 26+ replaces .safeAreaInset(edge: .bottom) with .safeAreaBar so that
-// the scroll view gets the native "soft" bottom edge effect (content fades behind
-// the composer instead of cutting off at a hard opaque boundary).
-// Extracted into a View extension so the #available check doesn't add to
-// ChatDetailView's type-checker expression complexity.
+// MARK: - Chat chrome
+// Native glass bars with an opaque, clipped-scrolling fallback on older iOS.
 private extension View {
     @ViewBuilder
-    func chatComposerBar<Content: View>(@ViewBuilder content: () -> Content) -> some View {
+    func chatControlGlass<S: Shape>(in shape: S, fallback: Color) -> some View {
         if #available(iOS 26.0, *) {
-            self.safeAreaBar(edge: .bottom, spacing: 0, content: content)
-                .scrollEdgeEffectStyle(.soft, for: .bottom)
-                .scrollEdgeEffectHidden(true, for: .top)
+            self.glassEffect(.regular.interactive(), in: shape)
         } else {
-            self.safeAreaInset(edge: .bottom, spacing: 0, content: content)
+            self.background(fallback, in: shape)
+        }
+    }
+
+    @ViewBuilder
+    func chatChromeBar<Content: View>(edge: VerticalEdge, @ViewBuilder content: () -> Content) -> some View {
+        if #available(iOS 26.0, *) {
+            self.safeAreaBar(edge: edge, spacing: 0, content: content)
+                .scrollEdgeEffectHidden(true, for: [.top, .bottom])
+        } else {
+            self.safeAreaInset(edge: edge, spacing: 0, content: content)
         }
     }
 }

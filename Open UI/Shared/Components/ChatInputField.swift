@@ -487,24 +487,27 @@ struct ChatInputField: View {
                     .padding(.bottom, 8)
             }
         }
-        // Solid adaptive background — dark surface in dark mode, warm fill in light.
-        // Materials (.ultraThinMaterial) render too bright/grey on dark backgrounds.
-        .background(composerBackground)
         .clipShape(RoundedRectangle(cornerRadius: composerCornerRadius, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: composerCornerRadius, style: .continuous)
-                .strokeBorder(composerBorderColor, lineWidth: 0.5)
-        )
-        // Shadow scaled for mode: light mode needs more spread to convey elevation
-        // without the blur depth that dark mode's glass provides.
-        .shadow(
-            color: theme.isDark
-                ? Color.black.opacity(isFocused ? 0.3 : 0.2)
-                : Color.black.opacity(isFocused ? 0.14 : 0.08),
-            radius: theme.isDark ? 8 : 14,
-            x: 0,
-            y: theme.isDark ? 2 : 3
-        )
+        .background {
+            if #available(iOS 26.0, *) {
+                Color.clear.glassEffect(.regular, in: RoundedRectangle(cornerRadius: composerCornerRadius))
+            } else {
+                RoundedRectangle(cornerRadius: composerCornerRadius, style: .continuous)
+                    .fill(composerBackground)
+                    .overlay {
+                        RoundedRectangle(cornerRadius: composerCornerRadius, style: .continuous)
+                            .strokeBorder(composerBorderColor, lineWidth: 0.5)
+                    }
+                    .shadow(
+                        color: theme.isDark
+                            ? Color.black.opacity(isFocused ? 0.3 : 0.2)
+                            : Color.black.opacity(isFocused ? 0.14 : 0.08),
+                        radius: theme.isDark ? 8 : 14,
+                        x: 0,
+                        y: theme.isDark ? 2 : 3
+                    )
+            }
+        }
         .gesture(composerExpandGesture)
         .animation(.spring(response: 0.35, dampingFraction: 0.78), value: composerIsExpanded)
         .animation(.interactiveSpring(), value: composerExpandDrag)
