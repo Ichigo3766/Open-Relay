@@ -497,6 +497,7 @@ struct ChatSettingsView: View {
     @AppStorage("temporaryChatDefault") private var temporaryChatDefault = false
     @AppStorage("expandThinkingWhileStreaming") private var expandThinkingWhileStreaming = true
     @AppStorage("streamingAutoScroll") private var streamingAutoScroll = true
+    @AppStorage("chatScrollControls") private var chatScrollControls: ChatScrollControls = .upDown
     @AppStorage("useInAppBrowser") private var useInAppBrowser: Bool = true
     @AppStorage("citationShowDomain") private var citationShowDomain: Bool = true
     @AppStorage("renderUserMarkdown") private var renderUserMarkdown: Bool = false
@@ -563,6 +564,19 @@ struct ChatSettingsView: View {
                     .scaledFont(size: 12, weight: .medium)
                     .foregroundStyle(theme.textTertiary)
                     .listRowSeparator(.hidden)
+            }
+
+            Section {
+                Picker("Scroll Controls", selection: $chatScrollControls) {
+                    ForEach(ChatScrollControls.allCases, id: \.self) { controls in
+                        Text(controls.title).tag(controls)
+                    }
+                }
+                .pickerStyle(.navigationLink)
+            } header: {
+                Text("Chat Navigation")
+            } footer: {
+                Text("Choose up/down buttons, a centered scroll-to-bottom button, or no buttons. Controls appear only when you are away from the bottom.")
             }
 
             Section {

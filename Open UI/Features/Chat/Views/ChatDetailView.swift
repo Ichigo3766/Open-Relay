@@ -138,6 +138,7 @@ struct ChatDetailView: View {
     /// Whether streaming responses should automatically scroll the chat to the bottom.
     /// Enabled by default (matches existing behaviour). Users can disable in Chat Behavior settings.
     @AppStorage("streamingAutoScroll") private var streamingAutoScroll = true
+    @AppStorage("chatScrollControls") private var chatScrollControls: ChatScrollControls = .upDown
     @AppStorage("suggestionsEnabled") private var suggestionsEnabled = true
     @AppStorage(MessageActionPreferences.orderKey) private var messageActionOrder = ""
     @AppStorage(MessageActionPreferences.hiddenKey) private var hiddenMessageActions = ""
@@ -1557,9 +1558,112 @@ struct ChatDetailView: View {
         .blur(radius: (isContentReady || initialConversationId == nil) ? 0 : 8)
         .animation(.easeOut(duration: 0.2), value: isContentReady)
 
-        // FAB overlay — attached pill group: ↑ (top half) + ↓ (bottom half) when scrolled away from bottom.
-        // Both appear together as one unit. ↑ is hidden when already at the very top.
-        .overlay(alignment: .bottomTrailing) {
+        // ── Top edge fade (dissolves into the nav bar) ────────────────────────
+        // Transparent at the scroll-content edge → opaque at the nav-bar boundary.
+        // .ignoresSafeArea() extends it into the status-bar / nav-bar safe area.
+        .overlay(alignment: .top) {
+            if !viewModel.messages.isEmpty || viewModel.isLoadingConversation {
+                LinearGradient(
+                    stops: [
+                        .init(color: theme.background.opacity(0), location: 0),
+                        .init(color: theme.background.opacity(0.6), location: 0.4),
+                        .init(color: theme.background, location: 1)
+                    ],
+                    startPoint: .bottom,
+                    endPoint: .top
+                )
+                .frame(height: 90)
+                .ignoresSafeArea()
+                .allowsHitTesting(false)
+            }
+        }
+
+
+
+        // ── Bottom edge fade (dissolves content into the void) ───────────────
+        // Uses a mask instead of a colored overlay so content pixels themselves
+        // fade to transparent — no ghost text, no banding, no gaps. The mask
+        // is a VStack: fully-opaque middle fills the entire view, then an
+        // alpha gradient at the bottom fades from opaque → clear using a smooth
+        // ease-out curve with extra stops for a fluid "swallowed" effect.
+        .mask(
+            VStack(spacing: 0) {
+                // Full-height opaque region (everything above the fade zone)
+                Rectangle()
+                    .fill(Color.black)
+                // Bottom dissolve — content alpha fades to zero
+                LinearGradient(
+                    stops: [
+                        .init(color: .black, location: 0),
+                        .init(color: .black.opacity(0.85), location: 0.25),
+                        .init(color: .black.opacity(0.55), location: 0.50),
+                        .init(color: .black.opacity(0.22), location: 0.75),
+                        .init(color: .clear, location: 1)
+                    ],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+                .frame(height: 44)
+            }
+        )
+
+        // Keep the single bottom control centered above the composer.
+        .overlay(alignment: chatScrollControls == .bottomOnly ? .bottom : .bottomTrailing) {
+>>>>>>> 6ab229e (Let users choose chat scroll controls)
+        .overlay(alignment: chatScrollControls == .bottomOnly ? .bottom : .bottomTrailing) {
+=======
+        // ── Top edge fade (dissolves into the nav bar) ────────────────────────
+        // Transparent at the scroll-content edge → opaque at the nav-bar boundary.
+        // .ignoresSafeArea() extends it into the status-bar / nav-bar safe area.
+        .overlay(alignment: .top) {
+            if !viewModel.messages.isEmpty || viewModel.isLoadingConversation {
+                LinearGradient(
+                    stops: [
+                        .init(color: theme.background.opacity(0), location: 0),
+                        .init(color: theme.background.opacity(0.6), location: 0.4),
+                        .init(color: theme.background, location: 1)
+                    ],
+                    startPoint: .bottom,
+                    endPoint: .top
+                )
+                .frame(height: 90)
+                .ignoresSafeArea()
+                .allowsHitTesting(false)
+            }
+        }
+
+
+
+        // ── Bottom edge fade (dissolves content into the void) ───────────────
+        // Uses a mask instead of a colored overlay so content pixels themselves
+        // fade to transparent — no ghost text, no banding, no gaps. The mask
+        // is a VStack: fully-opaque middle fills the entire view, then an
+        // alpha gradient at the bottom fades from opaque → clear using a smooth
+        // ease-out curve with extra stops for a fluid "swallowed" effect.
+        .mask(
+            VStack(spacing: 0) {
+                // Full-height opaque region (everything above the fade zone)
+                Rectangle()
+                    .fill(Color.black)
+                // Bottom dissolve — content alpha fades to zero
+                LinearGradient(
+                    stops: [
+                        .init(color: .black, location: 0),
+                        .init(color: .black.opacity(0.85), location: 0.25),
+                        .init(color: .black.opacity(0.55), location: 0.50),
+                        .init(color: .black.opacity(0.22), location: 0.75),
+                        .init(color: .clear, location: 1)
+                    ],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+                .frame(height: 44)
+            }
+        )
+
+        // Keep the single bottom control centered above the composer.
+        .overlay(alignment: chatScrollControls == .bottomOnly ? .bottom : .bottomTrailing) {
+>>>>>>> 6ab229e (Let users choose chat scroll controls)
             scrollFABGroup
                 .animation(MicroAnimation.presence, value: isScrolledUp)
                 .animation(MicroAnimation.presence, value: isAtTop)
@@ -2136,13 +2240,13 @@ struct ChatDetailView: View {
 
     @ViewBuilder
     private var scrollFABGroup: some View {
-        if isScrolledUp && !viewModel.messages.isEmpty && !viewModel.isLoadingConversation {
+        if chatScrollControls != .hidden && isScrolledUp && !viewModel.messages.isEmpty && !viewModel.isLoadingConversation {
             VStack(spacing: 0) {
                 // ↑ FAB — jumps to the previous user question on each tap
                 let total_fab = viewModel.messages.count
                 let effectiveEnd_fab = windowEnd ?? total_fab
                 let hasMoreAbove_fab = max(0, effectiveEnd_fab - windowSize) > 0
-                if !isAtTop || hasMoreAbove_fab {
+                if chatScrollControls == .upDown && (!isAtTop || hasMoreAbove_fab) {
                     Button {
                         // Build sorted list of user message indices from the full message list
                         let allMessages = viewModel.messages
@@ -2272,8 +2376,9 @@ struct ChatDetailView: View {
                     ZStack {
                         Rectangle()
                             .fill(.ultraThinMaterial)
-                            .frame(width: 38, height: 38)
-                        Image(systemName: "chevron.down")
+                            .frame(width: chatScrollControls == .bottomOnly ? 44 : 38,
+                                   height: chatScrollControls == .bottomOnly ? 44 : 38)
+                        Image(systemName: chatScrollControls == .bottomOnly ? "arrow.down" : "chevron.down")
                             .scaledFont(size: 13, weight: .bold)
                             .foregroundStyle(theme.textSecondary)
                     }
@@ -2282,13 +2387,13 @@ struct ChatDetailView: View {
                 .contentShape(Rectangle())
                 .accessibilityLabel("Scroll to bottom")
             }
-            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .clipShape(RoundedRectangle(cornerRadius: chatScrollControls == .bottomOnly ? 22 : 12, style: .continuous))
             .overlay(
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                RoundedRectangle(cornerRadius: chatScrollControls == .bottomOnly ? 22 : 12, style: .continuous)
                     .strokeBorder(theme.cardBorder.opacity(0.35), lineWidth: 0.5)
             )
             .shadow(color: .black.opacity(0.18), radius: 8, y: 3)
-            .padding(.trailing, Spacing.md)
+            .padding(.trailing, chatScrollControls == .bottomOnly ? 0 : Spacing.md)
             .padding(.bottom, Spacing.sm)
             .transition(
                 .asymmetric(
