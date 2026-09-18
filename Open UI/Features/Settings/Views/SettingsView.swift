@@ -534,6 +534,12 @@ struct ChatSettingsView: View {
 
     var body: some View {
         List {
+            Section {
+                NavigationLink("Message Actions") {
+                    MessageActionsSettingsView()
+                }
+            }
+
             Section("Input Behavior") {
                 Toggle("Send on Enter", isOn: $sendOnEnter)
                     .tint(theme.brandPrimary)
