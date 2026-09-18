@@ -446,7 +446,10 @@ struct MainChatView: View {
             // Push the content card — right by drawer, left by file browser
             .offset(x: combinedContentOffset)
             .scaleEffect(combinedContentScale, anchor: .center)
-            .clipShape(RoundedRectangle(cornerRadius: combinedContentCornerRadius, style: .continuous))
+            .mask {
+                RoundedRectangle(cornerRadius: combinedContentCornerRadius, style: .continuous)
+                    .ignoresSafeArea(.container)
+            }
             // Blur the main content as panels open, plus extra blur during chat-switch transitions
             .blur(radius: maxPanelFraction * 8 + contentTransitionBlur)
             // Shadow on the active edge: left when drawer open, right when file browser open
