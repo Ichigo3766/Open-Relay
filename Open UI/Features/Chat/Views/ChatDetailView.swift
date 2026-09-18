@@ -139,6 +139,8 @@ struct ChatDetailView: View {
     /// Enabled by default (matches existing behaviour). Users can disable in Chat Behavior settings.
     @AppStorage("streamingAutoScroll") private var streamingAutoScroll = true
     @AppStorage("suggestionsEnabled") private var suggestionsEnabled = true
+    @AppStorage(MessageActionPreferences.orderKey) private var messageActionOrder = ""
+    @AppStorage(MessageActionPreferences.hiddenKey) private var hiddenMessageActions = ""
 
     // MARK: Message pagination (sliding window — memory optimization)
     /// The ending index (exclusive) of the visible message window.
@@ -3489,10 +3491,6 @@ struct ChatDetailView: View {
     // MARK: - Assistant Action Bar
 
     private func assistantActionBar(for message: ChatMessage) -> some View {
-        // Resolve chat permissions once for all guards in this bar.
-        // Admins always get full access (GroupChatPermissions() defaults all to true).
-        let chatPerms = dependencies.authViewModel.chatPermissions
-
         // Build a timestamp-sorted list of ALL sibling IDs (current main + versions).
         // This is the single source of truth for position — it never gets stale
         // because it is derived fresh from the message object on every render.
@@ -3510,60 +3508,12 @@ struct ChatDetailView: View {
         // Its 1-based position in the sorted siblings list is the displayIndex.
         let displayIndex: Int = (allSiblings.firstIndex(where: { $0.id == message.id }) ?? 0) + 1
 
+        let preferences = MessageActionPreferences(order: messageActionOrder, hidden: hiddenMessageActions)
+        let actions = preferences.visibleActions(
+            speechActive: speakingMessageId == message.id || ttsGeneratingMessageId == message.id
+        )
+
         return HStack(spacing: 6) {
-            // Speak — gated by permissions.chat.tts
-            if chatPerms.tts {
-                Button {
-                    toggleSpeech(for: message)
-                    Haptics.play(.light)
-                } label: {
-                    if ttsGeneratingMessageId == message.id {
-                        ProgressView()
-                            .progressViewStyle(.circular)
-                            .scaleEffect(0.65)
-                            .frame(width: 28, height: 28)
-                            .tint(theme.brandPrimary)
-                    } else {
-                        compactActionIcon(
-                            icon: speakingMessageId == message.id ? "stop.fill" : "speaker.wave.2",
-                            isActive: speakingMessageId == message.id
-                        )
-                    }
-                }
-                .buttonStyle(CompactActionButtonStyle())
-                .accessibilityLabel(speakingMessageId == message.id ? "Stop speaking" : "Speak")
-            }
-
-            // Copy (always available — no permission gate in WebUI either)
-            Button { copyMessage(message) } label: {
-                compactActionIcon(icon: "doc.on.doc", isActive: false)
-            }
-            .buttonStyle(CompactActionButtonStyle())
-            .accessibilityLabel("Copy")
-
-            // Share — opens iOS share sheet with the clean message text.
-            // Always visible alongside Copy so sharing a complete answer is
-            // as direct and discoverable as copying it.
-            Button { shareMessage(message) } label: {
-                compactActionIcon(icon: "square.and.arrow.up", isActive: false)
-            }
-            .buttonStyle(CompactActionButtonStyle())
-            .accessibilityLabel("Share")
-
-            // Edit assistant message — gated by permissions.chat.edit
-            // Mirrors WebUI's editMessage(id, { content }, false): updates content
-            // in-place without creating a new branch or triggering regeneration.
-            if chatPerms.edit && !viewModel.isStreaming {
-                Button {
-                    beginAssistantEdit(message: message)
-                    Haptics.play(.light)
-                } label: {
-                    compactActionIcon(icon: "pencil", isActive: false)
-                }
-                .buttonStyle(CompactActionButtonStyle())
-                .accessibilityLabel("Edit response")
-            }
-
             // Version switcher (only when siblings exist and not overriding with a user edit version)
             if totalVersions > 1 && !viewModel.isStreaming && assistantContentOverride[message.id] == nil {
                 HStack(spacing: 2) {
@@ -3588,6 +3538,7 @@ struct ChatDetailView: View {
                         compactActionIcon(icon: "chevron.left", isActive: false, size: 10)
                     }
                     .buttonStyle(CompactActionButtonStyle())
+                    .accessibilityLabel("Previous response version")
                     .disabled(displayIndex == 1)
                     .opacity(displayIndex == 1 ? 0.35 : 1)
 
@@ -3613,11 +3564,97 @@ struct ChatDetailView: View {
                         compactActionIcon(icon: "chevron.right", isActive: false, size: 10)
                     }
                     .buttonStyle(CompactActionButtonStyle())
+                    .accessibilityLabel("Next response version")
                     .disabled(displayIndex == totalVersions)
                     .opacity(displayIndex == totalVersions ? 0.35 : 1)
                 }
             }
 
+            ForEach(actions) { action in
+                assistantAction(action, for: message, totalVersions: totalVersions)
+            }
+
+            // Action buttons (from model's configured actions — e.g. Generate Image)
+            if !viewModel.isStreaming {
+                let model = resolveModel(for: message)
+                if let actions = model?.actions, !actions.isEmpty {
+                    ForEach(actions) { action in
+                        Button {
+                            Task { await invokeActionButton(action: action, message: message) }
+                            Haptics.play(.medium)
+                        } label: {
+                            actionButtonIcon(action: action)
+                        }
+                        .buttonStyle(CompactActionButtonStyle())
+                        .accessibilityLabel(action.name)
+                    }
+                }
+            }
+
+            Spacer()
+        }
+    }
+
+    @ViewBuilder
+    private func assistantAction(_ action: MessageAction, for message: ChatMessage, totalVersions: Int) -> some View {
+        let chatPerms = dependencies.authViewModel.chatPermissions
+        switch action {
+        case .speak:
+            // Speak — gated by permissions.chat.tts
+            if chatPerms.tts {
+                Button {
+                    toggleSpeech(for: message)
+                    Haptics.play(.light)
+                } label: {
+                    if ttsGeneratingMessageId == message.id {
+                        ProgressView()
+                            .progressViewStyle(.circular)
+                            .scaleEffect(0.65)
+                            .frame(width: 28, height: 28)
+                            .tint(theme.brandPrimary)
+                    } else {
+                        compactActionIcon(
+                            icon: speakingMessageId == message.id ? "stop.fill" : "speaker.wave.2",
+                            isActive: speakingMessageId == message.id
+                        )
+                    }
+                }
+                .buttonStyle(CompactActionButtonStyle())
+                .accessibilityLabel(speakingMessageId == message.id ? "Stop speaking" : "Speak")
+            }
+
+        case .copy:
+            // Copy (always available — no permission gate in WebUI either)
+            Button { copyMessage(message) } label: {
+                compactActionIcon(icon: "doc.on.doc", isActive: false)
+            }
+            .buttonStyle(CompactActionButtonStyle())
+            .accessibilityLabel("Copy")
+
+        case .share:
+            // Share — opens iOS share sheet with the clean message text.
+            Button { shareMessage(message) } label: {
+                compactActionIcon(icon: "square.and.arrow.up", isActive: false)
+            }
+            .buttonStyle(CompactActionButtonStyle())
+            .accessibilityLabel("Share")
+
+        case .edit:
+            // Edit assistant message — gated by permissions.chat.edit
+            // Mirrors WebUI's editMessage(id, { content }, false): updates content
+            // in-place without creating a new branch or triggering regeneration.
+            if chatPerms.edit && !viewModel.isStreaming {
+                Button {
+                    beginAssistantEdit(message: message)
+                    Haptics.play(.light)
+                } label: {
+                    compactActionIcon(icon: "pencil", isActive: false)
+                }
+                .buttonStyle(CompactActionButtonStyle())
+                .accessibilityLabel("Edit response")
+            }
+
+        case .regenerate:
             // Regenerate — gated by permissions.chat.regenerate_response
             if !viewModel.isStreaming && chatPerms.regenerateResponse {
                 Button {
@@ -3630,6 +3667,7 @@ struct ChatDetailView: View {
                 .accessibilityLabel("Regenerate")
             }
 
+        case .continueResponse:
             // Continue — gated by permissions.chat.continue_response.
             // Only shown on the LAST assistant message so the user can append
             // more content to an incomplete or truncated response.
@@ -3645,6 +3683,7 @@ struct ChatDetailView: View {
                 .accessibilityLabel("Continue response")
             }
 
+        case .fork:
             // Fork chat — clones the entire conversation and navigates to the fork.
             // Matches open-webui's fork behaviour: POST /api/v1/chats/{id}/clone,
             // then navigate to the newly created chat.
@@ -3668,6 +3707,7 @@ struct ChatDetailView: View {
                 .accessibilityLabel("Fork chat")
             }
 
+        case .deleteVersion:
             // Delete — gated by permissions.chat.delete_message (only when siblings exist)
             if !viewModel.isStreaming && totalVersions > 1 && chatPerms.deleteMessage {
                 Button {
@@ -3683,6 +3723,7 @@ struct ChatDetailView: View {
                 .accessibilityLabel("Delete Version")
             }
 
+        case .usage:
             // Usage info — always show from the current active message (message.usage).
             // The current message IS the active sibling after any rederiveMessages() call.
             let displayUsage: [String: Any]? = message.usage
@@ -3702,66 +3743,52 @@ struct ChatDetailView: View {
                 .accessibilityLabel("Token usage")
             }
 
+        case .thumbsUp, .thumbsDown:
             // Thumbs up / down — gated by server enable_message_rating flag AND
             // permissions.chat.rate_response. Also hidden during temporary chats
             // (WebUI: !temporaryChatEnabled check).
             if viewModel.messageRatingEnabled && !viewModel.isStreaming
                 && !viewModel.isTemporaryChat && chatPerms.rateResponse {
                 let currentRating = message.annotation?.rating
-                Button {
-                    Task {
-                        await viewModel.submitThumbsRating(message: message, rating: 1)
-                        // Open detail sheet with the updated message (feedbackId now set)
-                        if let updated = viewModel.messages.first(where: { $0.id == message.id }) {
-                            feedbackDetailMessage = updated
+                if action == .thumbsUp {
+                    Button {
+                        Task {
+                            await viewModel.submitThumbsRating(message: message, rating: 1)
+                            // Open detail sheet with the updated message (feedbackId now set)
+                            if let updated = viewModel.messages.first(where: { $0.id == message.id }) {
+                                feedbackDetailMessage = updated
+                            }
                         }
+                        Haptics.play(.light)
+                    } label: {
+                        compactActionIcon(
+                            icon: currentRating == 1 ? "hand.thumbsup.fill" : "hand.thumbsup",
+                            isActive: currentRating == 1
+                        )
                     }
-                    Haptics.play(.light)
-                } label: {
-                    compactActionIcon(
-                        icon: currentRating == 1 ? "hand.thumbsup.fill" : "hand.thumbsup",
-                        isActive: currentRating == 1
-                    )
-                }
-                .buttonStyle(CompactActionButtonStyle())
-                .accessibilityLabel("Thumbs up")
+                    .buttonStyle(CompactActionButtonStyle())
+                    .accessibilityLabel("Thumbs up")
 
-                Button {
-                    Task {
-                        await viewModel.submitThumbsRating(message: message, rating: -1)
-                        if let updated = viewModel.messages.first(where: { $0.id == message.id }) {
-                            feedbackDetailMessage = updated
+                } else {
+                    Button {
+                        Task {
+                            await viewModel.submitThumbsRating(message: message, rating: -1)
+                            if let updated = viewModel.messages.first(where: { $0.id == message.id }) {
+                                feedbackDetailMessage = updated
+                            }
                         }
+                        Haptics.play(.light)
+                    } label: {
+                        compactActionIcon(
+                            icon: currentRating == -1 ? "hand.thumbsdown.fill" : "hand.thumbsdown",
+                            isActive: currentRating == -1
+                        )
                     }
-                    Haptics.play(.light)
-                } label: {
-                    compactActionIcon(
-                        icon: currentRating == -1 ? "hand.thumbsdown.fill" : "hand.thumbsdown",
-                        isActive: currentRating == -1
-                    )
-                }
-                .buttonStyle(CompactActionButtonStyle())
-                .accessibilityLabel("Thumbs down")
-            }
-
-            // Action buttons (from model's configured actions — e.g. Generate Image)
-            if !viewModel.isStreaming {
-                let model = resolveModel(for: message)
-                if let actions = model?.actions, !actions.isEmpty {
-                    ForEach(actions) { action in
-                        Button {
-                            Task { await invokeActionButton(action: action, message: message) }
-                            Haptics.play(.medium)
-                        } label: {
-                            actionButtonIcon(action: action)
-                        }
-                        .buttonStyle(CompactActionButtonStyle())
-                        .accessibilityLabel(action.name)
-                    }
+                    .buttonStyle(CompactActionButtonStyle())
+                    .accessibilityLabel("Thumbs down")
                 }
             }
 
-            Spacer()
         }
     }
 
