@@ -138,6 +138,7 @@ struct ChatDetailView: View {
     /// Whether streaming responses should automatically scroll the chat to the bottom.
     /// Enabled by default (matches existing behaviour). Users can disable in Chat Behavior settings.
     @AppStorage("streamingAutoScroll") private var streamingAutoScroll = true
+    @AppStorage("chatScrollControls") private var chatScrollControls: ChatScrollControls = .upDown
     @AppStorage("suggestionsEnabled") private var suggestionsEnabled = true
 
     // MARK: Message pagination (sliding window — memory optimization)
@@ -1629,9 +1630,8 @@ struct ChatDetailView: View {
             }
         )
 
-        // FAB overlay — attached pill group: ↑ (top half) + ↓ (bottom half) when scrolled away from bottom.
-        // Both appear together as one unit. ↑ is hidden when already at the very top.
-        .overlay(alignment: .bottomTrailing) {
+        // Keep the single bottom control centered above the composer.
+        .overlay(alignment: chatScrollControls == .bottomOnly ? .bottom : .bottomTrailing) {
             scrollFABGroup
                 .animation(MicroAnimation.presence, value: isScrolledUp)
                 .animation(MicroAnimation.presence, value: isAtTop)
@@ -2203,13 +2203,13 @@ struct ChatDetailView: View {
 
     @ViewBuilder
     private var scrollFABGroup: some View {
-        if isScrolledUp && !viewModel.messages.isEmpty && !viewModel.isLoadingConversation {
+        if chatScrollControls != .hidden && isScrolledUp && !viewModel.messages.isEmpty && !viewModel.isLoadingConversation {
             VStack(spacing: 0) {
                 // ↑ FAB — jumps to the previous user question on each tap
                 let total_fab = viewModel.messages.count
                 let effectiveEnd_fab = windowEnd ?? total_fab
                 let hasMoreAbove_fab = max(0, effectiveEnd_fab - windowSize) > 0
-                if !isAtTop || hasMoreAbove_fab {
+                if chatScrollControls == .upDown && (!isAtTop || hasMoreAbove_fab) {
                     Button {
                         // Build sorted list of user message indices from the full message list
                         let allMessages = viewModel.messages
@@ -2337,8 +2337,9 @@ struct ChatDetailView: View {
                     ZStack {
                         Rectangle()
                             .fill(.ultraThinMaterial)
-                            .frame(width: 38, height: 38)
-                        Image(systemName: "chevron.down")
+                            .frame(width: chatScrollControls == .bottomOnly ? 44 : 38,
+                                   height: chatScrollControls == .bottomOnly ? 44 : 38)
+                        Image(systemName: chatScrollControls == .bottomOnly ? "arrow.down" : "chevron.down")
                             .scaledFont(size: 13, weight: .bold)
                             .foregroundStyle(theme.textSecondary)
                     }
@@ -2347,13 +2348,13 @@ struct ChatDetailView: View {
                 .contentShape(Rectangle())
                 .accessibilityLabel("Scroll to bottom")
             }
-            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .clipShape(RoundedRectangle(cornerRadius: chatScrollControls == .bottomOnly ? 22 : 12, style: .continuous))
             .overlay(
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                RoundedRectangle(cornerRadius: chatScrollControls == .bottomOnly ? 22 : 12, style: .continuous)
                     .strokeBorder(theme.cardBorder.opacity(0.35), lineWidth: 0.5)
             )
             .shadow(color: .black.opacity(0.18), radius: 8, y: 3)
-            .padding(.trailing, Spacing.md)
+            .padding(.trailing, chatScrollControls == .bottomOnly ? 0 : Spacing.md)
             .padding(.bottom, Spacing.sm)
             .transition(
                 .asymmetric(
