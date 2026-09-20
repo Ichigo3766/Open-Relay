@@ -95,7 +95,10 @@ actor StreamingPipeline {
     // MARK: - Buffer
 
     /// The full accumulated server content (ground truth, append-only).
-    private var buffer: String = ""
+    private var buffer: String = "" {
+        didSet { needsDrain = true }
+    }
+    private var needsDrain = true
 
     // MARK: - Display cursor
 
@@ -224,12 +227,14 @@ actor StreamingPipeline {
     /// Append new server content. Content is always the full accumulated string.
     func append(_ content: String) {
         guard !isFinishing else { return }
+        if content.count < displayedCount { resetState() }
         buffer = content
     }
 
     /// Signal that the server has finished sending tokens.
     /// The timer keeps running to drain the remaining buffer, then stops.
     func finish() {
+        needsDrain = true
         isFinishing = true
     }
 
@@ -245,6 +250,7 @@ actor StreamingPipeline {
         // an aborted session that may have been reset between the Task dispatch
         // and this actor call.
         guard !isFinishing else { return }
+        if content.count < displayedCount { resetState() }
         buffer = content
         isFinishing = true
     }
@@ -303,6 +309,7 @@ actor StreamingPipeline {
     // MARK: - Drain tick (runs inside actor isolation, off main thread)
 
     private func drainTick() {
+        guard needsDrain else { return }
         let full = buffer
 
         // Finish-exit: drain to zero when the server is done.
@@ -318,10 +325,12 @@ actor StreamingPipeline {
         // BEFORE the unclosed tag normally — only text inside the partial block is held.
         // Fall through when isFinishing so content isn't left invisible if the server
         // closes abnormally.
-        if !isFinishing {
+        let hasDetailsMarker = full.utf8.contains(UInt8(ascii: "<"))
+        if !isFinishing && hasDetailsMarker {
             let hasUnclosedTool = toolCallFlags(for: full).hasUnclosed
             let hasUnclosedReasoning = reasoningFlags(for: full).hasUnclosed
             if hasUnclosedTool || hasUnclosedReasoning {
+                needsDrain = false
                 // Find the character offset of the first unclosed <details opening tag.
                 // Allow the drain cursor to advance up to that boundary so prose that
                 // arrived before the tag is still revealed to the user in real-time.
@@ -336,7 +345,7 @@ actor StreamingPipeline {
         }
 
         // ── Closed tool call fast-forward ─────────────────────────────────────
-        if toolCallFlags(for: full).hasClosed {
+        if hasDetailsMarker && toolCallFlags(for: full).hasClosed {
             if let lastEnd = Self.lastToolCallDetailsEnd(in: full), displayedCount < lastEnd {
                 let endIdx = full.index(full.startIndex, offsetBy: lastEnd)
                 displayedCount = lastEnd
@@ -357,7 +366,7 @@ actor StreamingPipeline {
         // Mirrors the tool_calls path: once a <details type="reasoning"> block
         // closes, instantly reveal everything up to and including it so the
         // ToolCallView renderer (not StreamingMarkdownView) shows it.
-        if reasoningFlags(for: full).hasClosed {
+        if hasDetailsMarker && reasoningFlags(for: full).hasClosed {
             if let lastEnd = Self.lastReasoningDetailsEnd(in: full), displayedCount < lastEnd {
                 let endIdx = full.index(full.startIndex, offsetBy: lastEnd)
                 displayedCount = lastEnd
@@ -390,7 +399,10 @@ actor StreamingPipeline {
         // Keep-back: reserve a couple chars while streaming to prevent the cursor
         // catching up to zero and stalling when the server briefly pauses.
         let effectiveBuffered = isFinishing ? currentBuffered : max(0, currentBuffered - tailReserve)
-        guard effectiveBuffered > 0 else { return }
+        guard effectiveBuffered > 0 else {
+            needsDrain = false
+            return
+        }
 
         let latency = isFinishing ? finishingLatencyFrames : targetLatencyFrames
 
@@ -439,6 +451,7 @@ actor StreamingPipeline {
     private static let proseBoundaryHysteresis: Int = 1200
 
     private func updateProseBoundary(in dc: String, effectiveFrozen: Int) {
+        guard displayedCount > frozenProseBoundaryOffset + Self.proseBoundaryHysteresis else { return }
         if effectiveFrozen > 0 {
             guard dc.count > effectiveFrozen else { return }
             let tailStartIdx = dc.index(dc.startIndex, offsetBy: effectiveFrozen)
@@ -542,6 +555,10 @@ actor StreamingPipeline {
         let count = content.utf8.count
         if let cached = _livePreviewFenceCache, cached.contentCount == count {
             return cached.hasOpen
+        }
+        guard content.utf8.contains(UInt8(ascii: "`")) || content.utf8.contains(UInt8(ascii: "@")) else {
+            _livePreviewFenceCache = (count, false)
+            return false
         }
         let fences = ["```html\n", "```svg\n", "```mermaid\n",
                       "```chart\n", "```chartjs\n", "```echarts\n",
