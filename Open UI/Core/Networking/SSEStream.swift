@@ -5,9 +5,7 @@ import Foundation
 /// Yields individual SSE data payloads as strings, handling the `data:` prefix
 /// and the `[DONE]` terminator used by OpenAI-compatible APIs.
 ///
-/// Uses `AsyncBytes.lines` for correct UTF-8 line splitting, avoiding
-/// the byte-by-byte `UnicodeScalar` approach that corrupts multi-byte
-/// characters (emoji, CJK, accented Latin, etc.).
+/// Preserves SSE blank-line delimiters and decodes complete UTF-8 lines.
 struct SSEStream: AsyncSequence {
     typealias Element = SSEEvent
 
@@ -21,26 +19,29 @@ struct SSEStream: AsyncSequence {
         AsyncIterator(bytes: bytes, stallTimeout: stallTimeout)
     }
 
-    // MARK: - Class-boxed line iterator
-    //
-    // `withTaskGroup` closures are `@Sendable`, which means they cannot capture
-    // `inout` (mutating) struct state. `AsyncLineSequence.AsyncIterator` is a struct
-    // with a `mutating func next()`, so we wrap it in a final class to allow safe
-    // concurrent access from the timeout-race task group below.
+    // Preserve blank event separators; AsyncBytes.lines omits empty lines.
     private final class LineIteratorBox: @unchecked Sendable {
-        // nonisolated(unsafe) lets Swift 6 call the mutating `next()` on this var
-        // without actor isolation. Safe because `next()` is never called concurrently —
-        // only the owning `AsyncIterator.next()` mutates it, sequentially.
-        nonisolated(unsafe) var iterator: AsyncLineSequence<URLSession.AsyncBytes>.AsyncIterator
+        nonisolated(unsafe) var iterator: URLSession.AsyncBytes.Iterator
+        private var skipLF = false
 
         init(_ bytes: URLSession.AsyncBytes) {
-            self.iterator = bytes.lines.makeAsyncIterator()
+            iterator = bytes.makeAsyncIterator()
         }
 
-        /// Calls the underlying mutating `next()`. Only ever called from the owning
-        /// `AsyncIterator.next()` — never concurrently — so `@unchecked Sendable` is safe.
         func next() async throws -> String? {
-            try await iterator.next()
+            var line: [UInt8] = []
+            while let byte = try await iterator.next() {
+                if skipLF {
+                    skipLF = false
+                    if byte == 10 { continue }
+                }
+                if byte == 10 || byte == 13 {
+                    skipLF = byte == 13
+                    return String(decoding: line, as: UTF8.self)
+                }
+                line.append(byte)
+            }
+            return line.isEmpty ? nil : String(decoding: line, as: UTF8.self)
         }
     }
 
@@ -99,17 +100,18 @@ struct SSEStream: AsyncSequence {
                 }
 
                 // Empty line = end of event block in SSE spec — dispatch accumulated data
-                if line.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                if line.isEmpty {
                     if !pendingDataLines.isEmpty {
                         return flushPendingEvent()
                     }
                     continue
                 }
 
-                let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+                let trimmed = line
 
-                if trimmed.hasPrefix("data: ") {
-                    let payload = String(trimmed.dropFirst(6))
+                if trimmed.hasPrefix("data:") {
+                    var payload = String(trimmed.dropFirst(5))
+                    if payload.first == " " { payload.removeFirst() }
                     // Fast path: single-line [DONE] — flush any pending lines first, then done
                     if payload == "[DONE]" {
                         if !pendingDataLines.isEmpty {
