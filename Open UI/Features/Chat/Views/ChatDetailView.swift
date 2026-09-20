@@ -431,11 +431,17 @@ struct ChatDetailView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .chatChromeBar(edge: .top) {
-            customTopBar
-                // Dissolve-into-top effect: fade out + subtle upward drift.
-                .opacity(navBarHidden ? 0 : 1)
-                .offset(y: navBarHidden ? -20 : 0)
-                .animation(.easeOut(duration: 0.25), value: navBarHidden)
+            // Removing the view from the tree (rather than just fading it) causes
+            // safeAreaBar / safeAreaInset to collapse to zero height, so the entire
+            // bar area disappears — not just the content inside it.
+            // All navBarHidden mutations are already wrapped in withAnimation(.easeOut)
+            // at the scroll-handler sites, so the transition animates automatically.
+            if !navBarHidden {
+                customTopBar
+                    .transition(
+                        .opacity.combined(with: .offset(y: -20))
+                    )
+            }
         }
         .chatChromeBar(edge: .bottom) {
             if editingMessageId != nil {
@@ -1878,8 +1884,18 @@ struct ChatDetailView: View {
                 // exactly the "flick then snap back" behaviour shown in the video.
                 // Setting isScrolledUp here keeps the pump suppressed after deceleration
                 // until the user explicitly taps the ↓ FAB to re-engage auto-scroll.
+                //
+                // IMPORTANT: Only do this if the user actually scrolled UP (away from bottom).
+                // If the user manually scrolled to the bottom and lifts their finger, we
+                // should NOT show the FAB. Use a computed distance from the cached sizes —
+                // not perfect but good enough for this phase-change callback.
                 if viewModel.isStreaming && !isScrolledUp {
-                    isScrolledUp = true
+                    let distAtDecel = max(0, viewState_contentHeight - viewState_containerHeight)
+                    // Only show FAB if the user is clearly away from the bottom (> 60pt).
+                    // This prevents the FAB appearing when coasting after a manual scroll-to-bottom.
+                    if distAtDecel > 60 {
+                        isScrolledUp = true
+                    }
                 }
             case .idle, .interacting:
                 isDecelerating = false
@@ -2009,7 +2025,7 @@ struct ChatDetailView: View {
             // pinned to 0 by the OS — distanceFromBottom would be 0 anyway, but this guard
             // makes the intent explicit and handles sub-pixel edge cases.
             let contentFitsViewport = contentHeight > 0 && contentHeight <= containerHeight
-            if (distanceFromBottom <= 40 || contentFitsViewport) && !isBouncing && !programmaticActive && !viewModel.isStreaming {
+            if (distanceFromBottom <= 40 || contentFitsViewport) && !isBouncing && !programmaticActive {
                 // Only re-engage auto-scroll (clear isScrolledUp) when the user is NOT in the
                 // middle of a ↑ FAB jump session. If userMessageJumpIndex is set the user
                 // explicitly navigated to a question mid-conversation — the near-bottom check
@@ -2017,11 +2033,15 @@ struct ChatDetailView: View {
                 if isScrolledUp && userMessageJumpIndex == nil {
                     isScrolledUp = false
                 }
-            } else if isUserDriving && !isBouncing {
+            } else if isUserDriving && !isBouncing && !programmaticActive && distanceFromBottom > 40 {
                 // User's finger (or inertia) is actively driving the scroll view —
                 // the ONLY condition under which auto-scroll is allowed to disengage.
                 // Require a small delta (>2pt) so sub-pixel layout reflow/settling noise
                 // never falsely trips the breakout.
+                // Guard programmaticActive so spring scrolls and bounce recovery can't
+                // falsely re-trigger the FAB after a ↓ FAB tap.
+                // Guard distanceFromBottom so bounce overshoot at the bottom edge never
+                // registers as an upward drag.
                 let upwardDelta = oldOffset.y - newOffset.y
                 if upwardDelta > 2 && !isScrolledUp { isScrolledUp = true }
             }
@@ -2294,6 +2314,7 @@ struct ChatDetailView: View {
                 // ↓ FAB — always shown when isScrolledUp
                 Button {
                     isScrolledUp = false
+                    isUserDriving = false
                     userMessageJumpIndex = nil
                     windowEnd = nil
                     // Do NOT expand windowSize here — mounting the full maxWindowSize

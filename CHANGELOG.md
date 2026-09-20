@@ -1,53 +1,37 @@
 # Changelog
 
-## 📦 NEXT BUILD
+## v5.7 — September 20, 2026
 
 ### What's New
-- Added native glass surfaces to the chat composer and header controls on iOS 26 — messages now scroll cleanly behind glass instead of under gradient fades, and Chat Settings moved into the ••• overflow menu
-- Added customizable message action buttons — hide individual actions (Speak, Copy, Share, Edit, Regenerate, etc.) and drag them into your preferred order in Settings → Chat Behavior → Message Actions
-- Added scroll controls setting in Settings → Chat Behavior — choose between Up and Down buttons (default), a single Scroll to Bottom button, or Hidden
+- Glass surfaces on the chat header and composer on iOS 26 — messages scroll behind glass, Chat Settings moved into the ••• menu
+- Customizable message actions — reorder and hide buttons (Speak, Copy, Share, Edit, Regenerate, etc.) in Settings → Chat Behavior → Message Actions
+- Scroll controls setting in Settings → Chat Behavior — Up/Down buttons, Scroll to Bottom only, or Hidden
 
 ### Improvements
-- Significantly reduced streaming CPU usage — the pipeline now skips redundant reasoning-tag scans and prose-boundary searches during server pauses, and gates `<details>` / tool-call scanning behind a fast single-character check
-- Conversation loading now parses message history off the main thread, eliminating 50–110 ms UI freezes when opening large chats
-- Sidebar date grouping (Today/Yesterday) now pre-computes day boundaries once per update instead of recalculating on every row, noticeably faster with large chat lists
-- Plain-text AI responses (no tool calls or reasoning blocks) skip all regex parsing and return immediately, cutting per-message parse time by ~96%
-- Chat reconciliation after receiving server messages is now O(n) instead of O(n²) — no more slowdown in very long conversations
-- Model metadata preparation now fetches the functions list once and shares it across all resolvers instead of making two separate network requests
-- Inline images with identical content now correctly deduplicate; previously distinct images with matching byte-lengths could resolve to the wrong image
-- Litext text labels now only draw the portion visible on screen, reducing render work for long messages
+- Smoother sidebar open/close — shadow and scrim now fade out gracefully instead of snapping off, with haptic feedback on both open and close
+- Overhauled Face ID / Touch ID sign-in — auto-triggers on the login screen
+- Face ID login settings toggle now shows a clear hint when credentials aren't saved yet, and requires confirmation before removing saved sign-in
+- Faster streaming — the pipeline skips redundant scans during server pauses; plain-text responses skip all parsing entirely
+- Opening large chats no longer freezes the UI — message history now parses off the main thread
+- Scrolling through long conversation lists is faster — sidebar date grouping and chat reconciliation are both significantly more efficient
+- Reduced memory usage — long messages only render visible text, image cache deduplication is fixed, and a markdown parser memory leak is resolved
 
 ### Bug Fixes
-- Fixed LRU chat cache corrupting after starting a new chat — the new conversation's cache entry was never promoted, causing wrong chats to be evicted
-- Fixed model avatar showing a permanent shimmer animation when an image fails to load — now shows the static initials fallback instead
-- Fixed local-only notes being silently deleted when the note cache reached 50 entries — only server-synced notes are now evicted
-- Fixed SSE event stream dropping all events when the server uses blank-line delimiters or omits the space after `data:`
-- Fixed channel thread loading a delayed response overwriting a newly selected thread — responses from superseded loads are now discarded
-- Fixed image cache holding decoded UIImages in memory after NSCache evicted them — the separate strong-reference deduplication map has been removed
-- Fixed automation toggle crashing or modifying the wrong row after the list refreshed during an in-flight network request
-- Fixed "Previous question" scroll button mapping the scroll fraction against total messages instead of the rendered window, jumping to the wrong message
-- Fixed selecting the current chat in the sidebar leaving the drawer open instead of closing it
-- Fixed the search keyboard staying visible after tapping a search result in the sidebar — the keyboard now dismisses when the drawer closes
-- Fixed the "previous question" jump cursor not resetting after manually scrolling, causing subsequent taps to jump to stale positions
-- Fixed voice call hanging when the user taps End before the call fully connects — state guards added at every async suspension point
-- Fixed two intensity-monitoring tasks running simultaneously during a voice call, doubling audio-level polling overhead
-- Fixed an extra error-recovery restart firing on server speech recognition errors during voice calls
-- Fixed voice call failing to retry from the error state when tapping the retry button
-- Fixed server TTS not announcing the speaking state — the voice sheet was stuck on "Thinking…" with no Skip control visible
-- Fixed audio-session notification observers leaking on every TTS pipeline cycle — two notification registrations were never stored or removed
-- Fixed reasoning `<details>` blocks being sent to the TTS speech API and spoken aloud as raw XML
-- Fixed old streaming callbacks clearing a replacement response after Stop and Retry — a generation counter now discards snapshots from superseded pipelines
-- Fixed shorter replacement content leaving the streaming cursor past the end of the buffer, preventing the finish condition from being reached
-- Fixed voice call recording continuing to upload after the call ended — in-flight uploads are now cancelled immediately on hang-up
-- Fixed note autosave firing a full server write on every keystroke instead of debouncing (fix was already in place; confirmed correct)
-- Fixed cmark markdown parser leaking the entire C AST on every parse — `cmark_node_free` is now called via `defer` after the tree is consumed
-- Fixed very long blockquotes rendering blank — oversized blockquotes are now split into chunks the same way paragraphs are
-- Fixed syntax highlighter running the full JavaScript pipeline on `plaintext` code blocks — these now return an empty highlight map immediately
-- Fixed close buttons in Settings and Sources sheets rendering as a circle inside another circle on iOS 26 — replaced with the standard `Button("Close", systemImage: "xmark")` pattern
-- Fixed the expanded message composer only responding to taps on the first text row — the full frame is now the tap target
-
-
-## Previous Builds
+- Fixed scroll FABs remaining visible after tapping the ↓ button or manually scrolling to the bottom
+- Fixed voice call reliability — hang-up before connect, stuck "Thinking…" state, retry button, duplicate audio polling, and recording not stopping on end are all fixed
+- Fixed Stop and Retry leaving a blank response when replacement content was shorter than the original
+- Fixed reasoning blocks being read aloud by TTS
+- Fixed SSE event stream dropping events when the server uses non-standard delimiters
+- Fixed channel thread being overwritten by a delayed response from a previously selected thread
+- Fixed automation toggle crashing when the list refreshed during a network request
+- Fixed "Previous question" button jumping to the wrong message and not resetting after manual scroll
+- Fixed sidebar search keyboard not dismissing after tapping a result
+- Fixed selecting the current chat leaving the sidebar drawer open
+- Fixed notes cache silently deleting local-only notes when it reached capacity
+- Fixed model avatar stuck in shimmer when an image fails to load
+- Fixed swiping from the left edge opening the sidebar behind the terminal file browser panel
+- Fixed close buttons rendering incorrectly on iOS 26
+- Fixed message composer not responding to taps below the first line
 
 ## v5.6.1 — September 17, 2026
 

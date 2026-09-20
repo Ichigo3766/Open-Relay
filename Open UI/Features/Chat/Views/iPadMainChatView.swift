@@ -602,33 +602,35 @@ struct iPadMainChatView: View {
                     .ignoresSafeArea()
                     .allowsHitTesting(false)
             }
-            // Tap or swipe-left to close when drawer is open
+            // Tap or swipe-left to close when drawer is open.
+            // Always in the view tree — hit-testing toggled via .allowsHitTesting()
+            // so removal never causes a visual pop/flicker on close.
             .overlay {
-                if drawerFraction > 0.01 || isDraggingDrawer {
-                    Color.clear
-                        .contentShape(Rectangle())
-                        .onTapGesture { closeDrawerAnimated() }
-                        .gesture(
-                            DragGesture(minimumDistance: 12, coordinateSpace: .local)
-                                .onChanged { value in
-                                    let h = value.translation.width
-                                    guard h < 0 else { return }
-                                    isDraggingDrawer = true
-                                    dragOffset = h
+                let panelActive = drawerFraction > 0.01 || isDraggingDrawer
+                Color.clear
+                    .contentShape(Rectangle())
+                    .allowsHitTesting(panelActive)
+                    .onTapGesture { closeDrawerAnimated() }
+                    .gesture(
+                        DragGesture(minimumDistance: 12, coordinateSpace: .local)
+                            .onChanged { value in
+                                let h = value.translation.width
+                                guard h < 0 else { return }
+                                isDraggingDrawer = true
+                                dragOffset = h
+                            }
+                            .onEnded { value in
+                                guard isDraggingDrawer else { return }
+                                isDraggingDrawer = false
+                                let h = value.translation.width
+                                let v = value.velocity.width
+                                if h < -(drawerWidth * 0.15) || v < -300 {
+                                    closeDrawerAnimated()
+                                } else {
+                                    openDrawerAnimated()
                                 }
-                                .onEnded { value in
-                                    guard isDraggingDrawer else { return }
-                                    isDraggingDrawer = false
-                                    let h = value.translation.width
-                                    let v = value.velocity.width
-                                    if h < -(drawerWidth * 0.15) || v < -300 {
-                                        closeDrawerAnimated()
-                                    } else {
-                                        openDrawerAnimated()
-                                    }
-                                }
-                        )
-                }
+                            }
+                    )
             }
 
             // MARK: Drawer panel
@@ -828,6 +830,7 @@ struct iPadMainChatView: View {
             showDrawer = false
             dragOffset = 0
         }
+        Haptics.play(.soft)
     }
 
     // MARK: - Detail

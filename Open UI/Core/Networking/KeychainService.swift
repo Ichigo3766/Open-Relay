@@ -212,13 +212,62 @@ final class KeychainService: Sendable {
         return status == errSecSuccess
     }
 
-    /// Retrieves the saved biometric credentials for a server.
+    /// Retrieves the saved biometric credentials for a server asynchronously.
     ///
-    /// This call will trigger a Face ID / Touch ID prompt (or passcode fallback).
-    /// `prompt` is the string shown in the system biometric dialog.
+    /// Runs the blocking `SecItemCopyMatching` call on a background thread so
+    /// the main thread is never blocked during Face ID / Touch ID evaluation.
     ///
-    /// Returns `(email, password)` on success, `nil` on failure or cancellation.
-    func loadBiometricCredentials(forServer serverURL: String, prompt: String = "Sign in to Open Relay") -> (email: String, password: String)? {
+    /// - Parameters:
+    ///   - serverURL: The server the credentials are scoped to.
+    ///   - prompt: The localized string shown in the system biometric dialog.
+    ///   - context: An already-evaluated `LAContext`. Pass one when you've already
+    ///     performed a `BiometricService.authenticate()` call and want to reuse
+    ///     the same context (avoids a second Face ID prompt).
+    ///     Pass `nil` (default) to let the Keychain trigger its own Face ID prompt.
+    /// - Returns: `(email, password)` on success, `nil` on failure or cancellation.
+    func loadBiometricCredentials(
+        forServer serverURL: String,
+        prompt: String = "Sign in to Open Relay",
+        context: LAContext? = nil
+    ) async -> (email: String, password: String)? {
+        let key = biometricCredentialKey(for: serverURL)
+        let authContext: LAContext
+        if let existing = context {
+            authContext = existing
+        } else {
+            let fresh = LAContext()
+            fresh.localizedReason = prompt
+            authContext = fresh
+        }
+
+        return await Task.detached(priority: .userInitiated) {
+            var result: AnyObject?
+            let query: [String: Any] = [
+                kSecClass as String: kSecClassGenericPassword,
+                kSecAttrService as String: self.serviceName,
+                kSecAttrAccount as String: key,
+                kSecReturnData as String: true,
+                kSecMatchLimit as String: kSecMatchLimitOne,
+                kSecUseAuthenticationContext as String: authContext,
+                kSecUseOperationPrompt as String: prompt
+            ]
+            let status = SecItemCopyMatching(query as CFDictionary, &result)
+
+            guard status == errSecSuccess,
+                  let data = result as? Data,
+                  let payload = String(data: data, encoding: .utf8) else {
+                return nil
+            }
+
+            let parts = payload.components(separatedBy: "\n")
+            guard parts.count >= 2 else { return nil }
+            return (email: parts[0], password: parts[1...].joined(separator: "\n"))
+        }.value
+    }
+
+    /// Synchronous version kept for backward compatibility.
+    /// Prefer `loadBiometricCredentials(forServer:prompt:context:)` async version.
+    func loadBiometricCredentialsSync(forServer serverURL: String, prompt: String = "Sign in to Open Relay") -> (email: String, password: String)? {
         let key = biometricCredentialKey(for: serverURL)
 
         let context = LAContext()
@@ -229,7 +278,8 @@ final class KeychainService: Sendable {
             kSecAttrAccount as String: key,
             kSecReturnData as String: true,
             kSecMatchLimit as String: kSecMatchLimitOne,
-            kSecUseAuthenticationContext as String: context
+            kSecUseAuthenticationContext as String: context,
+            kSecUseOperationPrompt as String: prompt
         ]
 
         var result: AnyObject?

@@ -202,28 +202,40 @@ struct LoginView: View {
             withAnimation(.spring(response: 0.5, dampingFraction: 0.8).delay(0.2)) {
                 formAppeared = true
             }
+            // Auto-trigger Face ID / Touch ID if it's ready — avoids making the user tap
+            // the button on every launch when biometric login is set up.
+            if viewModel.canUseBiometricLogin {
+                Task {
+                    // Small delay so the form animation completes first, then trigger Face ID.
+                    try? await Task.sleep(nanoseconds: 400_000_000) // 0.4s
+                    await viewModel.loginWithBiometrics()
+                    if viewModel.errorMessage != nil {
+                        withAnimation(.spring(response: 0.3, dampingFraction: 0.5)) {
+                            shakeCount += 1
+                        }
+                    }
+                }
+            }
         }
-        // Prompt to save credentials for Face ID / Touch ID after a successful manual login.
-        // Driven by `viewModel.pendingBiometricSaveCredentials` — login() sets this BEFORE
-        // advancing to .authenticated so the alert is presented while LoginView is still alive.
+        // "Save for Face ID?" alert after a successful manual login.
+        // Driven by `viewModel.showBiometricSavePrompt` — set by login() BEFORE advancing
+        // to .authenticated so the alert appears while LoginView is still in the hierarchy.
         .alert(
             "Save for \(viewModel.biometricTypeName)?",
-            isPresented: Binding(
-                get: { viewModel.pendingBiometricSaveCredentials != nil },
-                set: { if !$0 { viewModel.proceedToAuthenticated() } }
-            )
+            isPresented: $viewModel.showBiometricSavePrompt
         ) {
             Button("Save") {
-                if let creds = viewModel.pendingBiometricSaveCredentials {
-                    viewModel.saveBiometricCredentials(email: creds.email, password: creds.password)
-                }
+                viewModel.saveBiometricCredentials(
+                    email: viewModel.pendingBiometricEmail,
+                    password: viewModel.pendingBiometricPassword
+                )
                 viewModel.proceedToAuthenticated()
             }
             Button("Not Now", role: .cancel) {
                 viewModel.proceedToAuthenticated()
             }
         } message: {
-            Text("Next time you can sign in instantly with \(viewModel.biometricTypeName) — no password needed.")
+            Text("Sign in instantly next time with \(viewModel.biometricTypeName) — no password needed.")
         }
     }
 
@@ -241,7 +253,7 @@ struct LoginView: View {
             }
         } label: {
             HStack(spacing: Spacing.sm) {
-                Image(systemName: biometricIconName)
+                Image(systemName: viewModel.biometricIconName)
                     .scaledFont(size: 16, weight: .medium)
                 Text("Sign in with \(viewModel.biometricTypeName)")
                     .scaledFont(size: 15, weight: .medium)
@@ -258,14 +270,7 @@ struct LoginView: View {
         }
         .buttonStyle(.plain)
         .pressEffect()
-    }
-
-    private var biometricIconName: String {
-        switch viewModel.biometricTypeName {
-        case "Face ID": return "faceid"
-        case "Touch ID": return "touchid"
-        default: return "faceid"
-        }
+        .disabled(viewModel.isLoggingIn)
     }
 
     // MARK: - Login Helper

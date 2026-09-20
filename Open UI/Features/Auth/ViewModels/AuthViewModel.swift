@@ -1779,61 +1779,146 @@ final class AuthViewModel {
 
     // MARK: - Biometric Login
 
-    /// Holds the credentials captured just before `login()` clears the password field,
-    /// when we need to show a "Save for Face ID?" prompt BEFORE advancing to `.authenticated`.
-    /// LoginView observes this and shows the alert; both alert buttons call `proceedToAuthenticated()`.
-    var pendingBiometricSaveCredentials: (email: String, password: String)?
+    /// Holds the email + password captured just before `login()` clears the password,
+    /// when we detect the user should be prompted to save credentials for biometric login.
+    /// LoginView observes `showBiometricSavePrompt` to present the alert.
+    /// These are stored separately from the tuple to be safe across view re-renders.
+    var pendingBiometricEmail: String = ""
+    var pendingBiometricPassword: String = ""
+
+    /// Controls the "Save for Face ID?" alert in LoginView.
+    /// Set to `true` after a successful manual login when biometrics are available
+    /// but no credentials are saved yet. Always reset by `proceedToAuthenticated()`.
+    var showBiometricSavePrompt: Bool = false
+
+    /// Backward-compatible alias so existing references still compile.
+    var pendingBiometricSaveCredentials: (email: String, password: String)? {
+        get {
+            guard showBiometricSavePrompt, !pendingBiometricEmail.isEmpty else { return nil }
+            return (email: pendingBiometricEmail, password: pendingBiometricPassword)
+        }
+        set {
+            if let creds = newValue {
+                pendingBiometricEmail = creds.email
+                pendingBiometricPassword = creds.password
+                showBiometricSavePrompt = true
+            } else {
+                pendingBiometricEmail = ""
+                pendingBiometricPassword = ""
+                showBiometricSavePrompt = false
+            }
+        }
+    }
 
     /// UserDefaults key for the biometric login enabled preference.
     static let biometricLoginEnabledKey = "openui.biometric_login_enabled"
 
-    /// Whether biometric login (Face ID / Touch ID) is enabled.
+    /// Whether biometric login (Face ID / Touch ID) is enabled by the user.
     var biometricLoginEnabled: Bool {
         get { UserDefaults.standard.bool(forKey: Self.biometricLoginEnabledKey) }
         set { UserDefaults.standard.set(newValue, forKey: Self.biometricLoginEnabledKey) }
     }
 
     /// Whether Face ID / Touch ID is available on this device AND credentials are saved
-    /// for the active server. Both must be true for the biometric button to appear.
+    /// for the active server. Both must be true for the biometric button to appear on the login screen.
     var canUseBiometricLogin: Bool {
-        guard KeychainService.shared.isBiometricsAvailable,
+        guard BiometricService.shared.canUseBiometrics,
               let serverURL = serverConfigStore.activeServer?.url else { return false }
         return biometricLoginEnabled && KeychainService.shared.hasBiometricCredentials(forServer: serverURL)
     }
 
-    /// The biometric type name for the active device ("Face ID" / "Touch ID").
-    var biometricTypeName: String {
-        KeychainService.shared.biometricTypeName ?? "Biometrics"
+    /// Whether biometrics are enrolled on this device (regardless of whether login is enabled).
+    var isBiometricsAvailable: Bool {
+        BiometricService.shared.canUseBiometrics
     }
 
-    /// Triggers biometric authentication and, if successful, fills in the credentials
-    /// and submits login automatically.
+    /// The biometric type name for the active device ("Face ID" / "Touch ID" / "Optic ID").
+    var biometricTypeName: String {
+        BiometricService.shared.biometricTypeName
+    }
+
+    /// SF Symbol icon name for the current biometric type.
+    var biometricIconName: String {
+        BiometricService.shared.biometricIconName
+    }
+
+    /// Triggers biometric authentication via Face ID / Touch ID, then retrieves
+    /// saved credentials and performs a full login.
     ///
-    /// The Keychain itself shows the Face ID / Touch ID prompt when we read the
-    /// protected item — so we don't need a separate `LAContext.evaluatePolicy` call.
+    /// Flow:
+    /// 1. `BiometricService.authenticate()` — shows the Face ID / Touch ID system dialog.
+    /// 2. On success, retrieve credentials from Keychain (no second Face ID prompt since
+    ///    we reuse the evaluated LAContext).
+    /// 3. Submit credentials to the server.
+    ///
+    /// If Face ID is cancelled or fails silently, we do nothing (let the user use the form).
+    /// If Face ID fails with a real error (lockout, not enrolled), we show a message.
     func loginWithBiometrics() async {
         guard let serverURL = serverConfigStore.activeServer?.url else {
             errorMessage = "No server configured."
             return
         }
 
-        isLoggingIn = true
-        errorMessage = nil
-
-        // loadBiometricCredentials triggers the system biometric prompt
-        guard let credentials = KeychainService.shared.loadBiometricCredentials(
-            forServer: serverURL,
-            prompt: "Sign in to Open Relay"
-        ) else {
-            // User cancelled or biometrics failed — don't show an error,
-            // just let them use the manual form
-            isLoggingIn = false
+        guard canUseBiometricLogin else {
+            // Biometrics not available or no credentials saved — shouldn't reach here
+            // if the button visibility is correct, but guard defensively.
+            errorMessage = "Biometric sign-in is not set up. Please sign in with your password."
             return
         }
 
-        // Fill in fields (visible feedback while logging in)
+        isLoggingIn = true
+        errorMessage = nil
+
+        // Step 1: Authenticate with Face ID / Touch ID via BiometricService.
+        // This shows the system dialog and returns the evaluated LAContext on success.
+        let authResult = await BiometricService.shared.authenticate(
+            reason: "Sign in to Open Relay"
+        )
+
+        let evaluatedContext: LAContext
+        switch authResult {
+        case .failure(let biometricError):
+            isLoggingIn = false
+            if biometricError.isSilent {
+                // User cancelled or system interrupted — silently abort, let them use the form
+                logger.info("Biometric login cancelled by user")
+                return
+            }
+            if case .lockout = biometricError {
+                // Locked out — delete stored credentials so the button disappears
+                // and the user must use password + re-enroll Face ID
+                KeychainService.shared.deleteBiometricCredentials(forServer: serverURL)
+                biometricLoginEnabled = false
+            }
+            errorMessage = biometricError.errorDescription
+            logger.warning("Biometric auth error: \(biometricError.errorDescription ?? "unknown")")
+            return
+
+        case .success(let context):
+            // Face ID passed — capture the evaluated context so we can reuse it
+            // in the Keychain call below (avoids a second Face ID prompt).
+            evaluatedContext = context
+        }
+
+        // Step 2: Retrieve credentials from Keychain, passing the already-evaluated
+        // LAContext so the OS knows Face ID was already satisfied and skips a second prompt.
+        guard let credentials = await KeychainService.shared.loadBiometricCredentials(
+            forServer: serverURL,
+            prompt: "Sign in to Open Relay",
+            context: evaluatedContext
+        ) else {
+            isLoggingIn = false
+            // Credentials missing or Keychain error — clear the stale setting
+            KeychainService.shared.deleteBiometricCredentials(forServer: serverURL)
+            biometricLoginEnabled = false
+            errorMessage = "Saved sign-in was removed. Please sign in with your password."
+            logger.warning("Biometric credentials not found in Keychain after Face ID success for \(serverURL)")
+            return
+        }
+
+        // Step 3: Submit to server.
+        // Show the email in the field for visual feedback, but never display the password.
         email = credentials.email
-        // Don't set password field — log in silently, don't display the password
 
         do {
             guard let client = dependencies?.apiClient else {
@@ -1861,10 +1946,11 @@ final class AuthViewModel {
             let apiError = APIError.from(error)
             if case .httpError(let code, let msg, _) = apiError {
                 if code == 401 {
-                    // Credentials may have changed — delete saved biometric credentials
-                    // so the user isn't stuck in a loop
+                    // Password changed on server — remove stale biometric credentials
+                    // so the button disappears and the user signs in manually
                     KeychainService.shared.deleteBiometricCredentials(forServer: serverURL)
-                    errorMessage = "Saved credentials are no longer valid. Please sign in manually."
+                    biometricLoginEnabled = false
+                    errorMessage = "Your saved sign-in is no longer valid. Please sign in with your password and enable Face ID again."
                 } else if code == 403 {
                     errorMessage = msg ?? "Account is not active. Contact your administrator."
                 } else {
@@ -1873,7 +1959,7 @@ final class AuthViewModel {
             } else {
                 errorMessage = apiError.errorDescription
             }
-            logger.error("Biometric login failed: \(error.localizedDescription)")
+            logger.error("Biometric login failed (server error): \(error.localizedDescription)")
         }
 
         isLoggingIn = false
@@ -1892,14 +1978,16 @@ final class AuthViewModel {
             biometricLoginEnabled = true
             logger.info("Biometric credentials saved for \(serverURL)")
         } else {
+            biometricLoginEnabled = false
             logger.warning("Failed to save biometric credentials for \(serverURL)")
         }
     }
 
-    /// Removes saved biometric credentials for the active server.
+    /// Removes saved biometric credentials for the active server and disables biometric login.
     func clearBiometricCredentials() {
         guard let serverURL = serverConfigStore.activeServer?.url else { return }
         KeychainService.shared.deleteBiometricCredentials(forServer: serverURL)
+        biometricLoginEnabled = false
         logger.info("Biometric credentials cleared for \(serverURL)")
     }
 

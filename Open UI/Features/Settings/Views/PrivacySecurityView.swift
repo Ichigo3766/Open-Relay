@@ -147,75 +147,103 @@ struct PrivacySecurityView: View {
     @ViewBuilder
     private var biometricRow: some View {
         let typeName = authVM.biometricTypeName
-        let iconName: String = {
-            switch typeName {
-            case "Face ID": return "faceid"
-            case "Touch ID": return "touchid"
-            default: return "faceid"
-            }
-        }()
+        let iconName = authVM.biometricIconName
+        let hasCredentials = authVM.canUseBiometricLogin
         let isEnabled = authVM.biometricLoginEnabled
-        let hasCredentials = authVM.canUseBiometricLogin || isEnabled
+        let hasStoredCreds: Bool = {
+            guard let url = authVM.currentServerURL else { return false }
+            return KeychainService.shared.hasBiometricCredentials(forServer: url)
+        }()
 
-        HStack(spacing: 12) {
-            ZStack {
-                RoundedRectangle(cornerRadius: 8)
-                    .fill(Color.purple.opacity(0.15))
-                    .frame(width: 32, height: 32)
-                Image(systemName: iconName)
-                    .scaledFont(size: 14, weight: .medium)
-                    .foregroundStyle(Color.purple)
-            }
-
-            VStack(alignment: .leading, spacing: 2) {
-                Text(typeName)
-                    .scaledFont(size: 15)
-                    .foregroundStyle(theme.textPrimary)
-                Text(biometricSubtitle(isEnabled: isEnabled, hasCredentials: hasCredentials))
-                    .scaledFont(size: 12)
-                    .foregroundStyle(theme.textSecondary)
-                    .lineLimit(2)
-            }
-
-            Spacer()
-
-            Toggle("", isOn: Binding(
-                get: { isEnabled },
-                set: { newValue in
-                    if newValue {
-                        // Can only enable if credentials are already saved
-                        // (done automatically after manual login)
-                        if authVM.currentServerURL != nil,
-                           KeychainService.shared.hasBiometricCredentials(
-                               forServer: authVM.currentServerURL ?? "") {
-                            authVM.biometricLoginEnabled = true
-                        } else {
-                            // No credentials saved yet — turning on is a no-op;
-                            // the user will be prompted to save after their next manual login.
-                            authVM.biometricLoginEnabled = true
-                        }
-                    } else {
-                        // Turning off: clear credentials and disable
-                        authVM.clearBiometricCredentials()
-                        authVM.biometricLoginEnabled = false
-                    }
+        VStack(spacing: 0) {
+            HStack(spacing: 12) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 8)
+                        .fill(Color.purple.opacity(0.15))
+                        .frame(width: 32, height: 32)
+                    Image(systemName: iconName)
+                        .scaledFont(size: 14, weight: .medium)
+                        .foregroundStyle(Color.purple)
                 }
-            ))
-            .labelsHidden()
-            .tint(Color.purple)
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(typeName)
+                        .scaledFont(size: 15)
+                        .foregroundStyle(theme.textPrimary)
+                    Text(biometricSubtitle(isEnabled: isEnabled, hasCredentials: hasCredentials, hasStoredCreds: hasStoredCreds))
+                        .scaledFont(size: 12)
+                        .foregroundStyle(theme.textSecondary)
+                        .lineLimit(2)
+                }
+
+                Spacer()
+
+                Toggle("", isOn: Binding(
+                    get: { isEnabled },
+                    set: { newValue in
+                        if newValue {
+                            if hasStoredCreds {
+                                // Credentials already saved — just re-enable the feature
+                                authVM.biometricLoginEnabled = true
+                            } else {
+                                // No credentials yet — enable the flag so the save prompt
+                                // appears after the user's next manual login
+                                authVM.biometricLoginEnabled = true
+                            }
+                        } else {
+                            // Show confirmation before wiping credentials
+                            showDisableBiometricsConfirm = true
+                        }
+                    }
+                ))
+                .labelsHidden()
+                .tint(Color.purple)
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 10)
+
+            // "Not set up yet" hint row — only shown when enabled but no creds saved
+            if isEnabled && !hasStoredCreds {
+                Divider().padding(.leading, 60)
+                HStack(spacing: 8) {
+                    Image(systemName: "info.circle")
+                        .scaledFont(size: 12)
+                        .foregroundStyle(Color.orange)
+                    Text("Sign in with your password once to save your credentials for \(typeName).")
+                        .scaledFont(size: 12)
+                        .foregroundStyle(theme.textSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Spacer()
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 8)
+            }
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 10)
+        .confirmationDialog(
+            "Disable \(typeName)?",
+            isPresented: $showDisableBiometricsConfirm,
+            titleVisibility: .visible
+        ) {
+            Button("Disable & Remove Saved Sign-In", role: .destructive) {
+                authVM.clearBiometricCredentials()
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Your saved sign-in credentials will be removed. You'll need to sign in with your password and re-enable \(typeName).")
+        }
     }
 
-    private func biometricSubtitle(isEnabled: Bool, hasCredentials: Bool) -> String {
-        if !isEnabled {
+    private func biometricSubtitle(isEnabled: Bool, hasCredentials: Bool, hasStoredCreds: Bool) -> String {
+        guard isEnabled else {
             return "Sign in instantly without typing your password"
         }
         if hasCredentials {
-            return "Enabled — sign in with \(authVM.biometricTypeName)"
+            return "Enabled — tap to sign in with \(authVM.biometricTypeName)"
         }
-        return "Enabled — sign in manually once to save credentials"
+        if hasStoredCreds {
+            return "Enabled — credentials saved"
+        }
+        return "Enabled — sign in once to set up"
     }
 
     // MARK: - Location Row

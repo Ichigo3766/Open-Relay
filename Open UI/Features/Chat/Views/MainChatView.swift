@@ -332,7 +332,7 @@ struct MainChatView: View {
             // Also handles taps so touches on the left half of the hamburger button
             // (which overlaps this zone) still open the drawer.
             .overlay(alignment: .leading) {
-                if !showDrawer && !isDraggingFileBrowser {
+                if !showDrawer && !isDraggingFileBrowser && !showFileBrowser {
                     Color.clear
                         .frame(width: 20)
                         .frame(maxHeight: .infinity)
@@ -462,56 +462,56 @@ struct MainChatView: View {
                     .ignoresSafeArea()
                     .allowsHitTesting(false)
             }
-            // Unified tap/swipe-to-close overlay — active whenever either panel is open
-            // OR a drag is in progress. Enabling this as a separate overlay layer means
-            // the open-drag gesture on the NavigationStack is never cancelled by
-            // hitting its own interaction-blocking (the old .allowsHitTesting pattern).
+            // Unified tap/swipe-to-close overlay — always in the view tree so
+            // removal never causes a visual pop/flicker. Hit-testing is toggled
+            // via .allowsHitTesting() rather than an if/else branch, keeping
+            // the overlay identity stable across the open↔close transition.
             .overlay {
-                if maxPanelFraction > 0.01 || isDraggingDrawer || isDraggingFileBrowser {
-                    Color.clear
-                        .contentShape(Rectangle())
-                        .onTapGesture {
-                            if drawerFraction >= fileBrowserFraction {
-                                closeDrawerAnimated()
-                            } else {
-                                closeFileBrowserAnimated()
-                            }
+                let panelActive = maxPanelFraction > 0.01 || isDraggingDrawer || isDraggingFileBrowser
+                Color.clear
+                    .contentShape(Rectangle())
+                    .allowsHitTesting(panelActive)
+                    .onTapGesture {
+                        if drawerFraction >= fileBrowserFraction {
+                            closeDrawerAnimated()
+                        } else {
+                            closeFileBrowserAnimated()
                         }
-                        .gesture(
-                            DragGesture(minimumDistance: 12, coordinateSpace: .local)
-                                .onChanged { value in
-                                    let h = value.translation.width
-                                    if drawerFraction >= fileBrowserFraction {
-                                        guard h < 0 else { return }
-                                        isDraggingDrawer = true
-                                        dragOffset = h
+                    }
+                    .gesture(
+                        DragGesture(minimumDistance: 12, coordinateSpace: .local)
+                            .onChanged { value in
+                                let h = value.translation.width
+                                if drawerFraction >= fileBrowserFraction {
+                                    guard h < 0 else { return }
+                                    isDraggingDrawer = true
+                                    dragOffset = h
+                                } else {
+                                    guard h > 0 else { return }
+                                    isDraggingFileBrowser = true
+                                    fileBrowserDragOffset = h
+                                }
+                            }
+                            .onEnded { value in
+                                let h = value.translation.width
+                                let v = value.velocity.width
+                                if isDraggingDrawer {
+                                    isDraggingDrawer = false
+                                    if h < -(drawerWidth * 0.15) || v < -300 {
+                                        closeDrawerAnimated()
                                     } else {
-                                        guard h > 0 else { return }
-                                        isDraggingFileBrowser = true
-                                        fileBrowserDragOffset = h
+                                        openDrawerAnimated()
+                                    }
+                                } else if isDraggingFileBrowser {
+                                    isDraggingFileBrowser = false
+                                    if h > fileBrowserWidth * 0.15 || v > 300 {
+                                        closeFileBrowserAnimated()
+                                    } else {
+                                        openFileBrowserAnimated()
                                     }
                                 }
-                                .onEnded { value in
-                                    let h = value.translation.width
-                                    let v = value.velocity.width
-                                    if isDraggingDrawer {
-                                            isDraggingDrawer = false
-                                            if h < -(drawerWidth * 0.15) || v < -300 {
-                                                closeDrawerAnimated()
-                                            } else {
-                                                openDrawerAnimated()
-                                            }
-                                        } else if isDraggingFileBrowser {
-                                            isDraggingFileBrowser = false
-                                            if h > fileBrowserWidth * 0.15 || v > 300 {
-                                                closeFileBrowserAnimated()
-                                            } else {
-                                                openFileBrowserAnimated()
-                                            }
-                                        }
-                                }
-                        )
-                }
+                            }
+                    )
             }
 
             // MARK: Drawer
@@ -590,7 +590,9 @@ struct MainChatView: View {
             // selection, scroll views — so the content freezes instantly as the drawer slides in.
             // Also handles taps so that touches on the left half of the hamburger button
             // (which overlaps this zone) still open the drawer reliably.
-            if !showDrawer && !isDraggingFileBrowser {
+            // NOTE: Also disabled when the file browser is open so that swiping from the
+            // left edge cannot open the drawer behind the file browser panel.
+            if !showDrawer && !isDraggingFileBrowser && !showFileBrowser {
                 Color.clear
                     .frame(width: 20)
                     .frame(maxHeight: .infinity)
@@ -1486,6 +1488,7 @@ struct MainChatView: View {
             showDrawer = false
             dragOffset = 0
         }
+        Haptics.play(.soft)
     }
 
     // MARK: - File Browser Open/Close (right panel, mirrors drawer)
