@@ -7,7 +7,7 @@ import Foundation
 /// - on: true — always think
 /// - off: false — never think
 /// - custom: budget string (e.g. "medium", "8192")
-enum ThinkMode: Equatable, Sendable {
+nonisolated enum ThinkMode: Equatable, Sendable {
     case `default`
     case on
     case off
@@ -38,7 +38,7 @@ enum ThinkMode: Equatable, Sendable {
 
 /// Per-chat override params. All fields are optional (nil = use model/server default).
 /// Stored in `Conversation.chatParams` and persisted alongside the conversation.
-struct ChatAdvancedParams: Codable, Sendable, Equatable {
+nonisolated struct ChatAdvancedParams: Codable, Sendable, Equatable {
 
     // MARK: Basic
     var systemPrompt: String?

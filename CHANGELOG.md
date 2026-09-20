@@ -1,5 +1,49 @@
 # Changelog
 
+## 📦 NEXT BUILD
+
+### Improvements
+- Significantly reduced streaming CPU usage — the pipeline now skips redundant reasoning-tag scans and prose-boundary searches during server pauses, and gates `<details>` / tool-call scanning behind a fast single-character check
+- Conversation loading now parses message history off the main thread, eliminating 50–110 ms UI freezes when opening large chats
+- Sidebar date grouping (Today/Yesterday) now pre-computes day boundaries once per update instead of recalculating on every row, noticeably faster with large chat lists
+- Plain-text AI responses (no tool calls or reasoning blocks) skip all regex parsing and return immediately, cutting per-message parse time by ~96%
+- Chat reconciliation after receiving server messages is now O(n) instead of O(n²) — no more slowdown in very long conversations
+- Model metadata preparation now fetches the functions list once and shares it across all resolvers instead of making two separate network requests
+- Inline images with identical content now correctly deduplicate; previously distinct images with matching byte-lengths could resolve to the wrong image
+- Litext text labels now only draw the portion visible on screen, reducing render work for long messages
+
+### Bug Fixes
+- Fixed LRU chat cache corrupting after starting a new chat — the new conversation's cache entry was never promoted, causing wrong chats to be evicted
+- Fixed model avatar showing a permanent shimmer animation when an image fails to load — now shows the static initials fallback instead
+- Fixed local-only notes being silently deleted when the note cache reached 50 entries — only server-synced notes are now evicted
+- Fixed SSE event stream dropping all events when the server uses blank-line delimiters or omits the space after `data:`
+- Fixed channel thread loading a delayed response overwriting a newly selected thread — responses from superseded loads are now discarded
+- Fixed image cache holding decoded UIImages in memory after NSCache evicted them — the separate strong-reference deduplication map has been removed
+- Fixed automation toggle crashing or modifying the wrong row after the list refreshed during an in-flight network request
+- Fixed "Previous question" scroll button mapping the scroll fraction against total messages instead of the rendered window, jumping to the wrong message
+- Fixed selecting the current chat in the sidebar leaving the drawer open instead of closing it
+- Fixed the search keyboard staying visible after tapping a search result in the sidebar — the keyboard now dismisses when the drawer closes
+- Fixed the "previous question" jump cursor not resetting after manually scrolling, causing subsequent taps to jump to stale positions
+- Fixed voice call hanging when the user taps End before the call fully connects — state guards added at every async suspension point
+- Fixed two intensity-monitoring tasks running simultaneously during a voice call, doubling audio-level polling overhead
+- Fixed an extra error-recovery restart firing on server speech recognition errors during voice calls
+- Fixed voice call failing to retry from the error state when tapping the retry button
+- Fixed server TTS not announcing the speaking state — the voice sheet was stuck on "Thinking…" with no Skip control visible
+- Fixed audio-session notification observers leaking on every TTS pipeline cycle — two notification registrations were never stored or removed
+- Fixed reasoning `<details>` blocks being sent to the TTS speech API and spoken aloud as raw XML
+- Fixed old streaming callbacks clearing a replacement response after Stop and Retry — a generation counter now discards snapshots from superseded pipelines
+- Fixed shorter replacement content leaving the streaming cursor past the end of the buffer, preventing the finish condition from being reached
+- Fixed voice call recording continuing to upload after the call ended — in-flight uploads are now cancelled immediately on hang-up
+- Fixed note autosave firing a full server write on every keystroke instead of debouncing (fix was already in place; confirmed correct)
+- Fixed cmark markdown parser leaking the entire C AST on every parse — `cmark_node_free` is now called via `defer` after the tree is consumed
+- Fixed very long blockquotes rendering blank — oversized blockquotes are now split into chunks the same way paragraphs are
+- Fixed syntax highlighter running the full JavaScript pipeline on `plaintext` code blocks — these now return an empty highlight map immediately
+- Fixed close buttons in Settings and Sources sheets rendering as a circle inside another circle on iOS 26 — replaced with the standard `Button("Close", systemImage: "xmark")` pattern
+- Fixed the expanded message composer only responding to taps on the first text row — the full frame is now the tap target
+
+
+## Previous Builds
+
 ## v5.6.1 — September 17, 2026
 
 ### Improvements

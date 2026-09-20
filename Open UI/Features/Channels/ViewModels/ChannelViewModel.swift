@@ -774,7 +774,11 @@ final class ChannelViewModel {
     
     // MARK: - Threading
     
+    private var threadLoadGeneration = 0
+
     func openThread(for message: ChannelMessage) async {
+        threadLoadGeneration &+= 1
+        let generation = threadLoadGeneration
         let isRefresh = threadParentMessage?.id == message.id && !threadMessages.isEmpty
         
         if !isRefresh {
@@ -796,6 +800,7 @@ final class ChannelViewModel {
                 channelId: channelId,
                 messageId: message.id
             )
+            guard generation == threadLoadGeneration else { return }
             let chronological = fetched.reversed()
             
             if isRefresh {
@@ -815,7 +820,7 @@ final class ChannelViewModel {
             logger.error("Failed to load thread: \(error.localizedDescription)")
         }
         
-        isLoadingThread = false
+        if generation == threadLoadGeneration { isLoadingThread = false }
     }
     
     /// Fetches /data for all thread messages that have data. (R-001 applied to threads)
@@ -862,6 +867,8 @@ final class ChannelViewModel {
     }
     
     func closeThread() {
+        threadLoadGeneration &+= 1
+        isLoadingThread = false
         // BUG-006 fix: Clear editing state when closing thread
         cancelEditing()
         threadParentMessage = nil

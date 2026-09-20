@@ -17,6 +17,7 @@ struct Note: Codable, Identifiable, Hashable, Sendable {
     var fileAttachments: [FileAttachmentRef]
     var isPinned: Bool
     var folderId: String?
+    var isLocalOnly: Bool
 
     init(
         id: String = UUID().uuidString,
@@ -28,7 +29,8 @@ struct Note: Codable, Identifiable, Hashable, Sendable {
         audioAttachments: [AudioAttachment] = [],
         fileAttachments: [FileAttachmentRef] = [],
         isPinned: Bool = false,
-        folderId: String? = nil
+        folderId: String? = nil,
+        isLocalOnly: Bool = false
     ) {
         self.id = id
         self.title = title
@@ -40,6 +42,7 @@ struct Note: Codable, Identifiable, Hashable, Sendable {
         self.fileAttachments = fileAttachments
         self.isPinned = isPinned
         self.folderId = folderId
+        self.isLocalOnly = isLocalOnly
     }
 
     // MARK: - Server JSON Parsing

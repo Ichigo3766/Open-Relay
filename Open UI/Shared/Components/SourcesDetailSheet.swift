@@ -27,13 +27,11 @@ struct SourcesDetailSheet: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
-                    Button {
+                    Button("Close", systemImage: "xmark") {
                         dismiss()
-                    } label: {
-                        Image(systemName: "xmark.circle.fill")
-                            .scaledFont(size: 20)
-                            .foregroundStyle(theme.textTertiary)
                     }
+                    .labelStyle(.iconOnly)
+                    .tint(.secondary)
                 }
             }
         }

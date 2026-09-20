@@ -68,6 +68,7 @@ final class StreamingContentStore {
     // MARK: - Private: background actor
 
     private var pipeline: StreamingPipeline?
+    private var generation = 0
 
     /// The full raw server content (stored so `endStreaming()` can return it).
     private var rawServerContent: String = ""
@@ -85,8 +86,10 @@ final class StreamingContentStore {
         isActive = true
         rawServerContent = ""
 
+        generation &+= 1
+        let currentGeneration = generation
         let p = StreamingPipeline { [weak self] snapshot in
-            guard let self else { return }
+            guard let self, self.generation == currentGeneration else { return }
             self.applySnapshot(snapshot)
         }
         pipeline = p
@@ -111,8 +114,10 @@ final class StreamingContentStore {
         isActive = true
         rawServerContent = existingContent
 
+        generation &+= 1
+        let currentGeneration = generation
         let p = StreamingPipeline { [weak self] snapshot in
-            guard let self else { return }
+            guard let self, self.generation == currentGeneration else { return }
             self.applySnapshot(snapshot)
         }
         pipeline = p
@@ -250,6 +255,7 @@ final class StreamingContentStore {
     }
 
     private func completeCleanup() {
+        generation &+= 1
         // Capture and clear the drain completion before modifying any state,
         // so it fires with the final display content still accessible.
         let completion = drainCompletion

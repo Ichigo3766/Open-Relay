@@ -318,6 +318,12 @@ enum ToolCallParser {
     /// position of each `<details>` block relative to surrounding text.
     /// This is the core parser that all other methods delegate to.
     nonisolated static func parseOrdered(_ content: String) -> OrderedParseResult {
+        guard content.contains("<") || content.contains("◁") else {
+            return OrderedParseResult(
+                segments: [.text(content.trimmingCharacters(in: .whitespacesAndNewlines))],
+                allToolCalls: []
+            )
+        }
         // Pre-process: convert raw <think>…</think> tags (sent by models
         // like Qwen, DeepSeek, etc.) into <details type="reasoning"> blocks
         // so the state-machine tokenizer picks them up and renders them as

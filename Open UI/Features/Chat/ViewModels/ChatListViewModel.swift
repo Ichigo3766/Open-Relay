@@ -172,6 +172,9 @@ final class ChatListViewModel {
         var yearBuckets: [String: [Conversation]] = [:]   // e.g. "2025" → [...]
 
         let weekAgo = calendar.date(byAdding: .day, value: -7, to: now)!
+        let todayStart = calendar.startOfDay(for: now)
+        let tomorrowStart = calendar.date(byAdding: .day, value: 1, to: todayStart)!
+        let yesterdayStart = calendar.date(byAdding: .day, value: -1, to: todayStart)!
 
         // Compute the start of the current month for "this month" boundary
         let startOfMonth: Date = {
@@ -185,9 +188,9 @@ final class ChatListViewModel {
 
         for conv in unpinnedConversations {
             let date = conv.updatedAt
-            if calendar.isDateInToday(date) {
+            if date >= todayStart && date < tomorrowStart {
                 today.append(conv)
-            } else if calendar.isDateInYesterday(date) {
+            } else if date >= yesterdayStart && date < todayStart {
                 yesterday.append(conv)
             } else if date > weekAgo {
                 thisWeek.append(conv)

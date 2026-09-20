@@ -76,6 +76,7 @@ final class ServerSpeechRecognitionService {
     /// The API client used for transcription uploads.
     var apiClient: APIClient?
 
+    private var uploadTask: Task<Void, Never>?
     private var recorder: AVAudioRecorder?
     private var recordingURL: URL?
     private var meteringTimer: Timer?
@@ -136,8 +137,8 @@ final class ServerSpeechRecognitionService {
             }
         }
 
-        // Stop any existing session first
-        stopListening()
+        // Discard any previous recording or upload before starting a new session.
+        cancelListening()
         updateState(.requesting)
 
         // Configure audio session.
@@ -150,7 +151,7 @@ final class ServerSpeechRecognitionService {
 
         // Create temp file
         let tempDir = FileManager.default.temporaryDirectory
-        let fileName = "server_stt_\(Int(Date().timeIntervalSince1970)).m4a"
+        let fileName = "server_stt_\(UUID().uuidString).m4a"
         let url = tempDir.appendingPathComponent(fileName)
         recordingURL = url
 
@@ -205,6 +206,21 @@ final class ServerSpeechRecognitionService {
         }
 
         return currentTranscript
+    }
+
+    /// Discards recording and pending transcription without submitting a turn.
+    func cancelListening() {
+        uploadTask?.cancel()
+        uploadTask = nil
+        stopTimers()
+        recorder?.stop()
+        recorder = nil
+        if let url = recordingURL { try? FileManager.default.removeItem(at: url) }
+        recordingURL = nil
+        recordingStartTime = nil
+        hasSpeechStarted = false
+        intensity = 0
+        updateState(.idle)
     }
 
     // MARK: - Private Helpers
@@ -276,7 +292,7 @@ final class ServerSpeechRecognitionService {
     /// Uploads the recorded audio to the server transcription endpoint.
     private func uploadRecording(at url: URL) {
         updateState(.processing)
-        Task {
+        uploadTask = Task {
             defer {
                 try? FileManager.default.removeItem(at: url)
             }
@@ -290,9 +306,10 @@ final class ServerSpeechRecognitionService {
             do {
                 let audioData = try Data(contentsOf: url)
                 guard audioData.count > 1024 else {
-                    // Audio is too short / empty — ignore silently
+                    // Audio is too short / empty — signal empty transcript so the caller can re-arm.
                     logger.info("Audio too short, skipping transcription")
                     updateState(.idle)
+                    onFinalTranscript?("")
                     return
                 }
 
@@ -303,6 +320,7 @@ final class ServerSpeechRecognitionService {
                     fileName: url.lastPathComponent
                 )
 
+                guard !Task.isCancelled else { return }
                 let text: String
                 if let transcript = result["text"] as? String {
                     text = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -314,12 +332,11 @@ final class ServerSpeechRecognitionService {
 
                 updateState(.idle)
 
-                if !text.isEmpty {
-                    currentTranscript = text
-                    onFinalTranscript?(text)
-                }
+                currentTranscript = text
+                onFinalTranscript?(text)
 
             } catch {
+                guard !Task.isCancelled else { return }
                 logger.error("Server STT error: \(error.localizedDescription)")
                 updateState(.error(error.localizedDescription))
                 onError?(error.localizedDescription)

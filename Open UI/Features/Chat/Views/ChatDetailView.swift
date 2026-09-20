@@ -1845,6 +1845,9 @@ struct ChatDetailView: View {
         .scrollDismissesKeyboard(editingMessageId != nil ? .never : (viewModel.isStreaming ? .immediately : .interactively))
         .scrollPosition($scrollPosition)
         .onScrollPhaseChange { _, newPhase in
+            if newPhase == .interacting {
+                userMessageJumpIndex = nil
+            }
             // isUserDriving: yield the streaming pump to BOTH finger touch AND inertia/deceleration.
             // This prevents the pump from fighting the user during a flick-scroll.
             //
@@ -2230,10 +2233,12 @@ struct ChatDetailView: View {
                         } else {
                             // First tap: use window position + fraction estimate as reference.
                             let refIdx: Int = {
-                                // Use fraction estimate relative to full message list
+                                // The scroll geometry describes only the rendered window.
                                 guard viewState_contentHeight > 0 else { return allMessages.count - 1 }
                                 let fraction = max(0, min(1, _pumpRef.currentScrollOffsetY / viewState_contentHeight))
-                                return min(Int(fraction * CGFloat(allMessages.count)), allMessages.count - 1)
+                                let end = min(windowEnd ?? allMessages.count, allMessages.count)
+                                let start = max(0, end - windowSize)
+                                return min(start + Int(fraction * CGFloat(end - start)), end - 1)
                             }()
                             // Find the last user message at or before the reference index.
                             // This is the "current context" question — the one whose answer

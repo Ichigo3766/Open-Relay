@@ -20,6 +20,7 @@ struct NoteEditorView: View {
     @State private var isGeneratingTitle = false
     @State private var isEnhancing = false
     @State private var aiErrorMessage: String?
+    @State private var autoSaveTask: Task<Void, Never>?
 
     @Environment(AppDependencyContainer.self) private var dependencies
     @Environment(\.theme) private var theme
@@ -367,9 +368,10 @@ struct NoteEditorView: View {
 
     private func scheduleAutoSave() {
         hasChanges = true
-        // Debounced auto-save after 1 second of inactivity
-        Task {
+        autoSaveTask?.cancel()
+        autoSaveTask = Task {
             try? await Task.sleep(for: .seconds(1))
+            guard !Task.isCancelled else { return }
             await saveNote()
         }
     }

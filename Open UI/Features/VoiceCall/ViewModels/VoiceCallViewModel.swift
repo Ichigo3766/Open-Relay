@@ -72,6 +72,7 @@ final class VoiceCallViewModel {
 
     private let logger = Logger(subsystem: "com.openui", category: "VoiceCall")
     private var durationTimer: Task<Void, Never>?
+    private var intensityTask: Task<Void, Never>?
     private var callStartTime: Date?
     /// Tracks the task running `handleFinalTranscript` → `waitForResponseAndSpeak`.
     /// Cancelled in `endCall()` so TTS stops immediately when the user disconnects.
@@ -127,7 +128,15 @@ final class VoiceCallViewModel {
 
     /// Starts a new voice call session.
     func startCall() async {
-        guard callState == .idle || callState == .disconnected else { return }
+        switch callState {
+        case .idle, .disconnected: break
+        case .error:
+            await endCall()
+            setupCallbacks()
+            chatViewModel?.isVoiceMode = true
+        default: return
+        }
+        errorMessage = nil
 
         callState = .connecting
 
@@ -139,6 +148,7 @@ final class VoiceCallViewModel {
             authorized = await speechService?.requestPermissions() ?? false
         }
 
+        guard callState == .connecting else { return }
         guard authorized else {
             callState = .error("Microphone and speech recognition permissions are required.")
             errorMessage = "Please grant microphone and speech recognition permissions in Settings."
@@ -157,6 +167,8 @@ final class VoiceCallViewModel {
             logger.warning("CallKit start failed (non-fatal): \(error.localizedDescription)")
         }
 
+        guard callState == .connecting else { return }
+
         // Apply the user's TTS configuration so voice calls use identical
         // settings to the chat read-aloud button (speech rate, voice, engine).
         let rate = UserDefaults.standard.double(forKey: "ttsSpeechRate")
@@ -173,6 +185,8 @@ final class VoiceCallViewModel {
             await ttsService.preloadKokoroModel()
         }
 
+        guard callState == .connecting else { return }
+
         // Keep .playAndRecord session alive for the full call duration so the mic
         // stays active during TTS. Speaker vs earpiece routing is controlled
         // separately via applySpeakerOverride() — don't tie it to speakerOverrideEnabled.
@@ -188,7 +202,8 @@ final class VoiceCallViewModel {
 
     /// Ends the current voice call.
     func endCall() async {
-        stopActiveSTT()
+        callState = .disconnected
+        stopActiveSTT(discardRecording: true)
         // Cancel the response pipeline first so waitForResponseAndSpeak() stops looping
         // and cannot call finishStreamingTTS() or startListening() after we end the call.
         responseTask?.cancel()
@@ -198,7 +213,6 @@ final class VoiceCallViewModel {
 
         durationTimer?.cancel()
         durationTimer = nil
-        callState = .disconnected
         currentTranscript = ""
         voiceIntensity = 0
 
@@ -232,7 +246,7 @@ final class VoiceCallViewModel {
     /// Pauses listening.
     func pauseListening() {
         isPaused = true
-        stopActiveSTT()
+        stopActiveSTT(discardRecording: true)
         callState = .paused
     }
 
@@ -329,9 +343,12 @@ final class VoiceCallViewModel {
     // MARK: - Private Helpers
 
     /// Stops whichever STT service is active.
-    private func stopActiveSTT() {
+    private func stopActiveSTT(discardRecording: Bool = false) {
+        intensityTask?.cancel()
+        intensityTask = nil
         if let serverSTT = serverSpeechService {
-            serverSTT.stopListening()
+            if discardRecording { serverSTT.cancelListening() }
+            else { serverSTT.stopListening() }
         } else {
             speechService?.stopListening()
         }
@@ -426,20 +443,11 @@ final class VoiceCallViewModel {
             }
         }
 
-        serverSpeechService?.onError = { [weak self] error in
-            Task { @MainActor [weak self] in
-                self?.logger.error("Server STT error: \(error)")
-                // On network error during voice call, fall back gracefully
-                if let self, !self.isPaused && !self.isMuted {
-                    await self.startListening()
-                }
-            }
-        }
-
         // --- TTS callbacks ---
         ttsService.onStart = { [weak self] in
             Task { @MainActor [weak self] in
-                self?.callState = .speaking
+                guard let self, self.callState != .disconnected else { return }
+                self.callState = .speaking
             }
         }
 
@@ -494,6 +502,7 @@ final class VoiceCallViewModel {
 
     /// Starts speech recognition using whichever STT backend is active.
     private func startListening() async {
+        guard callState != .disconnected else { return }
         guard !isMuted, !isPaused else {
             callState = .paused
             return
@@ -533,7 +542,7 @@ final class VoiceCallViewModel {
             // with .defaultToSpeaker internally, which resets overrideOutputAudioPort(.none).
             applySpeakerOverride()
             // Monitor intensity from server STT recorder
-            monitorServerSTTIntensity()
+            monitorSTTIntensity()
         } else {
             // Apple on-device STT
             do {
@@ -547,27 +556,17 @@ final class VoiceCallViewModel {
             // Re-apply speaker preference — speechService.startListening() calls setCategory
             // with .defaultToSpeaker internally, which resets overrideOutputAudioPort(.none).
             applySpeakerOverride()
-            monitorAppleSTTIntensity()
+            monitorSTTIntensity()
         }
     }
 
-    /// Monitors voice intensity from the Apple STT service for waveform display.
-    private func monitorAppleSTTIntensity() {
-        Task {
-            while callState == .listening {
-                voiceIntensity = speechService?.intensity ?? 0
-                currentTranscript = speechService?.currentTranscript ?? ""
-                try? await Task.sleep(for: .milliseconds(50))
-            }
-        }
-    }
-
-    /// Monitors voice intensity from the server STT recorder for waveform display.
-    private func monitorServerSTTIntensity() {
-        Task {
-            while callState == .listening {
-                voiceIntensity = serverSpeechService?.intensity ?? 0
-                // Server STT has no real-time partial transcripts — show empty
+    /// Keeps exactly one waveform monitor for the active recognition session.
+    private func monitorSTTIntensity() {
+        intensityTask?.cancel()
+        intensityTask = Task {
+            while !Task.isCancelled && callState == .listening {
+                voiceIntensity = activeIntensity
+                currentTranscript = activeCurrentTranscript
                 try? await Task.sleep(for: .milliseconds(50))
             }
         }
@@ -587,6 +586,7 @@ final class VoiceCallViewModel {
 
     /// Handles the final transcript from whichever STT service is active.
     private func handleFinalTranscript(_ transcript: String) async {
+        guard callState != .disconnected, !isPaused else { return }
         guard !transcript.isEmpty else {
             if !isPaused && !isMuted {
                 await startListening()
@@ -627,6 +627,7 @@ final class VoiceCallViewModel {
             }
         }
 
+        guard callState != .disconnected, !isPaused else { return }
         chatViewModel.inputText = transcript
 
         // Fire sendMessage concurrently — DO NOT await it.
@@ -644,6 +645,7 @@ final class VoiceCallViewModel {
         // waitForStreamingToStart() returns instantly on subsequent messages and is
         // bounded by the server's request timeout — never hangs indefinitely.
         await chatViewModel.waitForStreamingToStart()
+        guard callState != .disconnected else { return }
 
         // Store the task so endCall() can cancel it if the user disconnects mid-response.
         responseTask = Task { [weak self] in

@@ -10,7 +10,7 @@ import Foundation
 /// Branching (edits, regenerations) is expressed through `childrenIds`
 /// — multiple children of the same parent with the same role are siblings
 /// (alternative versions).
-struct HistoryNode: Sendable {
+nonisolated struct HistoryNode: Sendable {
     var id: String
     var parentId: String?
     var childrenIds: [String]
@@ -218,7 +218,7 @@ struct HistoryNode: Sendable {
 ///
 /// All mutation operations (edit, regenerate, new message, version switch)
 /// modify the tree directly, then the flat list is re-derived.
-struct MessageHistory: Sendable {
+nonisolated struct MessageHistory: Sendable {
     var nodes: [String: HistoryNode] = [:]
     var currentId: String?
 

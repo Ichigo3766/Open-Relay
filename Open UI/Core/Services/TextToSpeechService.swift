@@ -263,7 +263,9 @@ final class TextToSpeechService: NSObject {
 
     /// Speaks text immediately, interrupting any current speech.
     func speak(_ text: String) {
-        let cleaned = TTSTextPreprocessor.prepareForSpeech(text)
+        let cleaned = TTSTextPreprocessor.prepareForSpeech(
+            ToolCallParser.parseAll(text).cleanedContent + "\n"
+        )
         guard !cleaned.isEmpty else { return }
 
         stop()
@@ -457,7 +459,7 @@ final class TextToSpeechService: NSObject {
         guard isStreamingTTS else { return }
 
         let (newChunks, newLength) = TTSTextPreprocessor.extractNewSpeakableChunks(
-            from: accumulatedText,
+            from: ToolCallParser.parseAll(accumulatedText).cleanedContent + "\n",
             alreadySpokenLength: streamingSpokenLength
         )
         guard !newChunks.isEmpty else { return }
@@ -481,7 +483,7 @@ final class TextToSpeechService: NSObject {
         guard isStreamingTTS else { return }
 
         let (remaining, newLength) = TTSTextPreprocessor.extractFinalChunks(
-            from: finalText,
+            from: ToolCallParser.parseAll(finalText).cleanedContent + "\n",
             alreadySpokenLength: streamingSpokenLength
         )
         streamingSpokenLength = newLength
@@ -613,27 +615,6 @@ final class TextToSpeechService: NSObject {
         }
         print("🔊[TTS] after session setup — category=\(session.category.rawValue) mode=\(session.mode.rawValue)")
 
-        // Listen for audio session interruptions — this is how iOS tells us the session was killed
-        NotificationCenter.default.addObserver(
-            forName: AVAudioSession.interruptionNotification,
-            object: session,
-            queue: .main
-        ) { note in
-            let type = note.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt ?? 999
-            let reason = note.userInfo?[AVAudioSessionInterruptionReasonKey] as? UInt ?? 999
-            print("🔊[TTS] ⚠️ AVAudioSession INTERRUPTION — type=\(type) reason=\(reason) userInfo=\(note.userInfo as Any)")
-        }
-
-        // Listen for route changes
-        NotificationCenter.default.addObserver(
-            forName: AVAudioSession.routeChangeNotification,
-            object: session,
-            queue: .main
-        ) { note in
-            let reason = note.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt ?? 999
-            print("🔊[TTS] AVAudioSession ROUTE CHANGE — reason=\(reason)")
-        }
-
         // Create a fresh AVQueuePlayer for this playback session
         let player = AVQueuePlayer()
         player.volume = 1.0
@@ -738,6 +719,10 @@ final class TextToSpeechService: NSObject {
                         // Start playing as soon as the first item is enqueued
                         if player.timeControlStatus == .paused || player.timeControlStatus == .waitingToPlayAtSpecifiedRate {
                             player.play()
+                        }
+                        if self.state == .idle {
+                            self.state = .speaking
+                            self.onStart?()
                         }
                     }
                 } catch {

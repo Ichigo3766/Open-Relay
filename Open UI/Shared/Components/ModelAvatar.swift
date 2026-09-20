@@ -35,7 +35,7 @@ struct ModelAvatar: View {
                     .frame(width: size, height: size)
                     .clipShape(RoundedRectangle(cornerRadius: size * 0.15, style: .continuous))
             } placeholder: {
-                shimmerPlaceholder
+                fallbackView
             }
             .accessibilityLabel(Text(label ?? String(localized: "AI Model")))
         } else {
@@ -64,12 +64,6 @@ struct ModelAvatar: View {
         .accessibilityLabel(Text(label ?? String(localized: "AI Model")))
     }
 
-    private var shimmerPlaceholder: some View {
-        RoundedRectangle(cornerRadius: size * 0.15, style: .continuous)
-            .fill(theme.shimmerBase)
-            .frame(width: size, height: size)
-            .shimmer()
-    }
 }
 
 // MARK: - User Avatar

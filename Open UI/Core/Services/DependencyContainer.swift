@@ -213,6 +213,8 @@ final class ActiveChatStore {
     func promoteNewChat(to conversationId: String) {
         guard let vm = viewModels.removeValue(forKey: "__new__") else { return }
         viewModels[conversationId] = vm
+        accessOrder.removeAll { $0 == "__new__" || $0 == conversationId }
+        accessOrder.append(conversationId)
     }
 
     /// Removes all cached view models and model cache (e.g. on server switch or logout).

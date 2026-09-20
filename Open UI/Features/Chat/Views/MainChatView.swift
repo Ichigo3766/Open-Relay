@@ -1477,6 +1477,8 @@ struct MainChatView: View {
 
     /// Animates the drawer to fully closed and resets drag offset.
     private func closeDrawerAnimated() {
+        UIApplication.shared.sendAction(
+            #selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
         withAnimation(MicroAnimation.panelClose) {
             showDrawer = false
             dragOffset = 0
@@ -2952,7 +2954,10 @@ struct MainChatView: View {
             } else {
                 Button {
                     let targetId = conversation.id
-                    guard targetId != activeConversationId else { return }
+                    guard targetId != activeConversationId else {
+                        closeDrawerAnimated()
+                        return
+                    }
 
                     // ① Blur the content pane so the old chat softens out instead of
                     //   showing raw stale content behind the closing drawer.

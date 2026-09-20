@@ -822,6 +822,8 @@ struct iPadMainChatView: View {
     }
 
     private func closeDrawerAnimated() {
+        UIApplication.shared.sendAction(
+            #selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
         withAnimation(MicroAnimation.panelClose) {
             showDrawer = false
             dragOffset = 0

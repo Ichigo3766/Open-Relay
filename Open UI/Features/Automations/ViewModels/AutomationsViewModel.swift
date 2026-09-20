@@ -96,10 +96,13 @@ final class AutomationsViewModel {
         Haptics.play(.light)
         do {
             let updated = try await apiClient.toggleAutomation(id: automation.id)
-            automations[idx] = updated
+            if let index = automations.firstIndex(where: { $0.id == automation.id }) {
+                automations[index] = updated
+            }
         } catch {
-            // Revert
-            automations[idx].isActive = automation.isActive
+            if let index = automations.firstIndex(where: { $0.id == automation.id }) {
+                automations[index].isActive = automation.isActive
+            }
             errorMessage = error.localizedDescription
         }
     }

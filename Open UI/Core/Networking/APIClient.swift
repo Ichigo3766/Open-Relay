@@ -806,7 +806,7 @@ final class APIClient: @unchecked Sendable {
                     data: data
                 )
             }
-            return await self.parseFullConversation(json)
+            return self.parseFullConversation(json)
         }.value
     }
 
@@ -4166,7 +4166,7 @@ final class APIClient: @unchecked Sendable {
         )
     }
 
-    private func parseFullConversation(_ json: [String: Any]) -> Conversation {
+    nonisolated private func parseFullConversation(_ json: [String: Any]) -> Conversation {
         let id = json["id"] as? String ?? UUID().uuidString
         let title = (json["chat"] as? [String: Any])?["title"] as? String
             ?? json["title"] as? String
@@ -4278,7 +4278,7 @@ final class APIClient: @unchecked Sendable {
     /// Builds a `MessageHistory` from a flat message array (for legacy or locally-created conversations).
     ///
     /// Creates a simple linear chain where each message's parent is the previous message.
-    static func buildHistoryFromFlatMessages(_ messages: [ChatMessage]) -> MessageHistory {
+    nonisolated static func buildHistoryFromFlatMessages(_ messages: [ChatMessage]) -> MessageHistory {
         var history = MessageHistory()
         var previousId: String?
 
@@ -4539,7 +4539,7 @@ final class APIClient: @unchecked Sendable {
         return message
     }
 
-    private func parseSingleMessage(_ msg: [String: Any]) -> ChatMessage? {
+    nonisolated private func parseSingleMessage(_ msg: [String: Any]) -> ChatMessage? {
         guard let id = msg["id"] as? String,
               let roleStr = msg["role"] as? String,
               let role = MessageRole(rawValue: roleStr)

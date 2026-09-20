@@ -1327,8 +1327,10 @@ final class ChatViewModel {
         }
 
         // Phase 2: Update existing messages in-place and insert new ones
-        for (serverIdx, serverMsg) in serverMessages.enumerated() {
-            if let localIdx = conversation!.messages.firstIndex(where: { $0.id == serverMsg.id }) {
+        var localIndices = Dictionary(conversation!.messages.enumerated().map { ($1.id, $0) },
+                                      uniquingKeysWith: { first, _ in first })
+        for serverMsg in serverMessages {
+            if let localIdx = localIndices[serverMsg.id] {
                 // Message exists locally — update only changed fields in-place
                 let local = conversation!.messages[localIdx]
 
@@ -1415,9 +1417,9 @@ final class ChatViewModel {
                     conversation!.messages[localIdx].embeds = serverMsg.embeds
                 }
             } else {
-                // New message from server — insert at correct position
-                let insertIdx = min(serverIdx, conversation!.messages.count)
-                conversation!.messages.insert(serverMsg, at: insertIdx)
+                // Append without shifting indices; Phase 3 restores server order.
+                localIndices[serverMsg.id] = conversation!.messages.count
+                conversation!.messages.append(serverMsg)
             }
         }
 
@@ -6103,9 +6105,8 @@ final class ChatViewModel {
                 }
                 // Resolve actions and filters from IDs + global functions.
                 // The single-model endpoint returns actionIds/filterIds but not full objects.
-                // Fetch functions to build proper entries with name/icon.
-                await resolveActionsForModel(&fullModel)
-                await resolveFiltersForModel(&fullModel)
+                // Fetch functions once to build proper entries with name/icon.
+                await resolveModelFunctions(&fullModel)
                 if let idx = availableModels.firstIndex(where: { $0.id == modelId }) {
                     availableModels[idx] = fullModel
                 } else {
@@ -6149,8 +6150,7 @@ final class ChatViewModel {
                     }
                 }
                 // Resolve actions and filters from IDs + global functions (fresh every time).
-                await resolveActionsForModel(&fullModel)
-                await resolveFiltersForModel(&fullModel)
+                await resolveModelFunctions(&fullModel)
                 if let idx = availableModels.firstIndex(where: { $0.id == modelId }) {
                     availableModels[idx] = fullModel
                 }
@@ -6165,52 +6165,56 @@ final class ChatViewModel {
         }
     }
 
+    /// Fetches functions once and resolves both actions and filters for a model.
+    /// Prevents the double `getFunctions()` call that occurred when the two
+    /// resolvers ran sequentially and each independently fetched the same list.
+    private func resolveModelFunctions(_ model: inout AIModel) async {
+        guard let apiClient = manager?.apiClient else { return }
+        do {
+            let functions = try await apiClient.getFunctions()
+            resolveActionsForModel(&model, functions: functions)
+            resolveFiltersForModel(&model, functions: functions)
+        } catch {
+            logger.debug("Failed to resolve model functions: \(error.localizedDescription)")
+        }
+    }
+
     /// Resolves action buttons for a model by combining:
     /// 1. Global action functions (is_global == true, is_active == true) → always included
     /// 2. Per-model action IDs (model.actionIds) → included if active
     ///
-    /// Fetches the functions list from `/api/v1/functions/` to get full action
-    /// metadata (name, icon) and global/active status. This ensures actions are
-    /// always fresh and correctly reflect admin changes (e.g., turning global off).
-    private func resolveActionsForModel(_ model: inout AIModel) async {
-        guard let apiClient = manager?.apiClient else { return }
-        do {
-            let functions = try await apiClient.getFunctions()
-            let actionFunctions = functions.filter { $0.type == "action" && $0.isActive }
+    /// Uses the fresh functions snapshot shared with filter resolution.
+    private func resolveActionsForModel(_ model: inout AIModel, functions: [FunctionItem]) {
+        let actionFunctions = functions.filter { $0.type == "action" && $0.isActive }
 
-            var resolvedActions: [AIModelAction] = []
-            var seenIds = Set<String>()
+        var resolvedActions: [AIModelAction] = []
+        var seenIds = Set<String>()
 
-            for fn in actionFunctions {
-                // Include if globally enabled OR if the model has this action in its actionIds
-                let isGlobal = fn.isGlobal
-                let isPerModel = model.actionIds.contains(fn.id)
+        for fn in actionFunctions {
+            // Include if globally enabled OR if the model has this action in its actionIds
+            let isGlobal = fn.isGlobal
+            let isPerModel = model.actionIds.contains(fn.id)
 
-                if isGlobal || isPerModel {
-                    guard !seenIds.contains(fn.id) else { continue }
-                    seenIds.insert(fn.id)
-                    resolvedActions.append(AIModelAction(
-                        id: fn.id,
-                        name: fn.name,
-                        description: fn.description,
-                        icon: fn.iconURL
-                    ))
-                }
+            if isGlobal || isPerModel {
+                guard !seenIds.contains(fn.id) else { continue }
+                seenIds.insert(fn.id)
+                resolvedActions.append(AIModelAction(
+                    id: fn.id,
+                    name: fn.name,
+                    description: fn.description,
+                    icon: fn.iconURL
+                ))
             }
-
-            model.actions = resolvedActions
-        } catch {
-            // Non-critical — keep whatever actions the model already has
-            logger.debug("Failed to resolve actions: \(error.localizedDescription)")
         }
+
+        model.actions = resolvedActions
     }
 
     /// Resolves filter IDs for a model by combining:
     /// 1. Global filter functions (is_global == true, is_active == true) → always included
     /// 2. Per-model filter IDs (model.filterIds from meta.filterIds) → included if active
     ///
-    /// Fetches the functions list from `/api/v1/functions/` to get global/active status.
-    /// This ensures filterIds sent in chat requests always reflect the current server state.
+    /// Uses the same fresh functions snapshot as action resolution.
     ///
     /// Also injects a `filters` array into `rawModelItem` containing full filter objects
     /// (id, name, description, icon, has_user_valves). This matches the web client's
@@ -6219,62 +6223,55 @@ final class ChatViewModel {
     /// `chat_template_kwargs` (Qwen3 thinking mode) fail on backends like Bedrock that
     /// reject unknown parameters — because the filter can't detect its target model type
     /// and falls back to injecting incompatible kwargs.
-    private func resolveFiltersForModel(_ model: inout AIModel) async {
-        guard let apiClient = manager?.apiClient else { return }
-        do {
-            let functions = try await apiClient.getFunctions()
-            let filterFunctions = functions.filter { $0.type == "filter" && $0.isActive }
+    private func resolveFiltersForModel(_ model: inout AIModel, functions: [FunctionItem]) {
+        let filterFunctions = functions.filter { $0.type == "filter" && $0.isActive }
 
-            var resolvedFilterIds: [String] = []
-            var resolvedFilterObjects: [[String: Any]] = []
-            var seenIds = Set<String>()
+        var resolvedFilterIds: [String] = []
+        var resolvedFilterObjects: [[String: Any]] = []
+        var seenIds = Set<String>()
 
-            for fn in filterFunctions {
-                let isGlobal = fn.isGlobal
-                let isPerModel = model.filterIds.contains(fn.id)
+        for fn in filterFunctions {
+            let isGlobal = fn.isGlobal
+            let isPerModel = model.filterIds.contains(fn.id)
 
-                if isGlobal || isPerModel {
-                    guard !seenIds.contains(fn.id) else { continue }
-                    seenIds.insert(fn.id)
+            if isGlobal || isPerModel {
+                guard !seenIds.contains(fn.id) else { continue }
+                seenIds.insert(fn.id)
 
-                    // Only add to filterIds (top-level activation list) when this is a
-                    // toggle-filter AND the user has the pill turned ON.
-                    // Non-toggle global filters run server-side automatically via is_global
-                    // and must NOT be in filter_ids — sending them causes the backend to
-                    // forward chat_template_kwargs to models like Bedrock that reject it.
-                    // This matches exactly what WebUI does: filter_ids is only populated
-                    // for toggle-filters whose pill is enabled.
-                    let isToggleOn = fn.hasToggle && selectedToolIds.contains(fn.id)
-                    if isToggleOn {
-                        resolvedFilterIds.append(fn.id)
-                    }
-
-                    // Always build the full filter object for model_item.filters[] so the
-                    // server receives the complete filter list (same as WebUI) regardless of
-                    // pill state — filters read model_item to detect model type.
-                    var filterObj: [String: Any] = [
-                        "id": fn.id,
-                        "name": fn.name,
-                        "description": fn.description,
-                        "has_user_valves": false  // default; server-side checks its own DB
-                    ]
-                    if let icon = fn.iconURL, !icon.isEmpty {
-                        filterObj["icon"] = icon
-                    }
-                    resolvedFilterObjects.append(filterObj)
+                // Only add to filterIds (top-level activation list) when this is a
+                // toggle-filter AND the user has the pill turned ON.
+                // Non-toggle global filters run server-side automatically via is_global
+                // and must NOT be in filter_ids — sending them causes the backend to
+                // forward chat_template_kwargs to models like Bedrock that reject it.
+                // This matches exactly what WebUI does: filter_ids is only populated
+                // for toggle-filters whose pill is enabled.
+                let isToggleOn = fn.hasToggle && selectedToolIds.contains(fn.id)
+                if isToggleOn {
+                    resolvedFilterIds.append(fn.id)
                 }
-            }
 
-            model.filterIds = resolvedFilterIds
-
-            // Inject the resolved filter objects into rawModelItem["filters"] so the
-            // server receives model_item.filters[] just like the web client sends.
-            if model.rawModelItem != nil {
-                model.rawModelItem?["filters"] = resolvedFilterObjects
+                // Always build the full filter object for model_item.filters[] so the
+                // server receives the complete filter list (same as WebUI) regardless of
+                // pill state — filters read model_item to detect model type.
+                var filterObj: [String: Any] = [
+                    "id": fn.id,
+                    "name": fn.name,
+                    "description": fn.description,
+                    "has_user_valves": false  // default; server-side checks its own DB
+                ]
+                if let icon = fn.iconURL, !icon.isEmpty {
+                    filterObj["icon"] = icon
+                }
+                resolvedFilterObjects.append(filterObj)
             }
-        } catch {
-            // Non-critical — keep whatever filterIds the model already has
-            logger.debug("Failed to resolve filters: \(error.localizedDescription)")
+        }
+
+        model.filterIds = resolvedFilterIds
+
+        // Inject the resolved filter objects into rawModelItem["filters"] so the
+        // server receives model_item.filters[] just like the web client sends.
+        if model.rawModelItem != nil {
+            model.rawModelItem?["filters"] = resolvedFilterObjects
         }
     }
 

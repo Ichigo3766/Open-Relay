@@ -58,26 +58,6 @@ actor ImageCacheService {
         }
     }
 
-    // MARK: - Content Deduplication
-
-    /// Maps SHA-256 of decoded pixel data → canonical UIImage.
-    /// When 290 models all return the same favicon, only one UIImage is kept in memory.
-    nonisolated(unsafe) private var imageDeduplicationMap: [Int: UIImage] = [:]
-
-    /// Returns the canonical UIImage for a given image, deduplicating by pixel checksum.
-    private func deduplicatedImage(_ image: UIImage) -> UIImage {
-        guard let cgImage = image.cgImage else { return image }
-        // Use (width, height, dataProvider pointer) as a lightweight identity check.
-        // The dataProvider address is stable for the same backing store.
-        let identity = cgImage.width &* 397 &+ cgImage.height &* 31
-            &+ (ObjectIdentifier(cgImage.dataProvider! as AnyObject).hashValue)
-        if let existing = imageDeduplicationMap[identity] {
-            return existing
-        }
-        imageDeduplicationMap[identity] = image
-        return image
-    }
-
     // MARK: - Cloudflare Support
 
     /// Custom headers (e.g. User-Agent) that must be sent with image requests
@@ -290,10 +270,9 @@ actor ImageCacheService {
                 if httpResponse.statusCode == 304 {
                     self.logger.debug("Image 304 Not Modified: \(url.lastPathComponent)")
                     if let diskImage = self.loadFromDisk(key: key) {
-                        let canonical = self.deduplicatedImage(diskImage)
-                        let cost = self.bitmapCost(for: canonical)
-                        self.memoryCache.setObject(canonical, forKey: key as NSString, cost: cost)
-                        return canonical
+                        let cost = self.bitmapCost(for: diskImage)
+                        self.memoryCache.setObject(diskImage, forKey: key as NSString, cost: cost)
+                        return diskImage
                     }
                     // Disk file was evicted — fall through to treat as cache miss
                 }
@@ -321,17 +300,14 @@ actor ImageCacheService {
                     return nil
                 }
 
-                // Deduplicate: identical images share one UIImage instance in memory
-                let canonical = self.deduplicatedImage(image)
-
                 // Store in memory with accurate bitmap cost so NSCache evicts correctly
-                let cost = self.bitmapCost(for: canonical)
-                self.memoryCache.setObject(canonical, forKey: key as NSString, cost: cost)
+                let cost = self.bitmapCost(for: image)
+                self.memoryCache.setObject(image, forKey: key as NSString, cost: cost)
 
                 // Store raw (pre-downsample) data on disk for future sessions
                 self.saveToDisk(data: data, key: key)
 
-                return canonical
+                return image
             } catch {
                 self.logger.error("Image download failed for \(url): \(error.localizedDescription)")
                 return nil
@@ -422,7 +398,6 @@ actor ImageCacheService {
     /// Evicts all images from memory and disk caches.
     func clearAll() {
         memoryCache.removeAllObjects()
-        imageDeduplicationMap.removeAll()
         clearDiskCache()
         logger.info("Image cache cleared")
     }
@@ -447,7 +422,6 @@ actor ImageCacheService {
     /// Evicts only the memory cache, preserving disk cache.
     func clearMemory() {
         memoryCache.removeAllObjects()
-        imageDeduplicationMap.removeAll()
     }
 
     /// Evicts all cached profile images (user/model avatars) from both memory and disk.
@@ -455,7 +429,6 @@ actor ImageCacheService {
     func evictProfileImages() {
         // Clear memory cache entirely — profile images reload quickly
         memoryCache.removeAllObjects()
-        imageDeduplicationMap.removeAll()
 
         // Also remove profile images from disk cache
         guard let directory = diskCacheDirectory else { return }

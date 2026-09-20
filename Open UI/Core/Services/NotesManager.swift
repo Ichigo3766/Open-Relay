@@ -46,8 +46,8 @@ final class NotesManager: @unchecked Sendable {
             let notes = rawNotes.compactMap { Note.fromServerJSON($0) }
                 .sorted { $0.updatedAt > $1.updatedAt }
 
-            // Cache server notes locally
-            saveLocalNotes(notes)
+            // Only remote notes can safely be evicted from the local cache.
+            saveLocalNotes(Array(notes.prefix(50)))
 
             return notes
         } catch {
@@ -159,12 +159,9 @@ final class NotesManager: @unchecked Sendable {
     }
 
     /// Saves the notes array to local storage.
-    /// STORAGE FIX: Only cache the most recent 50 notes to prevent
-    /// UserDefaults (plist) from growing unboundedly. Full content
-    /// is always fetched from the server on demand.
+    /// Local-only notes have no server copy and must not be evicted.
     private func saveLocalNotes(_ notes: [Note]) {
-        let limitedNotes = Array(notes.prefix(50))
-        guard let data = try? JSONEncoder().encode(limitedNotes) else { return }
+        guard let data = try? JSONEncoder().encode(notes) else { return }
         defaults.set(data, forKey: storageKey)
 
         // Also save to shared container for widget access

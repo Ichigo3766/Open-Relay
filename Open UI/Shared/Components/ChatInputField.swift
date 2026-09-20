@@ -403,16 +403,6 @@ struct ChatInputField: View {
 
     private var composerShell: some View {
         VStack(spacing: 0) {
-            // Invisible full-coverage tap target so tapping anywhere on the
-            // composer (including padding areas) focuses the text field.
-            // Uses the existing widget-focus notification that PasteInterceptingTextView
-            // already observes, so no new coupling is needed.
-            Color.clear
-                .frame(height: 0)
-                .contentShape(Rectangle())
-                .onTapGesture {
-                    NotificationCenter.default.post(name: .chatInputFieldRequestFocus, object: nil)
-                }
             // Model override chip (above text input)
             if mentionedModel != nil {
                 mentionedModelChip
@@ -468,6 +458,13 @@ struct ChatInputField: View {
                 textField
                     .frame(height: composerIsExpanded ? composerCurrentHeight : nil, alignment: .top)
                     .fixedSize(horizontal: false, vertical: !composerIsExpanded)
+                    .background {
+                        Color.clear
+                            .contentShape(Rectangle())
+                            .onTapGesture {
+                                NotificationCenter.default.post(name: .chatInputFieldRequestFocus, object: nil)
+                            }
+                    }
                 HStack(spacing: 8) {
                     inlineTerminalButton
                     inlineDictationButton

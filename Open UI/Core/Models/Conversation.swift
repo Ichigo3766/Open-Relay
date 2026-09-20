@@ -4,7 +4,7 @@ import Foundation
 
 /// A task item managed by the model's built-in task management tools
 /// (`create_tasks` / `update_task`). Stored at the chat level by OpenWebUI.
-struct ChatTask: Codable, Identifiable, Hashable, Sendable {
+nonisolated struct ChatTask: Codable, Identifiable, Hashable, Sendable {
     var id: String
     var content: String
     /// One of: "pending", "in_progress", "completed", "cancelled"
@@ -19,7 +19,7 @@ struct ChatTask: Codable, Identifiable, Hashable, Sendable {
 // MARK: - Conversation
 
 /// Represents a chat conversation with its message history.
-struct Conversation: Identifiable, Hashable, Sendable {
+nonisolated struct Conversation: Identifiable, Hashable, Sendable {
     var id: String
     var title: String
     var createdAt: Date

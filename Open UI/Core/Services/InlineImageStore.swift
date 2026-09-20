@@ -32,7 +32,7 @@ import os.log
 /// once per message load; reads happen on arbitrary threads (SwiftUI body, Task.detached).
 /// The store is never cleared during the app session — entries are lightweight (just a string
 /// alias; the heavy UIImage decode lives in `MarkdownInlineImageView.base64ImageCache`).
-final class InlineImageStore: @unchecked Sendable {
+nonisolated final class InlineImageStore: @unchecked Sendable {
     static let shared = InlineImageStore()
     private init() {}
 
@@ -50,8 +50,8 @@ final class InlineImageStore: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
 
-        // Dedup by content — use a cheap prefix+length key to avoid hashing 500 KB strings.
-        let dedupKey = deduplicationKey(for: dataURI)
+        // Compare complete content so equal-length images with shared headers stay distinct.
+        let dedupKey = dataURI
         if let existing = dedupIndex[dedupKey] {
             return "imgcache://\(existing)"
         }
@@ -81,11 +81,6 @@ final class InlineImageStore: @unchecked Sendable {
 
     /// Reverse map: dedup-key → token, so identical images share one store entry.
     private var dedupIndex: [String: String] = [:]
-
-    /// A cheap key derived from data URI length + first 80 chars — avoids hashing 500 KB.
-    private func deduplicationKey(for dataURI: String) -> String {
-        "\(dataURI.utf8.count)_\(dataURI.prefix(80))"
-    }
 }
 
 // MARK: - Content extraction helpers
@@ -99,7 +94,7 @@ extension InlineImageStore {
     ///
     /// This is designed to be called from a background thread at JSON-parse time so the
     /// replacement happens before SwiftUI ever sees the content string.
-    static func extractAndReplace(content: String) -> String {
+    nonisolated static func extractAndReplace(content: String) -> String {
         // Fast exit — most messages don't contain image gen results.
         guard content.contains("](data:image/") else { return content }
 
