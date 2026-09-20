@@ -468,6 +468,8 @@ struct ChatDetailView: View {
                     .frame(height: geometry.safeAreaInsets.top)
                     .offset(y: -geometry.safeAreaInsets.top)
             }
+            .opacity(navBarHidden ? 0 : 1)
+            .animation(.easeOut(duration: 0.25), value: navBarHidden)
             .allowsHitTesting(false)
         }
         .navigationBarHidden(true)
@@ -1008,6 +1010,7 @@ struct ChatDetailView: View {
                     .chatControlGlass(in: RoundedRectangle(cornerRadius: 12, style: .continuous), fallback: theme.cardBackground.opacity(0.9))
                 }
                 .buttonStyle(.plain)
+                .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
                 .sheet(isPresented: $isShowingModelSelectorSheet) {
                     ModelSelectorSheet(
                         models: viewModel.availableModels,
