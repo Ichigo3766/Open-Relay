@@ -2,6 +2,11 @@
 
 ## 📦 NEXT BUILD
 
+### What's New
+- Added native glass surfaces to the chat composer and header controls on iOS 26 — messages now scroll cleanly behind glass instead of under gradient fades, and Chat Settings moved into the ••• overflow menu
+- Added customizable message action buttons — hide individual actions (Speak, Copy, Share, Edit, Regenerate, etc.) and drag them into your preferred order in Settings → Chat Behavior → Message Actions
+- Added scroll controls setting in Settings → Chat Behavior — choose between Up and Down buttons (default), a single Scroll to Bottom button, or Hidden
+
 ### Improvements
 - Significantly reduced streaming CPU usage — the pipeline now skips redundant reasoning-tag scans and prose-boundary searches during server pauses, and gates `<details>` / tool-call scanning behind a fast single-character check
 - Conversation loading now parses message history off the main thread, eliminating 50–110 ms UI freezes when opening large chats
