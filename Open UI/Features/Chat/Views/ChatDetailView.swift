@@ -456,21 +456,25 @@ struct ChatDetailView: View {
                     .padding(.bottom, (verticalSizeClass == .compact && viewModel.terminalEnabled && viewModel.selectedTerminalServer != nil) ? keyboard.height : 0)
             }
         }
+        // On iOS 26, safeAreaBar + chatControlGlass on the individual pills already
+        // produce the correct transparent-glass look. The material fill overlay is
+        // only needed on older iOS where the nav area needs an opaque background.
         .overlay {
-            GeometryReader { geometry in
-                Rectangle()
-                    .fill(usesGlassChrome ? AnyShapeStyle(.ultraThinMaterial) : AnyShapeStyle(theme.background))
-                    .overlay(theme.background.opacity(usesGlassChrome && theme.isDark ? 0.8 : 0))
-                    .mask(LinearGradient(stops: [
-                        .init(color: .black, location: 0.45),
-                        .init(color: usesGlassChrome ? .clear : .black, location: 1)
-                    ], startPoint: .top, endPoint: .bottom))
-                    .frame(height: geometry.safeAreaInsets.top)
-                    .offset(y: -geometry.safeAreaInsets.top)
+            if !usesGlassChrome {
+                GeometryReader { geometry in
+                    Rectangle()
+                        .fill(AnyShapeStyle(theme.background))
+                        .mask(LinearGradient(stops: [
+                            .init(color: .black, location: 0.45),
+                            .init(color: .black, location: 1)
+                        ], startPoint: .top, endPoint: .bottom))
+                        .frame(height: geometry.safeAreaInsets.top)
+                        .offset(y: -geometry.safeAreaInsets.top)
+                }
+                .opacity(navBarHidden ? 0 : 1)
+                .animation(.easeOut(duration: 0.25), value: navBarHidden)
+                .allowsHitTesting(false)
             }
-            .opacity(navBarHidden ? 0 : 1)
-            .animation(.easeOut(duration: 0.25), value: navBarHidden)
-            .allowsHitTesting(false)
         }
         .navigationBarHidden(true)
         // Configure the view model synchronously on first appearance so that the
