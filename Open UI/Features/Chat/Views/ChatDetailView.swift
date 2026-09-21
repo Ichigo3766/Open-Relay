@@ -445,34 +445,40 @@ struct ChatDetailView: View {
                             .opacity.combined(with: .offset(y: -20))
                         )
                 }
-                let ttsPlayer = dependencies.textToSpeechService.readAloudPlayer
-                let showAnyPlayer = ttsPlayer.isVisible
-                    || speakingMessageId != nil
-                    || ttsGeneratingMessageId != nil
-                if showAnyPlayer {
-                    ReadAloudPlayerBar(
-                        player: ttsPlayer.isVisible ? ttsPlayer : nil,
-                        readFromHere: { text in
-                            guard let messageID = ttsPlayer.messageID else { return }
-                            dependencies.textToSpeechService.speakMessage(
-                                text, messageID: messageID,
-                                title: ttsPlayer.title,
-                                serverSplitOn: dependencies.authViewModel.backendConfig?.audio?.tts?.splitOn)
-                        },
-                        isGenerating: ttsGeneratingMessageId != nil && speakingMessageId == nil,
-                        isPlaying: speakingMessageId != nil || ttsPlayer.isPlaying,
-                        onStop: {
-                            dependencies.textToSpeechService.stop()
-                            speakingMessageId = nil
-                            ttsGeneratingMessageId = nil
-                        },
-                        isUserScrolling: isFingerDriving
-                    )
-                    .transition(.asymmetric(
-                        insertion: .opacity.combined(with: .move(edge: .top)),
-                        removal: .opacity.combined(with: .move(edge: .top))
-                    ))
-                }
+            }
+        }
+        // Read-aloud player — floats as a self-sizing pill in the top area
+        .overlay(alignment: .top) {
+            let ttsPlayer = dependencies.textToSpeechService.readAloudPlayer
+            let showAnyPlayer = ttsPlayer.isVisible
+                || speakingMessageId != nil
+                || ttsGeneratingMessageId != nil
+            if showAnyPlayer {
+                ReadAloudPlayerBar(
+                    player: ttsPlayer.isVisible ? ttsPlayer : nil,
+                    readFromHere: { text in
+                        guard let messageID = ttsPlayer.messageID else { return }
+                        dependencies.textToSpeechService.speakMessage(
+                            text, messageID: messageID,
+                            title: ttsPlayer.title,
+                            serverSplitOn: dependencies.authViewModel.backendConfig?.audio?.tts?.splitOn)
+                    },
+                    isGenerating: ttsGeneratingMessageId != nil && speakingMessageId == nil,
+                    isPlaying: speakingMessageId != nil || ttsPlayer.isPlaying,
+                    onStop: {
+                        dependencies.textToSpeechService.stop()
+                        speakingMessageId = nil
+                        ttsGeneratingMessageId = nil
+                    },
+                    isUserScrolling: isFingerDriving
+                )
+                .padding(.top, 8)
+                .transition(.asymmetric(
+                    insertion: .opacity.combined(with: .scale(scale: 0.9, anchor: .top)),
+                    removal: .opacity.combined(with: .scale(scale: 0.9, anchor: .top))
+                ))
+                .animation(.spring(response: 0.35, dampingFraction: 0.8), value: showAnyPlayer)
+                .allowsHitTesting(true)
             }
         }
         .chatChromeBar(edge: .bottom) {
