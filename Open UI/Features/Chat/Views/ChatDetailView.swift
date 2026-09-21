@@ -89,6 +89,8 @@ struct ChatDetailView: View {
     @State private var scrollPosition: ScrollPosition = .init()
     /// True when the user has manually scrolled away from the bottom.
     @State private var isScrolledUp = false
+    /// Button visibility is separate from the intent to pause streaming auto-follow.
+    @State private var isNearBottom = true
     /// Curtain flag: keeps the message area invisible until messages are loaded
     /// AND the scroll position has been set to the bottom. Prevents the user
     /// from seeing skeleton → messages → scroll animation. Resets to false on
@@ -1624,6 +1626,7 @@ struct ChatDetailView: View {
         .overlay(alignment: chatScrollControls == .bottomOnly ? .bottom : .bottomTrailing) {
             scrollFABGroup
                 .animation(MicroAnimation.presence, value: isScrolledUp)
+                .animation(MicroAnimation.presence, value: isNearBottom)
                 .animation(MicroAnimation.presence, value: isAtTop)
         }
         .onAppear {
@@ -1808,6 +1811,13 @@ struct ChatDetailView: View {
         // stretching the parent scroll view horizontally.
         .frame(maxWidth: UIScreen.main.bounds.width, alignment: .leading)
         .clipped()
+        .background(alignment: .bottom) {
+            // Observe the final 80pt without adding padding or changing auto-follow.
+            Color.clear
+                .frame(height: 80)
+                .onScrollVisibilityChange(threshold: 0.01) { isNearBottom = $0 }
+                .allowsHitTesting(false)
+        }
         // Tapping anywhere in the empty chat area (below messages in short conversations)
         // should dismiss the keyboard. .scrollDismissesKeyboard(.interactively) only fires
         // on a scroll gesture — a plain tap is ignored when the content is shorter than the
@@ -2208,11 +2218,13 @@ struct ChatDetailView: View {
         }
     }
 
-    // MARK: - Scroll FAB Pill Group
+    // MARK: - Scroll Controls
 
     @ViewBuilder
     private var scrollFABGroup: some View {
-        if chatScrollControls != .hidden && isScrolledUp && !viewModel.messages.isEmpty && !viewModel.isLoadingConversation {
+        if chatScrollControls != .hidden && isScrolledUp
+            && (!isNearBottom || (windowEnd ?? viewModel.messages.count) < viewModel.messages.count)
+            && !viewModel.messages.isEmpty && !viewModel.isLoadingConversation {
             VStack(spacing: 0) {
                 // ↑ FAB — jumps to the previous user question on each tap
                 let total_fab = viewModel.messages.count
@@ -2292,26 +2304,14 @@ struct ChatDetailView: View {
                         }
                         Haptics.play(.light)
                     } label: {
-                        ZStack {
-                            Rectangle()
-                                .fill(.ultraThinMaterial)
-                                .frame(width: 38, height: 38)
-                            Image(systemName: "chevron.up")
-                                .scaledFont(size: 13, weight: .bold)
-                                .foregroundStyle(theme.textSecondary)
-                        }
+                        scrollFABLabel("chevron.up")
                     }
                     .buttonStyle(.plain)
                     .contentShape(Rectangle())
                     .accessibilityLabel("Jump to previous question")
-
-                    // Hairline divider between the two halves
-                    Rectangle()
-                        .fill(theme.cardBorder.opacity(0.4))
-                        .frame(width: 38, height: 0.5)
                 }
 
-                // ↓ FAB — always shown when isScrolledUp
+                // ↓ FAB — returns to the latest messages and resumes auto-follow.
                 Button {
                     isScrolledUp = false
                     isUserDriving = false
@@ -2346,26 +2346,12 @@ struct ChatDetailView: View {
                     }
                     Haptics.play(.light)
                 } label: {
-                    ZStack {
-                        Rectangle()
-                            .fill(.ultraThinMaterial)
-                            .frame(width: chatScrollControls == .bottomOnly ? 44 : 38,
-                                   height: chatScrollControls == .bottomOnly ? 44 : 38)
-                        Image(systemName: chatScrollControls == .bottomOnly ? "arrow.down" : "chevron.down")
-                            .scaledFont(size: 13, weight: .bold)
-                            .foregroundStyle(theme.textSecondary)
-                    }
+                    scrollFABLabel(chatScrollControls == .bottomOnly ? "arrow.down" : "chevron.down")
                 }
                 .buttonStyle(.plain)
                 .contentShape(Rectangle())
                 .accessibilityLabel("Scroll to bottom")
             }
-            .clipShape(RoundedRectangle(cornerRadius: chatScrollControls == .bottomOnly ? 22 : 12, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: chatScrollControls == .bottomOnly ? 22 : 12, style: .continuous)
-                    .strokeBorder(theme.cardBorder.opacity(0.35), lineWidth: 0.5)
-            )
-            .shadow(color: .black.opacity(0.18), radius: 8, y: 3)
             .padding(.trailing, chatScrollControls == .bottomOnly ? 0 : Spacing.md)
             .padding(.bottom, Spacing.sm)
             .transition(
@@ -2376,6 +2362,17 @@ struct ChatDetailView: View {
                 .animation(MicroAnimation.presence)
             )
         }
+    }
+
+    private func scrollFABLabel(_ symbol: String) -> some View {
+        Image(systemName: symbol)
+            .scaledFont(size: 12, weight: .semibold)
+            .foregroundStyle(theme.textSecondary)
+            .frame(width: 32, height: 32)
+            .chatControlGlass(in: Circle(), fallback: .ultraThinMaterial)
+            // Keep the visual control small without shrinking its touch target.
+            .frame(width: 44, height: 44)
+            .contentShape(Rectangle())
     }
 
     // MARK: - Loading Placeholders
@@ -6429,10 +6426,10 @@ private extension View {
 }
 
 // MARK: - Chat chrome
-// Native glass bars with an opaque, clipped-scrolling fallback on older iOS.
+// Native glass controls with compatible backgrounds on older iOS.
 private extension View {
     @ViewBuilder
-    func chatControlGlass<S: Shape>(in shape: S, fallback: Color) -> some View {
+    func chatControlGlass<S: Shape, F: ShapeStyle>(in shape: S, fallback: F) -> some View {
         if #available(iOS 26.0, *) {
             self.glassEffect(.regular.interactive(), in: shape)
         } else {
