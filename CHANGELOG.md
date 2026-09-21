@@ -1,5 +1,16 @@
 # Changelog
 
+## v5.7.1 — September 21, 2026
+
+### What's New
+- Read-aloud player — tap Speak on any message to show a compact floating pill; tap the pill to expand into full controls (play/pause, speed 1×–2×, skip ±15s, scrubber); scrolling the chat auto-collapses it back to a pill; works with all TTS engines (server, Kokoro, system); server TTS adds lock-screen controls and response splitting (Follow Server / Sentences / Paragraphs / Whole Message) in Settings → Text-to-Speech
+
+### Improvements
+- Messages now scroll behind the chat header and composer with translucent glass backgrounds on all iOS versions, not just iOS 26
+- Significantly reduced memory usage when scrolling conversations with large quoted replies or collapsed tool results — up to 88% less memory in those scenarios
+- Scroll-to-bottom button now hides automatically when you're near the end of the conversation; controls are smaller and more compact circular buttons
+
+
 ## v5.7 — September 20, 2026
 
 ### What's New
