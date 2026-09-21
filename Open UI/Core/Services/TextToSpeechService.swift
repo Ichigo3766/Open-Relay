@@ -64,6 +64,8 @@ final class TextToSpeechService: NSObject {
 
     var serverVoiceId: String?
     var serverSpeechRate: Double = 1.0
+    let readAloudPlayer = ReadAloudPlayer()
+    var serverSplitOn: String?
     var isServerAvailable: Bool { apiClient != nil }
     private(set) var apiClient: APIClient?
 
@@ -89,6 +91,12 @@ final class TextToSpeechService: NSObject {
     private var ttsHoldsIdleTimerLock: Bool = false
 
     func configureServerTTS(apiClient: APIClient?) {
+        if self.apiClient !== apiClient {
+            readAloudPlayer.stop()
+            serverSplitOn = nil
+            serverDefaultVoice = nil
+            serverModel = nil
+        }
         self.apiClient = apiClient
     }
 
@@ -263,12 +271,11 @@ final class TextToSpeechService: NSObject {
 
     /// Speaks text immediately, interrupting any current speech.
     func speak(_ text: String) {
-        let cleaned = TTSTextPreprocessor.prepareForSpeech(
-            ToolCallParser.parseAll(text).cleanedContent + "\n"
-        )
+        let safeText = ToolCallParser.parseAll(text).cleanedContent + "\n"
+        let cleaned = TTSTextPreprocessor.prepareForSpeech(safeText)
         guard !cleaned.isEmpty else { return }
 
-        stop()
+        stop(deactivateSession: false)
 
         let engine = resolveEngine()
         activeEngine = engine
@@ -277,10 +284,37 @@ final class TextToSpeechService: NSObject {
         case .kokoro, .qwen3:
             speakWithKokoro(cleaned)
         case .server:
-            speakWithServer(cleaned)
+            let splitting = SpeechSplitting(rawValue: UserDefaults.standard.string(forKey: SpeechSplitting.preferenceKey) ?? "server") ?? .followServer
+            speakWithServer(splitting.resolved(serverValue: serverSplitOn).chunks(from: safeText))
         case .system, .auto:
             speakWithSystem(cleaned)
         }
+    }
+
+    /// Completed-message read-aloud owns a seekable session; voice calls keep their incremental pipeline.
+    func speakMessage(_ text: String, messageID: String, title: String, serverSplitOn: String?) {
+        guard resolveEngine() == .server, let apiClient else {
+            speak(text)
+            return
+        }
+        stop(deactivateSession: false)
+        activeEngine = .server
+        self.serverSplitOn = serverSplitOn
+        let splitting = SpeechSplitting(rawValue: UserDefaults.standard.string(forKey: SpeechSplitting.preferenceKey) ?? "server") ?? .followServer
+        var voice = serverVoiceId ?? serverDefaultVoice
+        let model = serverModel
+        readAloudPlayer.start(messageID: messageID, title: title, prepare: { [weak self] in
+            // /api/config is available to regular users; the admin audio endpoint is not.
+            let config = try? await apiClient.getBackendConfig()
+            try Task.checkCancellation()
+            let serverValue = config?.audio?.tts?.splitOn ?? serverSplitOn
+            self?.serverSplitOn = serverValue
+            if self?.serverVoiceId == nil { voice = config?.audio?.tts?.voice ?? voice }
+            let safe = ToolCallParser.parseAll(text).cleanedContent + "\n"
+            return splitting.resolved(serverValue: serverValue).chunks(from: safe)
+        }, generate: { text in
+            try await apiClient.generateSpeech(text: text, voice: voice, model: model)
+        })
     }
 
     // MARK: - Idle Timer Helpers
@@ -304,7 +338,8 @@ final class TextToSpeechService: NSObject {
     }
 
     /// Stops all speech and clears all queues.
-    func stop() {
+    func stop(deactivateSession: Bool = true) {
+        readAloudPlayer.stop()
         print("🔊[TTS] stop() called — activeEngine=\(activeEngine), isUsingServer=\(isUsingServer), state=\(state)")
         print("🔊[TTS] stop() call stack:\n\(Thread.callStackSymbols.prefix(12).joined(separator: "\n"))")
         // Clear streaming mode flag BEFORE stopping the on-device service so the
@@ -331,7 +366,7 @@ final class TextToSpeechService: NSObject {
 
         // Deactivate audio session to release hardware resources
         print("🔊[TTS] stop() — calling deactivateAudioSession()")
-        deactivateAudioSession()
+        if deactivateSession { deactivateAudioSession() }
 
         // Re-enable auto-lock now that TTS has been stopped.
         enableIdleTimer()
@@ -434,6 +469,7 @@ final class TextToSpeechService: NSObject {
     /// Call before streaming begins. Resets spoken-length tracking.
     /// Does NOT unload the model — only stops playback and clears queues.
     func startStreamingTTS() {
+        readAloudPlayer.stop()
         // Stop any active speech without unloading the model
         kokoroService.stop()
         isUsingKokoro = false
@@ -552,13 +588,12 @@ final class TextToSpeechService: NSObject {
 
     // MARK: - Server TTS
 
-    private func speakWithServer(_ text: String) {
+    private func speakWithServer(_ chunks: [String]) {
         isUsingServer = true
         state = .speaking
         disableIdleTimer()
         onStart?()
-        let sentences = TTSTextPreprocessor.splitIntoSentences(text)
-        serverQueue.append(contentsOf: sentences)
+        serverQueue.append(contentsOf: chunks)
         if !isRunningServerQueue {
             isRunningServerQueue = true
             startServerPipeline()
@@ -739,7 +774,7 @@ final class TextToSpeechService: NSObject {
                 self.isRunningServerQueue = false
                 // If nothing was produced (all chunks errored), complete immediately
                 let produced = producedAtLeastOne
-                if !produced {
+                if !produced || self.finishedItemCount >= self.queuedItemCount {
                     self.handleServerPlaybackComplete()
                 }
             }
@@ -755,7 +790,6 @@ final class TextToSpeechService: NSObject {
             NotificationCenter.default.removeObserver(token)
             playerItemEndObserver = nil
         }
-        let hadItems = queuedItemCount > 0
         stopServerPlayback()
         if !isStreamingTTS {
             state = .idle
@@ -766,9 +800,7 @@ final class TextToSpeechService: NSObject {
             // The audio session is deactivated in stop() only — when the user explicitly
             // stops TTS, not on natural completion.
             enableIdleTimer()
-            if hadItems {
-                onComplete?()
-            }
+            onComplete?()
         }
     }
 

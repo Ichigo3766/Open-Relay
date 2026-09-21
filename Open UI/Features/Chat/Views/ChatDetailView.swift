@@ -433,16 +433,26 @@ struct ChatDetailView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .chatChromeBar(edge: .top) {
-            // Removing the view from the tree (rather than just fading it) causes
-            // safeAreaBar / safeAreaInset to collapse to zero height, so the entire
-            // bar area disappears — not just the content inside it.
-            // All navBarHidden mutations are already wrapped in withAnimation(.easeOut)
-            // at the scroll-handler sites, so the transition animates automatically.
-            if !navBarHidden {
-                customTopBar
-                    .transition(
-                        .opacity.combined(with: .offset(y: -20))
-                    )
+            VStack(spacing: 0) {
+                // Removing the view from the tree (rather than just fading it) causes
+                // safeAreaBar / safeAreaInset to collapse to zero height, so the entire
+                // bar area disappears — not just the content inside it.
+                // All navBarHidden mutations are already wrapped in withAnimation(.easeOut)
+                // at the scroll-handler sites, so the transition animates automatically.
+                if !navBarHidden {
+                    customTopBar
+                        .transition(
+                            .opacity.combined(with: .offset(y: -20))
+                        )
+                }
+                let player = dependencies.textToSpeechService.readAloudPlayer
+                if player.isVisible {
+                    ReadAloudPlayerBar(player: player) { text in
+                        guard let messageID = player.messageID else { return }
+                        dependencies.textToSpeechService.speakMessage(text, messageID: messageID,
+                            title: player.title, serverSplitOn: dependencies.authViewModel.backendConfig?.audio?.tts?.splitOn)
+                    }
+                }
             }
         }
         .chatChromeBar(edge: .bottom) {
@@ -3457,6 +3467,7 @@ struct ChatDetailView: View {
         let preferences = MessageActionPreferences(order: messageActionOrder, hidden: hiddenMessageActions)
         let actions = preferences.visibleActions(
             speechActive: speakingMessageId == message.id || ttsGeneratingMessageId == message.id
+                || dependencies.textToSpeechService.readAloudPlayer.messageID == message.id
         )
 
         return HStack(spacing: 6) {
@@ -3559,14 +3570,17 @@ struct ChatDetailView: View {
                             .frame(width: 28, height: 28)
                             .tint(theme.brandPrimary)
                     } else {
+                        let player = dependencies.textToSpeechService.readAloudPlayer
+                        let isPlayerMessage = player.messageID == message.id
                         compactActionIcon(
-                            icon: speakingMessageId == message.id ? "stop.fill" : "speaker.wave.2",
-                            isActive: speakingMessageId == message.id
-                        )
+                            icon: isPlayerMessage ? (player.wantsPlayback ? "pause.fill" : "play.fill")
+                                : (speakingMessageId == message.id ? "stop.fill" : "speaker.wave.2"),
+                            isActive: isPlayerMessage || speakingMessageId == message.id)
                     }
                 }
                 .buttonStyle(CompactActionButtonStyle())
-                .accessibilityLabel(speakingMessageId == message.id ? "Stop speaking" : "Speak")
+                .accessibilityLabel(dependencies.textToSpeechService.readAloudPlayer.messageID == message.id
+                    ? "Toggle read-aloud playback" : (speakingMessageId == message.id ? "Stop speaking" : "Speak"))
             }
 
         case .copy:
@@ -4661,12 +4675,15 @@ struct ChatDetailView: View {
 
     private func toggleSpeech(for message: ChatMessage) {
         let tts = dependencies.textToSpeechService
+        if tts.readAloudPlayer.messageID == message.id {
+            tts.readAloudPlayer.togglePlayback()
+            return
+        }
         if speakingMessageId == message.id || ttsGeneratingMessageId == message.id {
             tts.stop()
             speakingMessageId = nil
             ttsGeneratingMessageId = nil
         } else {
-            tts.stop()
             speakingMessageId = nil
             ttsGeneratingMessageId = nil
             let rate = UserDefaults.standard.double(forKey: "ttsSpeechRate")
@@ -4690,7 +4707,10 @@ struct ChatDetailView: View {
             }()
             guard !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
             ttsGeneratingMessageId = message.id
-            tts.speak(content)
+            tts.speakMessage(content, messageID: message.id,
+                title: viewModel.conversation?.title ?? "Read Aloud",
+                serverSplitOn: dependencies.authViewModel.backendConfig?.audio?.tts?.splitOn)
+            if tts.readAloudPlayer.isVisible { ttsGeneratingMessageId = nil }
         }
     }
 

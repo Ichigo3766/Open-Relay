@@ -704,6 +704,7 @@ struct TTSSettingsView: View {
     @AppStorage("ttsQwen3Voice") private var qwen3Voice: String = "Aiden"
     @AppStorage("ttsQwen3Language") private var qwen3Language: String = "auto"
     @AppStorage("ttsServerVoiceId") private var serverVoiceId: String = ""
+    @AppStorage(SpeechSplitting.preferenceKey) private var speechSplitting = SpeechSplitting.followServer
     @State private var isSpeaking = false
     @State private var availableVoices: [AVSpeechSynthesisVoice] = []
     @State private var isDownloadingModel = false
@@ -981,6 +982,31 @@ struct TTSSettingsView: View {
                 }
             }
 
+            if selectedEngine == "server" || selectedEngine == "auto" {
+                Section {
+                    let server = SpeechSplitting.followServer.resolved(
+                        serverValue: dependencies.authViewModel.backendConfig?.audio?.tts?.splitOn)
+                    LabeledContent("Server setting", value: server.title)
+                        .accessibilityIdentifier("speech.serverSplitting")
+                    Picker("Client setting", selection: $speechSplitting) {
+                        ForEach(SpeechSplitting.allCases) { mode in
+                            Text(mode == .followServer ? "Follow Server (\(server.title))" : mode.title).tag(mode)
+                        }
+                    }
+                    .pickerStyle(.navigationLink)
+                    .accessibilityIdentifier("speech.clientSplitting")
+                    if dependencies.authViewModel.currentUser?.role == .admin {
+                        NavigationLink("Edit Server Audio") {
+                            AdminAudioView().navigationTitle("Server Audio")
+                        }
+                    }
+                } header: {
+                    Text("Response Splitting")
+                } footer: {
+                    Text("The client setting applies on this device. Whole Message keeps the text together for more context but takes longer to prepare and must fit your speech provider’s limits. Changes apply to the next playback; voice calls continue speaking incrementally.")
+                }
+            }
+
             // System Voice Settings (only when system engine is selected)
             if selectedEngine == "system" || selectedEngine == "auto" {
                 Section {
@@ -1122,6 +1148,8 @@ struct TTSSettingsView: View {
         .task {
             // Always fetch fresh config from server when the user opens this screen
             if ttsService.isServerAvailable {
+                await dependencies.authViewModel.refreshBackendConfig()
+                ttsService.serverSplitOn = dependencies.authViewModel.backendConfig?.audio?.tts?.splitOn
                 await loadServerConfig()
                 await loadServerVoices()
             }
@@ -1275,9 +1303,6 @@ struct TTSSettingsView: View {
                 let configVoice = (tts["VOICE"] as? String) ?? ""
                 if !configVoice.isEmpty {
                     ttsService.serverDefaultVoice = configVoice
-                    if serverVoiceId.isEmpty {
-                        ttsService.serverVoiceId = configVoice
-                    }
                 } else {
                     // Server has no VOICE configured. Pick a sensible default so the
                     // preview and read-aloud requests don't 400 with an empty voice field.
