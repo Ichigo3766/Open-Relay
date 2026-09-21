@@ -490,7 +490,7 @@ struct ChatInputField: View {
                 Color.clear.glassEffect(.regular, in: RoundedRectangle(cornerRadius: composerCornerRadius))
             } else {
                 RoundedRectangle(cornerRadius: composerCornerRadius, style: .continuous)
-                    .fill(composerBackground)
+                    .fill(.ultraThinMaterial)
                     .overlay {
                         RoundedRectangle(cornerRadius: composerCornerRadius, style: .continuous)
                             .strokeBorder(composerBorderColor, lineWidth: 0.5)
@@ -513,12 +513,6 @@ struct ChatInputField: View {
     private var composerCornerRadius: CGFloat {
         // Shrink corners slightly for multiline content
         text.contains("\n") || text.count > 60 ? 18 : 22
-    }
-
-    private var composerBackground: Color {
-        theme.isDark
-            ? theme.cardBackground.opacity(0.95)
-            : theme.inputBackground
     }
 
     private var composerBorderColor: Color {
