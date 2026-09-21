@@ -294,9 +294,6 @@ struct ChatInputField: View {
             }
         }
         .padding(.top, Spacing.xs)
-        // Focused: keep Spacing.sm so the composer lifts clear of the keyboard.
-        // Unfocused: keep a fixed 8pt gap so the pill never clips into the home indicator.
-        .padding(.bottom, 0)
         .animation(.spring(response: 0.3, dampingFraction: 0.8), value: isDictating)
         .animation(.spring(response: 0.3, dampingFraction: 0.8), value: dictationService?.state == .processing)
         // Widget deep link — focus the text field and show keyboard when
