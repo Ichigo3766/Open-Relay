@@ -441,6 +441,15 @@ struct ChatDetailView: View {
                 // at the scroll-handler sites, so the transition animates automatically.
                 if !navBarHidden {
                     customTopBar
+                        .background {
+                            // Full-width nav bar background — shows only when bar is visible.
+                            // Extends up into the safe area to cover the status bar region
+                            // as one continuous blurred band (Reddit-style).
+                            Rectangle()
+                                .fill(.ultraThinMaterial)
+                                .overlay(theme.background.opacity(theme.isDark ? 0.55 : 0.25))
+                                .ignoresSafeArea(edges: .top)
+                        }
                         .transition(
                             .opacity.combined(with: .offset(y: -20))
                         )
@@ -501,17 +510,35 @@ struct ChatDetailView: View {
                     .padding(.bottom, (verticalSizeClass == .compact && viewModel.terminalEnabled && viewModel.selectedTerminalServer != nil) ? keyboard.height : 0)
             }
         }
-        // Confine the backdrop to the status-bar safe area, above the floating controls.
+        // Status-bar safe-area backdrop — shows with the nav bar, hides when scrolled away.
+        // On iOS 26+ we use glassEffect(.clear) so text scrolling behind the status icons
+        // stays readable as a soft blur (PR #248). On older iOS, ultraThinMaterial fallback.
+        // The whole overlay fades in/out with navBarHidden so the bar and backdrop are unified.
         .overlay {
             GeometryReader { geometry in
-                theme.background.opacity(0.8)
-                    .background(.ultraThinMaterial)
-                    .mask(LinearGradient(stops: [
-                        .init(color: .black, location: 0.45),
-                        .init(color: .clear, location: 1)
-                    ], startPoint: .top, endPoint: .bottom))
-                    .frame(height: geometry.safeAreaInsets.top)
-                    .offset(y: -geometry.safeAreaInsets.top)
+                Group {
+                    if #available(iOS 26.0, *) {
+                        Color.clear
+                            // Keep the glass rim outside the visible status-area band.
+                            .glassEffect(.clear, in: Rectangle().inset(by: -geometry.safeAreaInsets.top))
+                            .overlay(theme.background.opacity(theme.isDark ? 0.7 : 0.15))
+                            .mask(LinearGradient(stops: [
+                                .init(color: .black, location: 0.8),
+                                .init(color: .clear, location: 1)
+                            ], startPoint: .top, endPoint: .bottom))
+                    } else {
+                        theme.background.opacity(0.8)
+                            .background(.ultraThinMaterial)
+                            .mask(LinearGradient(stops: [
+                                .init(color: .black, location: 0.45),
+                                .init(color: .clear, location: 1)
+                            ], startPoint: .top, endPoint: .bottom))
+                    }
+                }
+                .frame(height: geometry.safeAreaInsets.top)
+                .offset(y: -geometry.safeAreaInsets.top)
+                // Always visible — this blur protects the status icons regardless of whether
+                // the nav bar controls are hidden. The nav bar background hides/shows separately.
             }
             .allowsHitTesting(false)
         }
@@ -2069,7 +2096,14 @@ struct ChatDetailView: View {
 
             // ── At-top detection for ↑ FAB ──
             let atTop = newOffset.y < 50
-            if atTop != isAtTop { isAtTop = atTop }
+            if atTop != isAtTop {
+                isAtTop = atTop
+                // Always show the nav bar when the user reaches the very top —
+                // they clearly want to interact with the header controls.
+                if atTop && navBarHidden && !viewModel.isStreaming {
+                    withAnimation(.easeOut(duration: 0.25)) { navBarHidden = false }
+                }
+            }
 
             // ── Sliding window: preload older messages when approaching the top ──
             //

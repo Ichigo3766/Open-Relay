@@ -131,12 +131,13 @@ struct StreamingMarkdownView: View {
 
     var body: some View {
         unifiedBody
-            // Animate layout changes only when streaming ends (isStreaming flips false→true
-            // is intentionally excluded — animating during streaming would create per-token
-            // animations at 60fps and re-introduce the old AttributeGraph cycle).
-            // The `.value:` key ensures this animation fires exactly once per stream end,
-            // smoothing the height settle when the final parse delivers its result.
-            .animation(.easeOut(duration: 0.18), value: isStreaming)
+            // Animate layout changes only when streaming ends (isStreaming flips true→false).
+            // Using a nil animation while streaming prevents keyboard-triggered layout
+            // invalidations (safe-area inset changes when the composer appears) from being
+            // animated — which was causing the assistant message bubble to visibly shrink
+            // and settle whenever the keyboard opened. The animation only fires on the
+            // streaming-end transition so the final height settle is still smooth.
+            .animation(isStreaming ? nil : .easeOut(duration: 0.18), value: isStreaming)
             .onAppear {
                 rebuildThemeIfNeeded()
             }
