@@ -2476,7 +2476,7 @@ struct ToolCallView: View {
             }
 
             // ── Body ─────────────────────────────────────────────────────
-            AnimatedPresence(visible: isExpanded) {
+            if isExpanded {
                 VStack(alignment: .leading, spacing: Spacing.sm) {
                     // Arguments (INPUT)
                     if let args = toolCall.arguments, !args.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -2621,7 +2621,7 @@ private struct MixedToolCallGroup: View {
             .buttonStyle(.plain)
 
             // Expanded: render items in order (tool calls + inline reasoning)
-            AnimatedPresence(visible: isExpanded) {
+            if isExpanded {
                 VStack(alignment: .leading, spacing: 0) {
                     ForEach(Array(items.enumerated()), id: \.offset) { idx, item in
                         switch item {
