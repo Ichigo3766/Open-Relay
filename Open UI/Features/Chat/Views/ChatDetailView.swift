@@ -464,19 +464,21 @@ struct ChatDetailView: View {
                     .padding(.bottom, (verticalSizeClass == .compact && viewModel.terminalEnabled && viewModel.selectedTerminalServer != nil) ? keyboard.height : 0)
             }
         }
-        // Protect status icons with a soft blur confined to the top safe area.
+        // iOS 26 supplies the native soft scroll edge; older systems need a status-area backdrop.
         .overlay {
-            GeometryReader { geometry in
-                Rectangle()
-                    .fill(.regularMaterial)
-                    .mask(LinearGradient(stops: [
-                        .init(color: .black, location: 0.45),
-                        .init(color: .clear, location: 1)
-                    ], startPoint: .top, endPoint: .bottom))
-                    .frame(height: geometry.safeAreaInsets.top)
-                    .offset(y: -geometry.safeAreaInsets.top)
+            if #unavailable(iOS 26.0) {
+                GeometryReader { geometry in
+                    theme.background.opacity(0.8)
+                        .background(.ultraThinMaterial)
+                        .mask(LinearGradient(stops: [
+                            .init(color: .black, location: 0.45),
+                            .init(color: .clear, location: 1)
+                        ], startPoint: .top, endPoint: .bottom))
+                        .frame(height: geometry.safeAreaInsets.top)
+                        .offset(y: -geometry.safeAreaInsets.top)
+                }
+                .allowsHitTesting(false)
             }
-            .allowsHitTesting(false)
         }
         .navigationBarHidden(true)
         // Configure the view model synchronously on first appearance so that the
@@ -6378,7 +6380,8 @@ private extension View {
     func chatChromeBar<Content: View>(edge: VerticalEdge, @ViewBuilder content: () -> Content) -> some View {
         if #available(iOS 26.0, *) {
             self.safeAreaBar(edge: edge, spacing: 0, content: content)
-                .scrollEdgeEffectHidden(true, for: [.top, .bottom])
+                .scrollEdgeEffectStyle(.soft, for: .top)
+                .scrollEdgeEffectHidden(true, for: .bottom)
         } else {
             self.safeAreaInset(edge: edge, spacing: 0, content: content)
         }
