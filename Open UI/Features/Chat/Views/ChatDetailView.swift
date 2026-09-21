@@ -452,6 +452,28 @@ struct ChatDetailView: View {
                         dependencies.textToSpeechService.speakMessage(text, messageID: messageID,
                             title: player.title, serverSplitOn: dependencies.authViewModel.backendConfig?.audio?.tts?.splitOn)
                     }
+                    .transition(.asymmetric(
+                        insertion: .opacity.combined(with: .move(edge: .top)),
+                        removal: .opacity.combined(with: .move(edge: .top))
+                    ))
+                } else if speakingMessageId != nil || ttsGeneratingMessageId != nil {
+                    // Non-server TTS (system / Kokoro / Qwen3) — show simple player bar
+                    let msgId = speakingMessageId ?? ttsGeneratingMessageId
+                    let isGenerating = ttsGeneratingMessageId != nil && speakingMessageId == nil
+                    SimpleReadAloudPlayerBar(
+                        title: viewModel.conversation?.title ?? "Read Aloud",
+                        isGenerating: isGenerating,
+                        isPlaying: speakingMessageId != nil
+                    ) {
+                        dependencies.textToSpeechService.stop()
+                        speakingMessageId = nil
+                        ttsGeneratingMessageId = nil
+                        _ = msgId // suppress unused warning
+                    }
+                    .transition(.asymmetric(
+                        insertion: .opacity.combined(with: .move(edge: .top)),
+                        removal: .opacity.combined(with: .move(edge: .top))
+                    ))
                 }
             }
         }
