@@ -2,285 +2,377 @@ import SwiftUI
 import UIKit
 import Combine
 
-// MARK: - Main Player Bar
+// MARK: - Unified Read-Aloud Player
+//
+// One component for ALL TTS engines (server, Kokoro, system).
+// Two visual states driven by `isExpanded`:
+//
+//  • Collapsed — a compact pill showing a waveform icon + "Playing"
+//    (or elapsed time for server TTS) + a close ×.
+//    Auto-collapses when the user scrolls the chat (via `isUserScrolling`).
+//
+//  • Expanded — full controls with play/pause, speed, skip ±15s (server),
+//    scrubber (server), and transcript (server). Tap the pill or scroll
+//    to collapse back.
 
 struct ReadAloudPlayerBar: View {
     @Environment(\.theme) private var theme
-    let player: ReadAloudPlayer
-    /// Called when "Play from here" is tapped (server TTS only)
+
+    // ── Server TTS player (nil for on-device/system TTS) ──────────────
+    let player: ReadAloudPlayer?
+    /// Called when "Play from here" is tapped in the transcript sheet.
     let readFromHere: (String) -> Void
 
+    // ── On-device / system TTS state ──────────────────────────────────
+    let isGenerating: Bool   // ttsGeneratingMessageId != nil
+    let isPlaying: Bool      // speakingMessageId != nil
+    let onStop: () -> Void   // called for all TTS types to stop
+
+    // ── Collapse trigger from ChatDetailView ──────────────────────────
+    /// Set to true by ChatDetailView when the user starts scrolling.
+    /// Automatically collapses the player back to pill state.
+    let isUserScrolling: Bool
+
+    // ── Local UI state ─────────────────────────────────────────────────
     @State private var isExpanded = false
     @State private var showingTranscript = false
 
-    private var isSeekable: Bool { player.canSeek }
-    private var showProgress: Bool { player.bufferedDuration > 0 }
+    // Server-TTS convenience flags
+    private var serverPlayer: ReadAloudPlayer? { player?.isVisible == true ? player : nil }
+    private var isServerMode: Bool { serverPlayer != nil }
+    private var canSeek: Bool { serverPlayer?.canSeek ?? false }
+    private var showProgress: Bool { (serverPlayer?.bufferedDuration ?? 0) > 0 }
 
     var body: some View {
         VStack(spacing: 0) {
-            // Compact bar — always visible
-            compactBar
-                .contentShape(Rectangle())
+            pillRow
+                .contentShape(Rectangle())            // ← blocks tap-through
                 .onTapGesture {
-                    withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
+                    withAnimation(.spring(response: 0.4, dampingFraction: 0.75)) {
                         isExpanded.toggle()
                     }
                 }
 
-            // Expanded controls — slides in below
             if isExpanded {
-                expandedControls
+                expandedPanel
                     .transition(.asymmetric(
-                        insertion: .opacity.combined(with: .move(edge: .top)),
-                        removal: .opacity.combined(with: .move(edge: .top))
+                        insertion: .opacity.combined(with: .offset(y: -6)),
+                        removal:   .opacity.combined(with: .offset(y: -6))
                     ))
             }
-
-            // Error banner
-            if let error = player.error {
-                errorBanner(error)
-                    .transition(.opacity.combined(with: .move(edge: .top)))
+        }
+        // Solid blocking background so taps never fall through to the chat
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: isExpanded ? 18 : 22))
+        .padding(.horizontal, 14)
+        .padding(.top, 4)
+        .padding(.bottom, isExpanded ? 8 : 4)
+        .shadow(color: .black.opacity(0.10), radius: 8, y: 2)
+        // Auto-collapse on scroll
+        .onChange(of: isUserScrolling) { _, scrolling in
+            if scrolling && isExpanded {
+                withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
+                    isExpanded = false
+                }
             }
         }
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
-        .padding(.horizontal, 12)
-        .padding(.top, 4)
-        .padding(.bottom, 6)
         .sheet(isPresented: $showingTranscript) {
-            transcriptSheet
+            if let p = serverPlayer {
+                transcriptSheet(player: p)
+            }
         }
     }
 
-    // MARK: - Compact Bar
+    // MARK: - Pill Row (always visible)
 
-    private var compactBar: some View {
+    private var pillRow: some View {
         HStack(spacing: 10) {
-            // Play/Pause/Retry button
-            playPauseButton
-                .frame(width: 44, height: 44)
+            // ── Leading icon ────────────────────────────────────────────
+            leadingIcon
+                .frame(width: 36, height: 36)
 
-            // Center — title + progress
-            VStack(alignment: .leading, spacing: 2) {
-                Text(player.title)
-                    .font(.subheadline.weight(.medium))
-                    .lineLimit(1)
-                    .foregroundStyle(theme.textPrimary)
+            // ── Center label ────────────────────────────────────────────
+            centerLabel
+                .frame(maxWidth: .infinity, alignment: .leading)
 
-                progressLine
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-
-            // Expand chevron
+            // ── Expand/collapse chevron ─────────────────────────────────
             Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.secondary)
-                .frame(width: 28, height: 44)
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(.tertiary)
+                .frame(width: 24, height: 36)
 
-            // Close button
+            // ── Close / stop ────────────────────────────────────────────
             Button {
                 withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
                     isExpanded = false
                 }
-                player.stop()
+                if let p = serverPlayer { p.stop() }
+                onStop()
             } label: {
                 Image(systemName: "xmark")
-                    .font(.system(size: 12, weight: .semibold))
+                    .font(.system(size: 11, weight: .bold))
                     .foregroundStyle(.secondary)
-                    .frame(width: 44, height: 44)
-                    .contentShape(Rectangle())
+                    .frame(width: 36, height: 36)
+                    .background(.quaternary.opacity(0.6), in: Circle())
             }
             .buttonStyle(.plain)
-            .accessibilityLabel("Close audio player")
+            .accessibilityLabel("Stop audio")
             .accessibilityIdentifier("speech.close")
         }
-        .padding(.horizontal, 6)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 6)
     }
 
-    // MARK: - Play/Pause Button
+    // MARK: - Leading icon (waveform / play / pause / spinner)
 
-    private var playPauseButton: some View {
-        Button {
-            if player.error != nil {
-                player.retry()
-            } else {
-                player.togglePlayback()
-            }
-        } label: {
-            ZStack {
-                Circle()
-                    .fill(theme.brandPrimary.opacity(0.12))
-                    .frame(width: 36, height: 36)
+    @ViewBuilder
+    private var leadingIcon: some View {
+        ZStack {
+            Circle()
+                .fill(theme.brandPrimary.opacity(0.14))
 
-                Group {
-                    if player.error != nil {
-                        Image(systemName: "arrow.clockwise")
-                            .font(.system(size: 15, weight: .semibold))
-                            .foregroundStyle(theme.brandPrimary)
-                    } else if player.isGenerating && !player.isPlaying {
-                        // Buffering spinner
-                        ProgressView()
-                            .scaleEffect(0.75)
-                            .tint(theme.brandPrimary)
-                    } else {
-                        Image(systemName: player.wantsPlayback ? "pause.fill" : "play.fill")
-                            .font(.system(size: 15, weight: .semibold))
-                            .foregroundStyle(theme.brandPrimary)
-                            .contentTransition(.symbolEffect(.replace))
-                    }
+            if let p = serverPlayer {
+                // Server TTS — tap icon to toggle playback
+                Button {
+                    if p.error != nil { p.retry() }
+                    else { p.togglePlayback() }
+                } label: {
+                    serverIconImage(player: p)
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(theme.brandPrimary)
                 }
+                .buttonStyle(.plain)
+                .accessibilityLabel(p.wantsPlayback ? "Pause" : "Play")
+                .accessibilityIdentifier("speech.playPause")
+            } else {
+                // On-device TTS — tap icon to stop
+                Button { onStop() } label: {
+                    Image(systemName: isGenerating ? "waveform" : "speaker.wave.2.fill")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(theme.brandPrimary)
+                        .symbolEffect(.variableColor.iterative.reversing,
+                                      isActive: isPlaying || isGenerating)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Stop audio")
             }
         }
-        .buttonStyle(.plain)
-        .accessibilityLabel(player.error != nil ? "Retry audio" : (player.wantsPlayback ? "Pause" : "Play"))
-        .accessibilityIdentifier("speech.playPause")
     }
 
-    // MARK: - Progress Line
+    @ViewBuilder
+    private func serverIconImage(player p: ReadAloudPlayer) -> some View {
+        if p.error != nil {
+            Image(systemName: "arrow.clockwise")
+        } else if p.isGenerating && !p.isPlaying {
+            ProgressView().scaleEffect(0.65).tint(theme.brandPrimary)
+        } else {
+            Image(systemName: p.wantsPlayback ? "pause.fill" : "play.fill")
+                .contentTransition(.symbolEffect(.replace))
+        }
+    }
 
-    private var progressLine: some View {
-        HStack(spacing: 6) {
-            if player.isGenerating && !player.isPlaying && player.wantsPlayback {
-                Text(player.canSeek ? "Buffering…" : "Preparing…")
+    // MARK: - Center label (title + status/progress)
+
+    private var centerLabel: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            // Title
+            if let p = serverPlayer {
+                Text(p.title)
+                    .font(.subheadline.weight(.medium))
+                    .lineLimit(1)
+                    .foregroundStyle(theme.textPrimary)
+            } else {
+                Text(isGenerating ? "Preparing…" : "Playing")
+                    .font(.subheadline.weight(.medium))
+                    .foregroundStyle(theme.textPrimary)
+            }
+
+            // Progress / status
+            if let p = serverPlayer {
+                serverProgressLabel(player: p)
+            } else {
+                Text("Tap to stop")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
-            } else if showProgress {
-                Text(Self.formatTime(player.elapsed))
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func serverProgressLabel(player p: ReadAloudPlayer) -> some View {
+        if let err = p.error {
+            Text(err)
+                .font(.caption2)
+                .foregroundStyle(theme.error)
+                .lineLimit(1)
+        } else if p.isGenerating && !p.isPlaying && p.wantsPlayback {
+            Text(p.canSeek ? "Buffering…" : "Preparing…")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+        } else if showProgress {
+            HStack(spacing: 5) {
+                Text(Self.formatTime(p.elapsed))
                     .font(.system(.caption2, design: .monospaced))
                     .monospacedDigit()
                     .foregroundStyle(.secondary)
 
-                // Thin inline progress track
+                // Thin inline track
                 GeometryReader { geo in
                     ZStack(alignment: .leading) {
-                        Capsule()
-                            .fill(.tertiary)
-                            .frame(height: 2)
-                        let progress = player.bufferedDuration > 0
-                            ? min(player.elapsed / player.bufferedDuration, 1.0)
-                            : 0
+                        Capsule().fill(.quaternary).frame(height: 2)
+                        let pct = p.bufferedDuration > 0
+                            ? min(p.elapsed / p.bufferedDuration, 1.0) : 0
                         Capsule()
                             .fill(theme.brandPrimary)
-                            .frame(width: geo.size.width * progress, height: 2)
+                            .frame(width: geo.size.width * pct, height: 2)
                     }
                 }
-                .frame(height: 6)
+                .frame(height: 4)
+            }
+        } else {
+            Text("Ready")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    // MARK: - Expanded Panel
+
+    @ViewBuilder
+    private var expandedPanel: some View {
+        VStack(spacing: 0) {
+            Divider().padding(.horizontal, 8).padding(.top, 2)
+
+            if let p = serverPlayer {
+                // ── Full server-TTS controls ───────────────────────────
+                serverControls(player: p)
             } else {
-                Text("Ready")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
+                // ── On-device controls (no seeking) ────────────────────
+                onDeviceControls
             }
         }
     }
 
-    // MARK: - Expanded Controls
+    // MARK: - Server TTS controls
 
-    private var expandedControls: some View {
-        VStack(spacing: 12) {
-            Divider().padding(.horizontal, 6)
+    private func serverControls(player p: ReadAloudPlayer) -> some View {
+        VStack(spacing: 10) {
+            // Scrubber
+            if canSeek, let dur = p.duration, dur > 0 {
+                VStack(spacing: 2) {
+                    Slider(
+                        value: Binding(get: { p.elapsed }, set: { p.seek(to: $0) }),
+                        in: 0...dur
+                    )
+                    .tint(theme.brandPrimary)
+                    .padding(.horizontal, 4)
+                    .accessibilityLabel("Audio position")
+                    .accessibilityIdentifier("speech.position")
 
-            // Scrubber (seekable only)
-            if isSeekable, let duration = player.duration, duration > 0 {
-                scrubberRow(duration: duration)
+                    HStack {
+                        Text(Self.formatTime(p.elapsed))
+                        Spacer()
+                        Text(Self.formatTime(dur))
+                    }
+                    .font(.caption2.monospacedDigit())
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 8)
+                }
+                .padding(.top, 6)
             }
 
-            // Transport row
-            transportRow
+            // Transport row: ⏮  1×  ⏭
+            HStack(spacing: 0) {
+                Spacer()
+                iconButton("gobackward.15", label: "Back 15s", id: "speech.back", size: 22) {
+                    p.skip(-15)
+                }
+                .disabled(!canSeek || p.elapsed <= 0)
+                Spacer()
 
-            // Transcript button (server TTS — has transcript)
-            if !player.transcript.isEmpty {
-                Button {
-                    showingTranscript = true
-                } label: {
+                Button { p.cycleRate() } label: {
+                    Text(Self.formatRate(p.rate))
+                        .font(.subheadline.weight(.semibold)).monospacedDigit()
+                        .frame(width: 52, height: 40)
+                        .background(.quaternary, in: RoundedRectangle(cornerRadius: 10))
+                        .foregroundStyle(theme.textPrimary)
+                        .contentTransition(.numericText())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Speed: \(Self.formatRate(p.rate))")
+                .accessibilityIdentifier("speech.speed")
+                Spacer()
+
+                iconButton("goforward.15", label: "Forward 15s", id: "speech.forward", size: 22) {
+                    p.skip(15)
+                }
+                .disabled(!canSeek || p.elapsed >= p.bufferedDuration)
+                Spacer()
+            }
+            .padding(.bottom, 2)
+
+            // Transcript
+            if !p.transcript.isEmpty {
+                Button { showingTranscript = true } label: {
                     Label("View Transcript", systemImage: "text.quote")
                         .font(.subheadline)
                         .frame(maxWidth: .infinity)
-                        .frame(height: 36)
+                        .frame(height: 34)
                         .background(.quaternary, in: RoundedRectangle(cornerRadius: 10))
                         .foregroundStyle(theme.textPrimary)
                 }
                 .buttonStyle(.plain)
-                .padding(.horizontal, 8)
-                .padding(.bottom, 4)
+                .padding(.horizontal, 4)
+                .padding(.bottom, 2)
             }
         }
-    }
-
-    // MARK: - Scrubber
-
-    private func scrubberRow(duration: Double) -> some View {
-        VStack(spacing: 2) {
-            Slider(
-                value: Binding(
-                    get: { player.elapsed },
-                    set: { player.seek(to: $0) }
-                ),
-                in: 0...duration
-            )
-            .tint(theme.brandPrimary)
-            .padding(.horizontal, 8)
-            .accessibilityLabel("Audio position")
-            .accessibilityIdentifier("speech.position")
-
-            HStack {
-                Text(Self.formatTime(player.elapsed))
-                Spacer()
-                Text(Self.formatTime(duration))
-            }
-            .font(.caption2.monospacedDigit())
-            .foregroundStyle(.secondary)
-            .padding(.horizontal, 12)
-        }
-    }
-
-    // MARK: - Transport Row
-
-    private var transportRow: some View {
-        HStack(spacing: 0) {
-            Spacer()
-
-            // Skip back 15s
-            transportButton("gobackward.15", label: "Back 15 seconds", id: "speech.back") {
-                player.skip(-15)
-            }
-            .disabled(!isSeekable || player.elapsed <= 0)
-
-            Spacer()
-
-            // Speed button
-            Button {
-                player.cycleRate()
-            } label: {
-                Text(Self.formatRate(player.rate))
-                    .font(.subheadline.weight(.semibold))
-                    .monospacedDigit()
-                    .frame(width: 52, height: 44)
-                    .background(.quaternary, in: RoundedRectangle(cornerRadius: 10))
-                    .foregroundStyle(theme.textPrimary)
-                    .contentTransition(.numericText())
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel("Playback speed: \(Self.formatRate(player.rate))")
-            .accessibilityIdentifier("speech.speed")
-
-            Spacer()
-
-            // Skip forward 15s
-            transportButton("goforward.15", label: "Forward 15 seconds", id: "speech.forward") {
-                player.skip(15)
-            }
-            .disabled(!isSeekable || player.elapsed >= player.bufferedDuration)
-
-            Spacer()
-        }
+        .padding(.horizontal, 8)
         .padding(.bottom, 4)
     }
 
-    private func transportButton(_ symbol: String, label: String, id: String, action: @escaping () -> Void) -> some View {
+    // MARK: - On-device controls (system / Kokoro / Qwen3)
+
+    private var onDeviceControls: some View {
+        VStack(spacing: 8) {
+            HStack(spacing: 16) {
+                // Big stop button
+                Button {
+                    withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
+                        isExpanded = false
+                    }
+                    onStop()
+                } label: {
+                    Label("Stop", systemImage: "stop.fill")
+                        .font(.subheadline.weight(.semibold))
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 38)
+                        .background(theme.brandPrimary.opacity(0.12),
+                                    in: RoundedRectangle(cornerRadius: 10))
+                        .foregroundStyle(theme.brandPrimary)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Stop audio")
+            }
+            .padding(.horizontal, 4)
+            .padding(.top, 8)
+            .padding(.bottom, 4)
+
+            Text("On-device TTS — no scrubbing available")
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+                .padding(.bottom, 4)
+        }
+        .padding(.horizontal, 8)
+    }
+
+    // MARK: - Helpers
+
+    private func iconButton(_ symbol: String, label: String, id: String,
+                             size: CGFloat, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Image(systemName: symbol)
-                .font(.system(size: 22, weight: .regular))
+                .font(.system(size: size, weight: .regular))
                 .foregroundStyle(theme.textPrimary)
-                .frame(width: 52, height: 44)
+                .frame(width: 48, height: 40)
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -288,55 +380,47 @@ struct ReadAloudPlayerBar: View {
         .accessibilityIdentifier(id)
     }
 
-    // MARK: - Error Banner
+    private static func formatTime(_ seconds: Double) -> String {
+        let v = Int(max(0, seconds))
+        return v >= 3600
+            ? String(format: "%d:%02d:%02d", v / 3600, v / 60 % 60, v % 60)
+            : String(format: "%d:%02d", v / 60, v % 60)
+    }
 
-    private func errorBanner(_ message: String) -> some View {
-        HStack(spacing: 8) {
-            Image(systemName: "exclamationmark.triangle.fill")
-                .foregroundStyle(theme.error)
-                .font(.caption)
-            Text(message)
-                .font(.caption)
-                .foregroundStyle(theme.error)
-                .frame(maxWidth: .infinity, alignment: .leading)
-        }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 8)
-        .accessibilityIdentifier("speech.error")
+    private static func formatRate(_ rate: Float) -> String {
+        rate == 1.0 ? "1×" :
+        rate.truncatingRemainder(dividingBy: 1) == 0
+            ? String(format: "%.0f×", rate)
+            : String(format: "%.2g×", rate)
     }
 
     // MARK: - Transcript Sheet
 
-    private var transcriptSheet: some View {
+    private func transcriptSheet(player p: ReadAloudPlayer) -> some View {
         NavigationStack {
             VStack(spacing: 12) {
-                if let duration = player.duration, duration > 0 {
+                if let dur = p.duration, dur > 0 {
                     VStack {
                         Slider(
-                            value: Binding(get: { player.elapsed }, set: { player.seek(to: $0) }),
-                            in: 0...duration
+                            value: Binding(get: { p.elapsed }, set: { p.seek(to: $0) }),
+                            in: 0...dur
                         )
                         .tint(theme.brandPrimary)
                         .accessibilityLabel("Audio position")
                         .accessibilityIdentifier("speech.position")
-
                         HStack {
-                            Text(Self.formatTime(player.elapsed))
+                            Text(Self.formatTime(p.elapsed))
                             Spacer()
-                            Text(Self.formatTime(duration))
+                            Text(Self.formatTime(dur))
                         }
                         .font(.caption.monospacedDigit())
                         .foregroundStyle(.secondary)
                     }
                     .padding(.horizontal)
                 }
-
                 Text("Select a word, then choose \"Play from here\".")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-                    .padding(.horizontal)
-
-                SpeechTranscriptView(text: player.transcript) { suffix in
+                    .font(.footnote).foregroundStyle(.secondary).padding(.horizontal)
+                SpeechTranscriptView(text: p.transcript) { suffix in
                     showingTranscript = false
                     readFromHere(suffix)
                 }
@@ -351,84 +435,10 @@ struct ReadAloudPlayerBar: View {
         }
         .presentationDetents([.medium, .large])
     }
-
-    // MARK: - Helpers
-
-    private static func formatTime(_ seconds: Double) -> String {
-        let value = Int(max(0, seconds))
-        return value >= 3600
-            ? String(format: "%d:%02d:%02d", value / 3600, value / 60 % 60, value % 60)
-            : String(format: "%d:%02d", value / 60, value % 60)
-    }
-
-    private static func formatRate(_ rate: Float) -> String {
-        if rate == 1.0 { return "1×" }
-        let formatted = rate.truncatingRemainder(dividingBy: 1) == 0
-            ? String(format: "%.0f×", rate)
-            : String(format: "%.2g×", rate)
-        return formatted
-    }
-}
-
-// MARK: - Simple Player Bar (System / On-Device TTS)
-
-/// Shown when TTS engine is not server-based (system / Kokoro / Qwen3).
-/// No seeking — just play/pause/stop with a pulsing "Playing…" indicator.
-struct SimpleReadAloudPlayerBar: View {
-    @Environment(\.theme) private var theme
-    let title: String
-    let isGenerating: Bool
-    let isPlaying: Bool
-    let onStop: () -> Void
-
-    @State private var dotPhase: Int = 0
-    private let dotTimer = Timer.publish(every: 0.5, on: .main, in: .common).autoconnect()
-
-    var body: some View {
-        HStack(spacing: 10) {
-            // Animated wave icon
-            Image(systemName: isGenerating ? "waveform" : "speaker.wave.2.fill")
-                .font(.system(size: 15, weight: .medium))
-                .foregroundStyle(theme.brandPrimary)
-                .symbolEffect(.variableColor.iterative, isActive: isPlaying || isGenerating)
-                .frame(width: 36, height: 36)
-                .background(theme.brandPrimary.opacity(0.12), in: Circle())
-
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title)
-                    .font(.subheadline.weight(.medium))
-                    .lineLimit(1)
-                    .foregroundStyle(theme.textPrimary)
-                Text(isGenerating ? "Preparing…" : "Playing")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-
-            Button {
-                onStop()
-            } label: {
-                Image(systemName: "xmark")
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(.secondary)
-                    .frame(width: 44, height: 44)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel("Stop audio")
-        }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 4)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
-        .padding(.horizontal, 12)
-        .padding(.top, 4)
-        .padding(.bottom, 6)
-    }
 }
 
 // MARK: - Transcript UITextView
 
-/// Native selection preserves exact text offsets without inventing audio word timestamps.
 private struct SpeechTranscriptView: UIViewRepresentable {
     let text: String
     let readFromHere: (String) -> Void
@@ -457,12 +467,14 @@ private struct SpeechTranscriptView: UIViewRepresentable {
         var readFromHere: (String) -> Void
         init(readFromHere: @escaping (String) -> Void) { self.readFromHere = readFromHere }
 
-        func textView(_ textView: UITextView, editMenuForTextIn range: NSRange, suggestedActions: [UIMenuElement]) -> UIMenu? {
+        func textView(_ textView: UITextView, editMenuForTextIn range: NSRange,
+                      suggestedActions: [UIMenuElement]) -> UIMenu? {
             guard range.length > 0,
                   let text = textView.text,
                   range.location < (text as NSString).length else { return nil }
             let suffix = (text as NSString).substring(from: range.location)
-            let action = UIAction(title: "Play from here", image: UIImage(systemName: "speaker.wave.2")) { [weak self] _ in
+            let action = UIAction(title: "Play from here",
+                                  image: UIImage(systemName: "speaker.wave.2")) { [weak self] _ in
                 self?.readFromHere(suffix)
             }
             return UIMenu(children: [action] + suggestedActions)
