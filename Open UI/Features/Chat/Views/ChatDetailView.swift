@@ -144,6 +144,7 @@ struct ChatDetailView: View {
     @AppStorage("suggestionsEnabled") private var suggestionsEnabled = true
     @AppStorage(MessageActionPreferences.orderKey) private var messageActionOrder = ""
     @AppStorage(MessageActionPreferences.hiddenKey) private var hiddenMessageActions = ""
+    @AppStorage(MessageActionPreferences.shortcutsKey) private var shortcutMessageActions = ""
 
     // MARK: Message pagination (sliding window — memory optimization)
     /// The ending index (exclusive) of the visible message window.
@@ -165,6 +166,7 @@ struct ChatDetailView: View {
     /// Set on Share button tap; cleared on sheet dismiss. Uses ShareableText wrapper so
     /// .sheet(item:) can identify it without requiring String: Identifiable.
     @State private var shareMessageText: ShareableText? = nil
+    @State private var shortcutLaunchFailed = false
 
     // MARK: Action event handling (dynamic input/confirmation/notification)
 
@@ -820,6 +822,11 @@ struct ChatDetailView: View {
         // configuration needed because we're not using a UIButton anchor.
         .sheet(item: $shareMessageText) { shareable in
             ShareSheetView(activityItems: [shareable.text])
+        }
+        .alert("Couldn’t Open Shortcuts", isPresented: $shortcutLaunchFailed) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text("Make sure the Shortcuts app is installed on this device and try again.")
         }
         // User-configurable valves sheet (gear icon on tool rows in ToolsMenuSheet)
         .sheet(item: $toolUserValvesKind) { kind in
@@ -3490,13 +3497,18 @@ struct ChatDetailView: View {
         // Its 1-based position in the sorted siblings list is the displayIndex.
         let displayIndex: Int = (allSiblings.firstIndex(where: { $0.id == message.id }) ?? 0) + 1
 
-        let preferences = MessageActionPreferences(order: messageActionOrder, hidden: hiddenMessageActions)
-        let actions = preferences.visibleActions(
+        let shortcuts = ShortcutMessageAction.decodeStored(shortcutMessageActions)
+        let preferences = MessageActionPreferences(
+            order: messageActionOrder,
+            hidden: hiddenMessageActions,
+            shortcuts: shortcuts
+        )
+        let actions = preferences.visibleItems(
             speechActive: speakingMessageId == message.id || ttsGeneratingMessageId == message.id
                 || dependencies.textToSpeechService.readAloudPlayer.messageID == message.id
         )
 
-        return HStack(spacing: 6) {
+        return FeedbackFlowLayout(spacing: 6) {
             // Version switcher (only when siblings exist and not overriding with a user edit version)
             if totalVersions > 1 && !viewModel.isStreaming && assistantContentOverride[message.id] == nil {
                 HStack(spacing: 2) {
@@ -3573,8 +3585,24 @@ struct ChatDetailView: View {
                     }
                 }
             }
+        }
+    }
 
-            Spacer()
+    @ViewBuilder
+    private func assistantAction(_ item: MessageActionItem, for message: ChatMessage, totalVersions: Int) -> some View {
+        switch item {
+        case .builtIn(let action):
+            assistantAction(action, for: message, totalVersions: totalVersions)
+
+        case .shortcut(let action):
+            Button {
+                runShortcut(action, with: message)
+                Haptics.play(.light)
+            } label: {
+                compactActionIcon(icon: action.symbolName, isActive: false)
+            }
+            .buttonStyle(CompactActionButtonStyle())
+            .accessibilityLabel(action.name)
         }
     }
 
@@ -5154,7 +5182,9 @@ struct ChatDetailView: View {
         return .bool(true)
     }
 
-    private func copyMessage(_ message: ChatMessage) {
+    /// Returns the user-visible message text used by Copy, Share, and Shortcut actions.
+    /// Hidden reasoning blocks are removed and readable source links are appended.
+    private func cleanMessageText(_ message: ChatMessage) -> String {
         var clean = message.content
         if let re = try? NSRegularExpression(pattern: #"<details[^>]*>.*?</details>"#, options: [.dotMatchesLineSeparators]) {
             clean = re.stringByReplacingMatches(in: clean, range: NSRange(clean.startIndex..., in: clean), withTemplate: "")
@@ -5168,6 +5198,11 @@ struct ChatDetailView: View {
                 clean += "\n[\(i+1)] \(src.resolvedURL ?? src.title ?? "Source \(i+1)")"
             }
         }
+        return clean
+    }
+
+    private func copyMessage(_ message: ChatMessage) {
+        let clean = cleanMessageText(message)
         UIPasteboard.general.string = clean
         Haptics.notify(.success)
         withAnimation(MicroAnimation.gentle) { showCopiedToast = true }
@@ -5181,24 +5216,19 @@ struct ChatDetailView: View {
     /// Uses the same stripping logic as copyMessage: removes hidden reasoning blocks,
     /// collapses excess whitespace, and appends readable source links.
     private func shareMessage(_ message: ChatMessage) {
-        var clean = message.content
-        // Strip hidden reasoning/tool-call <details> blocks — same as copyMessage.
-        if let re = try? NSRegularExpression(pattern: #"<details[^>]*>.*?</details>"#, options: [.dotMatchesLineSeparators]) {
-            clean = re.stringByReplacingMatches(in: clean, range: NSRange(clean.startIndex..., in: clean), withTemplate: "")
-        }
-        clean = clean
-            .replacingOccurrences(of: "\n\n\n+", with: "\n\n", options: .regularExpression)
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        // Append human-readable source links so the shared text is self-contained.
-        if !message.sources.isEmpty {
-            clean += "\n\nSources:"
-            for (i, src) in message.sources.enumerated() {
-                clean += "\n[\(i+1)] \(src.resolvedURL ?? src.title ?? "Source \(i+1)")"
-            }
-        }
+        let clean = cleanMessageText(message)
         guard !clean.isEmpty else { return }
         shareMessageText = ShareableText(text: clean)
         Haptics.play(.light)
+    }
+
+    /// Runs a user-selected Apple Shortcut with the cleaned assistant message as text input.
+    private func runShortcut(_ action: ShortcutMessageAction, with message: ChatMessage) {
+        let clean = cleanMessageText(message)
+        guard !clean.isEmpty, let url = action.runURL(input: clean) else { return }
+        UIApplication.shared.open(url, options: [:]) { opened in
+            shortcutLaunchFailed = !opened
+        }
     }
 
     // MARK: - Attachment Processing

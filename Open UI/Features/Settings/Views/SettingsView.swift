@@ -518,6 +518,24 @@ struct ChatSettingsView: View {
         dependencies.taskConfig.enableFollowUpGeneration
     }
 
+    /// Built-in actions the connected server currently permits for this account.
+    /// Per-message conditions (such as version count or token data) still apply in chat.
+    private var availableMessageActions: Set<MessageAction> {
+        let permissions = dependencies.authViewModel.chatPermissions
+        var actions = Set(MessageAction.allCases)
+        if !permissions.tts { actions.remove(.speak) }
+        if !permissions.edit { actions.remove(.edit) }
+        if !permissions.regenerateResponse { actions.remove(.regenerate) }
+        if !permissions.continueResponse { actions.remove(.continueResponse) }
+        if !permissions.deleteMessage { actions.remove(.deleteVersion) }
+        if !permissions.rateResponse
+            || dependencies.authViewModel.backendConfig?.features?.enableMessageRating != true {
+            actions.remove(.thumbsUp)
+            actions.remove(.thumbsDown)
+        }
+        return actions
+    }
+
     private var selectedPillIds: Set<String> {
         Set(quickPillsData.components(separatedBy: ",").filter { !$0.isEmpty })
     }
@@ -537,7 +555,7 @@ struct ChatSettingsView: View {
         List {
             Section {
                 NavigationLink("Message Actions") {
-                    MessageActionsSettingsView()
+                    MessageActionsSettingsView(availableBuiltInActions: availableMessageActions)
                 }
             }
 
