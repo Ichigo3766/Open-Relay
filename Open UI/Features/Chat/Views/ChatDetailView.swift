@@ -504,12 +504,25 @@ struct ChatDetailView: View {
         // Confine the backdrop to the status-bar safe area, above the floating controls.
         .overlay {
             GeometryReader { geometry in
-                theme.background.opacity(0.8)
-                    .background(.ultraThinMaterial)
-                    .mask(LinearGradient(stops: [
-                        .init(color: .black, location: 0.45),
-                        .init(color: .clear, location: 1)
-                    ], startPoint: .top, endPoint: .bottom))
+                Group {
+                    if #available(iOS 26.0, *) {
+                        Color.clear
+                            // Keep the glass rim outside the visible status-area band.
+                            .glassEffect(.clear, in: Rectangle().inset(by: -geometry.safeAreaInsets.top))
+                            .overlay(theme.background.opacity(theme.isDark ? 0.7 : 0.15))
+                            .mask(LinearGradient(stops: [
+                                .init(color: .black, location: 0.8),
+                                .init(color: .clear, location: 1)
+                            ], startPoint: .top, endPoint: .bottom))
+                    } else {
+                        theme.background.opacity(0.8)
+                            .background(.ultraThinMaterial)
+                            .mask(LinearGradient(stops: [
+                                .init(color: .black, location: 0.45),
+                                .init(color: .clear, location: 1)
+                            ], startPoint: .top, endPoint: .bottom))
+                    }
+                }
                     .frame(height: geometry.safeAreaInsets.top)
                     .offset(y: -geometry.safeAreaInsets.top)
             }
