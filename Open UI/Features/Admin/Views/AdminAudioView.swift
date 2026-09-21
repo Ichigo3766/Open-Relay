@@ -54,7 +54,13 @@ struct AdminAudioView: View {
             }
 
             Button {
-                Task { await viewModel.save() }
+                Task {
+                    await viewModel.save()
+                    if viewModel.success {
+                        dependencies.textToSpeechService.serverSplitOn = viewModel.config.tts.splitOn
+                        await dependencies.authViewModel.refreshBackendConfig()
+                    }
+                }
                 Haptics.play(.light)
             } label: {
                 HStack(spacing: Spacing.xs) {

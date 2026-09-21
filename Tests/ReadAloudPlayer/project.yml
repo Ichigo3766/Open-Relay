@@ -1,0 +1,49 @@
+name: ReadAloudTests
+options:
+  deploymentTarget:
+    iOS: '18.1'
+settings:
+  base:
+    CODE_SIGN_IDENTITY: '-'
+    CODE_SIGNING_REQUIRED: NO
+    GENERATE_INFOPLIST_FILE: YES
+    SWIFT_VERSION: '5.0'
+targets:
+  SpeechTestHost:
+    type: application
+    platform: iOS
+    sources:
+      - Host.swift
+      - '../../Open UI/Core/Services/ReadAloudPlayer.swift'
+      - '../../Open UI/Core/Services/TTSTextPreprocessor.swift'
+      - '../../Open UI/Core/Models/SpeechSplitting.swift'
+    settings:
+      PRODUCT_BUNDLE_IDENTIFIER: org.example.relay.speech-host
+      INFOPLIST_KEY_UIBackgroundModes: audio
+  PlayerTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources: PlayerTests.swift
+    dependencies:
+      - target: SpeechTestHost
+    settings:
+      PRODUCT_BUNDLE_IDENTIFIER: org.example.relay.speech-tests
+      TEST_HOST: '$(BUILT_PRODUCTS_DIR)/SpeechTestHost.app/SpeechTestHost'
+  PlayerUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources: PlayerUITests.swift
+    dependencies:
+      - target: SpeechTestHost
+    settings:
+      PRODUCT_BUNDLE_IDENTIFIER: org.example.relay.speech-ui-tests
+      TEST_TARGET_NAME: SpeechTestHost
+schemes:
+  ReadAloudTests:
+    build:
+      targets:
+        SpeechTestHost: all
+        PlayerTests: [test]
+        PlayerUITests: [test]
+    test:
+      targets: [PlayerTests, PlayerUITests]

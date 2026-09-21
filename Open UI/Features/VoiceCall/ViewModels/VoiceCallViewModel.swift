@@ -139,6 +139,7 @@ final class VoiceCallViewModel {
         errorMessage = nil
 
         callState = .connecting
+        ttsService.readAloudPlayer.stop()
 
         // Request permissions (both STT backends need mic access)
         let authorized: Bool
