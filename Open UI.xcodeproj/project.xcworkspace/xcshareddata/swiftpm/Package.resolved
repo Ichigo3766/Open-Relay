@@ -1,5 +1,5 @@
 {
-  "originHash" : "920dcfc180720d003e1ca8b9297711c8129b7be46fa4ab6be034c3952173cb1b",
+  "originHash" : "ab168b1e268197b921e420a9195b4057f2654ba74722291fc4ab2f34846c76f2",
   "pins" : [
     {
       "identity" : "beautiful-mermaid-swift",
@@ -98,6 +98,15 @@
       "state" : {
         "branch" : "main",
         "revision" : "bb8cb726c8647fad17d3e09a6327a487a2630a61"
+      }
+    },
+    {
+      "identity" : "sfsafesymbols",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/SFSafeSymbols/SFSafeSymbols",
+      "state" : {
+        "revision" : "e01b3d4f861412f8dcee8d93c417d2c2b0cdfd77",
+        "version" : "7.0.0"
       }
     },
     {

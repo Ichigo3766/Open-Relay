@@ -151,4 +151,21 @@ for _ in 0..<200 {
     expect(allItems.indices.filter { !displayedIDs.contains(allItems[$0].id) }.allSatisfy { afterMove.order[$0] == allItems[$0] }, "Server-omitted actions must retain their exact slots")
     expect(afterMove.hiddenIDs == hiddenIDs, "Reordering must not change visibility")
 }
+let documentSymbol = MessageActionSymbol("doc.text.fill")
+expect(documentSymbol.id == "doc.text.fill", "Display labels must not change the system symbol name")
+expect(documentSymbol.title == "Document Text Filled", "Common abbreviations and separators must have readable labels")
+expect(MessageActionSymbol("paperplane.circle").title == "Paper Plane Circle", "Compound names must have readable words")
+for query in ["", " \n\t", "DOC.TEXT", "document filled", " FILLED\nDocument ", "text doc"] {
+    expect(documentSymbol.matches(MessageActionSymbol.searchTerms(query)), "Search must match raw names, labels, whitespace, and reordered words: \(query)")
+}
+for query in ["not-a-symbol", "document star", "🪁"] {
+    expect(!documentSymbol.matches(MessageActionSymbol.searchTerms(query)), "Every search term must match: \(query)")
+}
+expect(MessageActionSymbol("magnifyingglass").matches(MessageActionSymbol.searchTerms("search")), "Search must find the common search icon")
+expect(MessageActionSymbol("paperplane.fill").matches(MessageActionSymbol.searchTerms("paper plane")), "Search must support readable compound names")
+expect(MessageActionSymbol("new.symbol.variant").title == "New Symbol Variant", "Unrecognized names must still have useful labels")
+for name in ["book.closed.fill", "person.crop.circle.badge.checkmark", "character.ja", "waveform.path.ecg"] {
+    let selected = ShortcutMessageAction(name: "Process Text", shortcutName: "Process Assistant Text", symbolName: name)
+    expect(ShortcutMessageAction.decodeStored(ShortcutMessageAction.encodeStored([selected])) == [selected], "Any selected catalog name must persist unchanged")
+}
 print("MessageActionPreferences: \(checks) checks passed")

@@ -4,11 +4,11 @@ Run from the repository root on macOS (no app, network, or external packages nee
 
 ```sh
 test_output=$(mktemp -d)
-swiftc "Open UI/Core/Models/MessageActionPreferences.swift" Tests/MessageActionPreferences/main.swift -o "$test_output/checks"
+swiftc "Open UI/Core/Models/MessageActionPreferences.swift" "Open UI/Core/Models/MessageActionSymbol.swift" Tests/MessageActionPreferences/main.swift -o "$test_output/checks"
 "$test_output/checks"
 ```
 
-Checks defaults, legacy settings, unknown/duplicate IDs, JSON persistence, editing and deletion, reset, and keeping an active speech control available. Includes 200 deterministic randomized cases for mixed ordering, visibility, deletion, and reordering only the server-allowed subset. URL cases include reserved punctuation, newlines, Unicode, and long text. A temporary UserDefaults suite is removed after the test.
+Checks defaults, legacy settings, unknown/duplicate IDs, JSON persistence, editing and deletion, reset, and keeping an active speech control available. Includes 200 deterministic randomized cases for mixed ordering, visibility, deletion, and reordering only the server-allowed subset. URL cases include reserved punctuation, newlines, Unicode, and long text. Symbol checks cover readable labels, raw-name and multiword search, case/whitespace handling, empty results, and selected-name persistence. A temporary UserDefaults suite is removed after the test.
 
 For UI checks, use a fresh disposable simulator with the normal app build and this loopback-only fixture:
 
@@ -19,6 +19,7 @@ python3 Tests/MessageActionPreferences/mock_server.py
 Connect to `http://127.0.0.1:18083` with `demo@example.test` / `synthetic`. The fixture never contacts or imports Open WebUI and stores everything in memory. Open the invented conversation from the sidebar or `openui://chat/b7185907-9171-4c49-ab9d-d5a12d201237`.
 
 - In Settings → Chat Behavior → Message Actions, add, rename, change the icon, hide/show, reorder, and delete a custom action from its editor. Blank or whitespace-only names must keep Save disabled; Cancel must discard edits.
+- Tap the icon row to open Choose Icon. Browse and search the SFSafeSymbols catalog, which includes only symbols available on the current OS. Search by label (`paper plane`) and identifier (`paperplane.fill`), clear the query, and try a query without results. Selecting an icon returns to the editor; Back leaves the icon unchanged. Cancel the editor to discard a selection, then repeat and Save to verify persistence. Check scrolling, light/dark appearance, large text, and the back button on both supported iOS generations.
 - Create a real Apple Shortcut with a `Copy to Clipboard` action whose value is `Shortcut Input`. Give it exactly the name entered in Open Relay, including punctuation. Tap the actual message button and compare `xcrun simctl pbpaste SIMULATOR_UUID` with the expected cleaned text and source links. Check both response versions and a long message. Apple's own Shortcut permissions may appear on first use.
 - Ensure a crowded toolbar wraps and all buttons remain visible, tappable, and exposed as accessibility actions. Check smaller screens and dark mode.
 - Relaunch and verify order, visibility, and edited fields persist. Reset must restore visibility/order and retain the custom actions.
@@ -26,3 +27,17 @@ Connect to `http://127.0.0.1:18083` with `demo@example.test` / `synthetic`. The 
 - `GET /fixture` exposes app writes; `POST /fixture` clears that trace. Local action changes must not cause settings writes or place custom action fields in any request. Normal sign-in and chat-version updates are separate from local action settings.
 
 The URL contract follows [Apple's Shortcuts URL scheme documentation](https://support.apple.com/guide/shortcuts/apd624386f42/ios). Version navigation and model-provided actions remain outside the local preference list.
+
+## Full catalog rendering check
+
+After a Debug simulator build on Apple silicon, link the catalog check against that build's SFSafeSymbols objects. Set `build_dir` to its DerivedData directory and `simulator_id` to a booted disposable simulator. Run on both iOS 18 and iOS 26. This checks every offered image, label/raw-name search, unique IDs, and OS availability.
+
+```sh
+xcrun --sdk iphonesimulator swiftc -target arm64-apple-ios18.1-simulator \
+  -sdk "$(xcrun --sdk iphonesimulator --show-sdk-path)" \
+  -I "$build_dir/Build/Products/Debug-iphonesimulator" \
+  "Open UI/Core/Models/MessageActionSymbol.swift" Tests/MessageActionPreferences/catalog.swift \
+  "$build_dir"/Build/Intermediates.noindex/SFSafeSymbols.build/Debug-iphonesimulator/SFSafeSymbols.build/Objects-normal/arm64/*.o \
+  -o "$test_output/catalog-checks"
+xcrun simctl spawn "$simulator_id" "$test_output/catalog-checks"
+```

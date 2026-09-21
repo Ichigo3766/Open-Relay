@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		A4139D6D6AC24A4188000001 /* SFSafeSymbols in Frameworks */ = {isa = PBXBuildFile; productRef = A4139D6D6AC24A4188000002 /* SFSafeSymbols */; };
 		3800ST012F00000000ST001 /* SwiftTerm in Frameworks */ = {isa = PBXBuildFile; productRef = 3800ST002F00000000ST001 /* SwiftTerm */; };
 		383573A13040FCDC00BB4B52 /* MarkdownParser in Frameworks */ = {isa = PBXBuildFile; productRef = 383573A03040FCDC00BB4B52 /* MarkdownParser */; };
 		383573A33040FCDC00BB4B52 /* MarkdownView in Frameworks */ = {isa = PBXBuildFile; productRef = 383573A23040FCDC00BB4B52 /* MarkdownView */; };
@@ -152,6 +153,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				A4139D6D6AC24A4188000001 /* SFSafeSymbols in Frameworks */,
 				383573A13040FCDC00BB4B52 /* MarkdownParser in Frameworks */,
 				38FEA3182FA2A18600A98F25 /* MLXAudioCore in Frameworks */,
 				38FEA31C2FA2A18600A98F25 /* MLXAudioTTS in Frameworks */,
@@ -274,6 +276,7 @@
 			);
 			name = "Open UI";
 			packageProductDependencies = (
+				A4139D6D6AC24A4188000002 /* SFSafeSymbols */,
 				38AA00002FA9B00000MRMAID /* BeautifulMermaid */,
 				3800ST002F00000000ST001 /* SwiftTerm */,
 				38754A962F845BE60012CD28 /* ReactionContextMenu */,
@@ -370,6 +373,7 @@
 			mainGroup = 38EB66742F39CE5A00AED774;
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
+				A4139D6D6AC24A4188000003 /* XCRemoteSwiftPackageReference "SFSafeSymbols" */,
 				38AA00022FA9B00000MRMAID /* XCRemoteSwiftPackageReference "beautiful-mermaid-swift" */,
 				38754A952F845BE60012CD28 /* XCRemoteSwiftPackageReference "ReactionContextMenu" */,
 				3800STREF2F00000000ST00F /* XCRemoteSwiftPackageReference "SwiftTerm" */,
@@ -831,6 +835,14 @@
 /* End XCConfigurationList section */
 
 /* Begin XCRemoteSwiftPackageReference section */
+		A4139D6D6AC24A4188000003 /* XCRemoteSwiftPackageReference "SFSafeSymbols" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/SFSafeSymbols/SFSafeSymbols";
+			requirement = {
+				kind = exactVersion;
+				version = 7.0.0;
+			};
+		};
 		3800STREF2F00000000ST00F /* XCRemoteSwiftPackageReference "SwiftTerm" */ = {
 			isa = XCRemoteSwiftPackageReference;
 			repositoryURL = "https://github.com/migueldeicaza/SwiftTerm";
@@ -874,6 +886,11 @@
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
+		A4139D6D6AC24A4188000002 /* SFSafeSymbols */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = A4139D6D6AC24A4188000003 /* XCRemoteSwiftPackageReference "SFSafeSymbols" */;
+			productName = SFSafeSymbols;
+		};
 		3800ST002F00000000ST001 /* SwiftTerm */ = {
 			isa = XCSwiftPackageProductDependency;
 			package = 3800STREF2F00000000ST00F /* XCRemoteSwiftPackageReference "SwiftTerm" */;

@@ -164,13 +164,6 @@ struct MessageActionsSettingsView: View {
 }
 
 private struct ShortcutMessageActionEditor: View {
-    private static let symbols = [
-        "bolt.fill", "wand.and.stars", "doc.text", "text.quote",
-        "square.and.arrow.up", "tray.and.arrow.down", "note.text", "bookmark.fill",
-        "tag.fill", "link", "paperplane.fill", "bubble.left.fill",
-        "speaker.wave.2.fill", "headphones", "star.fill", "heart.fill"
-    ]
-
     @Environment(\.dismiss) private var dismiss
     @Environment(\.theme) private var theme
     @State private var name: String
@@ -223,27 +216,13 @@ private struct ShortcutMessageActionEditor: View {
                 }
 
                 Section {
-                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 48), spacing: 12)], spacing: 12) {
-                        ForEach(Self.symbols, id: \.self) { symbol in
-                            Button {
-                                symbolName = symbol
-                                Haptics.play(.light)
-                            } label: {
-                                Image(systemName: symbol)
-                                    .scaledFont(size: 20, weight: .medium)
-                                    .foregroundStyle(symbolName == symbol ? Color.white : theme.textPrimary)
-                                    .frame(width: 44, height: 44)
-                                    .background(
-                                        RoundedRectangle(cornerRadius: 10, style: .continuous)
-                                            .fill(symbolName == symbol ? theme.brandPrimary : theme.surfaceContainer)
-                                    )
-                            }
-                            .buttonStyle(.plain)
-                            .accessibilityLabel(symbol)
-                            .accessibilityAddTraits(symbolName == symbol ? .isSelected : [])
-                        }
+                    NavigationLink {
+                        MessageActionSymbolPicker(selection: $symbolName)
+                    } label: {
+                        Label(MessageActionSymbol(symbolName).title, systemImage: symbolName)
+                            .foregroundStyle(theme.brandPrimary)
                     }
-                    .padding(.vertical, 4)
+                    .accessibilityIdentifier("shortcutAction.chooseIcon")
                 } header: {
                     Text("SF Symbol")
                 } footer: {
@@ -280,5 +259,6 @@ private struct ShortcutMessageActionEditor: View {
             }
         }
         .presentationDetents([.large])
+        .preferredColorScheme(theme.isDark ? .dark : .light)
     }
 }
