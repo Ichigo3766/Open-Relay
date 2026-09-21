@@ -464,25 +464,19 @@ struct ChatDetailView: View {
                     .padding(.bottom, (verticalSizeClass == .compact && viewModel.terminalEnabled && viewModel.selectedTerminalServer != nil) ? keyboard.height : 0)
             }
         }
-        // On iOS 26, safeAreaBar + chatControlGlass on the individual pills already
-        // produce the correct transparent-glass look. The material fill overlay is
-        // only needed on older iOS where the nav area needs an opaque background.
+        // Protect status icons with a soft blur confined to the top safe area.
         .overlay {
-            if !usesGlassChrome {
-                GeometryReader { geometry in
-                    Rectangle()
-                        .fill(AnyShapeStyle(theme.background))
-                        .mask(LinearGradient(stops: [
-                            .init(color: .black, location: 0.45),
-                            .init(color: .black, location: 1)
-                        ], startPoint: .top, endPoint: .bottom))
-                        .frame(height: geometry.safeAreaInsets.top)
-                        .offset(y: -geometry.safeAreaInsets.top)
-                }
-                .opacity(navBarHidden ? 0 : 1)
-                .animation(.easeOut(duration: 0.25), value: navBarHidden)
-                .allowsHitTesting(false)
+            GeometryReader { geometry in
+                Rectangle()
+                    .fill(.regularMaterial)
+                    .mask(LinearGradient(stops: [
+                        .init(color: .black, location: 0.45),
+                        .init(color: .clear, location: 1)
+                    ], startPoint: .top, endPoint: .bottom))
+                    .frame(height: geometry.safeAreaInsets.top)
+                    .offset(y: -geometry.safeAreaInsets.top)
             }
+            .allowsHitTesting(false)
         }
         .navigationBarHidden(true)
         // Configure the view model synchronously on first appearance so that the
@@ -877,7 +871,7 @@ struct ChatDetailView: View {
                         .contentShape(Circle())
                 }
                 .buttonStyle(.plain)
-                .chatControlGlass(in: Circle(), fallback: theme.surfaceContainer)
+                .chatControlGlass(in: Circle(), fallback: .ultraThinMaterial)
                 .accessibilityLabel("Menu")
             }
 
@@ -892,9 +886,6 @@ struct ChatDetailView: View {
         }
         .padding(.horizontal, Spacing.sm)
         .padding(.bottom, 8)
-        .background {
-            if #unavailable(iOS 26.0) { theme.background }
-        }
     }
 
     /// All trailing action icons grouped into a single rounded-rect pill, matching the original design.
@@ -954,7 +945,7 @@ struct ChatDetailView: View {
             .contentShape(Rectangle())
             .accessibilityLabel("More chat actions")
         }
-        .chatControlGlass(in: RoundedRectangle(cornerRadius: 22, style: .continuous), fallback: theme.surfaceContainer)
+        .chatControlGlass(in: RoundedRectangle(cornerRadius: 22, style: .continuous), fallback: .ultraThinMaterial)
     }
 
     /// Icon button for use inside the trailing grouped pill.
@@ -1019,7 +1010,7 @@ struct ChatDetailView: View {
                     }
                     .padding(.horizontal, 10)
                     .padding(.vertical, 6)
-                    .chatControlGlass(in: RoundedRectangle(cornerRadius: 12, style: .continuous), fallback: theme.cardBackground.opacity(0.9))
+                    .chatControlGlass(in: RoundedRectangle(cornerRadius: 12, style: .continuous), fallback: .ultraThinMaterial)
                 }
                 .buttonStyle(.plain)
                 .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
@@ -1573,55 +1564,6 @@ struct ChatDetailView: View {
         .blur(radius: (isContentReady || initialConversationId == nil) ? 0 : 8)
         .animation(.easeOut(duration: 0.2), value: isContentReady)
 
-        // ── Top edge fade (dissolves into the nav bar) ────────────────────────
-        // Transparent at the scroll-content edge → opaque at the nav-bar boundary.
-        // .ignoresSafeArea() extends it into the status-bar / nav-bar safe area.
-        .overlay(alignment: .top) {
-            if !viewModel.messages.isEmpty || viewModel.isLoadingConversation {
-                LinearGradient(
-                    stops: [
-                        .init(color: theme.background.opacity(0), location: 0),
-                        .init(color: theme.background.opacity(0.6), location: 0.4),
-                        .init(color: theme.background, location: 1)
-                    ],
-                    startPoint: .bottom,
-                    endPoint: .top
-                )
-                .frame(height: 90)
-                .ignoresSafeArea()
-                .allowsHitTesting(false)
-            }
-        }
-
-
-
-        // ── Bottom edge fade (dissolves content into the void) ───────────────
-        // Uses a mask instead of a colored overlay so content pixels themselves
-        // fade to transparent — no ghost text, no banding, no gaps. The mask
-        // is a VStack: fully-opaque middle fills the entire view, then an
-        // alpha gradient at the bottom fades from opaque → clear using a smooth
-        // ease-out curve with extra stops for a fluid "swallowed" effect.
-        .mask(
-            VStack(spacing: 0) {
-                // Full-height opaque region (everything above the fade zone)
-                Rectangle()
-                    .fill(Color.black)
-                // Bottom dissolve — content alpha fades to zero
-                LinearGradient(
-                    stops: [
-                        .init(color: .black, location: 0),
-                        .init(color: .black.opacity(0.85), location: 0.25),
-                        .init(color: .black.opacity(0.55), location: 0.50),
-                        .init(color: .black.opacity(0.22), location: 0.75),
-                        .init(color: .clear, location: 1)
-                    ],
-                    startPoint: .top,
-                    endPoint: .bottom
-                )
-                .frame(height: 44)
-            }
-        )
-
         // Keep the single bottom control centered above the composer.
         .overlay(alignment: chatScrollControls == .bottomOnly ? .bottom : .bottomTrailing) {
             scrollFABGroup
@@ -1784,11 +1726,6 @@ struct ChatDetailView: View {
         }
     }
 
-    private var usesGlassChrome: Bool {
-        if #available(iOS 26.0, *) { return true }
-        return false
-    }
-
     private var scrollContent: some View {
         ScrollView {
             VStack(spacing: 0) {
@@ -1841,7 +1778,7 @@ struct ChatDetailView: View {
             }
         }
         .scrollContentBackground(.hidden)
-        .scrollClipDisabled(usesGlassChrome)
+        .scrollClipDisabled()
         .background(ScrollViewHorizontalLock())
         .scrollIndicators(.hidden)
         .scrollDismissesKeyboard(editingMessageId != nil ? .never : (viewModel.isStreaming ? .immediately : .interactively))
