@@ -518,7 +518,7 @@ struct ChatInputField: View {
     private var composerBorderColor: Color {
         isFocused
             ? theme.brandPrimary.opacity(0.35)
-            : theme.cardBorder.opacity(0.4)
+            : Color(uiColor: .separator)
     }
 
     // MARK: - Inline Plus Button
