@@ -7,6 +7,8 @@ nonisolated struct Conversation: Sendable {
     var createdAt: Date = Date(timeIntervalSince1970: 1)
     var updatedAt: Date = Date(timeIntervalSince1970: 1)
     var model: String? = nil
+    var systemPrompt: String? = nil
+    var chatParams: [String: String]? = nil
     var pinned = false
     var archived = false
     var folderId: String? = nil
@@ -14,7 +16,7 @@ nonisolated struct Conversation: Sendable {
     var messages: [Message] = []
     var history = History()
     var tasks: [String] = []
-    var files: [String] = []
+    var files: [ChatMessageFile] = []
     mutating func rederiveMessages() { messages = history.createMessagesList() }
 }
 
@@ -27,3 +29,5 @@ nonisolated struct History: Sendable {
     var isPopulated = false
     func createMessagesList() -> [Message] { isPopulated ? [Message()] : [] }
 }
+
+nonisolated struct ChatMessageFile: Sendable { var url: String? }

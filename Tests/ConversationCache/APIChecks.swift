@@ -15,11 +15,13 @@ import Foundation
 @MainActor final class APIClient: @unchecked Sendable {
     let network = Network()
     let testCache: ConversationCache
+    nonisolated let decodeGate = DecodeGate()
     init(_ cache: ConversationCache) { testCache = cache }
     nonisolated func parseFullConversation(_ json: [String: Any]) -> Conversation {
-        Conversation(id: json["id"] as! String, title: (json["chat"] as! [String: Any])["title"] as! String)
+        decodeGate.pauseIfArmed()
+        return Conversation(id: json["id"] as! String, title: (json["chat"] as! [String: Any])["title"] as! String)
     }
-    func parseConversationSummary(_ json: [String: Any]) -> Conversation? { nil }
+    // SUMMARY_METHOD
     // PAGE_METHOD
     // PRODUCTION_METHODS
 }
@@ -39,11 +41,48 @@ import Foundation
             print("FAIL: reopening a recent conversation downloads the full body again")
             exit(1)
         }
-        client.network.overrideData = Data("{}".utf8)
-        do {
-            _ = try await client.getConversationsPage(page: 2)
-            throw Failure(message: "malformed page treated as a completed list")
-        } catch is APIError {}
+        #if !BASELINE
+        client.decodeGate.arm()
+        let decoding = Task { await client.cachedConversation(id: "chat") }
+        await client.decodeGate.waitUntilStarted()
+        await cache.invalidate(scope: client.network.conversationCacheScope!, id: "chat")
+        client.decodeGate.release()
+        guard await decoding.value == nil else { throw Failure(message: "invalidated cached response escaped while decoding") }
+        #endif
+        for malformed in ["{}", "[{\"title\":\"Synthetic malformed row\"}]", "[{\"id\":\"\"}]"] {
+            client.network.overrideData = Data(malformed.utf8)
+            do {
+                _ = try await client.getConversationsPage(page: 2)
+                throw Failure(message: "malformed page treated as a completed list")
+            } catch is APIError {}
+        }
+        client.network.overrideData = Data(#"[{"id":"chat","title":"Synthetic summary","updated_at":5,"created_at":1}]"#.utf8)
+        guard try await client.getConversationsPage(page: 1).first?.title == "Synthetic summary",
+              try await client.getPinnedConversations().first?.pinned == true else { throw Failure(message: "summary endpoints lost metadata") }
         print("PASS: actual APIClient navigation reuses the saved response")
     }
+}
+
+final class DecodeGate: @unchecked Sendable {
+    private let condition = NSCondition()
+    private var armed = false
+    private var started = false
+    func arm() { condition.lock(); armed = true; started = false; condition.unlock() }
+    func pauseIfArmed() {
+        condition.lock()
+        defer { condition.unlock() }
+        guard armed else { return }
+        started = true
+        condition.broadcast()
+        while armed { condition.wait() }
+    }
+    func waitUntilStarted() async {
+        await Task.detached { self.waitForStart() }.value
+    }
+    private func waitForStart() {
+        condition.lock()
+        defer { condition.unlock() }
+        while !started { condition.wait() }
+    }
+    func release() { condition.lock(); armed = false; condition.broadcast(); condition.unlock() }
 }

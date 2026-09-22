@@ -477,6 +477,7 @@ final class ChatViewModel {
     }
 
     private func syncToServerViaTree() async {
+        guard !isShowingCachedConversation else { return }
         // Ensure tree nodes have up-to-date content from the flat messages list before
         // syncing to the server. Tree nodes are created with empty content at send/edit time
         // and streaming content only flows into conversation.messages — without this step,
@@ -1128,7 +1129,6 @@ final class ChatViewModel {
         restoreToolApprovalMode()
         // Scan for any pending HITL actions in the loaded history
         if !isShowingCachedConversation { scanForPendingToolActions() }
-        isLoadingConversation = false
         if isShowingCachedConversation && useCache {
             Task { await self.loadConversation(useCache: false) }
         }
@@ -2181,6 +2181,7 @@ final class ChatViewModel {
     /// Removes a top-level chat file from this conversation and persists the removal to the server.
     /// Adds the file ID to `removedContextIds` so it is not re-injected from history refs.
     func removeFile(_ file: ChatMessageFile) {
+        guard !isShowingCachedConversation else { return }
         chatFiles.removeAll { $0.url == file.url }
         if let fileId = file.url {
             removedContextIds.insert(fileId)

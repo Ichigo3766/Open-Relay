@@ -124,11 +124,11 @@ actor ConversationCache {
                             : (response.statusCode == 304 ? (entry?.freshFor ?? 0) : Self.recentInterval)
                         for part in control.split(separator: ",") {
                             let pair = part.trimmingCharacters(in: .whitespaces).split(separator: "=", maxSplits: 1)
-                            if pair.count == 2, pair[0] == "max-age", let seconds = Double(pair[1]) {
+                            if pair.count == 2, pair[0] == "max-age", let seconds = Double(pair[1].trimmingCharacters(in: CharacterSet(charactersIn: "\" "))) {
                                 freshFor = min(freshFor, max(0, seconds))
                             }
                         }
-                        freshFor = max(0, freshFor - (Double(response.value(forHTTPHeaderField: "Age") ?? "0") ?? 0))
+                        freshFor = max(0, freshFor - max(0, Double(response.value(forHTTPHeaderField: "Age") ?? "0") ?? 0))
                         self.store(Entry(data: data,
                             etag: response.value(forHTTPHeaderField: "ETag") ?? (response.statusCode == 304 ? entry?.etag : nil),
                             validatedAt: .now, freshFor: freshFor), scope: scope, id: id)

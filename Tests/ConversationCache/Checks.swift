@@ -66,6 +66,12 @@ import Foundation
         _ = try await cache.load(scope: scope, id: "chat", fetch: fetch)
         try check(await cache.cached(scope: scope, id: "chat")?.isRecent() == false, "Age must reduce freshness")
 
+        await server.configure(headers: ["Cache-Control": "max-age=\"0\""])
+        _ = try await cache.load(scope: scope, id: "chat", fetch: fetch)
+        try check(await cache.cached(scope: scope, id: "chat")?.isRecent() == false, "quoted max-age=0 must force validation")
+        await server.configure(headers: ["Age": "-20"])
+        _ = try await cache.load(scope: scope, id: "chat", fetch: fetch)
+        try check(await cache.cached(scope: scope, id: "chat")!.freshFor <= ConversationCache.recentInterval, "invalid negative Age must never extend freshness")
         await server.configure(headers: [:])
         _ = try await cache.load(scope: scope, id: "chat", fetch: fetch)
         let files = try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)

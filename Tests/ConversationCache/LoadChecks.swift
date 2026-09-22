@@ -2,12 +2,17 @@ import Foundation
 
 struct Logger { func error(_ message: String) {}; func info(_ message: String) {} }
 @MainActor final class Client {
+    var controlWrites = 0
+    var historyWrites = 0
+    func syncConversationHistory(id: String, history: History, model: String, systemPrompt: String?, chatParams: [String: String]?, title: String, chatFiles: [ChatMessageFile]) async throws { historyWrites += 1 }
+    func updateChatControls(id: String, files: [ChatMessageFile]) async throws { controlWrites += 1 }
     var saved: (conversation: Conversation, isRecent: Bool, validatedAt: Date)?
     func cachedConversation(id: String) async -> (conversation: Conversation, isRecent: Bool, validatedAt: Date)? { saved }
 }
 @MainActor final class ConversationManager {
     let apiClient = Client()
     var count = 0
+    func syncConversationMessages(id: String, messages: [Message], model: String, title: String?, chatParams: [String: String]?) async throws { apiClient.historyWrites += 1 }
     var gate: Gate?
     var failure: APIError?
     func fetchConversation(id: String) async throws -> Conversation {
@@ -34,7 +39,13 @@ struct Logger { func error(_ message: String) {}; func info(_ message: String) {
     var lastSyncTime = Date.distantPast
     var deletedMessageIds: [String] = []
     var tasks: [String] = []
-    var chatFiles: [String] = []
+    var chatFiles: [ChatMessageFile] = []
+    var removedContextIds = Set<String>()
+    // REMOVE_FILE_METHOD
+    // TREE_SYNC_METHOD
+    var flatSyncs = 0
+    func syncFlatMessagesToTreeNodes() { flatSyncs += 1 }
+    func syncHistory() async { await syncToServerViaTree() }
     var selectedModelId: String?
     var availableModels: [Conversation] = []
     var userDisabledBuiltinFeatures: [String] = []
@@ -60,10 +71,19 @@ struct Logger { func error(_ message: String) {}; func info(_ message: String) {
         await gate.waitUntilStarted()
         try check(model.conversation?.title == saved.title && model.isShowingCachedConversation, "stale content must appear immediately as read only")
         try check(model.writes == 0 && model.scans == 0, "preview must not synchronize history or run pending actions")
+        let file = ChatMessageFile(url: "https://relay.example/synthetic-file")
+        model.chatFiles = [file]
+        model.removeFile(file)
+        await model.syncHistory()
+        try check(manager.apiClient.historyWrites == 0 && model.flatSyncs == 0, "stale preview must block every full-history write")
+        for _ in 0..<100 { await Task.yield() }
+        try check(manager.apiClient.controlWrites == 0 && model.chatFiles.count == 1, "preview must not overwrite server attachments through chat controls")
         await gate.release()
         try await drain(model)
         try check(model.conversation?.title == "Updated synthetic conversation" && !model.isShowingCachedConversation, "successful validation must replace and unlock the preview")
 
+        await model.syncHistory()
+        try check(manager.apiClient.historyWrites == 1, "verified conversation must still allow history writes")
         manager.gate = nil
         manager.failure = .networkError(underlying: URLError(.notConnectedToInternet))
         await model.loadConversation()

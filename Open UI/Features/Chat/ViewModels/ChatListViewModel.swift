@@ -10,7 +10,9 @@ final class ChatListViewModel {
     // MARK: - Published State
 
     /// All conversations fetched from the server.
-    var conversations: [Conversation] = []
+    var conversations: [Conversation] = [] {
+        didSet { contentRevision = UUID() }
+    }
 
     /// Whether the initial page-1 load is in progress.
     var isLoading: Bool = false
@@ -81,6 +83,7 @@ final class ChatListViewModel {
 
     private var lastReconciledAt: Date?
     private var refreshGeneration = UUID()
+    private var contentRevision = UUID()
 
     // MARK: - Cached Formatters
 
@@ -100,6 +103,7 @@ final class ChatListViewModel {
     /// so it correctly includes folder chats that are excluded from the main list.
     var pinnedConversations: [Conversation] = [] {
         didSet {
+            contentRevision = UUID()
             // Keep folderViewModel in sync so folder chat lists can exclude pinned IDs
             // and avoid showing a pinned folder chat both in Pinned and inside its folder.
             folderViewModel.pinnedChatIds = Set(pinnedConversations.map(\.id))
@@ -269,9 +273,11 @@ final class ChatListViewModel {
         guard let manager, !isLoading, !isRefreshing, !isFetchingAllPages else { return }
         let scope = manager.apiClient.network.conversationCacheScope
         let generation = refreshGeneration
+        let savedContent = contentRevision
         isLoading = conversations.isEmpty
         if conversations.isEmpty, let saved = await ConversationCache.shared.cachedIndex(scope: scope) {
             guard generation == refreshGeneration, scope == manager.apiClient.network.conversationCacheScope else { return }
+            guard savedContent == contentRevision else { isLoading = false; return }
             conversations = saved.conversations.map(\.conversation)
             pinnedConversations = saved.pinned.map(\.conversation)
             lastReconciledAt = saved.reconciledAt
@@ -292,15 +298,22 @@ final class ChatListViewModel {
         guard generation == refreshGeneration else { return }
         let full = forceFull || (lastReconciledAt.map { Date().timeIntervalSince($0) >= 6 * 60 * 60 } ?? true)
         let known = Dictionary(conversations.map { ($0.id, ConversationIndex.Summary($0)) }, uniquingKeysWith: { _, last in last })
+        var expectedContent = contentRevision
+        func checkCurrent() throws {
+            try Task.checkCancellation()
+            guard generation == self.refreshGeneration, expectedContent == self.contentRevision,
+                  scope == manager.apiClient.network.conversationCacheScope else { throw CancellationError() }
+        }
         do {
             async let page1Request = manager.fetchConversationsPage(page: 1)
             async let pinnedRequest = manager.apiClient.getPinnedConversations()
             let (page1, pinned) = try await (page1Request, pinnedRequest)
-            guard generation == refreshGeneration, scope == manager.apiClient.network.conversationCacheScope else { return }
+            try checkCurrent()
             revision = await invalidateChangedSummaries(page1, known: known, scope: scope, revision: revision)
-            guard generation == refreshGeneration, scope == manager.apiClient.network.conversationCacheScope else { return }
+            try checkCurrent()
             conversations = mergeFreshPage(page1, into: conversations)
             pinnedConversations = pinned
+            expectedContent = contentRevision
             isLoading = false
             isRefreshing = false
             isFetchingAllPages = true
@@ -312,27 +325,38 @@ final class ChatListViewModel {
                 var unchangedPages = ConversationIndex.unchanged(page, comparedTo: known) ? 1 : 0
                 do {
                     while !page.isEmpty && (full || unchangedPages < 2) {
-                        try Task.checkCancellation()
-                        number += 1
-                        page = try await manager.fetchConversationsPage(page: number)
-                        guard generation == self.refreshGeneration,
-                              scope == manager.apiClient.network.conversationCacheScope else { return }
-                        try Task.checkCancellation()
-                        revision = await self.invalidateChangedSummaries(page, known: known, scope: scope, revision: revision)
-                        guard generation == self.refreshGeneration,
-                              scope == manager.apiClient.network.conversationCacheScope else { return }
-                        unchangedPages = ConversationIndex.unchanged(page, comparedTo: known) ? unchangedPages + 1 : 0
-                        fresh = self.mergeFreshPage(fresh, into: page)
-                        self.conversations = self.mergeFreshPage(fresh, into: self.conversations)
+                        try checkCurrent()
+                        // Preserve the existing five-page concurrency for full scans;
+                        // incremental scans request only the next page to find their checkpoint.
+                        let batch = try await withThrowingTaskGroup(of: (Int, [Conversation]).self) { group in
+                            for next in (number + 1)...(number + (full ? 5 : 1)) {
+                                group.addTask { (next, try await manager.fetchConversationsPage(page: next)) }
+                            }
+                            var results: [(Int, [Conversation])] = []
+                            for try await result in group { results.append(result) }
+                            return results.sorted { $0.0 < $1.0 }
+                        }
+                        for (next, fetched) in batch {
+                            try checkCurrent()
+                            number = next
+                            page = fetched
+                            revision = await self.invalidateChangedSummaries(page, known: known, scope: scope, revision: revision)
+                            try checkCurrent()
+                            unchangedPages = ConversationIndex.unchanged(page, comparedTo: known) ? unchangedPages + 1 : 0
+                            fresh = self.mergeFreshPage(fresh, into: page)
+                            self.conversations = self.mergeFreshPage(fresh, into: self.conversations)
+                            expectedContent = self.contentRevision
+                            if page.isEmpty { break }
+                        }
                     }
                     // Only a completed full scan may infer deletions/archives from absence.
                     if page.isEmpty {
                         let present = Set(fresh.map(\.id))
                         revision = await ConversationCache.shared.invalidate(scope: scope,
                             ids: known.keys.filter { !present.contains($0) }, since: revision)
-                        guard generation == self.refreshGeneration,
-                              scope == manager.apiClient.network.conversationCacheScope else { return }
+                        try checkCurrent()
                         self.conversations = fresh
+                        expectedContent = self.contentRevision
                         self.lastReconciledAt = .now
                     }
                     self.lastRefreshDate = .now
@@ -341,14 +365,14 @@ final class ChatListViewModel {
                         reconciledAt: self.lastReconciledAt ?? .distantPast)
                     await ConversationCache.shared.saveIndex(snapshot, scope: scope, revision: revision)
                 } catch {
-                    if !Task.isCancelled { self.errorMessage = self.errorDescription(for: error) }
+                    if generation == self.refreshGeneration, !Task.isCancelled, !(error is CancellationError) { self.errorMessage = self.errorDescription(for: error) }
                 }
                 if generation == self.refreshGeneration { self.isFetchingAllPages = false }
             }
         } catch {
             guard generation == refreshGeneration else { return }
             if APIError.from(error).requiresReauth { clearAll() }
-            errorMessage = errorDescription(for: error)
+            if !(error is CancellationError) { errorMessage = errorDescription(for: error) }
             isLoading = false
             isRefreshing = false
             isFetchingAllPages = false

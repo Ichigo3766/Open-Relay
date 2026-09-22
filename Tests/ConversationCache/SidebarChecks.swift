@@ -21,13 +21,13 @@ import Foundation
         return Array(rows[start..<min(rows.count, start + 10)])
     }
 }
-@MainActor final class Folders { var folders: [String] = [] }
+@MainActor final class Folders { var folders: [String] = []; var pinnedChatIds = Set<String>() }
 
 @MainActor final class ChatListViewModel {
     let testCache: ConversationCache
     var manager: ConversationManager?
-    var conversations: [Conversation] = []
-    var pinnedConversations: [Conversation] = []
+    // CONVERSATIONS_PROPERTY
+    // PINNED_PROPERTY
     var isLoading = false
     var isRefreshing = false
     var isFetchingAllPages = false
@@ -35,6 +35,7 @@ import Foundation
     var lastRefreshDate: Date?
     var lastReconciledAt: Date?
     var refreshGeneration = UUID()
+    var contentRevision = UUID()
     var backgroundFetchTask: Task<Void, Never>?
     let folderViewModel = Folders()
     let autoRefreshInterval: TimeInterval = 5
@@ -104,7 +105,7 @@ import Foundation
         manager.requests = []
         await reopened.refreshConversations()
         try await drain(reopened)
-        try check(manager.requests.count == 14, "an expired reconciliation checkpoint must trigger a full scan")
+        try check(manager.requests.count == 16, "an expired reconciliation checkpoint must trigger a full scan")
 
         let checkpoint = reopened.lastReconciledAt
         manager.failedPage = 2
@@ -113,6 +114,22 @@ import Foundation
         try check(reopened.lastReconciledAt == checkpoint, "failed page must not advance the full-scan checkpoint")
         try check(reopened.conversations.count == 124, "failed page must not truncate the saved list")
         manager.failedPage = 0
+
+        // A page request already in flight must not undo an optimistic edit.
+        let editGate = Gate()
+        manager.gate = editGate
+        manager.blockedPage = 2
+        await reopened.refreshConversations(forceFull: true)
+        await editGate.waitUntilStarted()
+        let deletedID = reopened.conversations[0].id
+        let renamedID = reopened.conversations[1].id
+        reopened.conversations.removeAll { $0.id == deletedID }
+        reopened.conversations[0].title = "Locally renamed synthetic chat"
+        await editGate.release()
+        try await drain(reopened)
+        try check(!reopened.conversations.contains { $0.id == deletedID }, "late pagination must not restore a locally deleted chat")
+        try check(reopened.conversations.first { $0.id == renamedID }?.title == "Locally renamed synthetic chat", "late pagination must not undo a rename")
+        try check(reopened.errorMessage == nil, "abandoning obsolete pagination should not show an error")
 
         let switchGate = Gate()
         manager.gate = switchGate

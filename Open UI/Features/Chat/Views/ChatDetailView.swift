@@ -942,6 +942,7 @@ struct ChatDetailView: View {
             // Center: model selector
             HStack(spacing: Spacing.xs) {
                 modelSelectorButton
+                    .disabled(viewModel.isShowingCachedConversation)
             }
             .frame(maxWidth: .infinity)
 
@@ -970,6 +971,7 @@ struct ChatDetailView: View {
                 } label: {
                     Label("Chat Settings", systemImage: "slider.horizontal.3")
                 }
+                .disabled(viewModel.isShowingCachedConversation)
 
                 if viewModel.messages.isEmpty {
                     Button {
