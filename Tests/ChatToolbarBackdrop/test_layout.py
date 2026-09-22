@@ -4,10 +4,12 @@ import unittest
 
 SOURCE = (Path(__file__).resolve().parents[2]
           / "Open UI/Features/Chat/Views/ChatDetailView.swift").read_text()
+APPEARANCE = (Path(__file__).resolve().parents[2]
+              / "Open UI/Features/Settings/Views/AppearanceSettingsView.swift").read_text()
 
 
 class ChatToolbarBackdropTests(unittest.TestCase):
-    def test_full_width_backdrop_is_only_for_legacy_ios(self):
+    def test_transparency_requires_ios26_and_opt_in(self):
         toolbar = SOURCE.split('.chatChromeBar(edge: .top) {', 1)[1].split(
             '// Read-aloud player', 1)[0]
         self.assertIn('if !navBarHidden', toolbar)
@@ -15,9 +17,23 @@ class ChatToolbarBackdropTests(unittest.TestCase):
         self.assertIn('.transition(', toolbar)
         self.assertEqual(toolbar.count('.background {'), 1)
         background = toolbar.split('.background {', 1)[1].split('.transition(', 1)[0]
-        code = '\n'.join(line.split('//', 1)[0] for line in background.splitlines()).strip()
-        self.assertTrue(code.startswith('if #unavailable(iOS 26.0) {'))
-        self.assertNotIn('else', code)
+        self.assertIn('if showsToolbarBackdrop {', background)
+        policy = SOURCE.partition('private var showsToolbarBackdrop: Bool {')[2].partition('// MARK:')[0]
+        self.assertIn('if #available(iOS 26.0, *) { return !transparentChatToolbar }', policy)
+        self.assertIn('return true', policy)
+
+    def test_local_preference_defaults_to_off_in_both_views(self):
+        declaration = '@AppStorage("transparentChatToolbar") private var transparentChatToolbar = false'
+        self.assertTrue(declaration in SOURCE, 'Chat defaults to the original backdrop')
+        self.assertTrue(declaration in APPEARANCE, 'Settings uses the same local default')
+
+    def test_setting_is_only_visible_on_ios26(self):
+        section = APPEARANCE.partition('// Chat toolbar')[2].partition('// iPad-only:')[0]
+        self.assertIn('if #available(iOS 26.0, *) {', section)
+        self.assertIn('header: "Chat Appearance"', section)
+        self.assertIn('title: "Transparent Chat Toolbar"', section)
+        self.assertIn('isOn: transparentChatToolbar', section)
+        self.assertIn('onChange: { transparentChatToolbar = $0 }', section)
 
     def test_legacy_backdrop_keeps_its_original_material_and_tint(self):
         toolbar = SOURCE.split('.chatChromeBar(edge: .top) {', 1)[1].split(

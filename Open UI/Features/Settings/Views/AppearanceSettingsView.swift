@@ -10,6 +10,7 @@ struct AppearanceSettingsView: View {
     @State private var wheelColor: Color = .blue
     @Namespace private var accentAnimation
     @AppStorage("streamingBlurAnimation") private var streamingBlurEnabled: Bool = true
+    @AppStorage("transparentChatToolbar") private var transparentChatToolbar = false
     /// iPad-only: whether the sidebar is pinned as a persistent left column.
     @AppStorage("ipad_sidebar_always_shown") private var iPadSidebarAlwaysShown: Bool = false
 
@@ -58,6 +59,23 @@ struct AppearanceSettingsView: View {
                         )
                     )
 
+                }
+
+                // Chat toolbar
+                if #available(iOS 26.0, *) {
+                    SettingsSection(header: "Chat Appearance") {
+                        SettingsCell(
+                            icon: "rectangle.on.rectangle",
+                            title: "Transparent Chat Toolbar",
+                            subtitle: "Show conversation text between the glass controls",
+                            showDivider: false,
+                            accessory: .toggle(
+                                isOn: transparentChatToolbar,
+                                onChange: { transparentChatToolbar = $0 }
+                            )
+                        )
+                        .accessibilityIdentifier("transparentChatToolbar")
+                    }
                 }
 
                 // iPad-only: sidebar layout preference

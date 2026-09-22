@@ -141,6 +141,7 @@ struct ChatDetailView: View {
     /// Enabled by default (matches existing behaviour). Users can disable in Chat Behavior settings.
     @AppStorage("streamingAutoScroll") private var streamingAutoScroll = true
     @AppStorage("chatScrollControls") private var chatScrollControls: ChatScrollControls = .upDown
+    @AppStorage("transparentChatToolbar") private var transparentChatToolbar = false
     @AppStorage("suggestionsEnabled") private var suggestionsEnabled = true
     @AppStorage(MessageActionPreferences.orderKey) private var messageActionOrder = ""
     @AppStorage(MessageActionPreferences.hiddenKey) private var hiddenMessageActions = ""
@@ -385,6 +386,11 @@ struct ChatDetailView: View {
         return copy
     }
 
+    private var showsToolbarBackdrop: Bool {
+        if #available(iOS 26.0, *) { return !transparentChatToolbar }
+        return true
+    }
+
     // MARK: - Body
 
     var body: some View {
@@ -442,8 +448,7 @@ struct ChatDetailView: View {
                 if !navBarHidden {
                     customTopBar
                         .background {
-                            // iOS 26 glass controls float directly over the conversation.
-                            if #unavailable(iOS 26.0) {
+                            if showsToolbarBackdrop {
                                 Rectangle()
                                     .fill(.ultraThinMaterial)
                                     .overlay(theme.background.opacity(theme.isDark ? 0.55 : 0.25))

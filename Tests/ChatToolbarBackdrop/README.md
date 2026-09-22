@@ -1,9 +1,11 @@
 # Floating chat toolbar regression
 
-On iOS 26, the top controls must retain their individual glass backgrounds without
-a full-width material band obscuring the response behind them. Earlier iOS versions
-must retain their existing material band. The separate status-bar safe-area blur
-must remain on both, including when the controls hide.
+The full-width toolbar background is retained by default. On iOS 26, users can
+enable **Settings → Appearance → Chat Appearance → Transparent Chat Toolbar**
+to show conversation text between the individual glass controls. This preference
+is local to the device and defaults to off. Earlier iOS versions neither show the
+setting nor honor an enabled value. The separate status-bar safe-area blur remains
+on both, including when the controls hide.
 
 Run the structural checks (Python standard library only):
 
@@ -11,10 +13,10 @@ Run the structural checks (Python standard library only):
 python3 -m unittest discover -s Tests/ChatToolbarBackdrop -p 'test_*.py' -v
 ```
 
-`test_full_width_backdrop_is_only_for_legacy_ios` fails on upstream commit
-`a5c0cfa014c92b4875b7ccb2a64562205b258eb8`. The other guards preserve the legacy
-backdrop, status-bar blur, and individual control glass. These are source-level guards,
-not pixel-level visual assertions.
+The opt-in/default/settings guards fail before the preference is implemented.
+Six checks cover the shared default-off preference, iOS 26 gating, original
+material and tint, status-bar blur, and individual control glass. These are
+source-level guards, not pixel-level visual assertions.
 
 For visual verification, use a **fresh disposable simulator**, never an existing
 account. The loopback fixture creates only invented content in memory and never
@@ -34,21 +36,25 @@ xcodebuild -project Tests/ChatToolbarBackdrop/ChatToolbarTests.xcodeproj \
 
 The UI tests sign into `http://127.0.0.1:18088` with the invented fixture account,
 scroll a long answer in both directions, verify toolbar hiding/reappearance and
-menu interaction, and capture light/dark screenshots for visual inspection.
-Compare screenshots before and after the fix: on iOS 26, text between the floating
-controls should remain clear, while text under the status icons should still be
-softened. On iOS 18, the full-width toolbar backdrop should be unchanged.
+menu interaction, and capture light/dark screenshots with the preference off and
+on. A fifth test opens Appearance, checks the initial off state, toggles it both
+ways, returns to the existing chat, and verifies both values survive app relaunch.
+On iOS 18 it checks that the setting is absent. Launch-argument overrides exercise
+both values on iOS 18 to verify that the old background is always retained.
+
+Review the screenshots: on iOS 26, enabling the setting removes only the toolbar
+band, while the status-icon blur and individual glass controls stay visible.
+Disabling it restores the original band. iOS 18 should remain unchanged.
 
 ## Verified
 
-- Baseline and corrected Release simulator builds passed.
-- The version-gating regression fails on the baseline; all four structural checks
-  pass with the fix.
-- Both light/dark UI tests passed on iPhone 17 Pro / iOS 26.5 and iPhone SE
-  (3rd generation) / iOS 18.4, before and after the fix.
-- Before/after screenshots in `Screenshots/` were visually reviewed: iOS 26 loses
-  the full-width band, while iOS 18 retains it. Status-icon blur remains present.
-  All screenshot content comes from the invented fixture above, not a real account.
+- Full Debug simulator app build and six structural checks pass.
+- Five UI tests pass on each of iOS 26.5 and iOS 18.4: light/dark scrolling and
+  controls with both preference values, plus setting availability and persistence.
+- Screenshot content comes only from the invented fixture above, not a real account.
+- The iOS 26 `before`/`after` images show the default and enabled states respectively.
+  [Setting off](Screenshots/settings-off.png) and [setting on](Screenshots/settings-on.png)
+  show the new Appearance option. The iOS 18 comparison retains the original background.
 
 These checks cover simulator rendering and toolbar interaction, not physical-device
 performance or every accessibility display setting.

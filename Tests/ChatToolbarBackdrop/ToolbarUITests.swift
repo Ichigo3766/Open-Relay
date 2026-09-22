@@ -6,8 +6,12 @@ final class ToolbarUITests: XCTestCase {
 
     override func setUpWithError() throws {
         continueAfterFailure = false
+        UserDefaults.standard.set(true, forKey: "DisableDiagnosticScreenRecordings")
         XCUIDevice.shared.orientation = .portrait
         relay.launchArguments = ["-openui.appearance.mode", name.contains("Dark") ? "dark" : "light"]
+        if !name.contains("Preference") {
+            relay.launchArguments += ["-transparentChatToolbar", name.contains("Transparent") ? "YES" : "NO"]
+        }
         relay.launch()
         if !relay.buttons["Menu"].waitForExistence(timeout: 3) {
             let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")
@@ -34,8 +38,14 @@ final class ToolbarUITests: XCTestCase {
             }
         }
         XCTAssertTrue(relay.buttons["Menu"].waitForExistence(timeout: 30))
+        openFixtureChat()
+    }
+
+    func openFixtureChat() {
         relay.open(URL(string: "openui://chat/02d642ed-d5ee-4270-b8f1-e4f271987f90")!)
-        XCTAssertTrue(relay.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Assistant:'")).firstMatch.waitForExistence(timeout: 15))
+        XCTAssertTrue(relay.buttons.matching(NSPredicate(
+            format: "label BEGINSWITH 'Assistant:' AND label CONTAINS 'Notebook entry'"
+        )).firstMatch.waitForExistence(timeout: 15), "Only use the invented fixture conversation")
         Thread.sleep(forTimeInterval: 1)
     }
 
@@ -52,19 +62,19 @@ final class ToolbarUITests: XCTestCase {
         add(attachment)
     }
 
-    func exerciseToolbar() {
+    func exerciseToolbar(_ style: String) {
         // Move into the response so text scrolls behind the revealed controls.
         for _ in 0..<3 { swipe(older: true) }
         XCTAssertTrue(relay.buttons["Menu"].waitForExistence(timeout: 3))
         XCTAssertTrue(relay.buttons["New Chat"].exists)
-        capture("revealed")
+        capture(style + "-revealed")
 
         swipe(older: false)
         let hidden = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
             !self.relay.buttons["Menu"].exists
         }, object: nil)
         XCTAssertEqual(XCTWaiter.wait(for: [hidden], timeout: 5), .completed)
-        capture("hidden")
+        capture(style + "-hidden")
 
         swipe(older: true)
         XCTAssertTrue(relay.buttons["Menu"].waitForExistence(timeout: 3))
@@ -75,6 +85,76 @@ final class ToolbarUITests: XCTestCase {
         XCTAssertEqual(relay.state, .runningForeground)
     }
 
-    func testLightToolbarScrollAndControls() { exerciseToolbar() }
-    func testDarkToolbarScrollAndControls() { exerciseToolbar() }
+    func testLightDefaultToolbarScrollAndControls() { exerciseToolbar("default") }
+    func testDarkDefaultToolbarScrollAndControls() { exerciseToolbar("default") }
+    func testLightTransparentToolbarScrollAndControls() { exerciseToolbar("transparent") }
+    func testDarkTransparentToolbarScrollAndControls() { exerciseToolbar("transparent") }
+
+    func openAppearance() {
+        swipe(older: true)
+        XCTAssertTrue(relay.buttons["Menu"].waitForExistence(timeout: 5))
+        relay.buttons["Menu"].tap()
+        let account = relay.staticTexts["Demo"].firstMatch
+        let drawerOpen = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            account.isHittable
+        }, object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [drawerOpen], timeout: 5), .completed)
+        account.tap()
+        let appearance = relay.buttons["Appearance"]
+        for _ in 0..<4 where !appearance.isHittable { relay.swipeUp() }
+        XCTAssertTrue(appearance.isHittable)
+        appearance.tap()
+        XCTAssertTrue(relay.navigationBars["Appearance"].waitForExistence(timeout: 5))
+        if #available(iOS 26.0, *) {
+            for _ in 0..<5 where !transparencySwitch.isHittable { relay.swipeUp() }
+            relay.swipeUp() // Show the full setting row, including its subtitle.
+        }
+    }
+
+    var transparencySwitch: XCUIElement {
+        relay.switches["transparentChatToolbar"]
+    }
+
+    func closeAppearance() {
+        relay.navigationBars["Appearance"].buttons.firstMatch.tap()
+        relay.navigationBars["Settings"].buttons.firstMatch.tap()
+        XCTAssertTrue(relay.buttons["Menu"].waitForExistence(timeout: 5))
+    }
+
+    func relaunchChat() {
+        relay.terminate()
+        relay.launch()
+        XCTAssertTrue(relay.buttons["Menu"].waitForExistence(timeout: 15))
+        openFixtureChat()
+    }
+
+    func testAppearancePreferenceAvailabilityAndPersistence() {
+        openAppearance()
+        if #available(iOS 26.0, *) {
+            XCTAssertTrue(transparencySwitch.waitForExistence(timeout: 5))
+            XCTAssertEqual(transparencySwitch.value as? String, "0")
+            capture("appearance-off")
+            transparencySwitch.tap()
+            XCTAssertEqual(transparencySwitch.value as? String, "1")
+            capture("appearance-on")
+            closeAppearance()
+            exerciseToolbar("changed-live")
+
+            // No launch-argument override: the real local preference must persist.
+            relaunchChat()
+            openAppearance()
+            XCTAssertEqual(transparencySwitch.value as? String, "1")
+            transparencySwitch.tap()
+            XCTAssertEqual(transparencySwitch.value as? String, "0")
+            closeAppearance()
+            exerciseToolbar("restored-live")
+
+            relaunchChat()
+            openAppearance()
+            XCTAssertEqual(transparencySwitch.value as? String, "0")
+        } else {
+            XCTAssertFalse(transparencySwitch.exists)
+            XCTAssertFalse(relay.staticTexts["Chat Appearance"].exists)
+        }
+    }
 }
