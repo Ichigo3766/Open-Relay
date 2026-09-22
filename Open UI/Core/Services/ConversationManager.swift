@@ -22,8 +22,8 @@ final class ConversationManager: @unchecked Sendable {
         try await apiClient.getConversationsPage(page: page, pinnedIds: pinnedIds)
     }
 
-    func fetchConversation(id: String) async throws -> Conversation {
-        try await apiClient.getConversation(id: id)
+    func fetchConversation(id: String, preferRecent: Bool = false) async throws -> Conversation {
+        try await apiClient.getConversation(id: id, preferRecent: preferRecent)
     }
 
     func searchConversations(query: String) async throws -> [Conversation] {

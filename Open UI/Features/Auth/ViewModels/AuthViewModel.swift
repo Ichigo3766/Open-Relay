@@ -828,7 +828,9 @@ final class AuthViewModel {
 
         if let client = dependencies?.apiClient {
             try? await client.logout()
+            client.updateAuthToken(nil)
         }
+        await ConversationCache.shared.clear()
         dependencies?.socketService?.disconnect()
 
         // Clear cached chat view models so stale model lists from the

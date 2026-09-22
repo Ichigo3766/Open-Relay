@@ -113,6 +113,8 @@ final class ChatViewModel {
     /// Set by `VoiceCallViewModel.configure()` and reset in `endCall()`.
     var isVoiceMode: Bool = false
     var isLoadingConversation: Bool = false
+    private(set) var isShowingCachedConversation = false
+    private(set) var isRevalidatingConversation = false
     var isLoadingModels: Bool = false
     /// Tasks managed by the model's built-in task tools (create_tasks / update_task).
     /// Populated from the server on load and updated in real-time during streaming.
@@ -514,7 +516,7 @@ final class ChatViewModel {
         let notBlocked = (enableMessageQueue && isStreaming)
             || (!isStreaming
                 && !attachments.contains(where: { $0.type == .audio && $0.isTranscribing }))
-        return notBlocked
+        return notBlocked && !isShowingCachedConversation && !(isLoadingModels && availableModels.isEmpty)
             && (!inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                 || !attachments.isEmpty)
     }
@@ -989,16 +991,14 @@ final class ChatViewModel {
             }
         } else {
             // ── Existing chat path ──
-            // Run model fetch (if needed) and conversation fetch in parallel.
+            // Saved messages should not wait for the model catalog's network request.
             if needsModelFetch {
-                await withTaskGroup(of: Void.self) { group in
-                    group.addTask { await self.loadModels() }
-                    group.addTask { await self.loadConversation() }
-                }
+                isLoadingModels = true
+                Task { await self.loadModels() }
             } else {
                 syncUIWithModelDefaults()
-                await loadConversation()
             }
+            await loadConversation()
         }
 
         // Ensure socket is connected — fire-and-forget so it never blocks
@@ -1044,12 +1044,28 @@ final class ChatViewModel {
         }
     }
 
-    func loadConversation() async {
-        guard let conversationId, let manager else { return }
-        isLoadingConversation = true
+    func loadConversation(useCache: Bool = true) async {
+        guard let conversationId, let manager, !isRevalidatingConversation else { return }
+        isRevalidatingConversation = true
+        defer {
+            isRevalidatingConversation = false
+            isLoadingConversation = false
+        }
+        isLoadingConversation = conversation == nil
         errorMessage = nil
         do {
-            let fetched = try await manager.fetchConversation(id: conversationId)
+            let cached = useCache ? await manager.apiClient.cachedConversation(id: conversationId) : nil
+            let fetched: Conversation
+            if let cached {
+                fetched = cached.conversation
+                isShowingCachedConversation = !cached.isRecent
+                lastSyncTime = cached.validatedAt
+            } else {
+                fetched = try await manager.fetchConversation(id: conversationId)
+                isShowingCachedConversation = false
+                lastSyncTime = .now
+            }
+            guard self.conversationId == conversationId else { return }
             // Always use server data as the source of truth.
             // Versions are now stored as sibling messages on the server,
             // so server-fetched data already contains them.
@@ -1077,13 +1093,26 @@ final class ChatViewModel {
         } catch {
             logger.error("Failed to load conversation: \(error.localizedDescription)")
             errorMessage = error.localizedDescription
+            let apiError = APIError.from(error)
+            let accessDenied: Bool
+            if case .httpError(let code, _, _) = apiError {
+                accessDenied = [401, 403, 404, 410].contains(code)
+            } else {
+                accessDenied = apiError.requiresReauth
+            }
+            if accessDenied {
+                conversation = nil
+                tasks = []
+                chatFiles = []
+                isShowingCachedConversation = false
+            }
         }
         // Re-derive flat messages from the history tree when the tree has more nodes
         // than the flat messages array. This handles background sub-agent messages which
         // the server appends only to the history tree — `chat.messages` stays at 2 entries
         // while the tree has 4. After re-deriving, push the updated currentId to the
         // server so WebUI also navigates to the full branch.
-        if conversation?.history.isPopulated == true {
+        if !isShowingCachedConversation, conversation?.history.isPopulated == true {
             let treeMessages = conversation!.history.createMessagesList()
             if treeMessages.count > (conversation?.messages.count ?? 0) {
                 conversation!.rederiveMessages()
@@ -1098,8 +1127,11 @@ final class ChatViewModel {
         // Restore HITL mode from conversation params or user preference
         restoreToolApprovalMode()
         // Scan for any pending HITL actions in the loaded history
-        scanForPendingToolActions()
+        if !isShowingCachedConversation { scanForPendingToolActions() }
         isLoadingConversation = false
+        if isShowingCachedConversation && useCache {
+            Task { await self.loadConversation(useCache: false) }
+        }
     }
 
     /// Syncs local conversation state with the server.
@@ -1116,7 +1148,11 @@ final class ChatViewModel {
     ///
     /// Uses debouncing to avoid redundant syncs when the app rapidly transitions
     /// between foreground and background states.
-    func syncWithServer() async {
+    func syncWithServer(preferRecent: Bool = false) async {
+        if isShowingCachedConversation {
+            await loadConversation(useCache: false)
+            return
+        }
         guard !isStreaming || isExternallyStreaming else { return }
         guard let chatId = conversationId ?? conversation?.id, let manager else { return }
 
@@ -1129,7 +1165,7 @@ final class ChatViewModel {
         }
 
         do {
-            let serverConversation = try await manager.fetchConversation(id: chatId)
+            let serverConversation = try await manager.fetchConversation(id: chatId, preferRecent: preferRecent)
             lastSyncTime = Date()
 
             let serverMessages = serverConversation.messages
@@ -1511,7 +1547,7 @@ final class ChatViewModel {
         lastEntryTime = now
         // Reset lastSyncTime so syncWithServer() is not blocked by its own debounce
         lastSyncTime = .distantPast
-        Task { await syncWithServer() }
+        Task { await syncWithServer(preferRecent: true) }
     }
 
     // MARK: - Foreground Sync
@@ -3099,6 +3135,7 @@ final class ChatViewModel {
     /// bound `inputText` — this avoids the prompt briefly flashing in the input
     /// field before being sent.
     func sendMessage(directText: String? = nil) async {
+        guard !isShowingCachedConversation, !isLoadingModels || !availableModels.isEmpty else { return }
         let text = (directText ?? inputText).trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty || !attachments.isEmpty else { return }
 

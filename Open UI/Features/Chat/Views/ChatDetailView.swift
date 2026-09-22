@@ -1145,6 +1145,15 @@ struct ChatDetailView: View {
         // @ViewBuilder builds from this function's many branches. Without it the
         // compiler inlines every child view into one enormous type, which blows the
         // thread stack at call time (EXC_BAD_ACCESS in the stack region).
+        if vm.isShowingCachedConversation {
+            return AnyView(HStack {
+                Text(vm.isRevalidatingConversation ? "Checking saved conversation…" : "Saved copy · read only")
+                    .font(.subheadline)
+                Spacer()
+                Button("Retry") { Task { await vm.loadConversation(useCache: false) } }
+                    .disabled(vm.isRevalidatingConversation)
+            }.padding().background(theme.surfaceContainer))
+        }
         if isReadOnly {
             // ── Read-only mode: show banner instead of input field ──────────
             return AnyView(readOnlyBanner)
@@ -1799,6 +1808,7 @@ struct ChatDetailView: View {
                 // eliminates the stutter caused by the VStack structural swap
                 // (4 skeleton rows → N message rows) that happened even under opacity 0.
                 messagesList
+                    .disabled(viewModel.isShowingCachedConversation)
             }
         .padding(.top, 8)
         .padding(.bottom, 8)

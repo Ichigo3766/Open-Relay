@@ -12,6 +12,10 @@ final class NetworkManager: NSObject, Sendable {
 
     var baseURL: URL? { serverConfig.apiBaseURL }
 
+    var conversationCacheScope: String? {
+        ConversationCache.scope(server: serverConfig.url, token: authToken, headers: serverConfig.customHeaders)
+    }
+
     var authToken: String? {
         keychain.getToken(forServer: serverConfig.url)
     }
@@ -235,9 +239,11 @@ final class NetworkManager: NSObject, Sendable {
         body: Data? = nil,
         contentType: String? = "application/json",
         authenticated: Bool = true,
-        timeout: TimeInterval? = nil
+        timeout: TimeInterval? = nil,
+        ifNoneMatch: String? = nil,
+        deduplicate: Bool = true
     ) async throws -> (Data, HTTPURLResponse) {
-        let urlRequest = try buildRequest(
+        var urlRequest = try buildRequest(
             path: path,
             method: method,
             queryItems: queryItems,
@@ -247,11 +253,13 @@ final class NetworkManager: NSObject, Sendable {
             timeout: timeout
         )
 
+        if let ifNoneMatch { urlRequest.setValue(ifNoneMatch, forHTTPHeaderField: "If-None-Match") }
+
         // Use the deduplicator for bodyless GET requests to prevent duplicate
         // in-flight requests from multiple startup code paths exhausting the
         // iOS per-host TCP connection pool.
         let (data, response): (Data, URLResponse)
-        if method == .get && body == nil {
+        if deduplicate && method == .get && body == nil {
             (data, response) = try await deduplicatedGET(urlRequest)
         } else {
             (data, response) = try await performRequest(urlRequest)
@@ -484,6 +492,7 @@ final class NetworkManager: NSObject, Sendable {
         )
         urlRequest.setValue("text/event-stream", forHTTPHeaderField: "Accept")
 
+        await ConversationCache.shared.invalidateMutation(urlRequest, scope: conversationCacheScope)
         let streamSession = makeStreamingSession()
         let (bytes, response) = try await streamSession.bytes(for: urlRequest)
 
@@ -664,15 +673,25 @@ final class NetworkManager: NSObject, Sendable {
 
     @discardableResult
     func deleteAuthToken() -> Bool {
-        keychain.deleteToken(forServer: serverConfig.url)
+        let scope = conversationCacheScope
+        let removed = keychain.deleteToken(forServer: serverConfig.url)
+        if let scope { Task { await ConversationCache.shared.invalidate(scope: scope) } }
+        return removed
     }
 
     // MARK: - Internal Helpers
 
     private func performRequest(_ request: URLRequest) async throws -> (Data, URLResponse) {
+        let scope = ConversationCache.scope(server: serverConfig.url,
+            token: request.value(forHTTPHeaderField: "Authorization").map { String($0.dropFirst(7)) },
+            headers: serverConfig.customHeaders)
+        await ConversationCache.shared.invalidateMutation(request, scope: scope)
         do {
-            return try await session.data(for: request)
+            let response = try await session.data(for: request)
+            await ConversationCache.shared.invalidateMutation(request, scope: scope)
+            return response
         } catch {
+            await ConversationCache.shared.invalidateMutation(request, scope: scope)
             throw APIError.from(error)
         }
     }

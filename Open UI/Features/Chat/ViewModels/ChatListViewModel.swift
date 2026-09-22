@@ -3,15 +3,8 @@ import os.log
 
 /// Manages the conversation list — grouping, search, and CRUD operations.
 ///
-/// ## Pagination Strategy
-///
-/// All conversations are fetched upfront on load, matching the Open WebUI web interface.
-/// Page 1 loads immediately so the UI is interactive right away. Remaining pages are then
-/// fetched in parallel batches of 5 in the background, merging progressively into the list.
-/// This continues until the server returns an empty page, signalling no more data.
-///
-/// There is no scroll-based lazy pagination — it doesn't work well with time-grouped sections
-/// because empty section headers don't render, leaving no items to scroll to.
+/// Cached summaries appear immediately. Refreshes stop after two unchanged pages;
+/// a full scan on pull-to-refresh and every six hours reconciles removals.
 @MainActor @Observable
 final class ChatListViewModel {
     // MARK: - Published State
@@ -86,8 +79,8 @@ final class ChatListViewModel {
     /// Minimum interval between auto-refreshes (in seconds).
     private let autoRefreshInterval: TimeInterval = 5
 
-    /// Number of pages to fetch in parallel per batch.
-    private let batchSize = 5
+    private var lastReconciledAt: Date?
+    private var refreshGeneration = UUID()
 
     // MARK: - Cached Formatters
 
@@ -272,247 +265,126 @@ final class ChatListViewModel {
 
     // MARK: - Loading
 
-    /// Loads conversations from the server.
-    ///
-    /// **Phase 1:** Fetches page 1 and the pinned IDs in parallel. The UI becomes
-    /// interactive immediately after page 1 arrives.
-    ///
-    /// **Phase 2:** Fetches all remaining pages in parallel batches of `batchSize`
-    /// in the background. Results are merged progressively so conversations trickle in
-    /// without blocking the UI.
     func loadConversations() async {
-        guard let manager else { return }
+        guard let manager, !isLoading, !isRefreshing, !isFetchingAllPages else { return }
+        let scope = manager.apiClient.network.conversationCacheScope
+        let generation = refreshGeneration
+        isLoading = conversations.isEmpty
+        if conversations.isEmpty, let saved = await ConversationCache.shared.cachedIndex(scope: scope) {
+            guard generation == refreshGeneration, scope == manager.apiClient.network.conversationCacheScope else { return }
+            conversations = saved.conversations.map(\.conversation)
+            pinnedConversations = saved.pinned.map(\.conversation)
+            lastReconciledAt = saved.reconciledAt
+            isLoading = false
+        }
+        await refreshConversations()
+    }
 
-        isLoading = true
-        errorMessage = nil
-
-        // Cancel any in-progress background fetch from a previous load
+    /// Keep the existing list visible; publish page one before fetching older pages.
+    func refreshConversations(forceFull: Bool = false) async {
+        guard let manager, !isRefreshing else { return }
         backgroundFetchTask?.cancel()
-        backgroundFetchTask = nil
-
+        let generation = UUID()
+        refreshGeneration = generation
+        let scope = manager.apiClient.network.conversationCacheScope
+        isRefreshing = true
+        var revision = await ConversationCache.shared.currentRevision()
+        guard generation == refreshGeneration else { return }
+        let full = forceFull || (lastReconciledAt.map { Date().timeIntervalSince($0) >= 6 * 60 * 60 } ?? true)
+        let known = Dictionary(conversations.map { ($0.id, ConversationIndex.Summary($0)) }, uniquingKeysWith: { _, last in last })
         do {
-            // Phase 1: page 1 + pinned conversations in parallel → instant UI
             async let page1Request = manager.fetchConversationsPage(page: 1)
             async let pinnedRequest = manager.apiClient.getPinnedConversations()
-
             let (page1, pinned) = try await (page1Request, pinnedRequest)
-
-            conversations = page1
+            guard generation == refreshGeneration, scope == manager.apiClient.network.conversationCacheScope else { return }
+            revision = await invalidateChangedSummaries(page1, known: known, scope: scope, revision: revision)
+            guard generation == refreshGeneration, scope == manager.apiClient.network.conversationCacheScope else { return }
+            conversations = mergeFreshPage(page1, into: conversations)
             pinnedConversations = pinned
             isLoading = false
-
-            // If page 1 was empty, we're done
-            guard !page1.isEmpty else { return }
-
-            // Phase 2: background fetch of all remaining pages
+            isRefreshing = false
             isFetchingAllPages = true
-
+            errorMessage = nil
             backgroundFetchTask = Task {
-                await fetchRemainingPagesInBackground(
-                    manager: manager,
-                    startingPage: 2
-                )
+                var fresh = page1
+                var page = page1
+                var number = 1
+                var unchangedPages = ConversationIndex.unchanged(page, comparedTo: known) ? 1 : 0
+                do {
+                    while !page.isEmpty && (full || unchangedPages < 2) {
+                        try Task.checkCancellation()
+                        number += 1
+                        page = try await manager.fetchConversationsPage(page: number)
+                        guard generation == self.refreshGeneration,
+                              scope == manager.apiClient.network.conversationCacheScope else { return }
+                        try Task.checkCancellation()
+                        revision = await self.invalidateChangedSummaries(page, known: known, scope: scope, revision: revision)
+                        guard generation == self.refreshGeneration,
+                              scope == manager.apiClient.network.conversationCacheScope else { return }
+                        unchangedPages = ConversationIndex.unchanged(page, comparedTo: known) ? unchangedPages + 1 : 0
+                        fresh = self.mergeFreshPage(fresh, into: page)
+                        self.conversations = self.mergeFreshPage(fresh, into: self.conversations)
+                    }
+                    // Only a completed full scan may infer deletions/archives from absence.
+                    if page.isEmpty {
+                        let present = Set(fresh.map(\.id))
+                        revision = await ConversationCache.shared.invalidate(scope: scope,
+                            ids: known.keys.filter { !present.contains($0) }, since: revision)
+                        guard generation == self.refreshGeneration,
+                              scope == manager.apiClient.network.conversationCacheScope else { return }
+                        self.conversations = fresh
+                        self.lastReconciledAt = .now
+                    }
+                    self.lastRefreshDate = .now
+                    let snapshot = ConversationIndex(conversations: self.conversations.map(ConversationIndex.Summary.init),
+                        pinned: self.pinnedConversations.map(ConversationIndex.Summary.init),
+                        reconciledAt: self.lastReconciledAt ?? .distantPast)
+                    await ConversationCache.shared.saveIndex(snapshot, scope: scope, revision: revision)
+                } catch {
+                    if !Task.isCancelled { self.errorMessage = self.errorDescription(for: error) }
+                }
+                if generation == self.refreshGeneration { self.isFetchingAllPages = false }
             }
-
         } catch {
-            logger.error("Failed to load conversations: \(error.localizedDescription)")
+            guard generation == refreshGeneration else { return }
+            if APIError.from(error).requiresReauth { clearAll() }
             errorMessage = errorDescription(for: error)
             isLoading = false
+            isRefreshing = false
+            isFetchingAllPages = false
         }
     }
 
-    /// Refreshes conversations (pull-to-refresh).
-    /// Clears existing data and re-fetches everything from page 1.
-    func refreshConversations() async {
-        guard let manager else { return }
-
-        isRefreshing = true
-
-        // Cancel any background fetch in progress
-        backgroundFetchTask?.cancel()
-        backgroundFetchTask = nil
-
-        do {
-            // Phase 1: page 1 + pinned conversations in parallel
-            async let page1Request = manager.fetchConversationsPage(page: 1)
-            async let pinnedRequest = manager.apiClient.getPinnedConversations()
-
-            let (page1, pinned) = try await (page1Request, pinnedRequest)
-
-            conversations = page1
-            pinnedConversations = pinned
-            errorMessage = nil
-            lastRefreshDate = Date()
-            isRefreshing = false
-
-            guard !page1.isEmpty else { return }
-
-            // Phase 2: background fetch remaining pages
-            isFetchingAllPages = true
-
-            backgroundFetchTask = Task {
-                await fetchRemainingPagesInBackground(
-                    manager: manager,
-                    startingPage: 2
-                )
-            }
-
-        } catch {
-            logger.error("Failed to refresh conversations: \(error.localizedDescription)")
-            isRefreshing = false
-        }
-    }
-
-    /// Instantly clears all conversation and folder data so the sidebar shows empty
-    /// while the new account's data is being fetched. Call this on account switch
-    /// before calling `refreshConversations()`.
+    /// Drop account-specific state and prevent old asynchronous work from restoring it.
     func clearAll() {
+        refreshGeneration = UUID()
         backgroundFetchTask?.cancel()
         backgroundFetchTask = nil
         conversations = []
         pinnedConversations = []
         lastRefreshDate = nil
+        lastReconciledAt = nil
+        isLoading = false
+        isRefreshing = false
+        isFetchingAllPages = false
         folderViewModel.folders = []
     }
 
-    /// Silently refreshes conversations if enough time has passed since the last refresh.
-    /// Only re-fetches page 1 to check for new/changed items near the top.
     func refreshIfStale() async {
-        guard let manager else { return }
-
-        // Skip if we refreshed recently
-        if let lastRefresh = lastRefreshDate,
-           Date().timeIntervalSince(lastRefresh) < autoRefreshInterval {
-            return
-        }
-
-        // Skip if already loading
-        guard !isLoading, !isRefreshing else { return }
-
-        do {
-            async let page1Request = manager.fetchConversationsPage(page: 1)
-            async let pinnedRequest = manager.apiClient.getPinnedConversations()
-
-            let (page1, pinned) = try await (page1Request, pinnedRequest)
-
-            // Merge page 1 into the existing list without truncating older data
-            let merged = mergeFreshPage(page1, into: conversations)
-
-            let changed = merged.map(\.id) != conversations.map(\.id)
-                || page1.contains { newConv in
-                    conversations.first(where: { $0.id == newConv.id })?.title != newConv.title
-                }
-
-            if changed {
-                conversations = merged
-                logger.info("Silent refresh: merged \(page1.count) fresh into \(merged.count) total")
-            }
-
-            // Always update pinned from authoritative source
-            pinnedConversations = pinned
-
-            errorMessage = nil
-            lastRefreshDate = Date()
-        } catch {
-            logger.error("Silent refresh failed: \(error.localizedDescription)")
-        }
+        guard !isLoading, !isRefreshing, !isFetchingAllPages else { return }
+        if let lastRefreshDate, Date().timeIntervalSince(lastRefreshDate) < autoRefreshInterval { return }
+        await refreshConversations()
     }
 
-    // MARK: - Background Pagination
-
-    /// Fetches all pages starting from `startingPage` in parallel batches.
-    /// Merges each completed batch into `conversations` progressively.
-    /// Stops when any page in a batch returns empty (no more data).
-    private func fetchRemainingPagesInBackground(
-        manager: ConversationManager,
-        startingPage: Int
-    ) async {
-        var nextPage = startingPage
-        var keepGoing = true
-
-        while keepGoing {
-            guard !Task.isCancelled else {
-                logger.info("Background fetch cancelled at page \(nextPage)")
-                break
-            }
-
-            // Build the batch of page numbers
-            let batchPages = (nextPage..<(nextPage + batchSize)).map { $0 }
-
-            // Fetch all pages in the batch concurrently
-            var batchResults: [(page: Int, conversations: [Conversation])] = []
-
-            await withTaskGroup(of: (Int, [Conversation]).self) { group in
-                for page in batchPages {
-                    group.addTask {
-                        do {
-                            let convs = try await manager.fetchConversationsPage(page: page)
-                            return (page, convs)
-                        } catch {
-                            // On error, return empty so we stop at this page
-                            return (page, [])
-                        }
-                    }
-                }
-
-                for await result in group {
-                    batchResults.append((page: result.0, conversations: result.1))
-                }
-            }
-
-            guard !Task.isCancelled else { break }
-
-            // Sort results by page number so we merge in order
-            batchResults.sort { $0.page < $1.page }
-
-            // Accumulate all conversations from this batch
-            var batchConversations: [Conversation] = []
-            for result in batchResults {
-                if result.conversations.isEmpty {
-                    // This page was empty — no more data
-                    keepGoing = false
-                    break
-                }
-                batchConversations.append(contentsOf: result.conversations)
-            }
-
-            if !batchConversations.isEmpty {
-                // Merge batch into main list (deduplicated)
-                let newItems = batchConversations.filter { newConv in
-                    !conversations.contains(where: { $0.id == newConv.id })
-                }
-                if !newItems.isEmpty {
-                    conversations.append(contentsOf: newItems)
-                    let endPage = nextPage + batchSize - 1
-                    logger.info("Background fetch: appended \(newItems.count) conversations (pages \(nextPage)-\(endPage))")
-                }
-            }
-
-            nextPage += batchSize
-        }
-
-        isFetchingAllPages = false
-        logger.info("Background fetch complete. Total conversations: \(self.conversations.count)")
+    private func invalidateChangedSummaries(_ page: [Conversation], known: [String: ConversationIndex.Summary],
+                                            scope: String?, revision: UUID) async -> UUID {
+        let changed = page.filter { known[$0.id] != nil && known[$0.id] != ConversationIndex.Summary($0) }.map(\.id)
+        return await ConversationCache.shared.invalidate(scope: scope, ids: changed, since: revision)
     }
 
-    // MARK: - Private Helpers
-
-    /// Merges a fresh page 1 into an existing full list.
-    /// Fresh items are placed at the top; existing items not in the fresh page are kept.
     private func mergeFreshPage(_ fresh: [Conversation], into existing: [Conversation]) -> [Conversation] {
-        var merged: [Conversation] = []
         var seen = Set<String>()
-
-        // Fresh page first (newest items)
-        for conv in fresh {
-            merged.append(conv)
-            seen.insert(conv.id)
-        }
-        // Existing items not in the fresh page (older paginated data)
-        for conv in existing where !seen.contains(conv.id) {
-            merged.append(conv)
-        }
-        return merged
+        return (fresh + existing).filter { seen.insert($0.id).inserted }
     }
 
     // MARK: - Search
