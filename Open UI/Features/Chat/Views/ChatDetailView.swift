@@ -442,13 +442,13 @@ struct ChatDetailView: View {
                 if !navBarHidden {
                     customTopBar
                         .background {
-                            // Full-width nav bar background — shows only when bar is visible.
-                            // Extends up into the safe area to cover the status bar region
-                            // as one continuous blurred band (Reddit-style).
-                            Rectangle()
-                                .fill(.ultraThinMaterial)
-                                .overlay(theme.background.opacity(theme.isDark ? 0.55 : 0.25))
-                                .ignoresSafeArea(edges: .top)
+                            // iOS 26 glass controls float directly over the conversation.
+                            if #unavailable(iOS 26.0) {
+                                Rectangle()
+                                    .fill(.ultraThinMaterial)
+                                    .overlay(theme.background.opacity(theme.isDark ? 0.55 : 0.25))
+                                    .ignoresSafeArea(edges: .top)
+                            }
                         }
                         .transition(
                             .opacity.combined(with: .offset(y: -20))
@@ -510,10 +510,9 @@ struct ChatDetailView: View {
                     .padding(.bottom, (verticalSizeClass == .compact && viewModel.terminalEnabled && viewModel.selectedTerminalServer != nil) ? keyboard.height : 0)
             }
         }
-        // Status-bar safe-area backdrop — shows with the nav bar, hides when scrolled away.
+        // Status-bar safe-area backdrop stays visible independently of the floating controls.
         // On iOS 26+ we use glassEffect(.clear) so text scrolling behind the status icons
         // stays readable as a soft blur (PR #248). On older iOS, ultraThinMaterial fallback.
-        // The whole overlay fades in/out with navBarHidden so the bar and backdrop are unified.
         .overlay {
             GeometryReader { geometry in
                 Group {
@@ -537,8 +536,6 @@ struct ChatDetailView: View {
                 }
                 .frame(height: geometry.safeAreaInsets.top)
                 .offset(y: -geometry.safeAreaInsets.top)
-                // Always visible — this blur protects the status icons regardless of whether
-                // the nav bar controls are hidden. The nav bar background hides/shows separately.
             }
             .allowsHitTesting(false)
         }

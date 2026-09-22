@@ -1,0 +1,34 @@
+name: ChatToolbarTests
+options:
+  deploymentTarget:
+    iOS: '18.1'
+settings:
+  base:
+    CODE_SIGN_IDENTITY: '-'
+    CODE_SIGNING_REQUIRED: NO
+    GENERATE_INFOPLIST_FILE: YES
+    SWIFT_VERSION: '5.0'
+targets:
+  ToolbarTestHost:
+    type: application
+    platform: iOS
+    sources: ['../ReadAloudPlayer/Host.swift']
+    settings:
+      PRODUCT_BUNDLE_IDENTIFIER: org.example.relay.toolbar-host
+  ToolbarUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources: ToolbarUITests.swift
+    dependencies:
+      - target: ToolbarTestHost
+    settings:
+      PRODUCT_BUNDLE_IDENTIFIER: org.example.relay.toolbar-tests
+      TEST_TARGET_NAME: ToolbarTestHost
+schemes:
+  ChatToolbarTests:
+    build:
+      targets:
+        ToolbarTestHost: all
+        ToolbarUITests: [test]
+    test:
+      targets: [ToolbarUITests]
