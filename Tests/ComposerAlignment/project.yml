@@ -1,0 +1,33 @@
+name: ComposerTests
+options:
+  deploymentTarget:
+    iOS: '18.1'
+settings:
+  base:
+    CODE_SIGN_IDENTITY: '-'
+    GENERATE_INFOPLIST_FILE: YES
+    SWIFT_VERSION: '5.0'
+targets:
+  ComposerTestHost:
+    type: application
+    platform: iOS
+    sources: Host.swift
+    settings:
+      PRODUCT_BUNDLE_IDENTIFIER: org.example.relay.composer-host
+  ComposerUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources: ComposerUITests.swift
+    dependencies:
+      - target: ComposerTestHost
+    settings:
+      PRODUCT_BUNDLE_IDENTIFIER: org.example.relay.composer-tests
+      TEST_TARGET_NAME: ComposerTestHost
+schemes:
+  ComposerTests:
+    build:
+      targets:
+        ComposerTestHost: all
+        ComposerUITests: [test]
+    test:
+      targets: [ComposerUITests]

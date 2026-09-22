@@ -444,14 +444,8 @@ struct ChatInputField: View {
                     ))
             }
 
-            // Main text input row — center alignment keeps + and send/voice
-            // button symmetrically aligned with the text on all line counts.
-            // The trailing buttons are grouped into a single fixed-size HStack
-            // so SwiftUI treats them as one atomic block and allocates their
-            // space first; the text field fills whatever remains.
-            HStack(alignment: composerIsExpanded ? .top : .center, spacing: 8) {
-                inlinePlusButton
-                    .padding(.top, composerIsExpanded ? 6 : 0)
+            // Give text the full width, with controls in a separate row below.
+            VStack(spacing: 8) {
                 textField
                     .frame(height: composerIsExpanded ? composerCurrentHeight : nil, alignment: .top)
                     .fixedSize(horizontal: false, vertical: !composerIsExpanded)
@@ -463,12 +457,12 @@ struct ChatInputField: View {
                             }
                     }
                 HStack(spacing: 8) {
+                    inlinePlusButton
+                    Spacer(minLength: 0)
                     inlineTerminalButton
                     inlineDictationButton
                     trailingButton
                 }
-                .fixedSize(horizontal: true, vertical: false)
-                .padding(.top, composerIsExpanded ? 6 : 0)
             }
             .padding(.horizontal, 12)
             .padding(.top, (selectedKnowledgeItems.isEmpty && selectedReferenceChats.isEmpty && selectedNotes.isEmpty && mentionedModel == nil) ? 10 : 6)
@@ -606,7 +600,7 @@ struct ChatInputField: View {
 
     // MARK: - Inline Terminal Button
 
-    /// Compact terminal icon that sits inline in the text row.
+    /// Compact terminal icon in the composer controls row.
     /// - Single server: tap toggles on/off
     /// - Multiple servers: tap opens a Menu for server selection
     @ViewBuilder
