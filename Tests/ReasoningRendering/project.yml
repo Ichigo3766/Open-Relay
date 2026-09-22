@@ -1,0 +1,62 @@
+name: ReasoningRendering
+options:
+  deploymentTarget:
+    iOS: '18.1'
+settings:
+  base:
+    CODE_SIGN_IDENTITY: '-'
+    CODE_SIGNING_REQUIRED: NO
+    GENERATE_INFOPLIST_FILE: YES
+    SWIFT_VERSION: '5.0'
+    ENABLE_TESTABILITY: YES
+    ONLY_ACTIVE_ARCH: YES
+packages:
+  Litext:
+    url: https://github.com/Ichigo3766/Litext.git
+    revision: 2d898b74db20976067cadff7ed283e03ec1e462f
+targets:
+  ReasoningHost:
+    type: application
+    platform: iOS
+    sources:
+      - Host.swift
+      - '../../Open UI/Shared/Components/ReasoningText.swift'
+    dependencies:
+      - package: Litext
+    settings:
+      PRODUCT_BUNDLE_IDENTIFIER: org.example.relay.reasoning-host
+      INFOPLIST_KEY_UILaunchScreen_Generation: YES
+  RenderingTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources: RenderingTests.swift
+    dependencies:
+      - target: ReasoningHost
+      - package: Litext
+    settings:
+      PRODUCT_BUNDLE_IDENTIFIER: org.example.relay.reasoning-tests
+      TEST_HOST: '$(BUILT_PRODUCTS_DIR)/ReasoningHost.app/ReasoningHost'
+  RenderingUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources: RenderingUITests.swift
+    dependencies:
+      - target: ReasoningHost
+    settings:
+      PRODUCT_BUNDLE_IDENTIFIER: org.example.relay.rendering-ui-tests
+      TEST_TARGET_NAME: ReasoningHost
+schemes:
+  ReasoningRendering:
+    build:
+      targets:
+        ReasoningHost: all
+        RenderingTests: [test]
+    test:
+      targets: [RenderingTests]
+  RenderingUI:
+    build:
+      targets:
+        ReasoningHost: all
+        RenderingUITests: [test]
+    test:
+      targets: [RenderingUITests]
