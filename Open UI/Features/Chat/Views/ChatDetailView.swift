@@ -1316,6 +1316,7 @@ struct ChatDetailView: View {
                 text: $vm.inputText,
                 attachments: $vm.attachments,
                 placeholder: placeholderText,
+                isKeyboardVisible: keyboard.isVisible,
                 isEnabled: !vm.isStreaming || vm.enableMessageQueue,
                 onSend: { Task { await viewModel.sendMessage() } },
                 onStopGenerating: vm.isStreaming ? { viewModel.stopStreaming() } : nil,

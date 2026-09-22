@@ -76,6 +76,7 @@ struct ChatInputField: View {
     @Binding var text: String
     @Binding var attachments: [ChatAttachment]
     var placeholder: String = "Message"
+    var isKeyboardVisible: Bool = false
     var isEnabled: Bool = true
     var onSend: () -> Void
     var onStopGenerating: (() -> Void)?
@@ -184,6 +185,7 @@ struct ChatInputField: View {
 
     @Environment(\.theme) private var theme
     @Environment(\.accessibilityScale) private var accessibilityScale
+    @Environment(\.layoutDirection) private var layoutDirection
     @FocusState private var isFocused: Bool
 
     /// UI chrome scale (buttons, icons, touch targets) — mirrors AccessibilityManager.uiScale.
@@ -398,6 +400,8 @@ struct ChatInputField: View {
 
     // MARK: - Composer Shell
 
+    private var isCompact: Bool { text.isEmpty && !isKeyboardVisible }
+
     private var composerShell: some View {
         VStack(spacing: 0) {
             // Model override chip (above text input)
@@ -444,11 +448,10 @@ struct ChatInputField: View {
                     ))
             }
 
-            // Give text the full width, with controls in a separate row below.
-            VStack(spacing: 8) {
+            ComposerLayout(compact: isCompact, direction: layoutDirection) {
                 textField
-                    .frame(height: composerIsExpanded ? composerCurrentHeight : nil, alignment: .top)
-                    .fixedSize(horizontal: false, vertical: !composerIsExpanded)
+                    .frame(height: composerIsExpanded && !isCompact ? composerCurrentHeight : nil, alignment: .top)
+                    .fixedSize(horizontal: false, vertical: !composerIsExpanded || isCompact)
                     .background {
                         Color.clear
                             .contentShape(Rectangle())
@@ -456,11 +459,10 @@ struct ChatInputField: View {
                                 NotificationCenter.default.post(name: .chatInputFieldRequestFocus, object: nil)
                             }
                     }
+                inlinePlusButton
+                    // Balance the bare plus glyph against the filled trailing circle.
+                    .padding(.leading, -8 * uiScale)
                 HStack(spacing: 8) {
-                    inlinePlusButton
-                        // Balance the bare plus glyph against the filled trailing circle.
-                        .padding(.leading, -8 * uiScale)
-                    Spacer(minLength: 0)
                     inlineTerminalButton
                     inlineDictationButton
                     trailingButton
@@ -1981,6 +1983,43 @@ private struct PDFKitView: UIViewRepresentable {
 
     func updateUIView(_ uiView: PDFView, context: Context) {
         uiView.document = document
+    }
+}
+
+/// Keeps the same text view (and first responder) when switching between one and two rows.
+private struct ComposerLayout: Layout {
+    var compact: Bool
+    var direction: LayoutDirection
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let width = proposal.replacingUnspecifiedDimensions().width
+        let frames = frames(width: width, subviews: subviews)
+        return CGSize(width: width, height: frames.map(\.maxY).max() ?? 0)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        for (view, frame) in zip(subviews, frames(width: bounds.width, subviews: subviews)) {
+            let x = direction == .rightToLeft ? bounds.width - frame.maxX : frame.minX
+            view.place(at: CGPoint(x: bounds.minX + x, y: bounds.minY + frame.minY),
+                       anchor: .topLeading, proposal: ProposedViewSize(frame.size))
+        }
+    }
+
+    private func frames(width: CGFloat, subviews: Subviews) -> [CGRect] {
+        let plus = subviews[1].sizeThatFits(.unspecified)
+        let trailing = subviews[2].sizeThatFits(.unspecified)
+        let textWidth = max(0, width - (compact ? plus.width + trailing.width + 16 : 0))
+        let text = subviews[0].sizeThatFits(ProposedViewSize(width: textWidth, height: nil))
+        let controlsHeight = max(plus.height, trailing.height, compact ? text.height : 0)
+        let controlsY = compact ? 0 : text.height + 8
+        return [
+            CGRect(x: compact ? plus.width + 8 : 0, y: compact ? (controlsHeight - text.height) / 2 : 0,
+                   width: textWidth, height: text.height),
+            CGRect(x: 0, y: controlsY + (controlsHeight - plus.height) / 2,
+                   width: plus.width, height: plus.height),
+            CGRect(x: width - trailing.width, y: controlsY + (controlsHeight - trailing.height) / 2,
+                   width: trailing.width, height: trailing.height)
+        ]
     }
 }
 

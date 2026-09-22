@@ -45,11 +45,15 @@ final class ComposerUITests: XCTestCase {
 
     var editor: XCUIElement { relay.textViews.firstMatch }
 
-    func enter(_ text: String) {
+    func focusEditor() {
         XCTAssertTrue(editor.waitForExistence(timeout: 5))
         editor.tap()
         if !relay.keyboards.firstMatch.waitForExistence(timeout: 3) { editor.tap() }
         XCTAssertTrue(relay.keyboards.firstMatch.waitForExistence(timeout: 5))
+    }
+
+    func enter(_ text: String) {
+        focusEditor()
         editor.typeText(text)
         Thread.sleep(forTimeInterval: 0.5)
         XCTAssertEqual(editor.value as? String, text)
@@ -60,6 +64,52 @@ final class ComposerUITests: XCTestCase {
         attachment.name = (name.contains("Dark") ? "dark-" : "light-") + suffix
         attachment.lifetime = .keepAlways
         add(attachment)
+    }
+
+    func dismissKeyboard() {
+        // Drag the conversation downward to exercise interactive keyboard dismissal.
+        let start = relay.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.35))
+        let end = relay.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.9))
+        start.press(forDuration: 0.05, thenDragTo: end)
+        XCTAssertTrue(relay.keyboards.firstMatch.waitForNonExistence(timeout: 5))
+        Thread.sleep(forTimeInterval: 0.5)
+    }
+
+    func assertCompact(file: StaticString = #filePath, line: UInt = #line) {
+        XCTAssertFalse(relay.keyboards.firstMatch.exists, file: file, line: line)
+        for label in ["Attachments & tools", "Start dictation", "Voice call"] {
+            let button = relay.buttons[label]
+            XCTAssertTrue(button.isHittable, file: file, line: line)
+            XCTAssertEqual(editor.frame.midY, button.frame.midY, accuracy: 2, file: file, line: line)
+        }
+        XCTAssertGreaterThan(editor.frame.minX, relay.buttons["Attachments & tools"].frame.maxX, file: file, line: line)
+        XCTAssertLessThan(editor.frame.maxX, relay.buttons["Start dictation"].frame.minX, file: file, line: line)
+        XCTAssertLessThan(editor.frame.height, 30, file: file, line: line)
+    }
+
+    func checkEmptyKeyboardTransitions() {
+        assertCompact()
+        capture("empty-keyboard-hidden")
+        focusEditor()
+        assertTwoRows(trailing: "Voice call")
+        capture("empty-keyboard-visible")
+        dismissKeyboard()
+        assertCompact()
+        // Reopening and clearing the last character must not dismiss the keyboard.
+        enter("x")
+        editor.typeText(XCUIKeyboardKey.delete.rawValue)
+        XCTAssertTrue(relay.keyboards.firstMatch.exists)
+        assertTwoRows(trailing: "Voice call")
+        dismissKeyboard()
+        assertCompact()
+    }
+
+    func testLightEmptyComposerFollowsKeyboardVisibility() {
+        checkEmptyKeyboardTransitions()
+    }
+
+    func testDarkEmptyComposerFollowsKeyboardVisibility() {
+        checkEmptyKeyboardTransitions()
     }
 
     func assertTwoRows(trailing: String = "Send message", file: StaticString = #filePath, line: UInt = #line) {
@@ -124,13 +174,15 @@ final class ComposerUITests: XCTestCase {
     func testSingleLineAndEmptyControlsRemainUsable() {
         let voice = relay.buttons["Voice call"]
         XCTAssertTrue(voice.waitForExistence(timeout: 5))
-        assertTwoRows(trailing: "Voice call")
-        capture("empty")
+        assertCompact()
         enter("One paper lantern.")
         capture("single-line")
         XCTAssertTrue(relay.buttons["Send message"].isHittable)
         assertTwoRows()
         XCTAssertFalse(relay.buttons["Voice call"].exists)
+        dismissKeyboard()
+        assertTwoRows()
+        XCTAssertEqual(editor.value as? String, "One paper lantern.")
     }
 
     func testDarkSingleLineUsesSeparateRows() {

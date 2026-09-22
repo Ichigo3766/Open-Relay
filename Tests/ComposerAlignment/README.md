@@ -1,7 +1,8 @@
 # Two-row composer
 
-The composer gives text its own full-width row, with attachment, dictation,
-and send/voice controls in a separate row below. Previously, the controls
+The empty composer uses one compact row while the keyboard is hidden. With
+the keyboard visible or a nonempty draft, text gets its own full-width row,
+with attachment, dictation, and send/voice controls below. Previously, the controls
 reserved columns on either side of the text and moved vertically as drafts grew.
 This suite measures the actual app's text and button positions.
 
@@ -17,6 +18,9 @@ must never be collected from a personal account.
 - A 14-line draft that scrolls internally without moving the controls.
 - Expanded composition, with controls remaining below the text at the bottom.
 - Empty and single-line inputs, including the voice-to-send transition.
+- Empty keyboard-hidden/visible states, repeated focus/dismissal, and clearing
+  the last character without losing keyboard focus.
+- Nonempty drafts keep their full-width layout when the keyboard is dismissed.
 - Single-line input in both appearances, plus minimum/maximum UI control sizes.
 - A whitespace-only multiline draft, which keeps the voice button visible.
 - Fixture content, authentication, and rejected write requests.
@@ -25,7 +29,7 @@ The original layout from upstream commit
 `a5c0cfa014c92b4875b7ccb2a64562205b258eb8` (v5.7.1) was reproduced on iOS 18
 and iOS 26. Bottom-aligning that inline row alone still fails the full-width
 regression: the text remains inset past the plus button's column.
-Tests require text to span the controls' visible width and stay above every button.
+Two-row checks require text to span the controls' visible width and stay above every button.
 The bare plus glyph has an optical leading adjustment to match the trailing
 circle's visible edge: both sit approximately 12 points from the composer edge
 instead of 20 points for the plus and 12 for send. Symmetry assertions allow
@@ -72,7 +76,12 @@ Every screenshot uses the invented fixture conversation and draft above.
 | iOS 18, light | [Before](Screenshots/before-ios18-light.png) | [After](Screenshots/after-ios18-light.png) |
 | iOS 18, dark | [Before](Screenshots/before-ios18-dark.png) | [After](Screenshots/after-ios18-dark.png) |
 
-[Empty two-row composer, iOS 26](Screenshots/after-ios26-empty.png)
+### Empty composer
+
+| Version | Keyboard hidden: one row | Keyboard visible: two rows |
+| --- | --- | --- |
+| iOS 26 | [Hidden](Screenshots/after-ios26-empty.png) | [Visible](Screenshots/after-ios26-empty-keyboard.png) |
+| iOS 18 | [Hidden](Screenshots/after-ios18-empty.png) | [Visible](Screenshots/after-ios18-empty-keyboard.png) |
 
 ### Single-line drafts
 
