@@ -17,6 +17,7 @@ must never be collected from a personal account.
 - A 14-line draft that scrolls internally without moving the controls.
 - Expanded composition, with controls remaining below the text at the bottom.
 - Empty and single-line inputs, including the voice-to-send transition.
+- Single-line input in both appearances, plus minimum/maximum UI control sizes.
 - A whitespace-only multiline draft, which keeps the voice button visible.
 - Fixture content, authentication, and rejected write requests.
 
@@ -24,8 +25,11 @@ The original layout from upstream commit
 `a5c0cfa014c92b4875b7ccb2a64562205b258eb8` (v5.7.1) was reproduced on iOS 18
 and iOS 26. Bottom-aligning that inline row alone still fails the full-width
 regression: the text remains inset past the plus button's column.
-Tests require text to span the controls' full width and stay above every button,
-with a two-point tolerance for differing icon sizes and rounding.
+Tests require text to span the controls' visible width and stay above every button.
+The bare plus glyph has an optical leading adjustment to match the trailing
+circle's visible edge: both sit approximately 12 points from the composer edge
+instead of 20 points for the plus and 12 for send. Symmetry assertions allow
+one point for glyph metrics and pixel rounding, including at UI scales 0.85–1.3.
 On iOS 18, accessibility exposes the glyph rather than the full clear circular
 button. Assertions use its center and the control's declared diameter (28 points
 for plus, 26 for the trailing controls) at the default UI scale on both OS versions.
@@ -69,3 +73,12 @@ Every screenshot uses the invented fixture conversation and draft above.
 | iOS 18, dark | [Before](Screenshots/before-ios18-dark.png) | [After](Screenshots/after-ios18-dark.png) |
 
 [Empty two-row composer, iOS 26](Screenshots/after-ios26-empty.png)
+
+### Single-line drafts
+
+| Appearance | Screenshot |
+| --- | --- |
+| iOS 26, light | [Single line](Screenshots/after-ios26-single-line-light.png) |
+| iOS 26, dark | [Single line](Screenshots/after-ios26-single-line-dark.png) |
+| iOS 18, light | [Single line](Screenshots/after-ios18-single-line-light.png) |
+| iOS 18, dark | [Single line](Screenshots/after-ios18-single-line-dark.png) |

@@ -4,12 +4,14 @@ import XCTest
 final class ComposerUITests: XCTestCase {
     let relay = XCUIApplication(bundleIdentifier: "com.openui.openui")
     let draft = "Cut the paper.\nFold the corners.\nAdd yellow stars.\nAttach a blue handle."
+    var controlScale: CGFloat { name.contains("LargeUI") ? 1.3 : name.contains("SmallUI") ? 0.85 : 1 }
 
     override func setUpWithError() throws {
         continueAfterFailure = false
         UserDefaults.standard.set(true, forKey: "DisableDiagnosticScreenRecordings")
         XCUIDevice.shared.orientation = .portrait
         relay.launchArguments = ["-sendOnEnter", "NO", "-quickPills", "",
+                                 "-openui.accessibility.uiScale", "\(controlScale)",
                                  "-openui.appearance.mode", name.contains("Dark") ? "dark" : "light"]
         relay.launch()
         if !relay.buttons["Menu"].waitForExistence(timeout: 3) {
@@ -63,9 +65,13 @@ final class ComposerUITests: XCTestCase {
     func assertTwoRows(trailing: String = "Send message", file: StaticString = #filePath, line: UInt = #line) {
         let plus = relay.buttons["Attachments & tools"]
         let last = relay.buttons[trailing]
-        // Text spans the same width as the controls, including their columns.
-        XCTAssertEqual(editor.frame.minX, plus.frame.midX - 14, accuracy: 2, file: file, line: line)
-        XCTAssertEqual(editor.frame.maxX, last.frame.midX + 13, accuracy: 2, file: file, line: line)
+        // Compare visible edges: the bare plus glyph is about 12 points wide,
+        // inside its 28-point container; the trailing circle is 26 points wide.
+        XCTAssertEqual(editor.frame.minX, plus.frame.midX - 6 * controlScale, accuracy: 1, file: file, line: line)
+        XCTAssertEqual(editor.frame.maxX, last.frame.midX + 13 * controlScale, accuracy: 1, file: file, line: line)
+        XCTAssertEqual(plus.frame.midX - 6 * controlScale,
+                       relay.frame.width - last.frame.midX - 13 * controlScale,
+                       accuracy: 1, "Visible left and right insets should match", file: file, line: line)
         let labels = ["Attachments & tools", "Start dictation", trailing]
         for label in labels {
             let button = relay.buttons[label]
@@ -73,7 +79,7 @@ final class ComposerUITests: XCTestCase {
             XCTAssertTrue(button.isHittable, file: file, line: line)
             // iOS 18 exposes the clear buttons' glyph bounds, while iOS 26
             // exposes their full circular containers. Both share the same center.
-            let diameter: CGFloat = label == "Attachments & tools" ? 28 : 26
+            let diameter: CGFloat = (label == "Attachments & tools" ? 28 : 26) * controlScale
             let controlTop = button.frame.midY - diameter / 2
             XCTAssertGreaterThanOrEqual(controlTop, editor.frame.maxY + 6,
                                         "\(label) should be below the text", file: file, line: line)
@@ -121,9 +127,26 @@ final class ComposerUITests: XCTestCase {
         assertTwoRows(trailing: "Voice call")
         capture("empty")
         enter("One paper lantern.")
+        capture("single-line")
         XCTAssertTrue(relay.buttons["Send message"].isHittable)
         assertTwoRows()
         XCTAssertFalse(relay.buttons["Voice call"].exists)
+    }
+
+    func testDarkSingleLineUsesSeparateRows() {
+        enter("One paper lantern.")
+        capture("single-line")
+        assertTwoRows()
+    }
+
+    func testLargeUIControlsRemainUsable() {
+        enter("One paper lantern.")
+        assertTwoRows()
+    }
+
+    func testSmallUIControlsRemainUsable() {
+        enter("One paper lantern.")
+        assertTwoRows()
     }
 
     func testExpandedComposerKeepsControlsBelowText() {

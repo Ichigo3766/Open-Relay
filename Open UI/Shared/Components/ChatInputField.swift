@@ -458,6 +458,8 @@ struct ChatInputField: View {
                     }
                 HStack(spacing: 8) {
                     inlinePlusButton
+                        // Balance the bare plus glyph against the filled trailing circle.
+                        .padding(.leading, -8 * uiScale)
                     Spacer(minLength: 0)
                     inlineTerminalButton
                     inlineDictationButton
