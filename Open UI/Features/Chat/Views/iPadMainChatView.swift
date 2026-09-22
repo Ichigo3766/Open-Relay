@@ -1148,12 +1148,7 @@ struct iPadMainChatView: View {
 
         dependencies.socketService?.onReconnect = { [self] in
             Task { @MainActor in
-                await withTaskGroup(of: Void.self) { group in
-                    group.addTask { await listViewModel.refreshIfStale() }
-                    group.addTask { await listViewModel.folderViewModel.refreshFolders() }
-                    group.addTask { await channelListVM.refreshChannels() }
-                    group.addTask { await dependencies.authViewModel.refreshBackendConfig() }
-                }
+                await dependencies.authViewModel.refreshBackendConfig()
                 if let activeId = activeConversationId {
                     let vm = dependencies.activeChatStore.viewModel(for: activeId)
                     if !vm.isStreaming { await vm.syncWithServer() }

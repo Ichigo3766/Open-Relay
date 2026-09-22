@@ -3539,11 +3539,6 @@ struct MainChatView: View {
 
         dependencies.socketService?.onReconnect = { [self] in
             Task { @MainActor in
-                // Refresh both conversations and folders in parallel
-                await withTaskGroup(of: Void.self) { group in
-                    group.addTask { await listViewModel.refreshIfStale() }
-                    group.addTask { await listViewModel.folderViewModel.refreshFolders() }
-                }
                 // Use syncWithServer() instead of loadConversation() —
                 // syncWithServer() does in-place updates via adoptServerMessages()
                 // and does NOT set isLoadingConversation=true, so the message list
