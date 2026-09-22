@@ -1,0 +1,46 @@
+name: BubbleTests
+options:
+  deploymentTarget:
+    iOS: '18.1'
+settings:
+  base:
+    CODE_SIGN_IDENTITY: '-'
+    CODE_SIGNING_REQUIRED: NO
+    GENERATE_INFOPLIST_FILE: YES
+    SWIFT_VERSION: '5.0'
+targets:
+  BubbleTestHost:
+    type: application
+    platform: iOS
+    sources:
+      - Host.swift
+      - '../../Open UI/Shared/Components/ChatMessageBubble.swift'
+      - '../../Open UI/Shared/Components/AnimatedPresence.swift'
+      - '../../Open UI/Shared/Components/LoadingStates.swift'
+      - '../../Open UI/Shared/Theme/AppTheme.swift'
+      - '../../Open UI/Shared/Theme/ColorTokens.swift'
+      - '../../Open UI/Shared/Theme/DesignTokens.swift'
+      - '../../Open UI/Shared/Theme/Typography.swift'
+      - '../../Open UI/Shared/Theme/ViewStyles.swift'
+      - '../../Open UI/Core/Services/AppearanceManager.swift'
+      - '../../Open UI/Core/Services/AccessibilityManager.swift'
+      - '../../Open UI/Core/Services/HapticService.swift'
+    settings:
+      PRODUCT_BUNDLE_IDENTIFIER: org.example.relay.bubble-host
+  BubbleCornerTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources: BubbleCornerTests.swift
+    dependencies:
+      - target: BubbleTestHost
+    settings:
+      PRODUCT_BUNDLE_IDENTIFIER: org.example.relay.bubble-tests
+      TEST_HOST: '$(BUILT_PRODUCTS_DIR)/BubbleTestHost.app/BubbleTestHost'
+schemes:
+  BubbleTests:
+    build:
+      targets:
+        BubbleTestHost: all
+        BubbleCornerTests: [test]
+    test:
+      targets: [BubbleCornerTests]

@@ -6,9 +6,8 @@ import SwiftUI
 /// sender role (user vs assistant).
 ///
 /// ## Design
-/// - **User messages**: Right-aligned pill with brand accent color and
-///   asymmetric corner radius (iMessage-style — smaller bottom-right corner
-///   gives the classic "tail" feel without needing actual tail geometry).
+/// - **User messages**: Right-aligned rounded rectangle with brand accent
+///   color and uniform corners.
 /// - **Assistant messages**: Full-width, no background — clean like
 ///   Claude.ai and ChatGPT native. Only a subtle label/avatar above.
 /// - **System messages**: Center-aligned muted label.
@@ -66,7 +65,7 @@ struct ChatMessageBubble<Content: View>: View {
                     .padding(.horizontal, 14)
                     .padding(.vertical, 10)
                     .background(theme.chatBubbleUser)
-                    .clipShape(UserBubbleShape())
+                    .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
 
                 // AnimatedPresence smoothly expands the ~18pt height when the
                 // timestamp toggles (user tap) instead of snapping.
@@ -129,68 +128,6 @@ struct ChatMessageBubble<Content: View>: View {
         }
         .padding(.horizontal, Spacing.screenPadding)
         .padding(.vertical, Spacing.xs)
-    }
-}
-
-// MARK: - User Bubble Shape (iMessage-style asymmetric corners)
-
-/// A rounded rectangle with asymmetric corner radii that mimics the
-/// iMessage bubble tail effect — all corners are 18pt except the
-/// bottom-right which is 4pt, giving a subtle directional cue without
-/// an actual tail/triangle.
-private struct UserBubbleShape: Shape {
-    // Standard corners
-    private let largeRadius: CGFloat = 18
-    // The "tail" corner — small to indicate message origin
-    private let tailRadius: CGFloat = 4
-
-    func path(in rect: CGRect) -> Path {
-        let tl = largeRadius   // top-left
-        let tr = largeRadius   // top-right
-        let bl = largeRadius   // bottom-left
-        let br = tailRadius    // bottom-right (tail)
-
-        return Path { p in
-            // Start at top-left arc
-            p.move(to: CGPoint(x: rect.minX + tl, y: rect.minY))
-            // Top edge → top-right arc
-            p.addLine(to: CGPoint(x: rect.maxX - tr, y: rect.minY))
-            p.addArc(
-                center: CGPoint(x: rect.maxX - tr, y: rect.minY + tr),
-                radius: tr,
-                startAngle: .degrees(-90),
-                endAngle: .degrees(0),
-                clockwise: false
-            )
-            // Right edge → bottom-right arc (tail)
-            p.addLine(to: CGPoint(x: rect.maxX, y: rect.maxY - br))
-            p.addArc(
-                center: CGPoint(x: rect.maxX - br, y: rect.maxY - br),
-                radius: br,
-                startAngle: .degrees(0),
-                endAngle: .degrees(90),
-                clockwise: false
-            )
-            // Bottom edge → bottom-left arc
-            p.addLine(to: CGPoint(x: rect.minX + bl, y: rect.maxY))
-            p.addArc(
-                center: CGPoint(x: rect.minX + bl, y: rect.maxY - bl),
-                radius: bl,
-                startAngle: .degrees(90),
-                endAngle: .degrees(180),
-                clockwise: false
-            )
-            // Left edge → top-left arc
-            p.addLine(to: CGPoint(x: rect.minX, y: rect.minY + tl))
-            p.addArc(
-                center: CGPoint(x: rect.minX + tl, y: rect.minY + tl),
-                radius: tl,
-                startAngle: .degrees(180),
-                endAngle: .degrees(270),
-                clockwise: false
-            )
-            p.closeSubpath()
-        }
     }
 }
 
@@ -271,7 +208,7 @@ struct MessageActionBar: View {
                 Text("Hello! How can I help you today? I'm ready to assist with anything you need.")
             }
 
-            // User message (iMessage-style bubble)
+            // User message (uniform rounded corners)
             ChatMessageBubble(role: .user) {
                 Text("Tell me about SwiftUI theming")
             }
