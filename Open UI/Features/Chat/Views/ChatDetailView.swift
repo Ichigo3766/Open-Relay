@@ -76,6 +76,7 @@ struct ChatDetailView: View {
 
     private let initialConversationId: String?
     @State private var viewModel: ChatViewModel
+    @State private var visibilityID = UUID()
 
     // MARK: Model selector sheet
     @State private var isShowingModelSelectorSheet = false
@@ -585,6 +586,7 @@ struct ChatDetailView: View {
             withTransaction(\.animation, nil) { randomPrompts = updated }
         }
         .onAppear {
+            viewModel.visibleViewIDs.insert(visibilityID)
             viewModel.syncOnEntry()
             // Lock in the background URL on first appear so it survives folder refreshes
             // that return a flat list without meta data.
@@ -4671,6 +4673,7 @@ struct ChatDetailView: View {
     }
 
     private func handleDisappear() {
+        viewModel.visibleViewIDs.remove(visibilityID)
         keyboard.stop()
         // Stop TTS playback and clear state when navigating away from chat
         if speakingMessageId != nil || ttsGeneratingMessageId != nil {

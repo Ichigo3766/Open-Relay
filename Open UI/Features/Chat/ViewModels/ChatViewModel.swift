@@ -394,6 +394,7 @@ final class ChatViewModel {
     /// Used by the recovery timer to avoid overwriting an active stream.
     private var socketHasReceivedContent = false
     private(set) var serverBaseURL: String = ""
+    @ObservationIgnored var visibleViewIDs: Set<UUID> = []
     @ObservationIgnored nonisolated(unsafe) private var foregroundObserver: NSObjectProtocol?
     @ObservationIgnored nonisolated(unsafe) private var backgroundObserver: NSObjectProtocol?
     @ObservationIgnored nonisolated(unsafe) private var configurationObservers: [NSObjectProtocol] = []
@@ -1551,7 +1552,7 @@ final class ChatViewModel {
                     // App was backgrounded during streaming — socket events may
                     // have been missed. Check server for actual completion state.
                     await self.recoverFromBackgroundStreaming()
-                } else if bgDuration >= 10.0 {
+                } else if !self.visibleViewIDs.isEmpty && bgDuration >= 10.0 {
                     // Only sync if we were backgrounded long enough for
                     // something to have changed on the server (10s threshold
                     // avoids triggering on quick app-switcher glances which
@@ -1562,7 +1563,7 @@ final class ChatViewModel {
                     // up immediately for the next chat request.
                     await self.fetchUserDefaultParamsFromServer()
                 } else {
-                    self.logger.debug("Foreground sync skipped — background duration \(bgDuration)s < 10s")
+                    self.logger.debug("Foreground sync skipped — chat hidden or background duration \(bgDuration)s < 10s")
                 }
 
                 // Auto-resume any transcriptions that were paused when the app
