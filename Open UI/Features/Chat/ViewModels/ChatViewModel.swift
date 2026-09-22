@@ -1492,12 +1492,11 @@ final class ChatViewModel {
 
     // MARK: - Entry Sync (navigation re-entry)
 
-    /// Syncs with the server every time the user navigates INTO this chat.
+    /// Checks for server updates when the user navigates into this chat.
     ///
-    /// Unlike `syncWithServer()` (which has a 3-second debounce designed to
-    /// guard against rapid foreground/background transitions), this method uses
-    /// a much shorter 1.5-second guard — just enough to absorb SwiftUI's
-    /// double-appear during push/pop navigation transitions.
+    /// Coalesces SwiftUI's double-appear during navigation with a 1.5-second
+    /// guard, while respecting `syncWithServer()`'s 3-second debounce after
+    /// a successful sync.
     ///
     /// Called from `ChatDetailView.onAppear` so that even when the view model
     /// is cached (`hasLoaded == true`) and no foreground transition occurs,
@@ -1509,8 +1508,6 @@ final class ChatViewModel {
         let now = Date()
         guard now.timeIntervalSince(lastEntryTime) >= 1.5 else { return }
         lastEntryTime = now
-        // Reset lastSyncTime so syncWithServer() is not blocked by its own debounce
-        lastSyncTime = .distantPast
         Task { await syncWithServer() }
     }
 
