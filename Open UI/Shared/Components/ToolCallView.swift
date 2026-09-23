@@ -676,7 +676,7 @@ enum ToolCallParser {
             let closeTag = pair.close
             let escapedClose = NSRegularExpression.escapedPattern(for: closeTag)
 
-            guard contentText.range(of: closeTag, options: .caseInsensitive) != nil else { continue }
+            guard containsIgnoringCase(contentText, closeTag) else { continue }
 
             // Split at the first occurrence: before = reasoning, after = reply
             if let splitRegex = cachedRegex("^([\\s\\S]*?)\(escapedClose)([\\s\\S]*)$",
@@ -800,6 +800,13 @@ enum ToolCallParser {
 
     // MARK: - Raw Reasoning Tag Preprocessing
 
+    /// Quickly reject absent markers, but preserve Swift's grapheme-boundary
+    /// behavior when UTF-16 search finds a possible match (e.g. combining marks).
+    private nonisolated static func containsIgnoringCase(_ text: String, _ marker: String) -> Bool {
+        guard (text as NSString).range(of: marker, options: .caseInsensitive).location != NSNotFound else { return false }
+        return text.range(of: marker, options: .caseInsensitive) != nil
+    }
+
     /// All tag pairs that OpenWebUI recognises by default for reasoning content.
     /// Order matters: more specific / longer tags first to avoid partial matches.
     private nonisolated static let defaultReasoningTagPairs: [(open: String, close: String)] = [
@@ -871,7 +878,7 @@ enum ToolCallParser {
 
             // Case 2: Unclosed tag (still streaming thinking content)
             // Case-insensitive check for the open tag
-            if result.range(of: pair.open, options: .caseInsensitive) != nil {
+            if containsIgnoringCase(result, pair.open) {
                 if let openRegex = cachedRegex("\(escapedOpen)([\\s\\S]*)$",
                     options: [.dotMatchesLineSeparators, .caseInsensitive]) {
                     let nsResult = result as NSString
@@ -901,7 +908,7 @@ enum ToolCallParser {
             if pair.open.hasPrefix("<|") || pair.open.hasPrefix("◁") { continue }
 
             // Already handled if exact-case was found. Check case-insensitive.
-            guard result.range(of: pair.open, options: .caseInsensitive) != nil else { continue }
+            guard containsIgnoringCase(result, pair.open) else { continue }
             // If exact case exists, Phase 1 already handled it
             guard !result.contains(pair.open) else { continue }
 
@@ -930,7 +937,7 @@ enum ToolCallParser {
             }
 
             // Unclosed tag (case-insensitive)
-            if result.range(of: pair.open, options: .caseInsensitive) != nil {
+            if containsIgnoringCase(result, pair.open) {
                 if let openRegex = cachedRegex("\(escapedOpen)([\\s\\S]*)$",
                     options: [.dotMatchesLineSeparators, .caseInsensitive]) {
                     let nsResult = result as NSString
@@ -1101,21 +1108,21 @@ enum ToolCallParser {
             let closeTag = pair.close
 
             // Case-insensitive check for the closing tag
-            guard result.range(of: closeTag, options: .caseInsensitive) != nil else { continue }
+            guard containsIgnoringCase(result, closeTag) else { continue }
 
             // If the matching open tag is also present, this is a complete pair
             // that Phase 1 should have handled — skip.
-            if result.range(of: pair.open, options: .caseInsensitive) != nil { continue }
+            if containsIgnoringCase(result, pair.open) { continue }
 
             // Also skip if the closer is inside a <details> block (already converted)
-            if result.contains("<details") && result.range(of: closeTag, options: .caseInsensitive) != nil {
+            if result.contains("<details") && containsIgnoringCase(result, closeTag) {
                 // Check if the close tag appears outside of any <details>...</details> block
                 let stripped = result.replacingOccurrences(
                     of: #"<details\s+[^>]*>[\s\S]*?</details>"#,
                     with: "",
                     options: .regularExpression
                 )
-                guard stripped.range(of: closeTag, options: .caseInsensitive) != nil else { continue }
+                guard containsIgnoringCase(stripped, closeTag) else { continue }
             }
 
             let escapedClose = NSRegularExpression.escapedPattern(for: closeTag)
