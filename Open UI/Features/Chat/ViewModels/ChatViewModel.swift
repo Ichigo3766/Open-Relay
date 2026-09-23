@@ -394,6 +394,7 @@ final class ChatViewModel {
     /// Used by the recovery timer to avoid overwriting an active stream.
     private var socketHasReceivedContent = false
     private(set) var serverBaseURL: String = ""
+    @ObservationIgnored var visibleViewIDs: Set<UUID> = []
     @ObservationIgnored nonisolated(unsafe) private var foregroundObserver: NSObjectProtocol?
     @ObservationIgnored nonisolated(unsafe) private var backgroundObserver: NSObjectProtocol?
     @ObservationIgnored nonisolated(unsafe) private var configurationObservers: [NSObjectProtocol] = []
@@ -1075,8 +1076,29 @@ final class ChatViewModel {
                 selectedModelId = availableModels.first?.id
             }
         } catch {
-            logger.error("Failed to load conversation: \(error.localizedDescription)")
-            errorMessage = error.localizedDescription
+            // When offline, try to serve the conversation from the on-disk cache so
+            // previously-opened chats remain readable without a connection.
+            let apiError = APIError.from(error)
+            if apiError.isConnectivityError,
+               let cached = await manager.apiClient.cachedConversation(id: conversationId) {
+                logger.info("loadConversation: offline — serving from disk cache for \(conversationId)")
+                conversation = cached.conversation
+                deletedMessageIds = []
+                tasks = cached.conversation.tasks
+                chatFiles = cached.conversation.files
+                // Restore model selection from cached data
+                if let lastAssistantModel = cached.conversation.messages.last(where: { $0.role == .assistant })?.model,
+                   !lastAssistantModel.isEmpty {
+                    selectedModelId = lastAssistantModel
+                } else if let conversationModel = cached.conversation.model, !conversationModel.isEmpty {
+                    selectedModelId = conversationModel
+                } else if selectedModelId == nil {
+                    selectedModelId = availableModels.first?.id
+                }
+            } else {
+                logger.error("Failed to load conversation: \(error.localizedDescription)")
+                errorMessage = error.localizedDescription
+            }
         }
         // Re-derive flat messages from the history tree when the tree has more nodes
         // than the flat messages array. This handles background sub-agent messages which
@@ -1492,12 +1514,11 @@ final class ChatViewModel {
 
     // MARK: - Entry Sync (navigation re-entry)
 
-    /// Syncs with the server every time the user navigates INTO this chat.
+    /// Checks for server updates when the user navigates into this chat.
     ///
-    /// Unlike `syncWithServer()` (which has a 3-second debounce designed to
-    /// guard against rapid foreground/background transitions), this method uses
-    /// a much shorter 1.5-second guard — just enough to absorb SwiftUI's
-    /// double-appear during push/pop navigation transitions.
+    /// Coalesces SwiftUI's double-appear during navigation with a 1.5-second
+    /// guard, while respecting `syncWithServer()`'s 3-second debounce after
+    /// a successful sync.
     ///
     /// Called from `ChatDetailView.onAppear` so that even when the view model
     /// is cached (`hasLoaded == true`) and no foreground transition occurs,
@@ -1509,8 +1530,6 @@ final class ChatViewModel {
         let now = Date()
         guard now.timeIntervalSince(lastEntryTime) >= 1.5 else { return }
         lastEntryTime = now
-        // Reset lastSyncTime so syncWithServer() is not blocked by its own debounce
-        lastSyncTime = .distantPast
         Task { await syncWithServer() }
     }
 
@@ -1551,7 +1570,7 @@ final class ChatViewModel {
                     // App was backgrounded during streaming — socket events may
                     // have been missed. Check server for actual completion state.
                     await self.recoverFromBackgroundStreaming()
-                } else if bgDuration >= 10.0 {
+                } else if !self.visibleViewIDs.isEmpty && bgDuration >= 10.0 {
                     // Only sync if we were backgrounded long enough for
                     // something to have changed on the server (10s threshold
                     // avoids triggering on quick app-switcher glances which
@@ -1562,7 +1581,7 @@ final class ChatViewModel {
                     // up immediately for the next chat request.
                     await self.fetchUserDefaultParamsFromServer()
                 } else {
-                    self.logger.debug("Foreground sync skipped — background duration \(bgDuration)s < 10s")
+                    self.logger.debug("Foreground sync skipped — chat hidden or background duration \(bgDuration)s < 10s")
                 }
 
                 // Auto-resume any transcriptions that were paused when the app

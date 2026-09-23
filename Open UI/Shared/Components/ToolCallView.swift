@@ -2714,6 +2714,7 @@ struct ReasoningView: View {
     let reasoning: ReasoningData
     @State private var isExpanded: Bool
     @Environment(\.theme) private var theme
+    @Environment(\.accessibilityScale) private var accessibilityScale
 
     init(reasoning: ReasoningData) {
         self.reasoning = reasoning
@@ -2761,15 +2762,15 @@ struct ReasoningView: View {
             // GeometryReader-background measures the constrained height, not the
             // natural height, so it locks the frame too early and truncates the text.
             if isExpanded {
-                Text(reasoning.content)
-                    .scaledFont(size: 12, weight: .regular)
-                    .foregroundStyle(theme.textTertiary)
-                    .lineSpacing(3)
-                    .padding(.leading, 22)
-                    .padding(.trailing, Spacing.sm)
-                    .padding(.bottom, Spacing.sm)
-                    .textSelection(.enabled)
-                    .transition(.opacity)
+                ReasoningText(
+                    text: reasoning.content,
+                    fontSize: round(12 * accessibilityScale.uiScale * 10) / 10,
+                    color: UIColor(theme.textTertiary)
+                )
+                .padding(.leading, 22)
+                .padding(.trailing, Spacing.sm)
+                .padding(.bottom, Spacing.sm)
+                .transition(.opacity)
             }
         }
         .padding(.horizontal, Spacing.xs)

@@ -12,6 +12,10 @@ final class NetworkManager: NSObject, Sendable {
 
     var baseURL: URL? { serverConfig.apiBaseURL }
 
+    var conversationCacheScope: String? {
+        ConversationCache.scope(server: serverConfig.url, token: authToken, headers: serverConfig.customHeaders)
+    }
+
     var authToken: String? {
         keychain.getToken(forServer: serverConfig.url)
     }
@@ -235,9 +239,11 @@ final class NetworkManager: NSObject, Sendable {
         body: Data? = nil,
         contentType: String? = "application/json",
         authenticated: Bool = true,
-        timeout: TimeInterval? = nil
+        timeout: TimeInterval? = nil,
+        ifNoneMatch: String? = nil,
+        deduplicate: Bool = true
     ) async throws -> (Data, HTTPURLResponse) {
-        let urlRequest = try buildRequest(
+        var urlRequest = try buildRequest(
             path: path,
             method: method,
             queryItems: queryItems,
@@ -247,11 +253,13 @@ final class NetworkManager: NSObject, Sendable {
             timeout: timeout
         )
 
+        if let ifNoneMatch { urlRequest.setValue(ifNoneMatch, forHTTPHeaderField: "If-None-Match") }
+
         // Use the deduplicator for bodyless GET requests to prevent duplicate
         // in-flight requests from multiple startup code paths exhausting the
         // iOS per-host TCP connection pool.
         let (data, response): (Data, URLResponse)
-        if method == .get && body == nil {
+        if deduplicate && method == .get && body == nil {
             (data, response) = try await deduplicatedGET(urlRequest)
         } else {
             (data, response) = try await performRequest(urlRequest)

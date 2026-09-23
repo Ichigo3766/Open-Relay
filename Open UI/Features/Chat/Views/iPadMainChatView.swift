@@ -1148,12 +1148,7 @@ struct iPadMainChatView: View {
 
         dependencies.socketService?.onReconnect = { [self] in
             Task { @MainActor in
-                await withTaskGroup(of: Void.self) { group in
-                    group.addTask { await listViewModel.refreshIfStale() }
-                    group.addTask { await listViewModel.folderViewModel.refreshFolders() }
-                    group.addTask { await channelListVM.refreshChannels() }
-                    group.addTask { await dependencies.authViewModel.refreshBackendConfig() }
-                }
+                await dependencies.authViewModel.refreshBackendConfig()
                 if let activeId = activeConversationId {
                     let vm = dependencies.activeChatStore.viewModel(for: activeId)
                     if !vm.isStreaming { await vm.syncWithServer() }
@@ -3101,11 +3096,23 @@ private extension View {
                     if let socket = deps.socketService, !socket.isConnected, !socket.isConnecting {
                         socket.connect()
                     }
+                    // If backendConfig failed to load (e.g. app started offline), fetch it now.
+                    // backendConfig drives feature flags, starter prompts, and model suggestions.
+                    if deps.authViewModel.backendConfig == nil {
+                        await deps.authViewModel.fetchBackendConfigIfNeeded()
+                    }
                     await withTaskGroup(of: Void.self) { group in
                         group.addTask { await lvm.refreshIfStale() }
                         group.addTask { await lvm.folderViewModel.refreshFolders() }
                         if let cvm { group.addTask { await cvm.refreshChannels() } }
                         group.addTask { await chatVM.fetchPinnedModels() }
+                        group.addTask { await deps.fetchTaskConfig() }
+                    }
+                    // If models failed to load while offline, reload them now so starter
+                    // prompts and the model picker populate correctly.
+                    let newChatVM = deps.activeChatStore.viewModel(for: nil)
+                    if newChatVM.availableModels.isEmpty {
+                        await newChatVM.loadModels()
                     }
                     deps.updateWidgetData(conversations: lvm.conversations)
                 }

@@ -5,6 +5,8 @@ import SwiftUI
 /// and the ability to delete individual items or run bulk cleanup actions.
 struct StorageSettingsView: View {
     @Environment(\.theme) private var theme
+    @AppStorage(ConversationCache.limitKey) private var conversationCacheLimit = ConversationCache.defaultLimitMB
+    @State private var conversationCacheSize = 0
 
     // MARK: - State
 
@@ -66,6 +68,7 @@ struct StorageSettingsView: View {
 
             // Quick action buttons
             quickActionsSection
+            conversationCacheSection
 
             // Per-location file browser
             ForEach(storageLocations, id: \.label) { location in
@@ -216,6 +219,27 @@ struct StorageSettingsView: View {
     }
 
     // MARK: - Quick Actions Section
+
+    private var conversationCacheSection: some View {
+        Section {
+            Picker("Cache Limit", selection: $conversationCacheLimit) {
+                Text("Off").tag(0)
+                ForEach([25, 50, 100, 250], id: \.self) { mb in Text("\(mb) MB").tag(mb) }
+            }
+            LabeledContent("Saved Conversations",
+                value: ByteCountFormatter.string(fromByteCount: Int64(conversationCacheSize), countStyle: .file))
+            Button("Clear Saved Copies", role: .destructive) {
+                Task {
+                    await ConversationCache.shared.clear()
+                    await loadStorage()
+                }
+            }
+        } header: {
+            Text("Conversation Cache")
+        } footer: {
+            Text("Keeps recent chats and sidebar summaries on this device for up to 7 days. Chats are rechecked after 30 seconds. Turning this off removes saved copies.")
+        }
+    }
 
     private var quickActionsSection: some View {
         Section {
@@ -530,6 +554,8 @@ struct StorageSettingsView: View {
 
     @MainActor
     private func loadStorage() async {
+        await ConversationCache.shared.prune()
+        conversationCacheSize = await ConversationCache.shared.size()
         isLoading = true
         let manager = StorageManager.shared
         let locations = manager.allStorageLocations()

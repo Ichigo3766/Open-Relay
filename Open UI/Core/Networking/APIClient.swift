@@ -722,22 +722,7 @@ final class APIClient: @unchecked Sendable {
             queryItems.append(URLQueryItem(name: "page", value: "\(max(1, page))"))
         }
 
-        let (data, _) = try await network.requestRaw(
-            path: "/api/v1/chats/",
-            queryItems: queryItems
-        )
-
-        guard let array = try JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
-            throw APIError.responseDecoding(
-                underlying: NSError(
-                    domain: "APIError", code: -1,
-                    userInfo: [NSLocalizedDescriptionKey: "Expected array of chats"]
-                ),
-                data: data
-            )
-        }
-
-        return array.compactMap { parseConversationSummary($0) }
+        return try await conversationSummaries(path: "/api/v1/chats/", queryItems: queryItems)
     }
 
     /// Fetches a specific page of conversations.
@@ -753,20 +738,9 @@ final class APIClient: @unchecked Sendable {
             URLQueryItem(name: "include_pinned", value: "true")
         ]
 
-        let (data, _) = try await network.requestRaw(
-            path: "/api/v1/chats/",
-            queryItems: queryItems
-        )
-
-        guard let array = try JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
-            // Some servers return null or a non-array — treat as end of pages
-            return []
-        }
-
-        guard !array.isEmpty else { return [] }
-
+        let summaries = try await conversationSummaries(path: "/api/v1/chats/", queryItems: queryItems)
         let knownPinnedIds = pinnedIds ?? Set<String>()
-        return array.compactMap { parseConversationSummary($0) }.map { conv in
+        return summaries.map { conv in
             guard !knownPinnedIds.isEmpty, knownPinnedIds.contains(conv.id) else { return conv }
             var pinned = conv
             pinned.pinned = true
@@ -778,33 +752,60 @@ final class APIClient: @unchecked Sendable {
     /// This is the canonical source of truth for the Pinned section — it includes folder chats
     /// that are excluded from the regular paginated list.
     func getPinnedConversations() async throws -> [Conversation] {
-        let (data, _) = try await network.requestRaw(path: "/api/v1/chats/pinned")
-        guard let array = try JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
-            return []
-        }
-        return array.compactMap { dict -> Conversation? in
-            guard var conv = parseConversationSummary(dict) else { return nil }
-            conv.pinned = true
-            return conv
+        try await conversationSummaries(path: "/api/v1/chats/pinned").map { conversation in
+            var pinned = conversation
+            pinned.pinned = true
+            return pinned
         }
     }
 
-    func getConversation(id: String) async throws -> Conversation {
-        let (data, _) = try await network.requestRaw(path: "/api/v1/chats/\(id)")
+    private func conversationSummaries(path: String, queryItems: [URLQueryItem]? = nil) async throws -> [Conversation] {
+        let scope = network.conversationCacheScope
+        let (data, response) = try await network.requestRaw(path: path, queryItems: queryItems)
+        if response.value(forHTTPHeaderField: "Cache-Control")?.lowercased().contains("no-store") == true,
+           let scope {
+            await ConversationCache.shared.invalidate(scope: scope, id: "index:sidebar")
+        }
+        guard let array = try JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
+            throw APIError.responseDecoding(underlying: CocoaError(.coderReadCorrupt), data: nil)
+        }
+        // A malformed row is not evidence that a conversation was deleted.
+        return try array.map {
+            guard let summary = parseConversationSummary($0), !summary.id.isEmpty else {
+                throw APIError.responseDecoding(underlying: CocoaError(.coderReadCorrupt), data: nil)
+            }
+            return summary
+        }
+    }
 
-        // Parse the full conversation (MessageHistory.fromServerJSON + InlineImageStore.extractAndReplace
-        // per node) on a background thread so we never block the main actor — even when called from a
-        // @MainActor context like ChatViewModel.loadConversation(). Large chats with hundreds of messages
-        // and base64 image nodes were causing the app to freeze on launch when auto-restoring a chat.
-        return try await Task.detached(priority: .userInitiated) { [self] in
+    func cachedConversation(id: String) async -> (conversation: Conversation, isRecent: Bool, validatedAt: Date)? {
+        let revision = await ConversationCache.shared.currentRevision()
+        let scope = network.conversationCacheScope
+        guard let entry = await ConversationCache.shared.cached(scope: scope, id: id),
+              let conversation = try? await decodeConversation(entry.data),
+              scope == network.conversationCacheScope,
+              revision == (await ConversationCache.shared.currentRevision()) else { return nil }
+        return (conversation, entry.isRecent(), entry.validatedAt)
+    }
+
+    func getConversation(id: String, preferRecent: Bool = false) async throws -> Conversation {
+        let scope = network.conversationCacheScope
+        let data = try await ConversationCache.shared.load(scope: scope, id: id, preferRecent: preferRecent) { [self] etag in
+            let result = try await network.requestRaw(path: "/api/v1/chats/\(id)",
+                ifNoneMatch: etag, deduplicate: false)
+            guard scope == (await network.conversationCacheScope) else { throw APIError.cancelled }
+            return result
+        }
+        let conversation = try await decodeConversation(data)
+        guard scope == network.conversationCacheScope else { throw APIError.cancelled }
+        return conversation
+    }
+
+    private func decodeConversation(_ data: Data) async throws -> Conversation {
+        // Parsing history and extracting inline images must stay off the main actor.
+        try await Task.detached(priority: .userInitiated) { [self] in
             guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-                throw APIError.responseDecoding(
-                    underlying: NSError(
-                        domain: "APIError", code: -1,
-                        userInfo: [NSLocalizedDescriptionKey: "Expected chat object"]
-                    ),
-                    data: data
-                )
+                throw APIError.responseDecoding(underlying: CocoaError(.coderReadCorrupt), data: nil)
             }
             return self.parseFullConversation(json)
         }.value

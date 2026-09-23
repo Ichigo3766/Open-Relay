@@ -1028,6 +1028,10 @@ final class SocketIOService: NSObject, @unchecked Sendable, URLSessionWebSocketD
 
     private func dispatchChatEvent(_ event: [String: Any], ackId: Int? = nil) {
         let chatId = event["chat_id"] as? String
+        if let chatId, let scope = ConversationCache.scope(server: serverConfig.url,
+            token: authToken, headers: serverConfig.customHeaders) {
+            Task { await ConversationCache.shared.invalidate(scope: scope, id: chatId) }
+        }
         let eventSessionId = extractSessionId(from: event)
         let eventType = (event["data"] as? [String: Any])?["type"] as? String ?? event["type"] as? String ?? "?"
 

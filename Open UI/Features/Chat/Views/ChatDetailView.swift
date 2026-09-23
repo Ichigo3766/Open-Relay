@@ -141,9 +141,11 @@ struct ChatDetailView: View {
     /// Enabled by default (matches existing behaviour). Users can disable in Chat Behavior settings.
     @AppStorage("streamingAutoScroll") private var streamingAutoScroll = true
     @AppStorage("chatScrollControls") private var chatScrollControls: ChatScrollControls = .upDown
+    @AppStorage("transparentChatToolbar") private var transparentChatToolbar = false
     @AppStorage("suggestionsEnabled") private var suggestionsEnabled = true
     @AppStorage(MessageActionPreferences.orderKey) private var messageActionOrder = ""
     @AppStorage(MessageActionPreferences.hiddenKey) private var hiddenMessageActions = ""
+    @AppStorage(MessageActionPreferences.shortcutsKey) private var shortcutMessageActions = ""
 
     // MARK: Message pagination (sliding window — memory optimization)
     /// The ending index (exclusive) of the visible message window.
@@ -165,6 +167,7 @@ struct ChatDetailView: View {
     /// Set on Share button tap; cleared on sheet dismiss. Uses ShareableText wrapper so
     /// .sheet(item:) can identify it without requiring String: Identifiable.
     @State private var shareMessageText: ShareableText? = nil
+    @State private var shortcutLaunchFailed = false
 
     // MARK: Action event handling (dynamic input/confirmation/notification)
 
@@ -385,6 +388,11 @@ struct ChatDetailView: View {
         return copy
     }
 
+    private var showsToolbarBackdrop: Bool {
+        if #available(iOS 26.0, *) { return !transparentChatToolbar }
+        return true
+    }
+
     // MARK: - Body
 
     var body: some View {
@@ -442,13 +450,12 @@ struct ChatDetailView: View {
                 if !navBarHidden {
                     customTopBar
                         .background {
-                            // Full-width nav bar background — shows only when bar is visible.
-                            // Extends up into the safe area to cover the status bar region
-                            // as one continuous blurred band (Reddit-style).
-                            Rectangle()
-                                .fill(.ultraThinMaterial)
-                                .overlay(theme.background.opacity(theme.isDark ? 0.55 : 0.25))
-                                .ignoresSafeArea(edges: .top)
+                            if showsToolbarBackdrop {
+                                Rectangle()
+                                    .fill(.ultraThinMaterial)
+                                    .overlay(theme.background.opacity(theme.isDark ? 0.55 : 0.25))
+                                    .ignoresSafeArea(edges: .top)
+                            }
                         }
                         .transition(
                             .opacity.combined(with: .offset(y: -20))
@@ -510,10 +517,9 @@ struct ChatDetailView: View {
                     .padding(.bottom, (verticalSizeClass == .compact && viewModel.terminalEnabled && viewModel.selectedTerminalServer != nil) ? keyboard.height : 0)
             }
         }
-        // Status-bar safe-area backdrop — shows with the nav bar, hides when scrolled away.
+        // Status-bar safe-area backdrop stays visible independently of the floating controls.
         // On iOS 26+ we use glassEffect(.clear) so text scrolling behind the status icons
         // stays readable as a soft blur (PR #248). On older iOS, ultraThinMaterial fallback.
-        // The whole overlay fades in/out with navBarHidden so the bar and backdrop are unified.
         .overlay {
             GeometryReader { geometry in
                 Group {
@@ -537,8 +543,6 @@ struct ChatDetailView: View {
                 }
                 .frame(height: geometry.safeAreaInsets.top)
                 .offset(y: -geometry.safeAreaInsets.top)
-                // Always visible — this blur protects the status icons regardless of whether
-                // the nav bar controls are hidden. The nav bar background hides/shows separately.
             }
             .allowsHitTesting(false)
         }
@@ -847,6 +851,11 @@ struct ChatDetailView: View {
         // configuration needed because we're not using a UIButton anchor.
         .sheet(item: $shareMessageText) { shareable in
             ShareSheetView(activityItems: [shareable.text])
+        }
+        .alert("Couldn't Open Shortcuts", isPresented: $shortcutLaunchFailed) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text("Make sure the Shortcuts app is installed on this device and try again.")
         }
         // User-configurable valves sheet (gear icon on tool rows in ToolsMenuSheet)
         .sheet(item: $toolUserValvesKind) { kind in
@@ -1316,6 +1325,7 @@ struct ChatDetailView: View {
                 text: $vm.inputText,
                 attachments: $vm.attachments,
                 placeholder: placeholderText,
+                isKeyboardVisible: keyboard.isVisible,
                 isEnabled: !vm.isStreaming || vm.enableMessageQueue,
                 onSend: { Task { await viewModel.sendMessage() } },
                 onStopGenerating: vm.isStreaming ? { viewModel.stopStreaming() } : nil,
@@ -2377,10 +2387,15 @@ struct ChatDetailView: View {
             .scaledFont(size: 12, weight: .semibold)
             .foregroundStyle(theme.textSecondary)
             .frame(width: 32, height: 32)
-            .chatControlGlass(in: Circle(), fallback: .ultraThinMaterial)
-            // Keep the visual control small without shrinking its touch target.
+            // Apply glass only to the 32pt visual circle via .background so it never
+            // intercepts touches outside of itself. The outer 44pt frame is the touch
+            // target only — invisible, no glass there.
+            .background {
+                Circle().chatControlGlass(in: Circle(), fallback: .ultraThinMaterial)
+            }
+            // Expand touch target to 44pt AFTER the visual glass is locked to 32pt.
             .frame(width: 44, height: 44)
-            .contentShape(Rectangle())
+            .contentShape(Circle())
     }
 
     // MARK: - Loading Placeholders
@@ -3524,13 +3539,18 @@ struct ChatDetailView: View {
         // Its 1-based position in the sorted siblings list is the displayIndex.
         let displayIndex: Int = (allSiblings.firstIndex(where: { $0.id == message.id }) ?? 0) + 1
 
-        let preferences = MessageActionPreferences(order: messageActionOrder, hidden: hiddenMessageActions)
-        let actions = preferences.visibleActions(
+        let shortcuts = ShortcutMessageAction.decodeStored(shortcutMessageActions)
+        let preferences = MessageActionPreferences(
+            order: messageActionOrder,
+            hidden: hiddenMessageActions,
+            shortcuts: shortcuts
+        )
+        let actions = preferences.visibleItems(
             speechActive: speakingMessageId == message.id || ttsGeneratingMessageId == message.id
                 || dependencies.textToSpeechService.readAloudPlayer.messageID == message.id
         )
 
-        return HStack(spacing: 6) {
+        return FeedbackFlowLayout(spacing: 6) {
             // Version switcher (only when siblings exist and not overriding with a user edit version)
             if totalVersions > 1 && !viewModel.isStreaming && assistantContentOverride[message.id] == nil {
                 HStack(spacing: 2) {
@@ -3587,8 +3607,8 @@ struct ChatDetailView: View {
                 }
             }
 
-            ForEach(actions) { action in
-                assistantAction(action, for: message, totalVersions: totalVersions)
+            ForEach(actions) { item in
+                assistantAction(item, for: message, totalVersions: totalVersions)
             }
 
             // Action buttons (from model's configured actions — e.g. Generate Image)
@@ -3609,6 +3629,44 @@ struct ChatDetailView: View {
             }
 
             Spacer()
+        }
+    }
+
+    @ViewBuilder
+    private func assistantAction(_ item: MessageActionItem, for message: ChatMessage, totalVersions: Int) -> some View {
+        switch item {
+        case .builtIn(let action):
+            assistantAction(action, for: message, totalVersions: totalVersions)
+        case .shortcut(let action):
+            Button {
+                runShortcut(action, with: message)
+                Haptics.play(.light)
+            } label: {
+                compactActionIcon(icon: action.symbolName, isActive: false)
+            }
+            .buttonStyle(CompactActionButtonStyle())
+            .accessibilityLabel(action.name)
+        }
+    }
+
+    /// Runs a user-selected Apple Shortcut with the cleaned assistant message as text input.
+    private func runShortcut(_ action: ShortcutMessageAction, with message: ChatMessage) {
+        var clean = message.content
+        if let re = try? NSRegularExpression(pattern: #"<details[^>]*>.*?</details>"#, options: [.dotMatchesLineSeparators]) {
+            clean = re.stringByReplacingMatches(in: clean, range: NSRange(clean.startIndex..., in: clean), withTemplate: "")
+        }
+        clean = clean
+            .replacingOccurrences(of: "\n\n\n+", with: "\n\n", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if !message.sources.isEmpty {
+            clean += "\n\nSources:"
+            for (i, src) in message.sources.enumerated() {
+                clean += "\n[\(i+1)] \(src.resolvedURL ?? src.title ?? "Source \(i+1)")"
+            }
+        }
+        guard !clean.isEmpty, let url = action.runURL(input: clean) else { return }
+        UIApplication.shared.open(url, options: [:]) { opened in
+            shortcutLaunchFailed = !opened
         }
     }
 

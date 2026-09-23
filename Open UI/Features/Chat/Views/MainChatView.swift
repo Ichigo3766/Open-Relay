@@ -232,11 +232,6 @@ struct MainChatView: View {
         max(drawerFraction, fileBrowserFraction)
     }
 
-    /// Scale applied to the main content card (1.0 → 0.92) based on most-open panel.
-    private var combinedContentScale: CGFloat {
-        1.0 - (maxPanelFraction * 0.08)
-    }
-
     /// Corner radius of the main content card (0 → 16) based on most-open panel.
     private var combinedContentCornerRadius: CGFloat {
         maxPanelFraction * 16
@@ -445,7 +440,6 @@ struct MainChatView: View {
             }
             // Push the content card — right by drawer, left by file browser
             .offset(x: combinedContentOffset)
-            .scaleEffect(combinedContentScale, anchor: .center)
             .mask {
                 RoundedRectangle(cornerRadius: combinedContentCornerRadius, style: .continuous)
                     .ignoresSafeArea(.container)
@@ -1217,6 +1211,12 @@ struct MainChatView: View {
                     isDraggingDrawer = false
                     fileBrowserDragOffset = 0
                     isDraggingFileBrowser = false
+                    // Close the drawer on foreground — if the user backgrounded with the drawer
+                    // open, the main card stays offset (shows black) until they tap.
+                    // The file browser is intentionally NOT closed here so that a terminal
+                    // session (e.g. a script that prompted to go to background) is still
+                    // visible when the user returns.
+                    if showDrawer { closeDrawerAnimated() }
                     Task { await refreshAllDataOnForeground() }
                     // Reconnect terminal WebSocket if the panel is open and terminal is expanded
                     terminalBrowserVM.handleAppForeground()
@@ -3510,10 +3510,27 @@ struct MainChatView: View {
             socket.connect()
         }
 
-        // Refresh both conversations and folders in parallel
+        // If backendConfig failed to load (e.g. app started offline), fetch it now.
+        // backendConfig drives feature flags, starter prompts, and model suggestions.
+        if dependencies.authViewModel.backendConfig == nil {
+            await dependencies.authViewModel.fetchBackendConfigIfNeeded()
+        }
+
+        // Refresh task config (follow-up suggestions, title gen, etc.) and channels
+        // in parallel with conversations/folders.
         await withTaskGroup(of: Void.self) { group in
             group.addTask { await listViewModel.refreshIfStale() }
             group.addTask { await listViewModel.folderViewModel.refreshFolders() }
+            group.addTask { await dependencies.fetchTaskConfig() }
+            group.addTask { await channelListVM.refreshChannels() }
+        }
+
+        // If models failed to load while offline (availableModels is empty on the
+        // new-chat VM), reload them now so starter prompts and the model picker
+        // populate correctly without requiring a manual app restart.
+        let newChatVM = dependencies.activeChatStore.viewModel(for: nil)
+        if newChatVM.availableModels.isEmpty {
+            await newChatVM.loadModels()
         }
 
         // Do NOT call loadConversation() here — it sets isLoadingConversation=true
@@ -3525,8 +3542,8 @@ struct MainChatView: View {
         // adoptServerMessages() for in-place surgical updates — no view recreation,
         // no scroll jump, no flash.
         //
-        // Similarly do NOT reload models/tools — they're loaded once on init and
-        // refreshed lazily before each send via refreshSelectedModelMetadata().
+        // Similarly do NOT reload models for EXISTING chats — they're refreshed
+        // lazily before each send via refreshSelectedModelMetadata().
 
         dependencies.updateWidgetData(conversations: listViewModel.conversations)
     }
@@ -3539,11 +3556,6 @@ struct MainChatView: View {
 
         dependencies.socketService?.onReconnect = { [self] in
             Task { @MainActor in
-                // Refresh both conversations and folders in parallel
-                await withTaskGroup(of: Void.self) { group in
-                    group.addTask { await listViewModel.refreshIfStale() }
-                    group.addTask { await listViewModel.folderViewModel.refreshFolders() }
-                }
                 // Use syncWithServer() instead of loadConversation() —
                 // syncWithServer() does in-place updates via adoptServerMessages()
                 // and does NOT set isLoadingConversation=true, so the message list

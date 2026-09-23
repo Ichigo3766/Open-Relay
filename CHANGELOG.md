@@ -1,5 +1,28 @@
 # Changelog
 
+## v5.8 — September 22, 2026
+
+### What's New
+- Added custom Shortcut message actions — create buttons in Settings → Chat Behavior → Message Actions that send any AI response directly to an Apple Shortcut as text input.
+- When offline with cached chats available, the app now shows a slim dismissible banner instead of a blocking overlay — you can browse saved conversations and tap any previously opened chat to read it without a connection.
+
+### Improvements
+- Expanding long reasoning/thinking blocks is now ~70× faster and no longer blocks scrolling
+- Sidebar now loads from a local cache instantly, then only re-fetches what changed — first open after launch is noticeably faster.
+- Recent chats reopen without a network round-trip and recheck in the background (Settings → Storage → Conversation Cache to configure).
+- On iOS 26, the chat toolbar background can now be made transparent in Settings → Appearance → Chat Appearance (off by default — existing look is preserved).
+- Sidebar and terminal file browser slide in/out  without shrinking the main view and causing visual glitch.
+- Chat input field now gives text its own full-width row when typing or keyboard is visible, with consistent left alignment and better-spaced internal padding
+- Reduced unnecessary network activity — opening a chat respects the last successful sync timestamp instead of always hitting the server again.
+- Models, starter prompts, channels, and feature flags now reload automatically when internet comes back after the app was started offline — no restart needed.
+
+### Bug Fixes
+- Fixed main view showing black/stuck-offset when returning to the app after backgrounding with the sidebar or file browser open
+- Fixed terminal file browser closing when returning from background (e.g. after a script prompted to run in background) — it now stays open so you can continue working in the terminal
+- Fixed fabs only responding to taps on the left edge — the full button area is now tappable.
+- Fixed hidden background chats unnecessarily syncing with the server when the app returns to the foreground.
+- Fixed duplicate conversation and folder list refreshes occurring on every socket reconnect.
+
 ## v5.7.1 — September 21, 2026
 
 ### What's New

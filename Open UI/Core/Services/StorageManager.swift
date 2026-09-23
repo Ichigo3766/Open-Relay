@@ -242,6 +242,7 @@ final class StorageManager: @unchecked Sendable {
         // 2. Clear image cache (memory + disk)
         Task {
             await ImageCacheService.shared.clearAll()
+            await ConversationCache.shared.clear()
         }
 
         // 3. Clear file upload cache
@@ -489,6 +490,7 @@ final class StorageManager: @unchecked Sendable {
 
     @discardableResult
     func clearCachesDirectory() -> Int64 {
+        Task { await ConversationCache.shared.clear() }
         guard let caches = fileManager.urls(for: .cachesDirectory, in: .userDomainMask).first else { return 0 }
         let freed = Int64(diskSize(of: caches))
         if let items = try? fileManager.contentsOfDirectory(at: caches, includingPropertiesForKeys: nil) {

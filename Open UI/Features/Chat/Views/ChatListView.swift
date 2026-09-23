@@ -652,7 +652,7 @@ private extension View {
         self
             .refreshable {
                 await withTaskGroup(of: Void.self) { group in
-                    group.addTask { await viewModel.refreshConversations() }
+                    group.addTask { await viewModel.refreshConversations(forceFull: true) }
                     group.addTask { await viewModel.folderViewModel.loadFolders() }
                 }
             }

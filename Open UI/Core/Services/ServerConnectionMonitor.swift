@@ -67,6 +67,11 @@ final class ServerConnectionMonitor: @unchecked Sendable {
         !otherAvailableServers.isEmpty
     }
 
+    /// `true` when the ConversationCache has a saved sidebar index for the current
+    /// server/session scope, meaning the user can browse cached chats offline.
+    /// Updated whenever the connection state changes.
+    var hasCachedContent: Bool = false
+
     // MARK: - Private State
 
     private let logger = Logger(subsystem: "com.openui", category: "ConnectionMonitor")
@@ -470,6 +475,8 @@ final class ServerConnectionMonitor: @unchecked Sendable {
     // MARK: - Overlay Debounce
 
     /// Updates the overlay visibility with a debounce to prevent flickering.
+    /// When ConversationCache has content, `hasCachedContent` is set so the UI
+    /// can render a dismissible banner instead of a blocking overlay.
     @MainActor
     private func updateOverlayVisibility(disconnected: Bool) {
         debounceTask?.cancel()
@@ -477,6 +484,7 @@ final class ServerConnectionMonitor: @unchecked Sendable {
         if !disconnected {
             // Hide overlay immediately on reconnection
             isShowingOverlay = false
+            hasCachedContent = false
         } else if !isShowingOverlay {
             // Show overlay after debounce delay — prevents flickering on transient blips
             debounceTask = Task { @MainActor [weak self] in
@@ -485,6 +493,12 @@ final class ServerConnectionMonitor: @unchecked Sendable {
                 guard !Task.isCancelled else { return }
                 // Double-check we're still disconnected and in the foreground
                 guard self.connectionState != .connected, !self.isAppInBackground else { return }
+                // Check whether there is cached sidebar content to browse offline
+                if let apiClient = self.apiClient {
+                    let scope = apiClient.network.conversationCacheScope
+                    let hasIndex = await ConversationCache.shared.cachedIndex(scope: scope) != nil
+                    self.hasCachedContent = hasIndex
+                }
                 self.isShowingOverlay = true
             }
         }
