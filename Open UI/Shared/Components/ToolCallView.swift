@@ -79,9 +79,7 @@ actor MessageParseCache {
     /// because `NSCache.setObject` is atomic and `EntryBox` is immutable after
     /// construction — once visible, it is fully formed.
     nonisolated func lookupSync(_ content: String) -> ToolCallParser.OrderedParseResult? {
-        let byteCount = content.utf8.count
-        let prefix = content.prefix(64)
-        let key = "\(byteCount)-\(prefix.hashValue)"
+        let key = cacheKey(content)
         guard let obj = cache.object(forKey: key as NSString) as? EntryBox else { return nil }
         guard obj.entry.content == content else { return nil }
         return obj.entry.result
@@ -124,13 +122,10 @@ actor MessageParseCache {
 
     // MARK: - Helpers
 
-    /// Fast O(1) cache key: use the content's utf8 count XORed with the prefix
-    /// hash as a cheap discriminator. Collision probability over 200 entries is
-    /// negligible; the full-content guard in `lookup`/`parseAndStore` handles it.
-    private func cacheKey(_ content: String) -> String {
-        let byteCount = content.utf8.count
-        let prefix = content.prefix(64)
-        return "\(byteCount)-\(prefix.hashValue)"
+    /// Hash the full content so equal-length messages with a common prefix can
+    /// coexist. Lookups still verify the exact content against hash collisions.
+    nonisolated private func cacheKey(_ content: String) -> String {
+        String(content.hashValue)
     }
 
     /// NSCache requires AnyObject values.
@@ -2855,7 +2850,7 @@ struct AssistantMessageContent: View {
     @State private var parseInFlight: Bool = false
 
     var body: some View {
-        // ── Global cache lookup (synchronous, O(1) path) ──────────────────────
+        // ── Global cache lookup (synchronous) ────────────────────────────────
         // MessageParseCache is an actor so we cannot call it synchronously from
         // body. Instead the cache stores its NSCache directly — we access it
         // via the actor's nonisolated helper to stay off the actor's executor.
