@@ -343,7 +343,7 @@ struct OnboardingView: View {
 
             // Hero icon
             heroIcon(
-                symbol: "rocket.fill",
+                symbol: "paperplane.fill",
                 tint: .orange,
                 page: 3,
                 delay: 0.0

@@ -26,7 +26,7 @@ nonisolated struct HistoryNode: Sendable {
     var error: ChatMessageError?
     /// Token usage data — `[String: Any]` for provider-agnostic storage.
     /// Not truly `Sendable` but matches the existing `ChatMessage.usage` pattern.
-    var usage: [String: Any]?
+    nonisolated(unsafe) var usage: [String: Any]?
     /// Rich UI HTML embeds stored by the server on the message.
     var embeds: [String]
     /// For user messages: the model IDs that were selected when this message was sent.
@@ -45,7 +45,7 @@ nonisolated struct HistoryNode: Sendable {
     /// array must survive the round-trip so that `files`, `images`, and other
     /// server-derived metadata (e.g. from `function_call_output`) are preserved
     /// even when the node is on an inactive branch.
-    var output: [[String: Any]]
+    nonisolated(unsafe) var output: [[String: Any]]
 
     init(
         id: String = UUID().uuidString,

@@ -1171,7 +1171,7 @@ struct MarkdownInlineImageView: View {
                             let tokenString = imageURL.absoluteString
                             let store = InlineImageStore.shared
                             decoded = await Task.detached(priority: .userInitiated) {
-                                guard let dataURI = await store.resolve(urlString: tokenString) else {
+                                guard let dataURI = store.resolve(urlString: tokenString) else {
                                     return nil
                                 }
                                 return Self.decodeDataURIString(dataURI)

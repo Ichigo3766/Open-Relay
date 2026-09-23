@@ -248,8 +248,7 @@ final class KeychainService: Sendable {
                 kSecAttrAccount as String: key,
                 kSecReturnData as String: true,
                 kSecMatchLimit as String: kSecMatchLimitOne,
-                kSecUseAuthenticationContext as String: authContext,
-                kSecUseOperationPrompt as String: prompt
+                kSecUseAuthenticationContext as String: authContext
             ]
             let status = SecItemCopyMatching(query as CFDictionary, &result)
 
@@ -278,8 +277,7 @@ final class KeychainService: Sendable {
             kSecAttrAccount as String: key,
             kSecReturnData as String: true,
             kSecMatchLimit as String: kSecMatchLimitOne,
-            kSecUseAuthenticationContext as String: context,
-            kSecUseOperationPrompt as String: prompt
+            kSecUseAuthenticationContext as String: context
         ]
 
         var result: AnyObject?

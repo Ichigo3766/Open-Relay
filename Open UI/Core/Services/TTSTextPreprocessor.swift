@@ -6,7 +6,7 @@ import NaturalLanguage
 ///
 /// Matches the Flutter `ConduitMarkdownPreprocessor.toPlainText` and
 /// `TextToSpeechService.splitTextForSpeech` behavior.
-enum TTSTextPreprocessor {
+nonisolated enum TTSTextPreprocessor {
 
 
     // MARK: - Script Detection
@@ -892,10 +892,10 @@ enum TTSTextPreprocessor {
 // MARK: - RegexMatch Helper
 
 private struct RegexMatch {
-    let result: NSTextCheckingResult
-    let source: NSString
+    nonisolated(unsafe) let result: NSTextCheckingResult
+    nonisolated(unsafe) let source: NSString
 
-    var groups: [String] {
+    nonisolated var groups: [String] {
         (1..<result.numberOfRanges).map { i in
             let range = result.range(at: i)
             guard range.location != NSNotFound,
@@ -908,7 +908,7 @@ private struct RegexMatch {
 // MARK: - Character Emoji Detection
 
 private extension Character {
-    var isEmoji: Bool {
+    nonisolated var isEmoji: Bool {
         if let scalar = unicodeScalars.first {
             if unicodeScalars.contains(where: { $0.value == 0xFE0F }) { return true }
             if scalar.properties.isEmoji {

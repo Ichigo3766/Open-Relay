@@ -1561,9 +1561,6 @@ struct ChatDetailView: View {
     }
 
     private var placeholderText: String {
-        if let model = viewModel.selectedModel {
-            return String(localized: "Message")
-        }
         return String(localized: "Message")
     }
 

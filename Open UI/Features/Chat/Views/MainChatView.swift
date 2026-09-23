@@ -1962,7 +1962,6 @@ struct MainChatView: View {
     @ViewBuilder
     private var serverFaviconView: some View {
         let baseURL = dependencies.apiClient?.baseURL ?? ""
-        let authToken = dependencies.apiClient?.network.authToken
 
         Group {
             if !baseURL.isEmpty,

@@ -564,7 +564,7 @@ final class SocketIOService: NSObject, @unchecked Sendable, URLSessionWebSocketD
         return await withTaskCancellationHandler {
             await withCheckedContinuation { continuation in
                 let resumeLock = OSAllocatedUnfairLock(initialState: false)
-                func resumeOnce(_ value: Any?) {
+                @Sendable func resumeOnce(_ value: Any?) {
                     let shouldResume = resumeLock.withLock { done -> Bool in
                         guard !done else { return false }
                         done = true
@@ -591,14 +591,14 @@ final class SocketIOService: NSObject, @unchecked Sendable, URLSessionWebSocketD
                 Task { [weak self] in
                     try? await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
                     guard let self else { return }
-                    self.ackLock.withLock { self.pendingAcks.removeValue(forKey: ackId) }
+                    _ = self.ackLock.withLock { self.pendingAcks.removeValue(forKey: ackId) }
                     resumeOnce(nil)
                 }
             }
         } onCancel: { [weak self] in
             // Task was cancelled — clean up the pending ack so it doesn't linger.
             guard let self else { return }
-            self.ackLock.withLock { self.pendingAcks.removeValue(forKey: ackId) }
+            _ = self.ackLock.withLock { self.pendingAcks.removeValue(forKey: ackId) }
         }
     }
 

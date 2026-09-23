@@ -52,13 +52,13 @@ enum BiometricError: LocalizedError {
 
 // MARK: - Biometric Type
 
-enum BiometricType {
+nonisolated enum BiometricType {
     case faceID
     case touchID
     case opticID
     case none
 
-    var displayName: String {
+    nonisolated var displayName: String {
         switch self {
         case .faceID: return "Face ID"
         case .touchID: return "Touch ID"
@@ -67,7 +67,7 @@ enum BiometricType {
         }
     }
 
-    var systemImageName: String {
+    nonisolated var systemImageName: String {
         switch self {
         case .faceID: return "faceid"
         case .touchID: return "touchid"
@@ -135,12 +135,32 @@ final class BiometricService: Sendable {
 
     /// Human-readable name for the biometric type ("Face ID", "Touch ID", etc.).
     nonisolated var biometricTypeName: String {
-        biometricType.displayName
+        let context = LAContext()
+        var error: NSError?
+        guard context.canEvaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, error: &error) else {
+            return BiometricType.none.displayName
+        }
+        switch context.biometryType {
+        case .faceID: return BiometricType.faceID.displayName
+        case .touchID: return BiometricType.touchID.displayName
+        case .opticID: return BiometricType.opticID.displayName
+        default: return BiometricType.none.displayName
+        }
     }
 
     /// SF Symbol name for the biometric type icon.
     nonisolated var biometricIconName: String {
-        biometricType.systemImageName
+        let context = LAContext()
+        var error: NSError?
+        guard context.canEvaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, error: &error) else {
+            return BiometricType.none.systemImageName
+        }
+        switch context.biometryType {
+        case .faceID: return BiometricType.faceID.systemImageName
+        case .touchID: return BiometricType.touchID.systemImageName
+        case .opticID: return BiometricType.opticID.systemImageName
+        default: return BiometricType.none.systemImageName
+        }
     }
 
     // MARK: - Authentication

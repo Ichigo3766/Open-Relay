@@ -233,7 +233,7 @@ nonisolated struct ChatMessage: Identifiable, Hashable, Sendable {
     /// Token usage data returned by the server after generation completes.
     /// Stored as a raw dictionary so any provider-specific fields are preserved
     /// regardless of model (OpenAI, Anthropic, Ollama, etc. all differ).
-    var usage: [String: Any]?
+    nonisolated(unsafe) var usage: [String: Any]?
     /// Rich UI HTML embeds stored at the message level by the server.
     /// OpenWebUI stores embeds here when the tool call's `<details>` block
     /// has an empty `embeds=""` attribute — the HTML is instead placed on the
@@ -472,7 +472,7 @@ nonisolated struct ChatMessageVersion: Codable, Equatable, Hashable, Sendable {
     var sources: [ChatSourceReference]
     var followUps: [String]
     var statusHistory: [ChatStatusUpdate]
-    var usage: [String: Any]?
+    nonisolated(unsafe) var usage: [String: Any]?
 
     init(
         id: String = UUID().uuidString,
