@@ -4763,10 +4763,12 @@ final class ChatViewModel {
         // pending MainActor Task — preventing main actor flooding while still
         // delivering each token as fast as Swift's task scheduler allows.
         let msgId = assistantMessageId
+        let updateSessionId = streamingSessionId
         acc.onUpdate = { [weak self] content in
             // Guard: if streaming already finished (done:true processed),
             // ignore late-arriving accumulated content dispatches.
-            guard let self, !self.hasFinishedStreaming else { return }
+            guard let self, !self.hasFinishedStreaming,
+                  self.streamingSessionId == updateSessionId else { return }
             self.socketHasReceivedContent = true
             self.updateAssistantMessage(id: msgId, content: content, isStreaming: true)
         }
@@ -7320,19 +7322,13 @@ final class ChatViewModel {
             if !isStreaming && streamingStore.streamingMessageId == id {
                 // Streaming just ended — flush store to conversation.
                 //
-                // DRAIN-DEFERRAL: We defer message.isStreaming=false and cleanupStreaming()
-                // until the pipeline has fully drained all buffered tokens. This prevents
-                // the stop button from disappearing and the action bar/input from appearing
-                // while the typewriter effect is still running.
-                //
-                // Content is written immediately (it doesn't affect UI chrome) so the
-                // message history tree node is always up-to-date regardless of timing.
-                // Capture session ID now so the callback can detect if a new stream
-                // started (e.g., queue drain triggered sendMessage) while we waited.
+                // Commit content now; finish UI state after the final snapshot has
+                // been processed. The session guard prevents old work from ending
+                // a newer stream.
                 let capturedSessionId = streamingSessionId
-                let result = streamingStore.endStreaming(onDrained: { [weak self] in
+                let result = streamingStore.endStreaming(finalContent: content.isEmpty ? nil : content, onFinished: { [weak self] in
                     guard let self else { return }
-                    // If a new streaming session started while we were draining
+                    // If a new streaming session started before finalization
                     // (e.g., the queue auto-fired), this callback belongs to the
                     // OLD session — don't tear down the new stream.
                     guard self.streamingSessionId == capturedSessionId else { return }
@@ -8070,9 +8066,8 @@ final class ChatViewModel {
 
 /// Thread-safe token accumulator with immediate main-actor dispatch.
 ///
-/// Accumulates token deltas from background socket/SSE callbacks into a
-/// single string and dispatches every token to the main actor immediately,
-/// giving smooth character-by-character streaming in the UI.
+/// Accumulates token deltas from background callbacks and coalesces pending
+/// main-actor deliveries without a timer or an intentional wait.
 final class ContentAccumulator: @unchecked Sendable {
     private let lock = NSLock()
     private nonisolated(unsafe) var _content: String = ""
@@ -8105,13 +8100,13 @@ final class ContentAccumulator: @unchecked Sendable {
         return value
     }
 
-    /// Clears the pending-update flag after the queued Task executes.
-    /// Extracted as a synchronous nonisolated helper so NSLock is never
-    /// acquired from an async context (avoids Swift 6 strict-concurrency warnings).
-    nonisolated private func clearPendingFlag() {
+    /// Clear the flag and capture content atomically BEFORE invoking the callback.
+    /// Arrivals during the callback must be able to schedule their own update.
+    nonisolated private func takePendingContent() -> String {
         lock.lock()
+        defer { lock.unlock() }
         _pendingUpdate = false
-        lock.unlock()
+        return _content
     }
 
     nonisolated func append(_ text: String) {
@@ -8132,10 +8127,8 @@ final class ContentAccumulator: @unchecked Sendable {
             guard let self else { return }
             // Read the LATEST content — may include tokens that arrived
             // after append() returned but before this Task executed.
-            let latest = self.content
+            let latest = self.takePendingContent()
             callback?(latest)
-            // Clear the flag so the next token can enqueue a new Task.
-            self.clearPendingFlag()
         }
     }
 
@@ -8151,9 +8144,8 @@ final class ContentAccumulator: @unchecked Sendable {
 
         Task { @MainActor [weak self] in
             guard let self else { return }
-            let latest = self.content
+            let latest = self.takePendingContent()
             callback?(latest)
-            self.clearPendingFlag()
         }
     }
 }

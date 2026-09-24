@@ -2833,6 +2833,7 @@ struct ReasoningContainer: View {
 struct AssistantMessageContent: View {
     let content: String
     let isStreaming: Bool
+    var streamingTail: String? = nil
     var messageEmbeds: [String] = []
     /// Passed down to Rich UI embeds for auth token injection and base URL resolution.
     var authToken: String? = nil
@@ -2840,79 +2841,44 @@ struct AssistantMessageContent: View {
     /// APIClient for rendering inline images via AuthenticatedImageView.
     var apiClient: APIClient? = nil
 
-    /// Holds the result currently being displayed. On a global-cache hit the result
-    /// is injected synchronously from `body`; on a cache miss it starts as `nil`
-    /// (showing a plain-text placeholder for one frame) and is populated by an
-    /// async `Task` that runs `parseOrdered` off the main thread.
-    @State private var resolvedResult: ToolCallParser.OrderedParseResult? = nil
-    /// Tracks which content string `resolvedResult` was computed for so we don't
-    /// re-trigger async work when `body` re-evaluates with the same content.
-    @State private var resolvedContent: String = ""
-    /// Guards against duplicate `Task(priority: .userInitiated)` spawns when
-    /// SwiftUI re-evaluates `body` multiple times before the async parse settles.
-    /// Without this, rapid body re-evaluations during streaming can queue many
-    /// identical background parses, spiking CPU to 180%+.
-    @State private var parseInFlight: Bool = false
+    @State private var resolvedResult: ToolCallParser.OrderedParseResult?
+    @State private var resolvedContent = ""
+    @State private var presentation = Presentation()
+
+    /// Retains the ENTIRE displayed answer while a new structural parse runs,
+    /// including the live tail. The prefix and tail always share one view tree.
+    private final class Presentation {
+        var result: ToolCallParser.OrderedParseResult?
+    }
+
+    private var isPlainText: Bool {
+        !content.contains("<") && !content.contains("◁")
+    }
 
     var body: some View {
-        // ── Global cache lookup (synchronous, O(1) path) ──────────────────────
-        // MessageParseCache is an actor so we cannot call it synchronously from
-        // body. Instead the cache stores its NSCache directly — we access it
-        // via the actor's nonisolated helper to stay off the actor's executor.
         let ordered: ToolCallParser.OrderedParseResult = {
-            // Check if the in-view state already has the result for this exact content.
-            if resolvedContent == content, let cached = resolvedResult {
-                return cached
+            let parsed: ToolCallParser.OrderedParseResult?
+            if isPlainText {
+                parsed = .init(segments: [.text(content)], allToolCalls: [])
+            } else if resolvedContent == content {
+                parsed = resolvedResult
+            } else {
+                parsed = MessageParseCache.shared.lookupSync(content)
             }
-            // Ask the global cache (actor-internal NSCache, thread-safe read).
-            // We do a best-effort synchronous lookup via a nonisolated wrapper.
-            if let globalHit = MessageParseCache.shared.lookupSync(content) {
-                // Sync the result into @State so subsequent renders are free.
-                // This mutation is from within body — we defer it to the next runloop
-                // tick via a no-animation transaction to avoid "state modified during
-                // body evaluation" warnings while keeping the UI update immediate.
-                if resolvedContent != content {
-                    DispatchQueue.main.async {
-                        resolvedResult = globalHit
-                        resolvedContent = content
+            if let parsed {
+                var segments = parsed.segments
+                if let tail = streamingTail?.trimmingCharacters(in: .whitespacesAndNewlines), !tail.isEmpty {
+                    if case .text(let previous) = segments.last {
+                        segments[segments.count - 1] = .text(previous + "\n\n" + tail)
+                    } else {
+                        segments.append(.text(tail))
                     }
                 }
-                return globalHit
+                let result = ToolCallParser.OrderedParseResult(segments: segments, allToolCalls: parsed.allToolCalls)
+                presentation.result = result
+                return result
             }
-            // Cache miss — kick off background parse if not already in flight.
-            // `parseInFlight` prevents duplicate Task spawns when SwiftUI
-            // re-evaluates body multiple times before the async parse settles
-            // (common during streaming — without this guard, each re-evaluation
-            // queues another `.userInitiated` Task, spiking CPU to 180%+).
-            if resolvedContent != content && !parseInFlight {
-                parseInFlight = true
-                let contentToparse = content
-                Task(priority: .userInitiated) {
-                    let result = await MessageParseCache.shared.parseAndStore(content: contentToparse)
-                    await MainActor.run {
-                        // Only apply if content hasn't changed by the time we return.
-                        guard contentToparse == content else {
-                            parseInFlight = false
-                            return
-                        }
-                        resolvedResult = result
-                        resolvedContent = contentToparse
-                        parseInFlight = false
-                    }
-                }
-            }
-            // Return a minimal placeholder: a single text segment with the raw content.
-            // This renders as plain unformatted text for at most one frame before the
-            // async parse completes and SwiftUI swaps in the fully formatted result.
-            if let stale = resolvedResult {
-                // If we have a stale result from a prior content version (e.g. during
-                // streaming), show it rather than a raw dump — it looks better.
-                return stale
-            }
-            return ToolCallParser.OrderedParseResult(
-                segments: [.text(content)],
-                allToolCalls: []
-            )
+            return presentation.result ?? .init(segments: [], allToolCalls: [])
         }()
 
         // Log VIZ presence once per parse (preserved from original).
@@ -3009,7 +2975,9 @@ struct AssistantMessageContent: View {
                     return false
                 })
 
-                ForEach(Array(groups.enumerated()), id: \.offset) { index, group in
+                ForEach(identifiedGroups(groups), id: \.id) { item in
+                    let index = item.index
+                    let group = item.group
                     switch group {
                     case .text(let str):
                         // Only the last text segment gets the streaming cursor
@@ -3103,6 +3071,29 @@ struct AssistantMessageContent: View {
                     }
                 }
             }
+        }
+        .task(id: content) {
+            guard !isPlainText, resolvedContent != content else { return }
+            let result = await MessageParseCache.shared.parseAndStore(content: content)
+            guard !Task.isCancelled else { return }
+            resolvedResult = result
+            resolvedContent = content
+        }
+    }
+
+    private func identifiedGroups(_ groups: [SegmentGroup]) -> [(id: String, index: Int, group: SegmentGroup)] {
+        var counts: [String: Int] = [:]
+        return groups.enumerated().map { index, group in
+            let kind: String
+            switch group {
+            case .text: kind = "text"
+            case .toolCalls: kind = "tools"
+            case .reasoningBlocks: kind = "reasoning"
+            case .standaloneEmbeds: kind = "embeds"
+            }
+            let ordinal = counts[kind, default: 0]
+            counts[kind] = ordinal + 1
+            return ("\(kind)-\(ordinal)", index, group)
         }
     }
 

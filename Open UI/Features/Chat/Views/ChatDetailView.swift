@@ -5737,99 +5737,17 @@ private struct IsolatedAssistantMessage: View {
             }
             .frame(minHeight: 44)
         } else {
-            // ── Unified stable render path ────────────────────────────────────
-            //
-            // AssistantMessageContent is ALWAYS child-0 of the outer VStack.
-            // This gives it a stable SwiftUI view identity across every render
-            // mode — streaming split, pure-prose split, and the final merged
-            // state — so SwiftUI diffs the content in place rather than tearing
-            // down the subtree when streaming ends.  The previous 3-way
-            // if/else-if/else produced different top-level view types (VStack vs
-            // bare AssistantMessageContent), causing a one-frame blank flash and
-            // a height re-rounding that nudged the scroll position.
-            //
-            // Split-render modes: use frozenBoundary or pureFrozenProse as the
-            // primary content (stable prefix, ParseCache hits every frame) and
-            // append the tiny live tail as a transient second child.  When
-            // streaming ends both useSplit* flags go false, the tail child is
-            // simply removed, and child-0's content transitions to the full
-            // displayContent — a pure prop update with no structural change.
-
-            // useSplitTool: frozen tool/reasoning prefix + live tail.
-            let useSplitTool = isActivelyStreaming && streamingStore.frozenBoundary > 0
-            // useSplitProse: pure-prose frozen prefix + live prose tail.
-            let useSplitProse = isActivelyStreaming && !streamingStore.pureFrozenProse.isEmpty
-
-            // Primary content: stable frozen prefix during streaming, full
-            // displayContent otherwise.  Always fed to AssistantMessageContent.
-            let primaryContent: String = {
-                if useSplitTool  { return streamingStore.frozenContent }
-                if useSplitProse { return streamingStore.pureFrozenProse }
-                return displayContent
-            }()
-            // Primary is never marked streaming — the live tail carries that role.
-            // For short / non-split messages the regular effectiveIsStreaming applies.
-            let primaryIsStreaming = !(useSplitTool || useSplitProse) && effectiveIsStreaming
-
             if renderAssistantMarkdown {
-                VStack(alignment: .leading, spacing: 0) {
-                    AssistantMessageContent(
-                        content: primaryContent,
-                        isStreaming: primaryIsStreaming,
-                        messageEmbeds: message.embeds,
-                        authToken: authToken,
-                        serverBaseURL: serverBaseURL,
-                        apiClient: apiClient
-                    )
-                    // ── Live tail: transient streaming-only second child ───────
-                    // Appended during split-render; removed atomically when
-                    // streaming ends.  Child-0 identity is unaffected.
-                    if useSplitTool {
-                        let liveTailStr = streamingStore.liveTail
-                        // An unclosed <details> block must disable streaming so
-                        // the raw HTML tag text doesn't flash before the block
-                        // completes.
-                        // A VIZ block must still stream so InlineVisualizerView
-                        // receives isStreaming: true and uses its reconcileContent
-                        // path instead of finalizeContent (which fails on partial HTML).
-                        // NOTE: We no longer disable streaming for unclosed <details> blocks.
-                        // The pipeline freeze was removed — ToolCallParser.findDetailsBlocks()
-                        // skips incomplete blocks, so partial <details> in the live tail
-                        // are invisible to the user and always safe to stream through.
-                        let liveTailHasViz = liveTailStr.contains("@@@VIZ-START")
-
-                        if !liveTailStr.isEmpty {
-                            if !liveTailHasViz && !streamingStore.liveTailFrozenProse.isEmpty {
-                                // Further split at prose boundary within the live tail.
-                                // The live segment starts on a new paragraph boundary,
-                                // so we add 16pt to match the CommonMark paragraphSpacing
-                                // that CoreText drops on the last paragraph of a view.
-                                StreamingMarkdownView(content: streamingStore.liveTailFrozenProse, isStreaming: false)
-                                if !streamingStore.liveTailLiveProse.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                                    StreamingMarkdownView(content: streamingStore.liveTailLiveProse, isStreaming: true)
-                                        .padding(.top, 16)
-                                }
-                            } else {
-                                // Stream live tail — VIZ content and plain text both stream.
-                                StreamingMarkdownView(content: liveTailStr, isStreaming: true)
-                            }
-                        }
-                    } else if useSplitProse {
-                        // Pure-prose live tail.  No tool/reasoning blocks.
-                        // Pipeline pre-slices at paragraph boundary; pureFrozenProse
-                        // is stable until the boundary advances (~every 400 chars).
-                        if !streamingStore.pureLiveProse.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                            // The live prose starts on a new paragraph boundary.
-                            // Add 16pt top padding to match CommonMark's paragraphSpacing
-                            // (which CoreText drops on the final paragraph of a view).
-                            // Without this, the two segments render flush against each other.
-                            StreamingMarkdownView(content: streamingStore.pureLiveProse, isStreaming: true)
-                                .padding(.top, 16)
-                        }
-                    }
-                    // No tail added for non-split / final messages — VStack contains
-                    // only AssistantMessageContent, identical to the old fallback.
-                }
+                let hasFrozenPrefix = isActivelyStreaming && !streamingStore.frozenContent.isEmpty
+                AssistantMessageContent(
+                    content: hasFrozenPrefix ? streamingStore.frozenContent : displayContent,
+                    isStreaming: effectiveIsStreaming,
+                    streamingTail: hasFrozenPrefix ? streamingStore.liveTail : nil,
+                    messageEmbeds: message.embeds,
+                    authToken: authToken,
+                    serverBaseURL: serverBaseURL,
+                    apiClient: apiClient
+                )
                 .transaction { $0.animation = nil }
             } else {
                 // Plain text (markdown rendering disabled).

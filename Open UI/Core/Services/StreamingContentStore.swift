@@ -1,134 +1,81 @@
 import Foundation
 import SwiftUI
-import UIKit
-import os.log
 
-// MARK: - StreamingContentStore (thin @MainActor observable wrapper)
-
-/// Bridges between the background `StreamingPipeline` actor and the SwiftUI
-/// view layer. The only work done on the main thread is writing the fields
-/// received from the background actor into observable properties — no O(N)
-/// string scanning, no string slicing, no regex, nothing heavy.
+/// Publishes off-main streaming analysis to the view layer.
 @MainActor @Observable
 final class StreamingContentStore {
-
-    // MARK: - Live Streaming State (read by views)
-
-    /// The message ID currently being streamed. `nil` when idle.
     var streamingMessageId: String?
-
-    // MARK: Pre-sliced display strings (all computed off-main by StreamingPipeline)
-
-    /// Full typewriter-drained content. Views should read sliced variants below instead.
-    var displayContent: String = ""
-
-    /// Effective frozen boundary = max(tool, reasoning) offsets. 0 when no closed block yet.
-    var frozenBoundary: Int = 0
-
-    /// displayContent[..<frozenBoundary] — stable tool/reasoning HTML. "" when frozenBoundary==0.
-    var frozenContent: String = ""
-
-    /// displayContent[frozenBoundary...] — tiny live prose tail. "" when frozenBoundary==0.
-    var liveTail: String = ""
-
-    /// Within liveTail: settled paragraphs up to prose boundary. "" when N/A.
-    var liveTailFrozenProse: String = ""
-
-    /// Within liveTail: current in-progress paragraph. "" when N/A.
-    var liveTailLiveProse: String = ""
-
-    /// Pure-prose (no tool/reasoning): displayContent[..<proseBoundary]. "" when N/A.
-    var pureFrozenProse: String = ""
-
-    /// Pure-prose (no tool/reasoning): displayContent[proseBoundary...]. "" when N/A.
-    var pureLiveProse: String = ""
-
-    // MARK: Boundary offsets (for has-special-content checks in the view)
-    var frozenToolBoundaryOffset: Int = 0
-    var frozenReasoningBoundaryOffset: Int = 0
-    var frozenProseBoundaryOffset: Int = 0
-
-    // MARK: - Metadata
-
-    /// Status history (tool calls, web search progress, etc.)
+    var displayContent = ""
+    var frozenContent = ""
+    var liveTail = ""
     var streamingStatusHistory: [ChatStatusUpdate] = []
-
-    /// Sources accumulated during streaming.
     var streamingSources: [ChatSourceReference] = []
-
-    /// Error that occurred during streaming, if any.
     var streamingError: ChatMessageError?
-
-    /// Whether streaming is actively in progress (including finishing drain).
-    var isActive: Bool = false
-
-    /// The model ID for the streaming message.
+    var isActive = false
     var streamingModelId: String?
 
-    // MARK: - Private: background actor
-
-    private var pipeline: StreamingPipeline?
-    private var generation = 0
-
-    /// The full raw server content (stored so `endStreaming()` can return it).
-    private var rawServerContent: String = ""
-
-    // MARK: - Begin / Update / End
-
-    /// Starts a new streaming session.
-    func beginStreaming(messageId: String, modelId: String?) {
-        streamingMessageId = messageId
-        streamingModelId = modelId
-        resetSnapshotFields()
-        streamingStatusHistory = []
-        streamingSources = []
-        streamingError = nil
-        isActive = true
-        rawServerContent = ""
-
-        generation &+= 1
-        let currentGeneration = generation
-        let p = StreamingPipeline { [weak self] snapshot in
-            guard let self, self.generation == currentGeneration else { return }
-            self.applySnapshot(snapshot)
-        }
-        pipeline = p
-        Task { await p.begin() }
+    private struct Update: Sendable {
+        let content: String
+        let isFinal: Bool
     }
 
-    /// Starts a streaming session for a **continue** response.
-    ///
-    /// Pre-seeds the pipeline buffer with `existingContent` and sets the drain
-    /// cursor to `existingContent.count` so the typewriter starts at the END of the
-    /// already-displayed content. Only new tokens the server appends will trickle in —
-    /// the old content is never re-streamed.
+    @ObservationIgnored private var updates: AsyncStream<Update>.Continuation?
+    @ObservationIgnored private var processingTask: Task<Void, Never>?
+    @ObservationIgnored private var generation = 0
+    @ObservationIgnored private var rawServerContent = ""
+    @ObservationIgnored private var completion: (@MainActor () -> Void)?
+
+    deinit {
+        processingTask?.cancel()
+        updates?.finish()
+    }
+
+    func beginStreaming(messageId: String, modelId: String?) {
+        beginStreamingForContinue(messageId: messageId, modelId: modelId, existingContent: "")
+    }
+
     func beginStreamingForContinue(messageId: String, modelId: String?, existingContent: String) {
+        processingTask?.cancel()
+        updates?.finish()
+        completion = nil
+        generation &+= 1
+        let currentGeneration = generation
         streamingMessageId = messageId
         streamingModelId = modelId
-        resetSnapshotFields()
-        // Pre-seed displayContent so there's no flash of empty content.
         displayContent = existingContent
+        frozenContent = ""
+        liveTail = ""
         streamingStatusHistory = []
         streamingSources = []
         streamingError = nil
         isActive = true
         rawServerContent = existingContent
 
-        generation &+= 1
-        let currentGeneration = generation
-        let p = StreamingPipeline { [weak self] snapshot in
+        let pipeline = StreamingPipeline { [weak self] snapshot in
             guard let self, self.generation == currentGeneration else { return }
             self.applySnapshot(snapshot)
         }
-        pipeline = p
-        Task { await p.beginWithPrefix(existingContent) }
+        // Only cumulative snapshots may be superseded, never raw token deltas
+        // or tool/status events. An idle consumer runs immediately; no timer.
+        let (stream, continuation) = AsyncStream<Update>.makeStream(bufferingPolicy: .bufferingNewest(1))
+        updates = continuation
+        processingTask = Task {
+            await pipeline.beginWithPrefix(existingContent)
+            for await update in stream {
+                guard !Task.isCancelled else { break }
+                if update.isFinal {
+                    await pipeline.setFinalContent(update.content)
+                } else {
+                    await pipeline.append(update.content)
+                }
+            }
+        }
     }
 
-    /// Updates the raw server content (called per token batch).
     func updateContent(_ content: String) {
+        guard let updates else { return }
         rawServerContent = content
-        let p = pipeline
-        Task { await p?.append(content) }
+        updates.yield(Update(content: content, isFinal: false))
     }
 
     /// Appends a status update.
@@ -161,45 +108,22 @@ final class StreamingContentStore {
         streamingError = error
     }
 
-    /// Callback invoked on @MainActor when the drain pipeline fully empties.
-    /// Set by the caller before `endStreaming()` to defer UI finalization until
-    /// all buffered tokens are displayed — prevents premature stop-button removal.
-    var drainCompletion: (@MainActor () -> Void)?
-
-    /// Ends the streaming session gracefully.
-    ///
-    /// Uses `setFinalContent` to atomically update the buffer AND mark finishing
-    /// in a single actor call — preventing the race where a separate `finish()` Task
-    /// could run before the `append()` Task and cause the final content to be dropped.
+    /// The authoritative final snapshot goes through the same ordered consumer.
     @discardableResult
-    func endStreaming(onDrained: (@MainActor () -> Void)? = nil) -> StreamingResult {
-        let result = StreamingResult(
-            messageId: streamingMessageId,
-            content: rawServerContent,
-            statusHistory: streamingStatusHistory,
-            sources: streamingSources,
-            error: streamingError
-        )
-        drainCompletion = onDrained
-        let p = pipeline
-        let finalContent = rawServerContent
-        Task { await p?.setFinalContent(finalContent) }
+    func endStreaming(finalContent: String? = nil, onFinished: (@MainActor () -> Void)? = nil) -> StreamingResult {
+        guard let updates else { return currentResult() }
+        if let finalContent { rawServerContent = finalContent }
+        let result = currentResult()
+        completion = onFinished
+        updates.yield(Update(content: rawServerContent, isFinal: true))
+        updates.finish()
+        self.updates = nil
         return result
     }
 
-    /// Immediately flushes the buffer and stops the pipeline.
     @discardableResult
     func abortStreaming() -> StreamingResult {
-        let p = pipeline
-        pipeline = nil
-        Task { _ = await p?.abort() }
-        let result = StreamingResult(
-            messageId: streamingMessageId,
-            content: rawServerContent,
-            statusHistory: streamingStatusHistory,
-            sources: streamingSources,
-            error: streamingError
-        )
+        let result = currentResult()
         completeCleanup()
         return result
     }
@@ -212,72 +136,44 @@ final class StreamingContentStore {
         let error: ChatMessageError?
     }
 
-    // MARK: - Snapshot application (called on @MainActor by pipeline)
-
-    private func applySnapshot(_ snapshot: StreamingSnapshot) {
-        if snapshot.isActive {
-            // Fire haptic in sync with the typewriter drain — characters are
-            // actually appearing on screen right now. Using utf8.count is O(1)
-            // (Swift stores it directly on the String) and avoids a full O(N)
-            // character count call on every 60 Hz tick.
-            let didReveal = snapshot.displayContent.utf8.count > displayContent.utf8.count
-            displayContent               = snapshot.displayContent
-            frozenBoundary               = snapshot.frozenBoundary
-            frozenContent                = snapshot.frozenContent
-            liveTail                     = snapshot.liveTail
-            liveTailFrozenProse          = snapshot.liveTailFrozenProse
-            liveTailLiveProse            = snapshot.liveTailLiveProse
-            pureFrozenProse              = snapshot.pureFrozenProse
-            pureLiveProse                = snapshot.pureLiveProse
-            frozenToolBoundaryOffset     = snapshot.frozenToolBoundaryOffset
-            frozenReasoningBoundaryOffset = snapshot.frozenReasoningBoundaryOffset
-            frozenProseBoundaryOffset    = snapshot.frozenProseBoundaryOffset
-            if didReveal { Haptics.streamingTick() }
-        } else {
-            completeCleanup()
-        }
+    private func currentResult() -> StreamingResult {
+        StreamingResult(
+            messageId: streamingMessageId, content: rawServerContent,
+            statusHistory: streamingStatusHistory, sources: streamingSources, error: streamingError
+        )
     }
 
-    // MARK: - Internal cleanup
-
-    private func resetSnapshotFields() {
-        displayContent = ""
-        frozenBoundary = 0
-        frozenContent = ""
-        liveTail = ""
-        liveTailFrozenProse = ""
-        liveTailLiveProse = ""
-        pureFrozenProse = ""
-        pureLiveProse = ""
-        frozenToolBoundaryOffset = 0
-        frozenReasoningBoundaryOffset = 0
-        frozenProseBoundaryOffset = 0
+    private func applySnapshot(_ snapshot: StreamingSnapshot) {
+        guard snapshot.isActive else {
+            completeCleanup()
+            return
+        }
+        let didReveal = snapshot.displayContent.utf8.count > displayContent.utf8.count
+        displayContent = snapshot.displayContent
+        frozenContent = snapshot.frozenContent
+        liveTail = snapshot.liveTail
+        if didReveal { Haptics.streamingTick() }
     }
 
     private func completeCleanup() {
         generation &+= 1
-        // Capture and clear the drain completion before modifying any state,
-        // so it fires with the final display content still accessible.
-        let completion = drainCompletion
-        drainCompletion = nil
-
-        pipeline = nil
+        processingTask?.cancel()
+        processingTask = nil
+        updates?.finish()
+        updates = nil
+        let onFinished = completion
+        completion = nil
         streamingMessageId = nil
         rawServerContent = ""
-        resetSnapshotFields()
+        displayContent = ""
+        frozenContent = ""
+        liveTail = ""
         streamingStatusHistory = []
-        // NOTE: streamingSources is intentionally NOT cleared here.
-        // It persists until the next beginStreaming() so IsolatedAssistantMessage
-        // can fall back to them during the brief window when isActive=false but
-        // message.sources hasn't been committed yet.
+        // Keep sources until the next session so citations survive finalization.
         streamingError = nil
         streamingModelId = nil
         isActive = false
-
-        // Fire drain completion AFTER state is clean so the callback's
-        // message.isStreaming = false and cleanupStreaming() see a fully
-        // idle store and don't re-trigger double cleanup.
         Haptics.streamingComplete()
-        completion?()
+        onFinished?()
     }
 }
