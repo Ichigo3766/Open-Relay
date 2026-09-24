@@ -45,3 +45,18 @@ public enum MarkdownTextView {
         completion(MarkdownView.PreprocessedContent(parserResultNoMath: MarkdownParser().parse(content)).split())
     }
 }
+
+@MainActor struct StreamingCodeBlockView: NSViewRepresentable {
+    static var made = 0
+    static var lastContent = ""
+    let language: String
+    let content: String
+    let isStreaming: Bool
+    let theme: MarkdownTheme
+    func makeNSView(context: Context) -> NSTextField {
+        Self.made += 1
+        Self.lastContent = content
+        return NSTextField(labelWithString: "Synthetic code view")
+    }
+    func updateNSView(_ view: NSTextField, context: Context) { Self.lastContent = content }
+}

@@ -15,7 +15,7 @@ clang -O2 -dynamiclib -I"$cmark/src/include" -I"$cmark/extensions/include" \
 sources=()
 while IFS= read -r source; do sources+=("$source"); done < <(rg --files --no-ignore "$package/Sources/MarkdownParser" -g '*.swift')
 swiftc -O -swift-version 5 -parse-as-library -emit-module -emit-library -module-name MarkdownParser \
-    -target arm64-apple-macosx14.0 "${flags[@]}" \
+    -target arm64-apple-macosx14.0 ${flags[@]+"${flags[@]}"} \
     -I"$cmark/src/include" -I"$cmark/extensions/include" -L"$scratch" -lcmark-local \
     "${sources[@]}" -emit-module-path "$scratch/MarkdownParser.swiftmodule" -o "$scratch/libMarkdownParser.dylib"
 source="$repo/Open UI/Shared/Components/StreamingMarkdownView.swift"
@@ -31,7 +31,7 @@ sed -n '/^    private static func parseFenceLine/,/^    private func looksLikeSV
 sed -n '/^    private func looksLikeSVG/,/^    }/p' "$source" >> "$scratch/Segments.swift"
 printf 'func segments(_ text: String) -> [ContentSegment] { parseCodeBlocks(text) }\n}\n' >> "$scratch/Segments.swift"
 swiftc -O -swift-version 5 -parse-as-library -target arm64-apple-macosx14.0 \
-    "${flags[@]}" -I"$scratch" -L"$scratch" -lMarkdownParser -lcmark-local \
+    ${flags[@]+"${flags[@]}"} -I"$scratch" -L"$scratch" -lMarkdownParser -lcmark-local \
     -Xlinker -rpath -Xlinker "$scratch" \
     -I"$cmark/src/include" -I"$cmark/extensions/include" \
     "$scratch/Renderer.swift" "$scratch/Segments.swift" \

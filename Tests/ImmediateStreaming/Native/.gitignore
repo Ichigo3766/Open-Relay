@@ -1,0 +1,6 @@
+*.xcodeproj/
+*.xcresult/
+*.log
+__pycache__/
+DerivedData/
+.venv/

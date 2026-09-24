@@ -1295,8 +1295,17 @@ private struct StableStreamingMarkdown: View {
             if let visible = chunks ?? cached {
                 VStack(alignment: .leading, spacing: 0) {
                     ForEach(visible.indices, id: \.self) { index in
-                        MarkdownView(visible[index], theme: theme)
-                            .codeAutoScroll(isStreaming)
+                        if visible[index].blocks.count == 1,
+                           case let .codeBlock(language, content) = visible[index].blocks[0] {
+                            // cmark adds a terminal newline even to partial lines.
+                            // Omit it so the native code view can append new tokens.
+                            let code = content.hasSuffix("\n") ? String(content.dropLast()) : content
+                            StreamingCodeBlockView(language: language ?? "", content: code,
+                                                   isStreaming: isStreaming, theme: theme)
+                        } else {
+                            MarkdownView(visible[index], theme: theme)
+                                .codeAutoScroll(isStreaming)
+                        }
                     }
                 }
             } else {

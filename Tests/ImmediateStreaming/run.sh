@@ -21,7 +21,7 @@ if [[ -n "${RELAY_SWIFT_FLAGS_FILE:-}" ]]; then
     while IFS= read -r flag; do swift_flags+=("$flag"); done < "$RELAY_SWIFT_FLAGS_FILE"
 fi
 swiftc -O -swift-version 5 -target arm64-apple-macosx14.0 -parse-as-library \
-    "${swift_flags[@]}" "$scratch/Pipeline.swift" "$scratch/Store.swift" \
+    ${swift_flags[@]+"${swift_flags[@]}"} "$scratch/Pipeline.swift" "$scratch/Store.swift" \
     "$scratch/Accumulator.swift" "$repo/Tests/ImmediateStreaming/TestSupport.swift" \
     "$repo/Tests/ImmediateStreaming/StreamingTests.swift" -o "$scratch/tests"
 "$scratch/tests"

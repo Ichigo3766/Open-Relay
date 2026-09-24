@@ -86,8 +86,9 @@ struct RenderFixture: View {
             times.sort()
             print("PARSE chars=\(content.count) median_ms=\(times[10]) p95_ms=\(times[18])")
         }
-        for text in [sentence, long] {
+        for text in [sentence, long, "~~~swift\nlet star = 7\n~~~"] {
             MarkdownView.made = 0
+            StreamingCodeBlockView.made = 0
             let state = RenderState()
             state.text = text
             let host = NSHostingView(rootView: RenderFixture(state: state))
@@ -98,13 +99,18 @@ struct RenderFixture: View {
                 host.layoutSubtreeIfNeeded()
                 try await Task.sleep(for: .milliseconds(10))
             }
-            let before = MarkdownView.made
+            let before = MarkdownView.made + StreamingCodeBlockView.made
             state.streaming = false
             for _ in 0..<20 {
                 host.layoutSubtreeIfNeeded()
                 try await Task.sleep(for: .milliseconds(10))
             }
-            check(before > 0 && MarkdownView.made == before, "native views survive completion, chars \(text.count)")
+            check(before > 0 && MarkdownView.made + StreamingCodeBlockView.made == before,
+                  "native views survive completion, chars \(text.count)")
+            if text.hasPrefix("~~~") {
+                check(StreamingCodeBlockView.made == 1, "code uses one dedicated native view")
+                check(StreamingCodeBlockView.lastContent == "let star = 7", "parser newline does not defeat native append path")
+            }
             window.contentView = nil
         }
         print("RENDER RESULT checks=\(checks) failures=\(failures)")

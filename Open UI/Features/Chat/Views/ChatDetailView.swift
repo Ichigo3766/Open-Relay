@@ -395,7 +395,7 @@ struct ChatDetailView: View {
 
     // MARK: - Body
 
-    var body: some View {
+    @ViewBuilder private var chatContentWithLifecycle: some View {
         @Bindable var vm = viewModel
 
         ZStack {
@@ -672,6 +672,10 @@ struct ChatDetailView: View {
                 ttsGeneratingMessageId = nil
             }
         }
+    }
+
+    var body: some View {
+        chatContentWithLifecycle
         // Toasts & banners
         .overlay(alignment: .top) {
             if showCopiedToast { copiedToastView }
@@ -751,7 +755,7 @@ struct ChatDetailView: View {
         }
         // Assistant inline edit sheet — shown when the user taps the pencil icon
         // on an assistant message. Allows editing content in-place (no regeneration).
-        .sheet(isPresented: Binding(
+        .sheet(isPresented: Binding<Bool>(
             get: { editingAssistantMessageId != nil },
             set: { if !$0 { cancelAssistantEdit() } }
         )) {

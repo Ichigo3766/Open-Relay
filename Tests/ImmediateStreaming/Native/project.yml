@@ -1,0 +1,44 @@
+name: RelayStreamingQA
+options:
+  deploymentTarget:
+    iOS: '18.1'
+settings:
+  base:
+    CODE_SIGNING_ALLOWED: NO
+    GENERATE_INFOPLIST_FILE: YES
+    SWIFT_VERSION: '5.0'
+    ENABLE_TESTABILITY: YES
+projectReferences:
+  Relay:
+    path: ${RELAY_CHECKOUT}/Open UI.xcodeproj
+targets:
+  NativeTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources: NativeTests.swift
+    dependencies:
+      - target: Relay/Open UI
+    settings:
+      PRODUCT_BUNDLE_IDENTIFIER: org.example.relay.native-stream-tests
+      TEST_HOST: '$(BUILT_PRODUCTS_DIR)/Open UI.app/Open UI'
+      BUNDLE_LOADER: '$(TEST_HOST)'
+  StreamingUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources: StreamingUITests.swift
+    settings:
+      PRODUCT_BUNDLE_IDENTIFIER: org.example.relay.streaming-ui-tests
+schemes:
+  Native:
+    build:
+      targets:
+        Relay/Open UI: all
+        NativeTests: [test]
+    test:
+      targets: [NativeTests]
+  UI:
+    build:
+      targets:
+        StreamingUITests: [test]
+    test:
+      targets: [StreamingUITests]

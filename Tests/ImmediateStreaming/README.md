@@ -1,7 +1,8 @@
 # Immediate streaming regression checks
 
-All fixtures are newly invented. The tests do not access a server, account, chat
-database, credentials, screenshots, or network service.
+All fixtures are newly invented. Component tests do not access a server, account,
+chat database, credentials, screenshots, or network service. The optional native
+UI suite uses only the bundled loopback fixture, never a real instance.
 
 ## Run
 
@@ -43,31 +44,32 @@ MarkdownView: 2654e0d8254816bb9c1bdcbb73fa43bcc0f9f429.
   consumer lifetime, concurrent token producers, and overload.
 - Original-source checks reproduce delayed delivery and the accumulator's
   missed-update window; failure counts are assertions, not distinct bugs.
-- 250 Markdown/view checks pass: original list and tilde-fence corruption
+- 253 Markdown/view checks pass: original list and tilde-fence corruption
   reproduced; each incremental input matches a full parse; unchanged chunk
   objects are reused; ordinary fences keep the same parent; preview IDs and
   native text-view lifetimes survive completion.
-- Off-main parse plus chunk preparation, median of 20 optimized runs:
-  approximately 0.03 ms at 1k characters, 0.22 ms at 10k, and 2.08 ms at 103k.
-  These are component measurements, not iPhone frame rates or time-to-pixel.
 
 The new path reparses the changing prose document correctly, then reuses unchanged
 render chunks. It is not a claim of a new incremental Markdown syntax parser.
 Completed reasoning/tool prefixes are separately cached, and superseded queued
 work is skipped without adding a debounce or reveal delay.
 
-## Required iOS verification before release
+## Native verification and benchmarking
 
-- Build and run the full app with synthetic Socket.IO responses.
-- Record slow/bursty streams and long reasoning-to-answer transitions.
-- Check lists, both fence types, links, math, images, HTML/SVG/chart/Mermaid
-  previews, Python blocks, and answers longer than 8k characters.
-- Exercise stop, immediate completion, regenerate/continue, chat switching,
-  scrolling away from the bottom, and expanding/collapsing thinking.
-- Inspect video for disappearing text, completion jumps and view recreation.
-- Profile actual UIKit layout, CPU, memory and update latency.
-- Verify code syntax highlighting and math after completion.
+See [Native/README.md](Native/README.md) for the real-app XCTest/XCUITest harness
+and [BENCHMARKS.md](BENCHMARKS.md) for matched before/after results and limitations.
+The native tests exercise actual UIKit rendering, Markdown nodes, code-view
+identity, final syntax highlighting, rendered equations, completion layout and
+large reasoning blocks. The UI fixture supports slow and bursty responses,
+cancellation, scrolling and chat switching without a production account.
 
-Full-app iOS build/video verification has not yet been completed for this patch.
-ThreadSanitizer coverage is also not established. Do not treat component results
-as release sign-off.
+The core suite also passed 20 consecutive repetitions (8,020 assertions) and two
+ThreadSanitizer runs (401 checks each, no reported races). These checks supplement,
+rather than replace, native rendering tests and physical-device validation.
+
+For the pipeline-only optimized A/B benchmark:
+
+    bash Tests/ImmediateStreaming/run-benchmark.sh --baseline
+    bash Tests/ImmediateStreaming/run-benchmark.sh
+
+It measures snapshot delivery and CPU, not network latency or displayed frames.
