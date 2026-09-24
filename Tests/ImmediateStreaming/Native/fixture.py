@@ -1,5 +1,6 @@
 """Loopback-only synthetic streaming fixture. Never imports or contacts Open WebUI."""
 import asyncio
+import hashlib
 import json
 import time
 import uuid
@@ -38,6 +39,8 @@ async def usage(sid, data):
     return True
 
 async def generate(body, mode):
+    video = mode.startswith("video-")
+    mode = mode.removeprefix("video-")
     answer = PARAGRAPH if mode == "slow-thinking" else ANSWER
     if mode == "long-code":
         answer = "Synthetic code sample.\n\n```swift\n" + "\n".join(f"let star{n} = {n} // invented observation" for n in range(160)) + "\n```\n\nFinished synthetic code."
@@ -48,6 +51,8 @@ async def generate(body, mode):
     interval = 0.5 if mode == "slow-thinking" else 0.02 if mode in ("long", "long-code", "mixed") else 0.1
     chunk = 200 if mode in ("long", "long-code") else 20
     if mode == "scrolling": chunk = 80
+    if video and mode == "mixed": interval = 0.05
+    if video and mode == "long": interval = 0.03
     chat_id, message_id = body["chat_id"], body["id"]
     entry = CHATS[chat_id]
     history = entry["chat"].setdefault("history", {"messages": {}})
@@ -63,13 +68,27 @@ async def generate(body, mode):
             await emit("response:completion", {"type": "response.reasoning_text.delta", "delta": THINKING[n * 400:(n + 1) * 400]})
             await asyncio.sleep(0.1)
         await emit("status", {"action": "thinking", "description": "Finished thinking", "done": True})
-    mark("answer_start", answer_chars=len(answer))
-    for end in range(chunk, len(answer) + chunk, chunk):
+    if video:
+        await emit("status", {"action": "replay", "description": "Replay ready", "done": False})
+        await asyncio.sleep(2)
+        await emit("status", {"action": "replay", "description": "Replay running", "done": False})
+    origin = time.monotonic()
+    lateness = []
+    mark("answer_start", mode=mode, video=video, answer_chars=len(answer), chunk=chunk,
+         interval=interval, sha256=hashlib.sha256(answer.encode()).hexdigest())
+    for index, end in enumerate(range(chunk, len(answer) + chunk, chunk)):
+        if video:
+            await asyncio.sleep(max(0, origin + index * interval - time.monotonic()))
+            lateness.append((time.monotonic() - origin - index * interval) * 1000)
         start = end - chunk
         delta = answer[start:end]
         node["content"] += delta
         await emit("response:completion", {"type": "response.output_text.delta", "delta": delta})
-        await asyncio.sleep(interval)
+        if not video: await asyncio.sleep(interval)
+    if video:
+        await asyncio.sleep(max(0, origin + len(lateness) * interval - time.monotonic()))
+        mark("replay_timing", mode=mode, max_lateness_ms=max(lateness), chunks=len(lateness))
+        await emit("status", {"action": "replay", "description": "Replay complete", "done": True})
     mark("answer_sent")
     output = []
     if mode in ("modern-thinking", "slow-thinking"):
@@ -127,7 +146,7 @@ async def handle(request):
         for task in list(RUNNING): task.cancel()
         mark("stopped")
         return web.json_response({"status": True})
-    if path.startswith("/api/tasks"): return web.json_response({"tasks": ["synthetic-task"] if RUNNING else []})
+    if path.startswith("/api/tasks"): return web.json_response({"task_ids": ["synthetic-task"] if RUNNING else []})
     if request.method == "POST": return web.json_response({"status": True})
     return web.json_response([])
 

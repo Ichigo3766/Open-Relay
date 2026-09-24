@@ -46,7 +46,10 @@ final class StreamingUITests: XCTestCase {
         func newChat() -> XCUIElement? {
             app.buttons.matching(identifier: "New Chat").allElementsBoundByIndex.first(where: { $0.isHittable })
         }
-        if newChat() == nil { app.swipeDown(velocity: .fast) }
+        for _ in 0..<5 {
+            if newChat() != nil { break }
+            app.swipeDown()
+        }
         guard let button = newChat() else { XCTFail("New Chat must be visible"); return }
         button.tap()
         let composer = app.textViews.firstMatch
@@ -107,6 +110,35 @@ final class StreamingUITests: XCTestCase {
             app.swipeDown(velocity: .fast)
             let attachment = XCTAttachment(screenshot: app.screenshot())
             attachment.name = "Synthetic completed trial \(trial)"; attachment.lifetime = .keepAlways; add(attachment)
+        }
+    }
+
+    /// Capture both app builds with exactly the same synthetic replay, without
+    /// gestures during delivery. Trim/align on the visible "Replay running" cue.
+    func testVideoComparison() throws {
+        let app = try openFixture()
+        for mode in ["slow-thinking", "mixed", "long"] {
+            try setMode("video-" + mode)
+            sendNew("Synthetic demo.", in: app)
+            // Reasoning must remain active through the recovery poll, not just
+            // produce a completed row after a premature fixture-driven stop.
+            if mode == "slow-thinking" {
+                Thread.sleep(forTimeInterval: 8)
+                XCTAssertTrue(app.buttons["Stop Generating"].exists)
+                Thread.sleep(forTimeInterval: 10)
+            } else {
+                Thread.sleep(forTimeInterval: 18)
+            }
+            let done = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+                app.buttons["Continue response"].exists && !app.buttons["Stop Generating"].exists
+            }, object: nil)
+            XCTAssertEqual(XCTWaiter.wait(for: [done], timeout: 60), .completed)
+            let answer = app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Assistant:'")).firstMatch
+            XCTAssertTrue(answer.exists)
+            // The combined accessibility label is a truncated persistence
+            // preview, not the rendered text; NativeTests checks that text.
+            print("IOS_VIDEO completed mode=\(mode) wall=\(Date().timeIntervalSince1970)")
+            Thread.sleep(forTimeInterval: 3)
         }
     }
 

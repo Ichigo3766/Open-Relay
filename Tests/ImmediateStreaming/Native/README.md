@@ -45,6 +45,33 @@ The thinking disclosure is hidden inside a combined accessibility element, so
 that test uses a default-font-scale fixture coordinate and verifies the resulting
 expanded/collapsed heights. Do not use that coordinate with arbitrary content.
 
+### Matched video capture
+
+Run `python -m unittest test_fixture.py` to check the replay payloads, final
+content and absolute delivery deadlines with simulated emission overhead.
+`testVideoComparison` replays three invented cases: slow text after reasoning,
+mixed formatting (lists, a tilde fence, Unicode, math and a link), and long prose.
+The `video-` fixture modes use absolute monotonic deadlines instead of accumulating
+per-chunk sleeps. Each run logs the payload hash, chunk size/interval and maximum
+emission lateness. Compare those values before presenting a matched recording.
+
+Record each installed Release build separately with `simctl io recordVideo`;
+do not compile, encode or run other tests during capture. Align the clips on the
+first visible `Replay running` status, immediately before answer delivery. Keep
+the preceding ready cue and completion in view, and apply identical cropping,
+scaling and speed to both sides. Disclose capture-frame alignment uncertainty.
+Show normal speed first; explicitly label any quarter-speed replay. Do not use
+motion interpolation or independently retime one build to imply a better result.
+Video is qualitative evidence, not a replacement for unrecorded native timings.
+
+See [the media notes](MEDIA.md) for the recorded cases, measured sending drift,
+normal/quarter-speed export rules and decoder validation.
+
+Export video-only MP4 with metadata stripped. Review the complete export and
+frame contact sheets before sharing: only invented content and generic app chrome
+may appear. Never upload raw recordings, Xcode bundles, logs, login screens,
+host paths, real account settings or real chats. Keep exports local until approved.
+
 The compiler configuration only raises expression-checking limits for the app
 module; it does not change optimization or dependency code. Both A/B builds must
 use the same compiler flags and dependency lockfile.

@@ -118,6 +118,16 @@ corrected and the navigation scenario rerun successfully. They were not fixed by
 weakening the native text assertions or changing app navigation code. Raw failed
 runs are retained locally; they are not counted as passing tests.
 
+Subsequent frame-by-frame capture review found another mock-protocol defect:
+the task registry returned `tasks: [String]`, which the client's task decoder
+does not accept. It now returns `task_ids: [String]`. The old response could cause
+the recovery poll to finish a reasoning-only stream early. Consequently, the
+earlier full-app test passes alone do **not** establish correct reasoning-to-answer
+streaming. New recording tests explicitly require generation to remain active
+after eight seconds; the registry shape and fixed delivery schedule have separate
+fixture regression tests. The native latency, renderer and CPU measurements above
+do not use this mock HTTP task registry and are unaffected.
+
 ## Why less code is sufficient
 
 The production diff adds 392 lines and removes 1,781: **1,389 fewer lines**, not
