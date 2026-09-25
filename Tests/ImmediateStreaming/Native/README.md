@@ -41,9 +41,16 @@ For end-to-end UI tests, start `python fixture.py`, build scheme `UI`, and run i
 loopback server on a fresh device and require the synthetic model label before
 sending anything. They exercise slow thinking, long prose/code, formatting,
 scrolling, expansion/collapse, cancellation, and subsequent new responses.
+The tool/thinking case inserts an invented tool call and result between two
+thinking blocks, including a mid-stream structured snapshot followed by deltas.
+It never executes a real tool.
 The thinking disclosure is hidden inside a combined accessibility element, so
 that test uses a default-font-scale fixture coordinate and verifies the resulting
 expanded/collapsed heights. Do not use that coordinate with arbitrary content.
+For a restored long chat, XCUITest may report the visibly present floating
+toolbar as non-hittable. The new-chat helper can tap the matched button's measured
+on-screen center, then requires the previous assistant row to disappear before
+typing. This avoids treating a failed navigation as a successful new-chat test.
 
 ### Matched video capture
 
@@ -92,3 +99,31 @@ use the same compiler flags and dependency lockfile.
   and sample answer presence while a large final reasoning block is introduced.
 
 Simulator validation does not replace final physical-device testing.
+
+## Cadence and reasoning checks
+
+`testTypewriterCadence` replays regular, irregular, stalled and already
+character-paced input through both the real Markdown view and the expanded
+reasoning path. `CADENCE_FRAMES` samples actual native text, input counts and
+arrival times. Its regular-stream assertions intentionally fail in `400fa36`.
+Record this test separately from CPU comparisons. Its on-screen `Packet N`
+counter changes when an input packet is submitted, independently of revealed
+text. Align before/after captures on the same counter transition; do not align
+on first displayed text, which would hide an implementation difference.
+The `400fa36` comparison uses this same test source without `QA_BASELINE`.
+
+`testTypewriterLargeThinkingCost` appends to 10 KB and 100 KB thinking prefixes;
+the `LayoutCost` variant bypasses structural parsing to isolate presentation.
+`testLargeReasoningParseCost` measures the structural parser separately.
+`testCompletedReasoningDoesNotReplay` protects history from replaying an old
+unfinished marker, and `testReasoningTagMatching` covers mixed casing and Unicode.
+`testTypewriterFastLargeThinking` and `testTypewriterFastFrozenThinking` deliver
+100 updates ten milliseconds apart over a 100 KB prefix. They require visible
+intermediate progress during delivery as well as exact final text; active display
+callbacks alone would miss a text view stuck on an obsolete parse.
+`testStructuralReplacementAndRemount` checks cancelled parses cannot replace a
+newly mounted message with stale content.
+
+The full-app `testCadenceThinkingHandoff` records slow thinking followed by an
+answer. `testThinkingDisclosureDuringStreaming` exercises three live disclosure
+cycles and cancellation. Both require only the bundled synthetic server.

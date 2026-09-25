@@ -29,6 +29,7 @@ struct StreamingTests {
         #endif
     }
     @MainActor static func main() async {
+        await responseTests()
         var samples: [StreamingSnapshot] = []
         let pipeline = StreamingPipeline { samples.append($0) }
         await pipeline.beginWithPrefix("")

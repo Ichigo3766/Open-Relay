@@ -1,5 +1,9 @@
 # Cached-block typewriter prototype
 
+Historical results for the first typewriter prototype (`400fa36`). The current
+pacing and reasoning iteration is documented in [SMOOTHNESS.md](SMOOTHNESS.md);
+the measurements below must not be relabeled as that later candidate's results.
+
 This local prototype keeps the character reveal effect. It builds on the stable
 streaming renderer, not the original paced raw-Markdown pipeline. No dependency
 implementation or server is changed.

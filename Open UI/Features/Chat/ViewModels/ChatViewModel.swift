@@ -4793,36 +4793,19 @@ final class ChatViewModel {
                     return
                 }
             }
-            // ── Fast-path: response:completion (new OWUI streaming architecture) ──
-            // OpenWebUI now sends per-token incremental deltas as `response:completion`
-            // events instead of per-token `chat:completion` events. The `data.data`
-            // payload is a Responses-API-style event where `type` ends in `.delta`
-            // and `delta` is the raw new token string (NOT the full accumulated text).
-            // We handle the output_text delta here in the fast-path (same background
-            // thread, zero main-actor hops per token) and let non-delta sub-types fall
-            // through to the normal @MainActor dispatch below.
-            if type == "response:completion" {
-                let innerPayload = data["data"] as? [String: Any]
-                let innerType = innerPayload?["type"] as? String ?? ""
-                if innerType == "response.output_text.delta" {
-                    let delta = innerPayload?["delta"] as? String ?? ""
-                    if !delta.isEmpty {
-                        acc.append(delta)
-                        return
-                    }
-                }
-                // reasoning text delta — append to accumulator so thinking blocks
-                // stream visibly (they are included in the final output reconstruct too)
-                if innerType == "response.reasoning_text.delta" {
-                    // Do NOT append reasoning deltas to the visible acc — they are
-                    // internal chain-of-thought and will be included in the final
-                    // output array reconstruction at done:true.  Just return so we
-                    // don't schedule a needless @MainActor task.
+            // Apply snapshots and deltas in socket order. Deferring a snapshot
+            // to MainActor could otherwise overwrite a later fast-path delta.
+            if type == "chat:completion", let payload = data["data"] as? [String: Any],
+               let output = payload["output"] as? [[String: Any]], (payload["error"] as? String ?? "").isEmpty {
+                acc.replaceOutput(output)
+            }
+            if type == "response:completion", let payload = data["data"] as? [String: Any] {
+                acc.receiveResponse(payload)
+                let innerType = payload["type"] as? String ?? ""
+                if innerType == "response.output_text.delta" || innerType == "response.reasoning_text.delta" {
                     return
                 }
-                // All other response:completion sub-types (item.added, item.done,
-                // function_call_arguments.delta, etc.) fall through to @MainActor
-                // dispatch where handleResponseCompletion() will process them.
+                // Item events still update tool status on MainActor below.
             }
             // For all other event types, dispatch to main actor normally
             Task { @MainActor in
@@ -5096,31 +5079,9 @@ final class ChatViewModel {
             return
         }
 
-        // ── PATH 1: Structured output array (final authoritative snapshot) ────
-        //
-        // In the new OWUI streaming architecture, `chat:completion` events with an
-        // `output` array are sent ONLY at stream end (done:true) or on tool-approval
-        // pauses (done:false). Per-token deltas now arrive as `response:completion`
-        // events handled upstream, so this path fires once at completion.
-        //
-        // The output array is the AUTHORITATIVE final snapshot — always use
-        // `acc.replace()` so any delta-accumulated text is superseded by the
-        // complete, server-authoritative version (including tool call <details> blocks).
-        //
-        // This path handles: thinking blocks, tool calls, concurrent tool calls,
-        // prose, reasoning+tool+reasoning sequences, and the final done signal.
-        // Once we find a valid output array we handle everything here and RETURN —
-        // never fall through to the legacy choices/content paths to prevent
-        // double-application of content.
+        // Structured snapshots were already applied in socket order. Handle
+        // metadata/completion here without replacing newer accumulated deltas.
         if let outputArr = payload["output"] as? [[String: Any]] {
-            if let reconstructed = MessageHistory.reconstructContentFromOutput(outputArr) {
-                acc.replace(reconstructed)
-                // Removed redundant updateAssistantMessage call — acc.replace() already
-                // fires acc.onUpdate which calls streamingStore.updateContent().
-                // Calling updateAssistantMessage here causes a duplicate pipeline.append()
-                // which can race with setFinalContent() at done:true.
-            }
-
             // Update the raw output on the history node so scanForPendingToolActions()
             // can detect pending/ask_user calls in real-time during streaming.
             if let conv = conversation, conv.history.nodes[assistantMessageId] != nil {
@@ -5258,8 +5219,8 @@ final class ChatViewModel {
     ///
     /// | Inner `type`                              | Action                                    |
     /// |-------------------------------------------|-------------------------------------------|
-    /// | `response.output_text.delta`              | Fast-pathed BEFORE this function (acc.append in socket handler) |
-    /// | `response.reasoning_text.delta`           | Fast-pathed / ignored (internal CoT)      |
+    /// | `response.output_text.delta`              | Accumulated before MainActor dispatch    |
+    /// | `response.reasoning_text.delta`           | Accumulated into a live thinking block   |
     /// | `response.function_call_arguments.delta`  | Ignored — no visible content              |
     /// | `response.output_item.added`              | Show tool-call status pill if function_call |
     /// | `response.output_item.done`               | Mark tool-call completed in status        |
@@ -5279,20 +5240,6 @@ final class ChatViewModel {
         guard !hasFinishedStreaming else { return }
 
         let innerType = innerPayload["type"] as? String ?? ""
-
-        // ── output_text.delta ────────────────────────────────────────────────
-        // This is the hot path for streaming tokens. It is already handled by
-        // the fast-path in registerSocketHandlers (no @MainActor hop per token).
-        // If it somehow reaches here (e.g. empty delta that wasn't filtered),
-        // just append and return.
-        if innerType == "response.output_text.delta" {
-            let delta = innerPayload["delta"] as? String ?? ""
-            if !delta.isEmpty {
-                acc.append(delta)
-                updateAssistantMessage(id: assistantMessageId, content: acc.content, isStreaming: true)
-            }
-            return
-        }
 
         // ── function_call tool-call status pill ─────────────────────────────
         // When a function_call item is added to the output, show a live
@@ -8071,6 +8018,9 @@ final class ChatViewModel {
 final class ContentAccumulator: @unchecked Sendable {
     private let lock = NSLock()
     private nonisolated(unsafe) var _content: String = ""
+    private nonisolated(unsafe) var output: [[String: Any]]?
+    private nonisolated(unsafe) var outputPrefix = ""
+    private nonisolated(unsafe) var outputDirty = false
     private nonisolated(unsafe) var _onUpdate: (@MainActor @Sendable (_ content: String) -> Void)?
 
     /// Guards against flooding the main actor with redundant Tasks.
@@ -8095,9 +8045,17 @@ final class ContentAccumulator: @unchecked Sendable {
 
     nonisolated var content: String {
         lock.lock()
-        let value = _content
-        lock.unlock()
-        return value
+        defer { lock.unlock() }
+        return currentContent()
+    }
+
+    /// Called under the lock; reconstruct at delivery, not on every token.
+    nonisolated private func currentContent() -> String {
+        if outputDirty, let output {
+            _content = outputPrefix + (MessageHistory.reconstructContentFromOutput(output) ?? "")
+            outputDirty = false
+        }
+        return _content
     }
 
     /// Clear the flag and capture content atomically BEFORE invoking the callback.
@@ -8106,35 +8064,86 @@ final class ContentAccumulator: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         _pendingUpdate = false
-        return _content
+        return currentContent()
     }
 
     nonisolated func append(_ text: String) {
-        lock.lock()
-        _content += text
-        // Only enqueue a new MainActor Task if none is already in-flight.
-        // The in-flight Task will read _content at execution time, so it will
-        // always deliver the very latest accumulated text — even if many tokens
-        // arrived while it was waiting for MainActor scheduling.
-        let needsDispatch = !_pendingUpdate
-        if needsDispatch { _pendingUpdate = true }
-        let callback = _onUpdate
-        lock.unlock()
-
-        guard needsDispatch else { return }
-
-        Task { @MainActor [weak self] in
-            guard let self else { return }
-            // Read the LATEST content — may include tokens that arrived
-            // after append() returned but before this Task executed.
-            let latest = self.takePendingContent()
-            callback?(latest)
+        mutate {
+            _ = currentContent()
+            _content += text
+            output = nil
         }
     }
 
     nonisolated func replace(_ text: String) {
+        mutate {
+            _content = text
+            output = nil
+            outputDirty = false
+        }
+    }
+
+    nonisolated func replaceOutput(_ items: [[String: Any]]) {
+        mutate {
+            // An empty/unsupported in-progress snapshot has no replacement
+            // text. Preserve the existing continuation, as the legacy path does.
+            guard let text = MessageHistory.reconstructContentFromOutput(items) else { return }
+            outputPrefix = ""
+            output = items
+            _content = text
+            outputDirty = false
+        }
+    }
+
+    /// Keep protocol item identity/order, including snapshots between deltas.
+    /// Flattening thinking into the answer loses that information and duplicates
+    /// text when a cumulative snapshot arrives midway through a response.
+    nonisolated func receiveResponse(_ event: [String: Any]) {
+        let type = event["type"] as? String ?? ""
+        let reasoning = type == "response.reasoning_text.delta"
+        let textDelta = reasoning || type == "response.output_text.delta"
+        let delta = event["delta"] as? String ?? ""
+        let item = event["item"] as? [String: Any]
+        guard (textDelta && !delta.isEmpty) ||
+                ((type == "response.output_item.added" || type == "response.output_item.done") && item != nil) else { return }
+        let index = event["output_index"] as? Int
+        let partIndex = event["content_index"] as? Int ?? 0
+        guard (index ?? 0) >= 0, partIndex >= 0 else { return }
+        let kind = reasoning ? "reasoning" : "message"
+        let id = item?["id"] as? String ?? event["item_id"] as? String ?? "\(kind)-\(index ?? 0)"
+        mutate {
+            let existing = output?.firstIndex { ($0["id"] as? String) == id }
+            var parts = existing.flatMap { output?[$0]["content"] as? [[String: Any]] } ?? []
+            guard !textDelta || partIndex <= parts.count else { return }
+            if output == nil {
+                outputPrefix = _content
+                output = []
+            }
+            let position = existing ?? min(index ?? output!.count, output!.count)
+            if existing == nil {
+                output!.insert(item ?? ["id": id, "type": kind, "status": "in_progress", "content": []], at: position)
+            }
+            if let item {
+                output![position] = item
+            } else {
+                if partIndex == parts.count { parts.append(["type": "output_text", "text": ""]) }
+                parts[partIndex]["text"] = (parts[partIndex]["text"] as? String ?? "") + delta
+                output![position]["content"] = parts
+            }
+            // Chat-completions providers may switch to the answer without
+            // emitting an explicit reasoning item.done event.
+            if (output![position]["type"] as? String) != "reasoning" {
+                for earlier in 0..<position where (output![earlier]["type"] as? String) == "reasoning" {
+                    output![earlier]["status"] = "completed"
+                }
+            }
+            outputDirty = true
+        }
+    }
+
+    nonisolated private func mutate(_ change: () -> Void) {
         lock.lock()
-        _content = text
+        change()
         let needsDispatch = !_pendingUpdate
         if needsDispatch { _pendingUpdate = true }
         let callback = _onUpdate

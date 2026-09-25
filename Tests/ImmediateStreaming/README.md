@@ -1,7 +1,8 @@
 # Immediate streaming regression checks
 
 The current local branch additionally prototypes a character-by-character reveal
-over parsed blocks. See [TYPEWRITER.md](TYPEWRITER.md). The transport pipeline is
+over parsed blocks. See [SMOOTHNESS.md](SMOOTHNESS.md) for the current iteration
+and [TYPEWRITER.md](TYPEWRITER.md) for the earlier prototype. The transport pipeline is
 still immediate; presentation animates independently without reparsing per frame.
 
 All fixtures are newly invented. Component tests do not access a server, account,
@@ -42,13 +43,15 @@ one argument per line. No dependency sources or SDK files are modified by the ru
 Base: Open Relay b38bfe91ab0d584c7ab22ac119adadae1af3dbf5.
 MarkdownView: 2654e0d8254816bb9c1bdcbb73fa43bcc0f9f429.
 
-- 401 core checks pass: immediate Unicode delivery, duplicate suppression,
+- 421 core checks pass: immediate Unicode delivery, duplicate suppression,
   authoritative replacements, nested/quoted/incomplete structural markup,
   final-only responses, cancellation, session isolation, duplicate completion,
-  consumer lifetime, concurrent token producers, and overload.
+  consumer lifetime, concurrent token producers, and overload. Structured-response
+  checks additionally cover live thinking, item ordering, multiple content parts,
+  snapshots between deltas, tool-separated thinking and continuation preservation.
 - Original-source checks reproduce delayed delivery and the accumulator's
   missed-update window; failure counts are assertions, not distinct bugs.
-- 1,832 Markdown/view checks pass, including the original 253 checks: list and tilde-fence corruption
+- 2,255 Markdown/view checks pass, including the original 253 checks: list and tilde-fence corruption
   reproduced; each incremental input matches a full parse; unchanged chunk
   objects are reused; ordinary fences keep the same parent; preview IDs and
   native text-view lifetimes survive completion.
@@ -69,8 +72,8 @@ identity, final syntax highlighting, rendered equations, completion layout and
 large reasoning blocks. The UI fixture supports slow and bursty responses,
 cancellation, scrolling and chat switching without a production account.
 
-The core suite also passed 20 consecutive repetitions (8,020 assertions) and two
-ThreadSanitizer runs (401 checks each, no reported races). These checks supplement,
+The current core suite also passed 20 consecutive repetitions (8,420 assertions)
+and a ThreadSanitizer run (421 checks, no reported race). These checks supplement,
 rather than replace, native rendering tests and physical-device validation.
 
 For the pipeline-only optimized A/B benchmark:

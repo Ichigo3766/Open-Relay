@@ -267,6 +267,12 @@ enum ToolCallParser {
         return rx
     }
 
+    // Presence checks need no Swift string indices. NSString avoids repeatedly
+    // case-folding every Character in a long response for each possible tag.
+    private nonisolated static func containsTag(_ tag: String, in text: String) -> Bool {
+        (text as NSString).range(of: tag, options: .caseInsensitive).location != NSNotFound
+    }
+
     /// Result of parsing assistant content.
     struct ParseResult {
         let toolCalls: [ToolCallData]
@@ -676,7 +682,7 @@ enum ToolCallParser {
             let closeTag = pair.close
             let escapedClose = NSRegularExpression.escapedPattern(for: closeTag)
 
-            guard contentText.range(of: closeTag, options: .caseInsensitive) != nil else { continue }
+            guard containsTag(closeTag, in: contentText) else { continue }
 
             // Split at the first occurrence: before = reasoning, after = reply
             if let splitRegex = cachedRegex("^([\\s\\S]*?)\(escapedClose)([\\s\\S]*)$",
@@ -871,7 +877,7 @@ enum ToolCallParser {
 
             // Case 2: Unclosed tag (still streaming thinking content)
             // Case-insensitive check for the open tag
-            if result.range(of: pair.open, options: .caseInsensitive) != nil {
+            if containsTag(pair.open, in: result) {
                 if let openRegex = cachedRegex("\(escapedOpen)([\\s\\S]*)$",
                     options: [.dotMatchesLineSeparators, .caseInsensitive]) {
                     let nsResult = result as NSString
@@ -901,7 +907,7 @@ enum ToolCallParser {
             if pair.open.hasPrefix("<|") || pair.open.hasPrefix("◁") { continue }
 
             // Already handled if exact-case was found. Check case-insensitive.
-            guard result.range(of: pair.open, options: .caseInsensitive) != nil else { continue }
+            guard containsTag(pair.open, in: result) else { continue }
             // If exact case exists, Phase 1 already handled it
             guard !result.contains(pair.open) else { continue }
 
@@ -930,7 +936,7 @@ enum ToolCallParser {
             }
 
             // Unclosed tag (case-insensitive)
-            if result.range(of: pair.open, options: .caseInsensitive) != nil {
+            if containsTag(pair.open, in: result) {
                 if let openRegex = cachedRegex("\(escapedOpen)([\\s\\S]*)$",
                     options: [.dotMatchesLineSeparators, .caseInsensitive]) {
                     let nsResult = result as NSString
@@ -1101,21 +1107,21 @@ enum ToolCallParser {
             let closeTag = pair.close
 
             // Case-insensitive check for the closing tag
-            guard result.range(of: closeTag, options: .caseInsensitive) != nil else { continue }
+            guard containsTag(closeTag, in: result) else { continue }
 
             // If the matching open tag is also present, this is a complete pair
             // that Phase 1 should have handled — skip.
-            if result.range(of: pair.open, options: .caseInsensitive) != nil { continue }
+            if containsTag(pair.open, in: result) { continue }
 
             // Also skip if the closer is inside a <details> block (already converted)
-            if result.contains("<details") && result.range(of: closeTag, options: .caseInsensitive) != nil {
+            if result.contains("<details") {
                 // Check if the close tag appears outside of any <details>...</details> block
                 let stripped = result.replacingOccurrences(
                     of: #"<details\s+[^>]*>[\s\S]*?</details>"#,
                     with: "",
                     options: .regularExpression
                 )
-                guard stripped.range(of: closeTag, options: .caseInsensitive) != nil else { continue }
+                guard containsTag(closeTag, in: stripped) else { continue }
             }
 
             let escapedClose = NSRegularExpression.escapedPattern(for: closeTag)
@@ -2543,6 +2549,7 @@ private struct MixedToolCallGroup: View {
     let items: [AssistantMessageContent.GroupedItem]
     var authToken: String? = nil
     var serverBaseURL: String? = nil
+    var isStreaming = false
 
     @State private var isExpanded: Bool = false
     @Environment(\.theme) private var theme
@@ -2632,7 +2639,7 @@ private struct MixedToolCallGroup: View {
                             ToolCallView(toolCall: tc, authToken: authToken, serverBaseURL: serverBaseURL)
                         case .reasoning(let r):
                             Divider().overlay(Color.primary.opacity(0.07))
-                            ReasoningView(reasoning: r)
+                            ReasoningView(reasoning: r, isStreaming: isStreaming)
                                 .padding(.vertical, Spacing.xs)
                         }
                     }
@@ -2654,6 +2661,7 @@ struct ToolCallsContainer: View {
     let toolCalls: [AssistantMessageContent.GroupedItem]
     var authToken: String? = nil
     var serverBaseURL: String? = nil
+    var isStreaming = false
 
     /// Returns the server prefix for a tool name (for external callers).
     static func serverPrefix(for name: String) -> String {
@@ -2690,7 +2698,8 @@ struct ToolCallsContainer: View {
 
         // Multiple items (or single reasoning-only edge case) → collapsed group
         return AnyView(
-            MixedToolCallGroup(items: toolCalls, authToken: authToken, serverBaseURL: serverBaseURL)
+            MixedToolCallGroup(items: toolCalls, authToken: authToken, serverBaseURL: serverBaseURL,
+                              isStreaming: isStreaming)
                 .background(
                     RoundedRectangle(cornerRadius: CornerRadius.md, style: .continuous)
                         .fill(Color.primary.opacity(0.03))
@@ -2712,21 +2721,34 @@ struct ToolCallsContainer: View {
 /// then collapses automatically once thinking completes.
 struct ReasoningView: View {
     let reasoning: ReasoningData
+    let isStreaming: Bool
     @State private var isExpanded: Bool
+    @State private var progress = StreamingTypewriter()
     @Environment(\.theme) private var theme
     @Environment(\.accessibilityScale) private var accessibilityScale
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    init(reasoning: ReasoningData) {
+    private struct RevealRequest: Equatable {
+        let text: String
+        let streaming: Bool
+        let skipAnimation: Bool
+    }
+
+    init(reasoning: ReasoningData, isStreaming: Bool = true) {
         self.reasoning = reasoning
+        self.isStreaming = isStreaming
         // Expanded while thinking is in progress, collapsed once done.
-        // ReasoningData.id is a stable hash so SwiftUI reuses this view across
-        // streaming ticks — @State persists, so user taps are preserved mid-stream.
+        // Containers use the block's position rather than its growing content
+        // as identity, preserving user taps and reveal state between tokens.
         // Auto-collapse when isDone flips is handled by .onChange below.
         let autoExpand = UserDefaults.standard.object(forKey: "expandThinkingWhileStreaming") as? Bool ?? true
         self._isExpanded = State(initialValue: !reasoning.isDone && autoExpand)
     }
 
     var body: some View {
+        let streaming = isStreaming && !reasoning.isDone
+        let request = RevealRequest(text: reasoning.content, streaming: streaming,
+                                    skipAnimation: reduceMotion || !isExpanded)
         VStack(alignment: .leading, spacing: 0) {
             // Header — tappable to expand/collapse
             Button {
@@ -2763,7 +2785,8 @@ struct ReasoningView: View {
             // natural height, so it locks the frame too early and truncates the text.
             if isExpanded {
                 ReasoningText(
-                    text: reasoning.content,
+                    text: streaming || progress.hasStreamed
+                        ? String(reasoning.content.prefix(progress.visibleCount)) : reasoning.content,
                     fontSize: round(12 * accessibilityScale.uiScale * 10) / 10,
                     color: UIColor(theme.textTertiary)
                 )
@@ -2774,6 +2797,13 @@ struct ReasoningView: View {
             }
         }
         .padding(.horizontal, Spacing.xs)
+        // Keep reveal state outside the conditional text view. Collapsed
+        // thinking catches up without animating, so reopening does not replay it.
+        .onChange(of: request, initial: true) { _, request in
+            progress.receive(request.text, count: request.text.count, streaming: request.streaming,
+                             reduceMotion: request.skipAnimation)
+        }
+        .onDisappear { progress.finish() }
         .onChange(of: reasoning.isDone) { _, done in
             guard done else { return }
             let autoExpand = UserDefaults.standard.object(forKey: "expandThinkingWhileStreaming") as? Bool ?? true
@@ -2798,12 +2828,15 @@ struct ReasoningView: View {
 /// Renders a list of reasoning blocks.
 struct ReasoningContainer: View {
     let blocks: [ReasoningData]
+    var isStreaming = false
 
     var body: some View {
         if !blocks.isEmpty {
             VStack(alignment: .leading, spacing: Spacing.xs) {
-                ForEach(blocks) { block in
-                    ReasoningView(reasoning: block)
+                // A content-derived ID changes while the first tokens arrive.
+                // Reasoning blocks are append-ordered within this message group.
+                ForEach(Array(blocks.enumerated()), id: \.offset) { _, block in
+                    ReasoningView(reasoning: block, isStreaming: isStreaming)
                 }
             }
         }
@@ -2849,6 +2882,8 @@ struct AssistantMessageContent: View {
     /// including the live tail. The prefix and tail always share one view tree.
     private final class Presentation {
         var result: ToolCallParser.OrderedParseResult?
+        var pendingContent: String?
+        var parseTask: Task<Void, Never>?
     }
 
     private var isPlainText: Bool {
@@ -2863,7 +2898,11 @@ struct AssistantMessageContent: View {
             } else if resolvedContent == content {
                 parsed = resolvedResult
             } else {
+                // During a live structural stream, use the latest finished
+                // parse while the next one runs. Requiring an exact match on
+                // every packet starves rendering when delivery outruns parsing.
                 parsed = MessageParseCache.shared.lookupSync(content)
+                    ?? (isStreaming && (streamingTail?.isEmpty ?? true) ? resolvedResult : nil)
             }
             if let parsed {
                 var segments = parsed.segments
@@ -3029,11 +3068,12 @@ struct AssistantMessageContent: View {
                         ToolCallsContainer(
                             toolCalls: calls,
                             authToken: authToken,
-                            serverBaseURL: serverBaseURL
+                            serverBaseURL: serverBaseURL,
+                            isStreaming: isStreaming
                         )
 
                     case .reasoningBlocks(let blocks):
-                        ReasoningContainer(blocks: blocks)
+                        ReasoningContainer(blocks: blocks, isStreaming: isStreaming)
 
                     case .standaloneEmbeds(let embeds):
                         // Standalone embeds: no tool call to attach to.
@@ -3072,12 +3112,31 @@ struct AssistantMessageContent: View {
                 }
             }
         }
-        .task(id: content) {
-            guard !isPlainText, resolvedContent != content else { return }
-            let result = await MessageParseCache.shared.parseAndStore(content: content)
-            guard !Task.isCancelled else { return }
-            resolvedResult = result
-            resolvedContent = content
+        .onAppear(perform: parseLatestContent)
+        .onChange(of: content) { _, _ in parseLatestContent() }
+        .onDisappear {
+            presentation.parseTask?.cancel()
+            presentation.parseTask = nil
+            presentation.pendingContent = nil
+        }
+    }
+
+    private func parseLatestContent() {
+        let work = presentation
+        work.pendingContent = isPlainText ? nil : content
+        guard work.parseTask == nil, work.pendingContent != nil else { return }
+        work.parseTask = Task {
+            // Cumulative snapshots need only one in-flight parse and the latest
+            // pending input. Never queue a parse for every arriving token.
+            while let source = work.pendingContent {
+                work.pendingContent = nil
+                if resolvedContent == source { continue }
+                let result = await MessageParseCache.shared.parseAndStore(content: source)
+                guard !Task.isCancelled else { return }
+                resolvedResult = result
+                resolvedContent = source
+            }
+            work.parseTask = nil
         }
     }
 

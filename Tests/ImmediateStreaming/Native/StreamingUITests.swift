@@ -44,14 +44,23 @@ final class StreamingUITests: XCTestCase {
     }
     func sendNew(_ text: String, in app: XCUIApplication) {
         func newChat() -> XCUIElement? {
-            app.buttons.matching(identifier: "New Chat").allElementsBoundByIndex.first(where: { $0.isHittable })
+            let buttons = app.buttons.matching(identifier: "New Chat").allElementsBoundByIndex
+            return buttons.first(where: { $0.isHittable })
+                ?? buttons.first(where: { !$0.frame.isEmpty && app.frame.contains($0.frame) })
         }
         for _ in 0..<5 {
             if newChat() != nil { break }
             app.swipeDown()
         }
         guard let button = newChat() else { XCTFail("New Chat must be visible"); return }
-        button.tap()
+        // On restored long chats XCUITest can report the visible toolbar button
+        // non-hittable. Tap its measured on-screen center, then verify navigation.
+        if button.isHittable { button.tap() }
+        else { button.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap() }
+        let empty = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            !app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Assistant:'")).firstMatch.exists
+        }, object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [empty], timeout: 5), .completed)
         let composer = app.textViews.firstMatch
         XCTAssertTrue(composer.waitForExistence(timeout: 5))
         composer.tap(); composer.typeText(text)
@@ -99,7 +108,7 @@ final class StreamingUITests: XCTestCase {
     }
     func testSyntheticStream() throws {
         let app = try openFixture()
-        for (trial, mode) in ["modern-thinking", "slow-thinking", "long-code", "mixed", "long"].enumerated() {
+        for (trial, mode) in ["modern-thinking", "slow-thinking", "tool-thinking", "long-code", "mixed", "long"].enumerated() {
             try setMode(mode)
             sendNew("Describe an imaginary observatory. Synthetic trial \(trial).", in: app)
             print("IOS_UI sent trial=\(trial) mode=\(mode) wall=\(Date().timeIntervalSince1970)")
@@ -123,6 +132,34 @@ final class StreamingUITests: XCTestCase {
         try replayVideoModes(["slow-thinking"])
     }
 
+    func testCadenceThinkingHandoff() throws {
+        try replayVideoModes(["cadence-thinking"])
+    }
+
+    func testThinkingDisclosureDuringStreaming() throws {
+        let app = try openFixture()
+        try setMode("interactive-thinking")
+        sendNew("Synthetic live thinking disclosure.", in: app)
+        Thread.sleep(forTimeInterval: 4)
+        let row = app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Assistant:'")).firstMatch
+        XCTAssertTrue(row.waitForExistence(timeout: 5))
+        for trial in 0..<3 {
+            XCTAssertTrue(app.buttons["Stop Generating"].exists)
+            let height = row.frame.height
+            row.coordinate(withNormalizedOffset: .zero).withOffset(CGVector(dx: 24, dy: 70)).tap()
+            let collapsed = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in row.frame.height < height - 15 }, object: nil)
+            XCTAssertEqual(XCTWaiter.wait(for: [collapsed], timeout: 5), .completed)
+            Thread.sleep(forTimeInterval: 1)
+            row.coordinate(withNormalizedOffset: .zero).withOffset(CGVector(dx: 24, dy: 70)).tap()
+            let reopened = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in row.frame.height >= height - 2 }, object: nil)
+            XCTAssertEqual(XCTWaiter.wait(for: [reopened], timeout: 5), .completed)
+            print("IOS_UI live_thinking_disclosure trial=\(trial) passed")
+        }
+        app.buttons["Stop Generating"].tap()
+        let stopped = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in !app.buttons["Stop Generating"].exists }, object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [stopped], timeout: 10), .completed)
+    }
+
     private func replayVideoModes(_ modes: [String]) throws {
         let app = try openFixture()
         for mode in modes {
@@ -130,7 +167,7 @@ final class StreamingUITests: XCTestCase {
             sendNew("Synthetic demo.", in: app)
             // Reasoning must remain active through the recovery poll, not just
             // produce a completed row after a premature fixture-driven stop.
-            if mode == "slow-thinking" {
+            if mode.hasSuffix("thinking") {
                 Thread.sleep(forTimeInterval: 8)
                 XCTAssertTrue(app.buttons["Stop Generating"].exists)
                 Thread.sleep(forTimeInterval: 10)

@@ -134,6 +134,35 @@ struct RenderFixture: View {
             released = transient
         }
         check(released == nil, "clock does not retain the reveal controller")
+        // Deterministic packet timing: callbacks do not need to sleep or rely
+        // on the display-link stub. A fixed drain speed used to stop every batch.
+        let paced = StreamingTypewriter()
+        var inputCount = 0, previousCount = 0, lastChange = 0, largestGap = 0
+        for frame in 0..<420 {
+            if frame % 30 == 0 {
+                inputCount += 20
+                paced.receive(String(repeating: "x", count: inputCount), count: inputCount,
+                              streaming: true, now: Double(frame) / 60)
+            }
+            paced.advance(by: 1.0 / 60)
+            check(paced.visibleCount >= previousCount && paced.visibleCount <= inputCount,
+                  "pacing never rewinds or invents characters")
+            if paced.visibleCount > previousCount {
+                if lastChange >= 60 { largestGap = max(largestGap, frame - lastChange) }
+                lastChange = frame
+            }
+            previousCount = paced.visibleCount
+        }
+        check(largestGap <= 4, "steady packets have no repeated catch-up pauses after warmup: \(largestGap) frames")
+        paced.finish()
+        let burst = StreamingTypewriter()
+        burst.receive(String(repeating: "x", count: 100_000), count: 100_000, streaming: true, now: 0)
+        for _ in 0..<54 { burst.advance(by: 1.0 / 60) }
+        check(burst.visibleCount == 100_000 && !burst.isAnimating, "one large burst finishes within 900 ms")
+        burst.receive(String(repeating: "x", count: 100_020), count: 100_020, streaming: true, now: 2)
+        burst.advance(by: 1.0 / 60)
+        check(burst.visibleCount < 100_020, "a completed large burst must not make the next packet jump")
+        burst.finish()
         for size in [1000, 10000, 100000] {
             let content = String(repeating: sentence + "\n\n", count: max(1, size / sentence.count))
             var times: [Double] = []
@@ -154,7 +183,9 @@ struct RenderFixture: View {
             let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 400, height: 800),
                                   styleMask: .borderless, backing: .buffered, defer: false)
             window.contentView = host
-            for _ in 0..<45 {
+            // Let the bounded initial reveal finish before counting views.
+            // Completion-during-reveal is checked separately above.
+            for _ in 0..<90 {
                 host.layoutSubtreeIfNeeded()
                 try await Task.sleep(for: .milliseconds(10))
             }

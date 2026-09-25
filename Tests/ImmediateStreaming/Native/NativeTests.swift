@@ -9,17 +9,41 @@ import XCTest
 @MainActor private final class RenderState: ObservableObject {
     @Published var text = ""
     @Published var streaming = true
+    @Published var visible = true
+    @Published var packet: Int?
     var assistant = false
+    var reasoningOnly = false
+    var frozen = false
+    var cadenceLabel: String?
 }
 private struct Fixture: View {
     @ObservedObject var state: RenderState
     var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            if let label = state.cadenceLabel {
+                Text("Synthetic typewriter replay").font(.headline)
+                HStack {
+                    Text(label).font(.subheadline)
+                    Spacer()
+                    if let packet = state.packet {
+                        Text("Packet \(packet)").font(.caption).monospacedDigit()
+                    }
+                }
+                Divider()
+            }
         ScrollView {
-            if state.assistant {
-                AssistantMessageContent(content: state.text, isStreaming: state.streaming)
+            if state.visible {
+            if state.reasoningOnly {
+                ReasoningView(reasoning: .init(summary: "Thinking", content: state.text, duration: nil,
+                                               isDone: !state.streaming))
+            } else if state.assistant {
+                AssistantMessageContent(content: state.text, isStreaming: state.streaming,
+                                        streamingTail: state.frozen ? "" : nil)
             } else {
                 StreamingMarkdownView(content: state.text, isStreaming: state.streaming)
             }
+            }
+        }
         }.padding(.horizontal, 20)
     }
 }
@@ -167,6 +191,82 @@ private struct Fixture: View {
         window.isHidden = true; window.rootViewController = nil
         #endif
     }
+    /// Same scheduled input and actual native text samples for both renderer
+    /// revisions. Record this test separately from the unrecorded CPU runs.
+    func testTypewriterCadence() async throws {
+        UserDefaults.standard.set(true, forKey: "expandThinkingWhileStreaming")
+        defer { UserDefaults.standard.removeObject(forKey: "expandThinkingWhileStreaming") }
+        let regular = Array(repeating: (20, 0.5), count: 14)
+        let irregular = Array(repeating: [(5, 0.08), (15, 0.30), (8, 0.14), (32, 0.50)], count: 5).flatMap { $0 }
+        let stalled = Array(repeating: (20, 0.25), count: 5) + [(20, 2.0)] + Array(repeating: (20, 0.25), count: 5)
+        let dense = Array(repeating: (1, 0.025), count: 160)
+        for thinking in [false, true] {
+            for (name, packets) in [("regular", regular), ("irregular", irregular), ("network-stall", stalled), ("single-character", dense)] {
+                let state = RenderState()
+                state.assistant = thinking
+                state.cadenceLabel = "\(thinking ? "Thinking" : "Answer") · \(name)"
+                state.packet = 0
+                let window = try host(state)
+                try await settle(window, milliseconds: 500)
+                let content = String(repeating: sentence, count: 12)
+                var source = "", inputCount = 0
+                let probe = FrameProbe()
+                var frames: [[Double]] = [], arrivals: [[Double]] = []
+                var identities = Set<ObjectIdentifier>()
+                func visible() -> String {
+                    if thinking {
+                        return self.views(window).compactMap { view in
+                            guard let label = view as? LTXLabel else { return nil }
+                            identities.insert(ObjectIdentifier(label))
+                            return label.attributedText.string
+                        }.joined()
+                    }
+                    return self.rendered(window)
+                }
+                let start = CACurrentMediaTime(), cpuStart = cpu(), wallStart = Date().timeIntervalSince1970
+                probe.observe = {
+                    let count = visible().trimmingCharacters(in: .whitespacesAndNewlines).count
+                    frames.append([CACurrentMediaTime() - start, Double(inputCount), Double(count)])
+                }
+                probe.start()
+                var deadline = start
+                for (packet, (size, interval)) in packets.enumerated() {
+                    let delay = deadline - CACurrentMediaTime()
+                    if delay > 0 { try await Task.sleep(for: .seconds(delay)) }
+                    source = String(content.prefix(source.count + size))
+                    inputCount = source.trimmingCharacters(in: .whitespacesAndNewlines).count
+                    state.text = thinking
+                        ? "<details type=\"reasoning\"><summary>Thinking</summary>\n" + source
+                        : source
+                    state.packet = packet + 1
+                    arrivals.append([CACurrentMediaTime() - start, Double(inputCount)])
+                    deadline += interval
+                }
+                let inputEnd = CACurrentMediaTime() - start
+                try await settle(window, milliseconds: 1000)
+                probe.stop()
+                let cost = (cpu() - cpuStart) * 1000
+                XCTAssertEqual(visible().trimmingCharacters(in: .whitespacesAndNewlines), source.trimmingCharacters(in: .whitespacesAndNewlines))
+                if name == "regular" {
+                    let active = frames.filter { $0[0] >= 1 && $0[0] <= inputEnd }
+                    let advances = zip(active, active.dropFirst()).filter { $1[2] > $0[2] }
+                    let times = advances.map { $1[0] }
+                    let longest = zip(times, times.dropFirst()).map { $1 - $0 }.max() ?? .infinity
+                    XCTAssertLessThan(longest, 0.15, "Regular delivery should not create repeated burst/pause cycles after warmup")
+                    XCTAssertLessThan(advances.map { $1[2] - $0[2] }.max() ?? .infinity, 8,
+                                      "Regular text should reveal characters, not entire 20-character packets")
+                    if thinking { XCTAssertEqual(identities.count, 1, "Growing reasoning must retain its native view") }
+                }
+                let data: [String: Any] = ["kind": thinking ? "thinking" : "answer", "case": name,
+                    "cpu_ms": cost, "wall_start": wallStart, "input_end": inputEnd, "frames": frames, "arrivals": arrivals,
+                    "reasoning_views": identities.count]
+                print("CADENCE_FRAMES " + String(decoding: try JSONSerialization.data(withJSONObject: data, options: [.sortedKeys]), as: UTF8.self))
+                state.streaming = false
+                try await settle(window, milliseconds: 500)
+                window.isHidden = true; window.rootViewController = nil
+            }
+        }
+    }
     func testTypewriterFullPipelineCost() async throws {
         let prose = (1...1250).map { "Section \($0). " + sentence + "\n\n" }.joined()
         let code = "~~~swift\n" + (1...120).map { "let observation\($0) = \($0) // synthetic" }.joined(separator: "\n") + "\n~~~"
@@ -229,6 +329,149 @@ private struct Fixture: View {
             } else { XCTAssertTrue(rendered(window).contains("seven paper stars")) }
             window.isHidden = true; window.rootViewController = nil
         }
+    }
+    func testTypewriterLargeThinkingCost() async throws {
+        try await largeThinkingCost(direct: false)
+    }
+    func testTypewriterLargeThinkingLayoutCost() async throws {
+        try await largeThinkingCost(direct: true)
+    }
+    func testTypewriterFastLargeThinking() async throws {
+        try await largeThinkingCost(direct: false, interval: 0.01, updates: 100, sizes: [100_000])
+    }
+    func testTypewriterFastFrozenThinking() async throws {
+        try await largeThinkingCost(direct: false, interval: 0.01, updates: 100, sizes: [100_000], frozen: true)
+    }
+    private func largeThinkingCost(direct: Bool, interval: Double = 0.1, updates: Int = 30,
+                                   sizes: [Int] = [10_000, 100_000], frozen: Bool = false) async throws {
+        UserDefaults.standard.set(true, forKey: "expandThinkingWhileStreaming")
+        defer { UserDefaults.standard.removeObject(forKey: "expandThinkingWhileStreaming") }
+        for size in sizes {
+            let state = RenderState()
+            state.assistant = true
+            state.reasoningOnly = direct
+            state.frozen = frozen
+            state.cadenceLabel = "Thinking · \(size)-character prefix"
+            var text = String(repeating: sentence + "\n\n", count: size / (sentence.count + 2))
+            let prefix = direct ? "" : "<details type=\"reasoning\"><summary>Thinking</summary>\n"
+            let suffix = frozen ? "</details>" : ""
+            state.text = prefix + text + suffix
+            let window = try host(state)
+            try await settle(window, milliseconds: 1500)
+            let scroll = try XCTUnwrap(views(window).compactMap { $0 as? UIScrollView }.first)
+            scroll.setContentOffset(CGPoint(x: 0, y: max(0, scroll.contentSize.height - scroll.bounds.height)), animated: false)
+            let probe = FrameProbe()
+            var frames: [[Double]] = [], arrivals: [[Double]] = []
+            var identities = Set<ObjectIdentifier>()
+            var inputCount = text.trimmingCharacters(in: .whitespacesAndNewlines).utf16.count
+            let start = CACurrentMediaTime(), cpuStart = cpu(), memoryStart = footprint()
+            func labels() -> [LTXLabel] { views(window).compactMap { $0 as? LTXLabel } }
+            probe.observe = {
+                let visible = labels()
+                visible.forEach { identities.insert(ObjectIdentifier($0)) }
+                // This fixture is ASCII. NSAttributedString.length avoids a
+                // fresh 100 KB grapheme scan in the measurement callback.
+                frames.append([CACurrentMediaTime() - start, Double(inputCount),
+                               Double(visible.reduce(0) { $0 + $1.attributedText.length })])
+            }
+            probe.start()
+            for index in 0..<updates {
+                let delay = start + Double(index) * interval - CACurrentMediaTime()
+                if delay > 0 { try await Task.sleep(for: .seconds(delay)) }
+                text += "A copper telescope records seven stars. "
+                inputCount = text.trimmingCharacters(in: .whitespacesAndNewlines).utf16.count
+                state.text = prefix + text + suffix
+                arrivals.append([CACurrentMediaTime() - start, Double(inputCount)])
+                scroll.setContentOffset(CGPoint(x: 0, y: max(0, scroll.contentSize.height - scroll.bounds.height)), animated: false)
+            }
+            let inputEnd = CACurrentMediaTime() - start
+            try await settle(window, milliseconds: 1000)
+            probe.stop()
+            let cost = (cpu() - cpuStart) * 1000
+            if interval < 0.1 {
+                let liveLengths = Set(frames.filter { $0[0] > 0.15 && $0[0] < inputEnd }.map { $0[2] })
+                XCTAssertGreaterThan(liveLengths.count, 5, "Fast arrivals must not starve visible parsing progress")
+            }
+            XCTAssertTrue(labels().map { $0.attributedText.string }.joined().trimmingCharacters(in: .whitespacesAndNewlines)
+                          == text.trimmingCharacters(in: .whitespacesAndNewlines), "Final thinking must contain every delivered character")
+            XCTAssertEqual(identities.count, 1)
+            let data: [String: Any] = ["kind": "thinking", "case": "\(direct ? "layout" : frozen ? "frozen" : interval < 0.1 ? "fast" : "long")-\(size)", "cpu_ms": cost,
+                "input_end": inputEnd, "frames": frames, "arrivals": arrivals, "reasoning_views": identities.count,
+                "footprint_start": memoryStart, "footprint_end": footprint()]
+            print("CADENCE_FRAMES " + String(decoding: try JSONSerialization.data(withJSONObject: data, options: [.sortedKeys]), as: UTF8.self))
+            window.isHidden = true; window.rootViewController = nil
+        }
+    }
+    func testLargeReasoningParseCost() async {
+        for size in [10_000, 100_000] {
+            let text = "<details type=\"reasoning\"><summary>Thinking</summary>\n"
+                + String(repeating: sentence + "\n\n", count: size / (sentence.count + 2))
+            let start = CACurrentMediaTime(), cpuStart = cpu()
+            let parsed = await MessageParseCache.shared.parseAndStore(content: text)
+            print("REASONING_PARSE size=\(size) cpu_ms=\((cpu() - cpuStart) * 1000) wall_ms=\((CACurrentMediaTime() - start) * 1000) segments=\(parsed.segments.count)")
+        }
+    }
+    func testReasoningTagMatching() {
+        let bodies = ["Invented copper telescope.", "Cafe\u{301} 👩🏽‍🚀 星 مرحبا & a copper telescope."]
+        for name in ["think", "thinking", "reason", "reasoning", "thought"] {
+            for tag in [name, name.uppercased(), name.capitalized] {
+                for body in bodies {
+                    for complete in [false, true] {
+                        let input = "<\(tag)>" + body + (complete ? "</\(tag)>\n\nA paper star." : "")
+                        let result = ToolCallParser.parseAll(input)
+                        XCTAssertEqual(result.reasoning.count, 1)
+                        XCTAssertEqual(result.reasoning.first?.content, body)
+                        XCTAssertEqual(result.reasoning.first?.isDone, complete)
+                        if complete { XCTAssertTrue(result.cleanedContent.contains("A paper star.")) }
+                    }
+                    let spill = ToolCallParser.parseAll("<details type=\"reasoning\"><summary>Thinking</summary>"
+                        + body + "</\(tag)>A paper star.</details>")
+                    XCTAssertEqual(spill.reasoning.first?.content, body)
+                    XCTAssertTrue(spill.cleanedContent.contains("A paper star."))
+                }
+            }
+        }
+    }
+    func testCompletedReasoningDoesNotReplay() async throws {
+        // Older completed messages can retain an unfinished reasoning marker.
+        // Opening history must still show its text immediately, not replay it.
+        let state = RenderState()
+        state.assistant = true; state.streaming = false
+        let text = String(repeating: sentence, count: 15).trimmingCharacters(in: .whitespacesAndNewlines)
+        state.text = "<details type=\"reasoning\"><summary>Thinking</summary>" + text + "</details>"
+        let window = try host(state)
+        let probe = FrameProbe()
+        var lengths: [Int] = []
+        probe.observe = {
+            lengths.append(self.views(window).compactMap { ($0 as? LTXLabel)?.attributedText.length }.reduce(0, +))
+        }
+        probe.start()
+        try await settle(window, milliseconds: 1000)
+        probe.stop()
+        XCTAssertFalse(lengths.filter { $0 > 0 }.isEmpty)
+        XCTAssertTrue(lengths.allSatisfy { $0 == 0 || $0 == text.utf16.count }, "Completed reasoning must not replay a typewriter animation")
+        window.isHidden = true; window.rootViewController = nil
+    }
+    func testStructuralReplacementAndRemount() async throws {
+        let state = RenderState()
+        state.assistant = true
+        let prefix = "<details type=\"reasoning\"><summary>Thinking</summary>"
+        state.text = prefix + String(repeating: sentence, count: 1500)
+        let window = try host(state)
+        try await settle(window, milliseconds: 60)
+        for trial in 0..<3 {
+            state.text = prefix + String(repeating: sentence, count: 1500) + " Update \(trial)."
+            try await settle(window, milliseconds: 10)
+            state.visible = false
+            try await settle(window, milliseconds: 40)
+            state.text = "<details type=\"reasoning\" done=\"true\"><summary>Thinking</summary>"
+                + "A newly invented replacement.</details>\n\nReplacement answer \(trial)."
+            state.streaming = false; state.visible = true
+            try await settle(window, milliseconds: 800)
+            XCTAssertEqual(rendered(window).trimmingCharacters(in: .whitespacesAndNewlines), "Replacement answer \(trial).")
+            state.streaming = true
+        }
+        window.isHidden = true; window.rootViewController = nil
     }
     func testWarmShortTypewriterCost() async throws {
         // Isolate steady animation from app startup and first-use initialization.

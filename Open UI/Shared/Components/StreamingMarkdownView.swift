@@ -1349,64 +1349,14 @@ private struct StableStreamingMarkdown: View {
 /// never by the display clock. Non-text attachments are revealed atomically.
 @MainActor @Observable
 final class StreamingTextReveal {
-    private(set) var chunks: [MarkdownView.PreprocessedContent]?
-    @ObservationIgnored private var target: [MarkdownView.PreprocessedContent] = []
+    private var target: [MarkdownView.PreprocessedContent]?
     @ObservationIgnored private var lengths: [Int] = []
-    @ObservationIgnored private var source = ""
-    @ObservationIgnored private var shown = 0.0
-    @ObservationIgnored private var total = 0
-    @ObservationIgnored private var speed = 90.0
-    @ObservationIgnored private var wasStreaming = false
-    @ObservationIgnored private var link: CADisplayLink?
-    var isAnimating: Bool { link != nil }
+    private let progress = StreamingTypewriter()
+    var isAnimating: Bool { progress.isAnimating }
 
-    deinit { link?.invalidate() }
-
-    func receive(_ next: [MarkdownView.PreprocessedContent], source: String,
-                 streaming: Bool, reduceMotion: Bool = false) {
-        let append = source.hasPrefix(self.source)
-        let nextLengths = next.enumerated().map { index, chunk in
-            index < target.count && target[index] === chunk
-                ? lengths[index] : chunk.blocks.reduce(0) { $0 + RevealPrefix.length($1) }
-        }
-        target = next
-        lengths = nextLengths
-        total = lengths.reduce(0, +)
-        self.source = source
-        wasStreaming = wasStreaming || streaming
-        guard wasStreaming, !reduceMotion, append else { finish(); return }
-        shown = min(shown, Double(total))
-        // Start visibly, with no reserved characters. Catch up within 250 ms of
-        // the latest snapshot, instead of accumulating a long playback queue.
-        if shown == 0, total > 0 { shown = 1 }
-        speed = max(90, (Double(total) - shown) / 0.25)
-        publish()
-        if shown < Double(total), link == nil {
-            let clock = Clock(self)
-            let displayLink = CADisplayLink(target: clock, selector: #selector(Clock.tick(_:)))
-            displayLink.preferredFrameRateRange = CAFrameRateRange(minimum: 30, maximum: 60, preferred: 60)
-            displayLink.add(to: .main, forMode: .common)
-            link = displayLink
-        }
-    }
-
-    func advance(by seconds: Double) {
-        guard seconds > 0, seconds.isFinite, shown < Double(total) else { return }
-        let previous = Int(shown)
-        shown = min(Double(total), shown + speed * seconds)
-        if Int(shown) != previous { publish() }
-    }
-
-    func finish() {
-        shown = Double(total)
-        chunks = target
-        link?.invalidate()
-        link = nil
-    }
-
-    private func publish() {
-        guard shown < Double(total) else { finish(); return }
-        var remaining = Int(shown)
+    var chunks: [MarkdownView.PreprocessedContent]? {
+        guard let target else { return nil }
+        var remaining = progress.visibleCount
         var visible: [MarkdownView.PreprocessedContent] = []
         for (index, chunk) in target.enumerated() {
             if remaining >= lengths[index] {
@@ -1420,13 +1370,113 @@ final class StreamingTextReveal {
                 break
             }
         }
-        chunks = visible
+        return visible
+    }
+
+    func receive(_ next: [MarkdownView.PreprocessedContent], source: String,
+                 streaming: Bool, reduceMotion: Bool = false) {
+        let previous = target ?? []
+        lengths = next.enumerated().map { index, chunk in
+            index < previous.count && previous[index] === chunk
+                ? lengths[index] : chunk.blocks.reduce(0) { $0 + RevealPrefix.length($1) }
+        }
+        target = next
+        progress.receive(source, count: lengths.reduce(0, +), streaming: streaming, reduceMotion: reduceMotion)
+    }
+
+    func advance(by seconds: Double) { progress.advance(by: seconds) }
+    func finish() { progress.finish() }
+}
+
+/// Both formatted answers and plain reasoning use this clock. Learn the input
+/// cadence instead of emptying every packet at a fixed minimum typing speed.
+@MainActor @Observable
+final class StreamingTypewriter {
+    private(set) var visibleCount = 0
+    private(set) var hasStreamed = false
+    @ObservationIgnored private var source = ""
+    @ObservationIgnored private var shown = 0.0
+    @ObservationIgnored private var total = 0
+    @ObservationIgnored private var speed = 90.0
+    @ObservationIgnored private var desiredSpeed = 90.0
+    @ObservationIgnored private var arrivalRate = 90.0
+    @ObservationIgnored private var lastArrival: Double?
+    @ObservationIgnored private var meanInterval = 0.0
+    @ObservationIgnored private var meanSize = 0.0
+    @ObservationIgnored private var link: CADisplayLink?
+    var isAnimating: Bool { visibleCount < total }
+
+    deinit { link?.invalidate() }
+
+    func receive(_ source: String, count: Int, streaming: Bool, reduceMotion: Bool = false,
+                 now: Double = ProcessInfo.processInfo.systemUptime) {
+        let append = source.hasPrefix(self.source)
+        let added = count - total
+        total = count
+        self.source = source
+        hasStreamed = hasStreamed || streaming
+        guard hasStreamed, !reduceMotion, append else {
+            lastArrival = nil; meanInterval = 0; meanSize = 0
+            arrivalRate = 90; speed = 90; desiredSpeed = 90
+            finish()
+            return
+        }
+        if added > 0 {
+            if let lastArrival {
+                let interval = now - lastArrival
+                // A network outage is not a new typing speed. Average packet
+                // sizes and intervals separately so clustered packets do not
+                // inflate the estimate as averages of instantaneous rates do.
+                if interval > 0, interval < 1.5 {
+                    let weight = meanInterval == 0 ? 1.0 : 0.3
+                    meanInterval += (interval - meanInterval) * weight
+                    meanSize += (Double(added) - meanSize) * weight
+                    arrivalRate = meanSize / meanInterval
+                }
+            }
+            lastArrival = now
+        }
+        shown = min(shown, Double(total))
+        // No startup wait and no fixed character reserve.
+        // Already character-paced input needs no additional animation clock.
+        if link == nil, Double(total) - shown <= 1 { shown = Double(total) }
+        else if shown == 0, total > 0 { shown = 1 }
+        let horizon = max(0.5, min(1, meanInterval * 1.25))
+        desiredSpeed = max(arrivalRate, (Double(total) - shown) / horizon)
+        visibleCount = Int(shown)
+        if shown >= Double(total) { finish() }
+        else if link == nil {
+            let clock = Clock(self)
+            let displayLink = CADisplayLink(target: clock, selector: #selector(Clock.tick(_:)))
+            displayLink.preferredFrameRateRange = CAFrameRateRange(minimum: 30, maximum: 60, preferred: 60)
+            displayLink.add(to: .main, forMode: .common)
+            link = displayLink
+        }
+    }
+
+    func advance(by seconds: Double) {
+        guard seconds > 0, seconds.isFinite, shown < Double(total) else { return }
+        // Ease rate changes rather than visibly accelerating at each packet.
+        // Keep the catch-up target until the next input; recalculating it from
+        // the shrinking remainder every frame produces a long exponential tail.
+        speed += (desiredSpeed - speed) * (1 - exp(-seconds / 0.08))
+        shown = min(Double(total), shown + speed * seconds)
+        visibleCount = Int(shown)
+        if shown >= Double(total) { finish() }
+    }
+
+    func finish() {
+        shown = Double(total)
+        visibleCount = total
+        speed = arrivalRate
+        link?.invalidate()
+        link = nil
     }
 
     @MainActor private final class Clock: NSObject {
-        weak var owner: StreamingTextReveal?
+        weak var owner: StreamingTypewriter?
         private var previous: CFTimeInterval?
-        init(_ owner: StreamingTextReveal) { self.owner = owner }
+        init(_ owner: StreamingTypewriter) { self.owner = owner }
         @objc func tick(_ link: CADisplayLink) {
             let elapsed = previous.map { link.timestamp - $0 } ?? (link.targetTimestamp - link.timestamp)
             previous = link.timestamp

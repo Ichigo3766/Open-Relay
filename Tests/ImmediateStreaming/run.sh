@@ -17,12 +17,21 @@ else
 fi
 printf 'import Foundation\n' > "$scratch/Accumulator.swift"
 cat "$scratch/AccumulatorBody.swift" >> "$scratch/Accumulator.swift"
+# Compile the actual pure reconstruction helpers, not a mock implementation.
+awk 'BEGIN { print "import Foundation\nnonisolated enum MessageHistory {" }
+ /^    static func reconstructContentFromOutput/ { copying=1 }
+ /^    \/\/ MARK: - Human-in-the-Loop/ { copying=0 }
+ /^    private static func htmlEntityEncode/ { copying=1 }
+ /^    \/\/\/ Parses a single node/ { copying=0 }
+ copying { print }
+ END { print "}" }' "$repo/Open UI/Core/Models/MessageHistory.swift" > "$scratch/Output.swift"
 if [[ -n "${RELAY_SWIFT_FLAGS_FILE:-}" ]]; then
     while IFS= read -r flag; do swift_flags+=("$flag"); done < "$RELAY_SWIFT_FLAGS_FILE"
 fi
 swiftc -O -swift-version 5 -target arm64-apple-macosx14.0 -parse-as-library \
     ${swift_flags[@]+"${swift_flags[@]}"} "$scratch/Pipeline.swift" "$scratch/Store.swift" \
-    "$scratch/Accumulator.swift" "$repo/Tests/ImmediateStreaming/TestSupport.swift" \
+    "$scratch/Accumulator.swift" "$scratch/Output.swift" "$repo/Tests/ImmediateStreaming/TestSupport.swift" \
+    "$repo/Tests/ImmediateStreaming/ResponseTests.swift" \
     "$repo/Tests/ImmediateStreaming/StreamingTests.swift" -o "$scratch/tests"
 "$scratch/tests"
 echo "Artifacts: $scratch"
