@@ -75,6 +75,65 @@ struct RenderFixture: View {
         check(before[0] === after[0], "unchanged chunk object reused")
         let replaced = await parser.parse("Replacement.")
         check(replaced.flatMap(\.blocks) == MarkdownParser().parse("Replacement.").document, "replacement clears old chunks")
+        // Exercise every reveal budget, including nested formatting, grapheme
+        // clusters, ordered-list starts and atomic attachments.
+        let revealFixtures = fixtures.map(\.1) + [
+            "", "~~~text\n~~~", "- \n- Item",
+            "# Heading **bold** and *italic* with `code` and ~~strike~~.",
+            "- One\n  - Nested 👨‍👩‍👧‍👦 e\u{301} 星\n\n> Quote [link](https://example.com)",
+            "3. Three\n4. Four\n\n- [x] Done\n- [ ] Pending",
+            "> [!NOTE]\n> Synthetic note.",
+            "| A | B |\n|---|---|\n| 1 | 2 |\n\n---\n\n$x^2$",
+            "![image](https://example.com/image.png)\n\n<strong>Text</strong>",
+        ]
+        for text in revealFixtures {
+            let nodes = MarkdownParser().parse(text).document
+            let length = nodes.reduce(0) { $0 + RevealPrefix.length($1) }
+            for amount in 0...length {
+                var budget = amount
+                let prefix = RevealPrefix.blocks(nodes, budget: &budget)
+                check(prefix.reduce(0) { $0 + RevealPrefix.length($1) } == amount, "reveal consumes exact budget")
+                if amount == length { check(prefix == nodes, "reveal restores exact final AST") }
+            }
+        }
+        let reveal = StreamingTextReveal()
+        let first = await parser.parse("Copper telescope.")
+        reveal.receive(first, source: "Copper telescope.", streaming: true)
+        check(reveal.isAnimating, "clock starts only with unrevealed text")
+        check(reveal.chunks?.flatMap(\.blocks) != first.flatMap(\.blocks), "first snapshot is not a whole-chunk jump")
+        reveal.advance(by: 1.0 / 60)
+        let earlyLength = reveal.chunks?.flatMap(\.blocks).reduce(0) { $0 + RevealPrefix.length($1) } ?? 0
+        check(earlyLength >= 2 && earlyLength <= 3, "one frame reveals characters")
+        // Completion preserves an in-progress reveal rather than replacing it.
+        reveal.receive(first, source: "Copper telescope.", streaming: false)
+        check(reveal.isAnimating, "completion keeps remaining animation")
+        reveal.advance(by: 1)
+        check(!reveal.isAnimating && reveal.chunks?.first === first.first, "caught-up clock stops and target object survives")
+        let next = await parser.parse("Copper telescope. Seven stars.")
+        reveal.receive(next, source: "Copper telescope. Seven stars.", streaming: true)
+        check(reveal.isAnimating, "arrival restarts stopped clock")
+        reveal.receive(replaced, source: "Replacement.", streaming: true)
+        check(!reveal.isAnimating && reveal.chunks?.first === replaced.first, "authoritative replacement cannot replay stale characters")
+        let historical = StreamingTextReveal()
+        historical.receive(before, source: long, streaming: false)
+        check(!historical.isAnimating && historical.chunks?.count == before.count, "history never typewrites")
+        let reduced = StreamingTextReveal()
+        reduced.receive(before, source: long, streaming: true, reduceMotion: true)
+        check(!reduced.isAnimating && reduced.chunks?.first === before.first, "Reduce Motion bypasses animation")
+        let stable = StreamingTextReveal()
+        stable.receive(before, source: long, streaming: true)
+        stable.advance(by: 1)
+        stable.receive(after, source: long + "New paragraph.", streaming: true)
+        check(stable.chunks?.first === before.first, "animation preserves settled render objects")
+        stable.finish()
+        check(!stable.isAnimating, "disappearing view leaves no running clock")
+        weak var released: StreamingTextReveal?
+        do {
+            let transient = StreamingTextReveal()
+            transient.receive(first, source: "Copper telescope.", streaming: true)
+            released = transient
+        }
+        check(released == nil, "clock does not retain the reveal controller")
         for size in [1000, 10000, 100000] {
             let content = String(repeating: sentence + "\n\n", count: max(1, size / sentence.count))
             var times: [Double] = []
@@ -95,7 +154,7 @@ struct RenderFixture: View {
             let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 400, height: 800),
                                   styleMask: .borderless, backing: .buffered, defer: false)
             window.contentView = host
-            for _ in 0..<20 {
+            for _ in 0..<45 {
                 host.layoutSubtreeIfNeeded()
                 try await Task.sleep(for: .milliseconds(10))
             }

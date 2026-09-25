@@ -116,8 +116,16 @@ final class StreamingUITests: XCTestCase {
     /// Capture both app builds with exactly the same synthetic replay, without
     /// gestures during delivery. Trim/align on the visible "Replay running" cue.
     func testVideoComparison() throws {
+        try replayVideoModes(["slow-thinking", "mixed", "long"])
+    }
+
+    func testTypewriterSlowReplay() throws {
+        try replayVideoModes(["slow-thinking"])
+    }
+
+    private func replayVideoModes(_ modes: [String]) throws {
         let app = try openFixture()
-        for mode in ["slow-thinking", "mixed", "long"] {
+        for mode in modes {
             try setMode("video-" + mode)
             sendNew("Synthetic demo.", in: app)
             // Reasoning must remain active through the recovery poll, not just

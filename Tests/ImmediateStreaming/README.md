@@ -1,5 +1,9 @@
 # Immediate streaming regression checks
 
+The current local branch additionally prototypes a character-by-character reveal
+over parsed blocks. See [TYPEWRITER.md](TYPEWRITER.md). The transport pipeline is
+still immediate; presentation animates independently without reparsing per frame.
+
 All fixtures are newly invented. Component tests do not access a server, account,
 chat database, credentials, screenshots, or network service. The optional native
 UI suite uses only the bundled loopback fixture, never a real instance.
@@ -44,10 +48,12 @@ MarkdownView: 2654e0d8254816bb9c1bdcbb73fa43bcc0f9f429.
   consumer lifetime, concurrent token producers, and overload.
 - Original-source checks reproduce delayed delivery and the accumulator's
   missed-update window; failure counts are assertions, not distinct bugs.
-- 253 Markdown/view checks pass: original list and tilde-fence corruption
+- 1,832 Markdown/view checks pass, including the original 253 checks: list and tilde-fence corruption
   reproduced; each incremental input matches a full parse; unchanged chunk
   objects are reused; ordinary fences keep the same parent; preview IDs and
   native text-view lifetimes survive completion.
+- Typewriter checks cover every character budget, formatting, Unicode graphemes,
+  final-content equality, cached objects, clock lifetime and Reduce Motion.
 
 The new path reparses the changing prose document correctly, then reuses unchanged
 render chunks. It is not a claim of a new incremental Markdown syntax parser.

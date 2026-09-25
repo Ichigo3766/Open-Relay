@@ -1,5 +1,8 @@
 # Immediate streaming: matched native measurements
 
+These results describe the animation-free implementation at `6e34a99`. They do
+not measure the later typewriter prototype; see [TYPEWRITER.md](TYPEWRITER.md).
+
 ## Method
 
 Baseline: `b38bfe91ab0d584c7ab22ac119adadae1af3dbf5`.

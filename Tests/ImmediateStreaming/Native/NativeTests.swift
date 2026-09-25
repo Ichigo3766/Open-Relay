@@ -42,6 +42,16 @@ private struct Fixture: View {
         return Double(usage.ru_utime.tv_sec + usage.ru_stime.tv_sec)
             + Double(usage.ru_utime.tv_usec + usage.ru_stime.tv_usec) / 1_000_000
     }
+    func footprint() -> UInt64 {
+        var info = task_vm_info_data_t()
+        var count = mach_msg_type_number_t(MemoryLayout<task_vm_info_data_t>.size / MemoryLayout<integer_t>.size)
+        let result = withUnsafeMutablePointer(to: &info) { pointer in
+            pointer.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
+                task_info(mach_task_self_, task_flavor_t(TASK_VM_INFO), $0, &count)
+            }
+        }
+        return result == KERN_SUCCESS ? info.phys_footprint : 0
+    }
     func views(_ view: UIView) -> [UIView] { [view] + view.subviews.flatMap(views) }
     func rendered(_ window: UIWindow) -> String {
         views(window).compactMap { ($0 as? MarkdownTextView)?.textView.attributedText.string }.joined()
@@ -127,6 +137,127 @@ private struct Fixture: View {
             probe.stop()
             XCTAssertNotNil(first)
             print("IOS_BENCH native_first trial=\(trial) ready_at_display_callback_ms=\(((first ?? start)-start)*1000)")
+            window.isHidden = true; window.rootViewController = nil
+        }
+    }
+    func testTypewriterProgress() async throws {
+        #if !QA_BASELINE
+        let state = RenderState(), window = try host(state)
+        try await settle(window)
+        var samples: [String] = []
+        let probe = FrameProbe()
+        // The native paragraph builder adds one layout newline, not present in
+        // the source. Keep the assertion about the actual visible characters.
+        probe.observe = {
+            let text = self.rendered(window)
+            samples.append(text.hasSuffix("\n") ? String(text.dropLast()) : text)
+        }
+        probe.start()
+        state.text = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+        try await settle(window, milliseconds: 60)
+        state.streaming = false
+        try await settle(window, milliseconds: 500)
+        probe.stop()
+        let lengths = Set(samples.map(\.count))
+        print("TYPEWRITER visible_lengths=\(lengths.sorted())")
+        XCTAssertGreaterThan(lengths.filter { $0 > 0 && $0 < 26 }.count, 5,
+                             "Actual native text must pass through character prefixes, not a whole-chunk jump")
+        XCTAssertTrue(samples.allSatisfy { state.text.hasPrefix($0) })
+        XCTAssertEqual(rendered(window), state.text + "\n")
+        window.isHidden = true; window.rootViewController = nil
+        #endif
+    }
+    func testTypewriterFullPipelineCost() async throws {
+        let prose = (1...1250).map { "Section \($0). " + sentence + "\n\n" }.joined()
+        let code = "~~~swift\n" + (1...120).map { "let observation\($0) = \($0) // synthetic" }.joined(separator: "\n") + "\n~~~"
+        let reasoning = "<details type=\"reasoning\" done=\"true\"><summary>Thinking</summary>" + String(repeating: sentence, count: 1500) + "</details>\n\n"
+        let cases = [
+            ("slow", "", String(repeating: sentence, count: 4), 20, 150),
+            ("large", "", prose, 700, 30),
+            ("code", "", code, 40, 30),
+            ("reasoning", reasoning, String(repeating: sentence, count: 8), 20, 30),
+        ]
+        for (name, prefix, text, step, interval) in cases {
+            let state = RenderState()
+            let window = try host(state)
+            try await settle(window)
+            var idle = false
+            let prefixBytes = prefix.utf8.count
+            let pipeline = StreamingPipeline { snapshot in
+                if snapshot.isActive {
+                    // As in the chat's frozen-prefix render path, the settled
+                    // reasoning is not reparsed as part of each answer update.
+                    // Strip this fixture's known prefix without another O(N)
+                    // character scan, in both original and candidate builds.
+                    let bytes = snapshot.displayContent.utf8
+                    if prefixBytes == 0 {
+                        state.text = snapshot.displayContent
+                    } else if bytes.count >= prefixBytes {
+                        state.text = String(decoding: bytes.dropFirst(prefixBytes), as: UTF8.self)
+                    }
+                }
+                else { state.streaming = false; idle = true }
+            }
+            await pipeline.beginWithPrefix(prefix)
+            try await settle(window)
+            let probe = FrameProbe(); probe.start()
+            let started = CACurrentMediaTime(), cpuStart = cpu()
+            let initialMemory = footprint()
+            var sampledMemory = initialMemory
+            let values = stride(from: step, to: text.count, by: step).map { prefix + String(text.prefix($0)) } + [prefix + text]
+            for (index, value) in values.enumerated() {
+                let deadline = started + Double(index * interval) / 1000
+                let wait = deadline - CACurrentMediaTime()
+                if wait > 0 { try await Task.sleep(for: .seconds(wait)) }
+                await pipeline.append(value)
+                sampledMemory = max(sampledMemory, footprint())
+            }
+            await pipeline.setFinalContent(prefix + text)
+            let finishDeadline = CACurrentMediaTime() + 90
+            while !idle && CACurrentMediaTime() < finishDeadline { try await Task.sleep(for: .milliseconds(10)) }
+            XCTAssertTrue(idle)
+            try await settle(window, milliseconds: 800)
+            let elapsed = (CACurrentMediaTime() - started) * 1000
+            let cost = (cpu() - cpuStart) * 1000
+            probe.stop()
+            let gaps = zip(probe.times, probe.times.dropFirst()).map { ($1 - $0) * 1000 }.sorted()
+            sampledMemory = max(sampledMemory, footprint())
+            print("TYPEWRITER_BENCH case=\(name) cpu_ms=\(cost) elapsed_ms=\(elapsed) gap_p95_ms=\(gaps.isEmpty ? 0 : gaps[Int(Double(gaps.count - 1) * 0.95)]) gaps_over50=\(gaps.filter { $0 > 50 }.count) footprint_start_mib=\(Double(initialMemory) / 1048576) footprint_sampled_max_mib=\(Double(sampledMemory) / 1048576)")
+            if prefix.isEmpty {
+                let expected = MarkdownView.PreprocessedContent(parserResultNoMath: MarkdownParser().parse(text)).split().flatMap(\.blocks)
+                XCTAssertEqual(blocks(window), expected)
+            } else { XCTAssertTrue(rendered(window).contains("seven paper stars")) }
+            window.isHidden = true; window.rootViewController = nil
+        }
+    }
+    func testWarmShortTypewriterCost() async throws {
+        // Isolate steady animation from app startup and first-use initialization.
+        try await Task.sleep(for: .seconds(3))
+        for trial in 0..<6 {
+            let state = RenderState(), window = try host(state)
+            try await settle(window)
+            let text = "Trial \(trial). " + String(repeating: sentence, count: 4)
+            var idle = false
+            let pipeline = StreamingPipeline { snapshot in
+                if snapshot.isActive { state.text = snapshot.displayContent }
+                else { state.streaming = false; idle = true }
+            }
+            await pipeline.beginWithPrefix("")
+            let values = stride(from: 20, to: text.count, by: 20).map { String(text.prefix($0)) } + [text]
+            let started = CACurrentMediaTime(), cpuStart = cpu()
+            for (index, value) in values.enumerated() {
+                let wait = started + Double(index) * 0.15 - CACurrentMediaTime()
+                if wait > 0 { try await Task.sleep(for: .seconds(wait)) }
+                await pipeline.append(value)
+            }
+            await pipeline.setFinalContent(text)
+            let deadline = CACurrentMediaTime() + 10
+            while !idle && CACurrentMediaTime() < deadline { try await Task.sleep(for: .milliseconds(10)) }
+            try await settle(window, milliseconds: 400)
+            print("TYPEWRITER_WARM trial=\(trial) cpu_ms=\((cpu() - cpuStart) * 1000)")
+            XCTAssertTrue(idle)
+            let expected = MarkdownView.PreprocessedContent(parserResultNoMath: MarkdownParser().parse(text)).split().flatMap(\.blocks)
+            XCTAssertEqual(blocks(window), expected)
             window.isHidden = true; window.rootViewController = nil
         }
     }

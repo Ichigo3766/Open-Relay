@@ -1279,20 +1279,22 @@ private struct StableStreamingMarkdown: View {
     let text: String
     let isStreaming: Bool
     let theme: MarkdownTheme
-    @State private var chunks: [MarkdownView.PreprocessedContent]?
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var reveal = StreamingTextReveal()
     @State private var parser = StreamingMarkdownParser()
 
     private struct Request: Equatable {
         let text: String
         let isStreaming: Bool
         let theme: MarkdownTheme
+        let reduceMotion: Bool
     }
 
     var body: some View {
-        let request = Request(text: text, isStreaming: isStreaming, theme: theme)
+        let request = Request(text: text, isStreaming: isStreaming, theme: theme, reduceMotion: reduceMotion)
         let cached = isStreaming ? nil : MarkdownBlockRenderCache.shared.lookup(content: text, theme: theme)
         Group {
-            if let visible = chunks ?? cached {
+            if let visible = reveal.chunks ?? cached {
                 VStack(alignment: .leading, spacing: 0) {
                     ForEach(visible.indices, id: \.self) { index in
                         if visible[index].blocks.count == 1,
@@ -1301,10 +1303,10 @@ private struct StableStreamingMarkdown: View {
                             // Omit it so the native code view can append new tokens.
                             let code = content.hasSuffix("\n") ? String(content.dropLast()) : content
                             StreamingCodeBlockView(language: language ?? "", content: code,
-                                                   isStreaming: isStreaming, theme: theme)
+                                                   isStreaming: isStreaming || reveal.isAnimating, theme: theme)
                         } else {
                             MarkdownView(visible[index], theme: theme)
-                                .codeAutoScroll(isStreaming)
+                                .codeAutoScroll(isStreaming || reveal.isAnimating)
                         }
                     }
                 }
@@ -1314,17 +1316,18 @@ private struct StableStreamingMarkdown: View {
                     .accessibilityHidden(true)
             }
         }
+        .onDisappear { reveal.finish() }
         .task(id: request) {
             if let cached {
-                chunks = cached
+                reveal.receive(cached, source: text, streaming: isStreaming, reduceMotion: reduceMotion)
                 return
             }
-            if isStreaming || chunks != nil {
+            if isStreaming || reveal.chunks != nil {
                 // The actor serializes parses; cancelled, superseded requests
                 // are skipped before parsing. No shared mutable detached parser.
                 let parsed = await parser.parse(text)
                 guard !Task.isCancelled else { return }
-                chunks = parsed
+                reveal.receive(parsed, source: text, streaming: isStreaming, reduceMotion: reduceMotion)
             }
             if !isStreaming {
                 // Reuse the existing finished-message cache, including its math
@@ -1335,9 +1338,180 @@ private struct StableStreamingMarkdown: View {
                     }
                 }
                 guard !Task.isCancelled else { return }
-                chunks = finished
+                reveal.receive(finished, source: text, streaming: false, reduceMotion: reduceMotion)
             }
         }
+    }
+}
+
+/// Animation changes only a prefix of the already-parsed active chunk. Completed
+/// chunks keep their render objects; Markdown parsing is driven by server updates,
+/// never by the display clock. Non-text attachments are revealed atomically.
+@MainActor @Observable
+final class StreamingTextReveal {
+    private(set) var chunks: [MarkdownView.PreprocessedContent]?
+    @ObservationIgnored private var target: [MarkdownView.PreprocessedContent] = []
+    @ObservationIgnored private var lengths: [Int] = []
+    @ObservationIgnored private var source = ""
+    @ObservationIgnored private var shown = 0.0
+    @ObservationIgnored private var total = 0
+    @ObservationIgnored private var speed = 90.0
+    @ObservationIgnored private var wasStreaming = false
+    @ObservationIgnored private var link: CADisplayLink?
+    var isAnimating: Bool { link != nil }
+
+    deinit { link?.invalidate() }
+
+    func receive(_ next: [MarkdownView.PreprocessedContent], source: String,
+                 streaming: Bool, reduceMotion: Bool = false) {
+        let append = source.hasPrefix(self.source)
+        let nextLengths = next.enumerated().map { index, chunk in
+            index < target.count && target[index] === chunk
+                ? lengths[index] : chunk.blocks.reduce(0) { $0 + RevealPrefix.length($1) }
+        }
+        target = next
+        lengths = nextLengths
+        total = lengths.reduce(0, +)
+        self.source = source
+        wasStreaming = wasStreaming || streaming
+        guard wasStreaming, !reduceMotion, append else { finish(); return }
+        shown = min(shown, Double(total))
+        // Start visibly, with no reserved characters. Catch up within 250 ms of
+        // the latest snapshot, instead of accumulating a long playback queue.
+        if shown == 0, total > 0 { shown = 1 }
+        speed = max(90, (Double(total) - shown) / 0.25)
+        publish()
+        if shown < Double(total), link == nil {
+            let clock = Clock(self)
+            let displayLink = CADisplayLink(target: clock, selector: #selector(Clock.tick(_:)))
+            displayLink.preferredFrameRateRange = CAFrameRateRange(minimum: 30, maximum: 60, preferred: 60)
+            displayLink.add(to: .main, forMode: .common)
+            link = displayLink
+        }
+    }
+
+    func advance(by seconds: Double) {
+        guard seconds > 0, seconds.isFinite, shown < Double(total) else { return }
+        let previous = Int(shown)
+        shown = min(Double(total), shown + speed * seconds)
+        if Int(shown) != previous { publish() }
+    }
+
+    func finish() {
+        shown = Double(total)
+        chunks = target
+        link?.invalidate()
+        link = nil
+    }
+
+    private func publish() {
+        guard shown < Double(total) else { finish(); return }
+        var remaining = Int(shown)
+        var visible: [MarkdownView.PreprocessedContent] = []
+        for (index, chunk) in target.enumerated() {
+            if remaining >= lengths[index] {
+                visible.append(chunk)
+                remaining -= lengths[index]
+            } else {
+                if remaining > 0 {
+                    visible.append(.init(blocks: RevealPrefix.blocks(chunk.blocks, budget: &remaining),
+                                         rendered: chunk.rendered, highlightMaps: chunk.highlightMaps))
+                }
+                break
+            }
+        }
+        chunks = visible
+    }
+
+    @MainActor private final class Clock: NSObject {
+        weak var owner: StreamingTextReveal?
+        private var previous: CFTimeInterval?
+        init(_ owner: StreamingTextReveal) { self.owner = owner }
+        @objc func tick(_ link: CADisplayLink) {
+            let elapsed = previous.map { link.timestamp - $0 } ?? (link.targetTimestamp - link.timestamp)
+            previous = link.timestamp
+            owner?.advance(by: elapsed)
+        }
+    }
+}
+
+/// Prefixes formatted nodes, not Markdown source: a closing fence or emphasis
+/// delimiter cannot disappear merely because the animation has not reached it.
+enum RevealPrefix {
+    static func length(_ node: MarkdownBlockNode) -> Int {
+        switch node {
+        case let .paragraph(content), let .heading(_, content): return inlineLength(content)
+        case let .codeBlock(_, content): return content.count
+        case let .blockquote(children), let .callout(_, children): return children.reduce(0) { $0 + length($1) }
+        case let .bulletedList(_, items), let .numberedList(_, _, items):
+            return items.reduce(0) { $0 + $1.children.reduce(0) { $0 + length($1) } }
+        case let .taskList(_, items):
+            return items.reduce(0) { $0 + $1.children.reduce(0) { $0 + length($1) } }
+        case .table, .thematicBreak: return 1
+        }
+    }
+
+    private static func inlineLength(_ nodes: [MarkdownInlineNode]) -> Int {
+        nodes.reduce(0) { result, node in
+            switch node {
+            case let .text(text), let .code(text), let .html(text): return result + text.count
+            case .emphasis, .strong, .strikethrough, .link: return result + inlineLength(node.children)
+            case .softBreak, .lineBreak, .image, .math: return result + 1
+            }
+        }
+    }
+
+    static func blocks(_ nodes: [MarkdownBlockNode], budget: inout Int) -> [MarkdownBlockNode] {
+        var result: [MarkdownBlockNode] = []
+        for node in nodes {
+            let count = length(node)
+            if budget >= count { result.append(node); budget -= count; continue }
+            guard budget > 0 else { break }
+            switch node {
+            case let .paragraph(content): result.append(.paragraph(content: inlines(content, budget: &budget)))
+            case let .heading(level, content): result.append(.heading(level: level, content: inlines(content, budget: &budget)))
+            case let .codeBlock(info, content):
+                result.append(.codeBlock(fenceInfo: info, content: String(content.prefix(budget)))); budget = 0
+            case let .blockquote(children): result.append(.blockquote(children: blocks(children, budget: &budget)))
+            case let .callout(kind, children): result.append(.callout(kind: kind, children: blocks(children, budget: &budget)))
+            case let .bulletedList(tight, items):
+                result.append(.bulletedList(isTight: tight, items: list(items, budget: &budget)))
+            case let .numberedList(tight, start, items):
+                result.append(.numberedList(isTight: tight, start: start, items: list(items, budget: &budget)))
+            case let .taskList(tight, items):
+                var visible: [RawTaskListItem] = []
+                for item in items where budget > 0 {
+                    visible.append(.init(isCompleted: item.isCompleted, children: blocks(item.children, budget: &budget)))
+                }
+                result.append(.taskList(isTight: tight, items: visible))
+            case .table, .thematicBreak: break // Atomic nodes were handled above.
+            }
+        }
+        return result
+    }
+
+    private static func list(_ items: [RawListItem], budget: inout Int) -> [RawListItem] {
+        var result: [RawListItem] = []
+        for item in items where budget > 0 { result.append(.init(children: blocks(item.children, budget: &budget))) }
+        return result
+    }
+
+    private static func inlines(_ nodes: [MarkdownInlineNode], budget: inout Int) -> [MarkdownInlineNode] {
+        var result: [MarkdownInlineNode] = []
+        for var node in nodes {
+            let count = inlineLength([node])
+            if budget >= count { result.append(node); budget -= count; continue }
+            guard budget > 0 else { break }
+            switch node {
+            case let .text(text): node = .text(String(text.prefix(budget))); budget = 0
+            case let .code(text): node = .code(String(text.prefix(budget))); budget = 0
+            case let .html(text): node = .html(String(text.prefix(budget))); budget = 0
+            case .emphasis, .strong, .strikethrough, .link: node.children = inlines(node.children, budget: &budget)
+            case .softBreak, .lineBreak, .image, .math: break
+            }
+            result.append(node)
+        }
+        return result
     }
 }
 
