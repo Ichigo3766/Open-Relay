@@ -342,8 +342,78 @@ private struct Fixture: View {
     func testTypewriterFastFrozenThinking() async throws {
         try await largeThinkingCost(direct: false, interval: 0.01, updates: 100, sizes: [100_000], frozen: true)
     }
+    func testTypewriterUnicodeThinkingCost() async throws {
+        try await largeThinkingCost(direct: true, sizes: [100_000], phrase: "Cafe\u{301} 👩🏽‍🚀 星 مرحبا. \n\n")
+    }
+    func testTypewriterUnbrokenThinkingCost() async throws {
+        try await largeThinkingCost(direct: true, sizes: [100_000], phrase: sentence)
+    }
+    /// Isolate native plain-text layout before considering a renderer change.
+    /// This is exploratory, not a replacement for the SwiftUI/real-app tests.
+    func testPlainThinkingLayoutAlternatives() async throws {
+        for (name, unit) in [("paragraphs", sentence + "\n\n"), ("unbroken", sentence),
+                             ("unicode", "Cafe\u{301} 👩🏽‍🚀 星 مرحبا. \n\n")] {
+            for renderer in ["litext", "textkit1", "textkit1-append", "textkit2", "textkit2-append"] {
+                let state = RenderState(), window = try host(state)
+                let controller = UIViewController()
+                window.rootViewController = controller
+                let scroll = UIScrollView(frame: window.bounds)
+                controller.view.addSubview(scroll)
+                let label = LTXLabel()
+                label.isSelectable = true
+                label.isAccessibilityElement = true
+                let textView = UITextView(usingTextLayoutManager: renderer.hasPrefix("textkit2"))
+                textView.isScrollEnabled = false
+                textView.isEditable = false
+                textView.textContainerInset = .zero
+                textView.textContainer.lineFragmentPadding = 0
+                let native: UIView = renderer == "litext" ? label : textView
+                scroll.addSubview(native)
+                let width = window.bounds.width - 40
+                let paragraph = NSMutableParagraphStyle(); paragraph.lineSpacing = 3
+                let attributes: [NSAttributedString.Key: Any] = [.font: UIFont.systemFont(ofSize: 12),
+                    .paragraphStyle: paragraph, .foregroundColor: UIColor.label]
+                var source = String(repeating: unit, count: 100_000 / unit.utf8.count)
+                func update(_ appended: String? = nil) {
+                    if renderer == "litext" {
+                        label.attributedText = NSAttributedString(string: source, attributes: attributes)
+                        label.preferredMaxLayoutWidth = width
+                        native.frame = CGRect(x: 20, y: 0, width: width, height: label.intrinsicContentSize.height)
+                    } else {
+                        if renderer.hasSuffix("-append"), let appended {
+                            textView.textStorage.append(NSAttributedString(string: appended, attributes: attributes))
+                        } else {
+                            textView.attributedText = NSAttributedString(string: source, attributes: attributes)
+                        }
+                        native.frame = CGRect(x: 20, y: 0, width: width,
+                            height: textView.sizeThatFits(CGSize(width: width, height: .greatestFiniteMagnitude)).height)
+                    }
+                    scroll.contentSize = CGSize(width: window.bounds.width, height: native.frame.height)
+                    scroll.contentOffset.y = max(0, scroll.contentSize.height - scroll.bounds.height)
+                }
+                update()
+                try await settle(window, milliseconds: 1500)
+                let probe = FrameProbe(); probe.start()
+                let start = CACurrentMediaTime(), cpuStart = cpu(), memoryStart = footprint()
+                for index in 0..<30 {
+                    let wait = start + Double(index) * 0.1 - CACurrentMediaTime()
+                    if wait > 0 { try await Task.sleep(for: .seconds(wait)) }
+                    source += unit
+                    update(unit)
+                    window.layoutIfNeeded()
+                }
+                try await settle(window, milliseconds: 500)
+                probe.stop()
+                let gaps = zip(probe.times, probe.times.dropFirst()).map { ($1 - $0) * 1000 }.sorted()
+                XCTAssertEqual(renderer == "litext" ? label.attributedText.string : textView.text, source)
+                print("LAYOUT_ALTERNATIVE case=\(name) renderer=\(renderer) cpu_ms=\((cpu()-cpuStart)*1000) elapsed_ms=\((CACurrentMediaTime()-start)*1000) callback_p95_ms=\(gaps.isEmpty ? 0 : gaps[Int(Double(gaps.count-1)*0.95)]) footprint_delta_mib=\(Double(Int64(footprint())-Int64(memoryStart))/1048576) height=\(native.frame.height)")
+                window.isHidden = true; window.rootViewController = nil
+            }
+        }
+    }
     private func largeThinkingCost(direct: Bool, interval: Double = 0.1, updates: Int = 30,
-                                   sizes: [Int] = [10_000, 100_000], frozen: Bool = false) async throws {
+                                   sizes: [Int] = [10_000, 100_000], frozen: Bool = false,
+                                   phrase: String? = nil) async throws {
         UserDefaults.standard.set(true, forKey: "expandThinkingWhileStreaming")
         defer { UserDefaults.standard.removeObject(forKey: "expandThinkingWhileStreaming") }
         for size in sizes {
@@ -352,7 +422,8 @@ private struct Fixture: View {
             state.reasoningOnly = direct
             state.frozen = frozen
             state.cadenceLabel = "Thinking · \(size)-character prefix"
-            var text = String(repeating: sentence + "\n\n", count: size / (sentence.count + 2))
+            let unit = phrase ?? (sentence + "\n\n")
+            var text = String(repeating: unit, count: size / unit.utf8.count)
             let prefix = direct ? "" : "<details type=\"reasoning\"><summary>Thinking</summary>\n"
             let suffix = frozen ? "</details>" : ""
             state.text = prefix + text + suffix
@@ -369,8 +440,8 @@ private struct Fixture: View {
             probe.observe = {
                 let visible = labels()
                 visible.forEach { identities.insert(ObjectIdentifier($0)) }
-                // This fixture is ASCII. NSAttributedString.length avoids a
-                // fresh 100 KB grapheme scan in the measurement callback.
+                // Compare UTF-16 lengths to avoid a fresh 100 KB grapheme scan
+                // in the measurement callback, including the Unicode fixture.
                 frames.append([CACurrentMediaTime() - start, Double(inputCount),
                                Double(visible.reduce(0) { $0 + $1.attributedText.length })])
             }
@@ -378,7 +449,7 @@ private struct Fixture: View {
             for index in 0..<updates {
                 let delay = start + Double(index) * interval - CACurrentMediaTime()
                 if delay > 0 { try await Task.sleep(for: .seconds(delay)) }
-                text += "A copper telescope records seven stars. "
+                text += phrase ?? "A copper telescope records seven stars. "
                 inputCount = text.trimmingCharacters(in: .whitespacesAndNewlines).utf16.count
                 state.text = prefix + text + suffix
                 arrivals.append([CACurrentMediaTime() - start, Double(inputCount)])
@@ -395,7 +466,8 @@ private struct Fixture: View {
             XCTAssertTrue(labels().map { $0.attributedText.string }.joined().trimmingCharacters(in: .whitespacesAndNewlines)
                           == text.trimmingCharacters(in: .whitespacesAndNewlines), "Final thinking must contain every delivered character")
             XCTAssertEqual(identities.count, 1)
-            let data: [String: Any] = ["kind": "thinking", "case": "\(direct ? "layout" : frozen ? "frozen" : interval < 0.1 ? "fast" : "long")-\(size)", "cpu_ms": cost,
+            let variant = phrase == nil ? "" : phrase == sentence ? "unbroken-" : "unicode-"
+            let data: [String: Any] = ["kind": "thinking", "case": "\(variant)\(direct ? "layout" : frozen ? "frozen" : interval < 0.1 ? "fast" : "long")-\(size)", "cpu_ms": cost,
                 "input_end": inputEnd, "frames": frames, "arrivals": arrivals, "reasoning_views": identities.count,
                 "footprint_start": memoryStart, "footprint_end": footprint()]
             print("CADENCE_FRAMES " + String(decoding: try JSONSerialization.data(withJSONObject: data, options: [.sortedKeys]), as: UTF8.self))

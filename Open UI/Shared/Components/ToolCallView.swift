@@ -201,6 +201,8 @@ struct ReasoningData: Identifiable {
     let id: String
     let summary: String
     let content: String
+    // Count once per parsed snapshot; reveal can then trim from the short tail.
+    let characterCount: Int
     let duration: String?
     let isDone: Bool
 
@@ -211,6 +213,7 @@ struct ReasoningData: Identifiable {
         self.id = "reason-\(prefix.hashValue)"
         self.summary = summary
         self.content = content
+        self.characterCount = content.count
         self.duration = duration
         self.isDone = isDone
     }
@@ -847,115 +850,14 @@ enum ToolCallParser {
 
         // ── Phase 1: Convert raw model reasoning tags ──
         for pair in defaultReasoningTagPairs {
-            // Quick check: skip this pair entirely if the open tag isn't present
             guard result.contains(pair.open) else { continue }
-
-            let escapedOpen = NSRegularExpression.escapedPattern(for: pair.open)
-            let escapedClose = NSRegularExpression.escapedPattern(for: pair.close)
-
-            // Case 1: Complete pairs (thinking finished)
-            // Use .caseInsensitive so <Think>, <THINK>, <Thinking>, etc. all match
-            if let completeRegex = cachedRegex("\(escapedOpen)([\\s\\S]*?)\(escapedClose)",
-                options: [.dotMatchesLineSeparators, .caseInsensitive]) {
-                let nsResult = result as NSString
-                let matches = completeRegex.matches(
-                    in: result,
-                    range: NSRange(location: 0, length: nsResult.length)
-                )
-                for match in matches.reversed() where match.numberOfRanges > 1 {
-                    let thinkContent = nsResult.substring(with: match.range(at: 1))
-                        .trimmingCharacters(in: .whitespacesAndNewlines)
-                    let replacement = """
-                    <details type="reasoning" done="true">\
-                    <summary>Thinking</summary>\
-                    \(thinkContent)\
-                    </details>
-                    """
-                    result = (result as NSString).replacingCharacters(in: match.range, with: replacement)
-                }
-            }
-
-            // Case 2: Unclosed tag (still streaming thinking content)
-            // Case-insensitive check for the open tag
-            if containsTag(pair.open, in: result) {
-                if let openRegex = cachedRegex("\(escapedOpen)([\\s\\S]*)$",
-                    options: [.dotMatchesLineSeparators, .caseInsensitive]) {
-                    let nsResult = result as NSString
-                    if let match = openRegex.firstMatch(
-                        in: result,
-                        range: NSRange(location: 0, length: nsResult.length)
-                    ), match.numberOfRanges > 1 {
-                        let thinkContent = nsResult.substring(with: match.range(at: 1))
-                            .trimmingCharacters(in: .whitespacesAndNewlines)
-                        let replacement = """
-                        <details type="reasoning" done="false">\
-                        <summary>Thinking</summary>\
-                        \(thinkContent)\
-                        </details>
-                        """
-                        result = (result as NSString).replacingCharacters(in: match.range, with: replacement)
-                    }
-                }
-            }
+            result = convertReasoningTag(pair, in: result)
         }
-
-        // ── Phase 1b: Also handle case-insensitive open tags that the
-        // case-sensitive .contains() quick-check above may have skipped ──
-        // Re-run Phase 1 logic for tags present only in different casing.
+        // Keep the existing second-pass ordering for mixed-case nested input.
         for pair in defaultReasoningTagPairs {
-            // Skip Unicode/pipe variants — they're case-sensitive by nature
-            if pair.open.hasPrefix("<|") || pair.open.hasPrefix("◁") { continue }
-
-            // Already handled if exact-case was found. Check case-insensitive.
-            guard containsTag(pair.open, in: result) else { continue }
-            // If exact case exists, Phase 1 already handled it
-            guard !result.contains(pair.open) else { continue }
-
-            let escapedOpen = NSRegularExpression.escapedPattern(for: pair.open)
-            let escapedClose = NSRegularExpression.escapedPattern(for: pair.close)
-
-            // Complete pairs (case-insensitive)
-            if let completeRegex = cachedRegex("\(escapedOpen)([\\s\\S]*?)\(escapedClose)",
-                options: [.dotMatchesLineSeparators, .caseInsensitive]) {
-                let nsResult = result as NSString
-                let matches = completeRegex.matches(
-                    in: result,
-                    range: NSRange(location: 0, length: nsResult.length)
-                )
-                for match in matches.reversed() where match.numberOfRanges > 1 {
-                    let thinkContent = nsResult.substring(with: match.range(at: 1))
-                        .trimmingCharacters(in: .whitespacesAndNewlines)
-                    let replacement = """
-                    <details type="reasoning" done="true">\
-                    <summary>Thinking</summary>\
-                    \(thinkContent)\
-                    </details>
-                    """
-                    result = (result as NSString).replacingCharacters(in: match.range, with: replacement)
-                }
-            }
-
-            // Unclosed tag (case-insensitive)
-            if containsTag(pair.open, in: result) {
-                if let openRegex = cachedRegex("\(escapedOpen)([\\s\\S]*)$",
-                    options: [.dotMatchesLineSeparators, .caseInsensitive]) {
-                    let nsResult = result as NSString
-                    if let match = openRegex.firstMatch(
-                        in: result,
-                        range: NSRange(location: 0, length: nsResult.length)
-                    ), match.numberOfRanges > 1 {
-                        let thinkContent = nsResult.substring(with: match.range(at: 1))
-                            .trimmingCharacters(in: .whitespacesAndNewlines)
-                        let replacement = """
-                        <details type="reasoning" done="false">\
-                        <summary>Thinking</summary>\
-                        \(thinkContent)\
-                        </details>
-                        """
-                        result = (result as NSString).replacingCharacters(in: match.range, with: replacement)
-                    }
-                }
-            }
+            guard !pair.open.hasPrefix("<|"), !pair.open.hasPrefix("◁"),
+                  containsTag(pair.open, in: result), !result.contains(pair.open) else { continue }
+            result = convertReasoningTag(pair, in: result)
         }
 
         // ── Phase 2: Handle incomplete <details type="tool_calls"> blocks ──
@@ -1183,6 +1085,34 @@ enum ToolCallParser {
         }
 
         return result.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// Convert complete pairs, then any remaining unfinished opening tag.
+    private nonisolated static func convertReasoningTag(_ pair: (open: String, close: String), in content: String) -> String {
+        var result = content
+        let escapedOpen = NSRegularExpression.escapedPattern(for: pair.open)
+        let escapedClose = NSRegularExpression.escapedPattern(for: pair.close)
+        if let regex = cachedRegex("\(escapedOpen)([\\s\\S]*?)\(escapedClose)",
+                                   options: [.dotMatchesLineSeparators, .caseInsensitive]) {
+            let source = result as NSString
+            for match in regex.matches(in: result, range: NSRange(location: 0, length: source.length)).reversed()
+                where match.numberOfRanges > 1 {
+                let text = source.substring(with: match.range(at: 1)).trimmingCharacters(in: .whitespacesAndNewlines)
+                let replacement = "<details type=\"reasoning\" done=\"true\"><summary>Thinking</summary>\(text)</details>"
+                result = (result as NSString).replacingCharacters(in: match.range, with: replacement)
+            }
+        }
+        if containsTag(pair.open, in: result),
+           let regex = cachedRegex("\(escapedOpen)([\\s\\S]*)$", options: [.dotMatchesLineSeparators, .caseInsensitive]) {
+            let source = result as NSString
+            if let match = regex.firstMatch(in: result, range: NSRange(location: 0, length: source.length)),
+               match.numberOfRanges > 1 {
+                let text = source.substring(with: match.range(at: 1)).trimmingCharacters(in: .whitespacesAndNewlines)
+                let replacement = "<details type=\"reasoning\" done=\"false\"><summary>Thinking</summary>\(text)</details>"
+                result = source.replacingCharacters(in: match.range, with: replacement)
+            }
+        }
+        return result
     }
 
     /// Counts regex occurrences in a string.
@@ -2715,6 +2645,24 @@ struct ToolCallsContainer: View {
 
 // MARK: - Reasoning View
 
+/// Observe per-character progress only in the text leaf, not the disclosure/header.
+private struct StreamingReasoningText: View {
+    let reasoning: ReasoningData
+    let progress: StreamingTypewriter
+    let streaming: Bool
+    let fontSize: CGFloat
+    let color: UIColor
+
+    var body: some View {
+        ReasoningText(
+            text: streaming || progress.hasStreamed
+                ? String(reasoning.content.dropLast(max(0, reasoning.characterCount - progress.visibleCount)))
+                : reasoning.content,
+            fontSize: fontSize, color: color
+        )
+    }
+}
+
 /// Displays a reasoning/thinking block as a collapsible section with
 /// a brain icon, similar to how ChatGPT shows "Thought for X seconds".
 /// Expanded while thinking is in progress so the user can follow along,
@@ -2784,9 +2732,8 @@ struct ReasoningView: View {
             // GeometryReader-background measures the constrained height, not the
             // natural height, so it locks the frame too early and truncates the text.
             if isExpanded {
-                ReasoningText(
-                    text: streaming || progress.hasStreamed
-                        ? String(reasoning.content.prefix(progress.visibleCount)) : reasoning.content,
+                StreamingReasoningText(
+                    reasoning: reasoning, progress: progress, streaming: streaming,
                     fontSize: round(12 * accessibilityScale.uiScale * 10) / 10,
                     color: UIColor(theme.textTertiary)
                 )
@@ -2800,7 +2747,7 @@ struct ReasoningView: View {
         // Keep reveal state outside the conditional text view. Collapsed
         // thinking catches up without animating, so reopening does not replay it.
         .onChange(of: request, initial: true) { _, request in
-            progress.receive(request.text, count: request.text.count, streaming: request.streaming,
+            progress.receive(request.text, count: reasoning.characterCount, streaming: request.streaming,
                              reduceMotion: request.skipAnimation)
         }
         .onDisappear { progress.finish() }

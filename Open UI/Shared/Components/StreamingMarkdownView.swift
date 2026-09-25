@@ -1403,6 +1403,7 @@ final class StreamingTypewriter {
     @ObservationIgnored private var lastArrival: Double?
     @ObservationIgnored private var meanInterval = 0.0
     @ObservationIgnored private var meanSize = 0.0
+    @ObservationIgnored private var arrivalSamples = 0
     @ObservationIgnored private var link: CADisplayLink?
     var isAnimating: Bool { visibleCount < total }
 
@@ -1417,6 +1418,7 @@ final class StreamingTypewriter {
         hasStreamed = hasStreamed || streaming
         guard hasStreamed, !reduceMotion, append else {
             lastArrival = nil; meanInterval = 0; meanSize = 0
+            arrivalSamples = 0
             arrivalRate = 90; speed = 90; desiredSpeed = 90
             finish()
             return
@@ -1428,7 +1430,9 @@ final class StreamingTypewriter {
                 // sizes and intervals separately so clustered packets do not
                 // inflate the estimate as averages of instantaneous rates do.
                 if interval > 0, interval < 1.5 {
-                    let weight = meanInterval == 0 ? 1.0 : 0.3
+                    // Average the first few samples before using a fixed EWMA weight.
+                    arrivalSamples += 1
+                    let weight = max(0.3, 1 / Double(arrivalSamples))
                     meanInterval += (interval - meanInterval) * weight
                     meanSize += (Double(added) - meanSize) * weight
                     arrivalRate = meanSize / meanInterval
@@ -1443,6 +1447,7 @@ final class StreamingTypewriter {
         else if shown == 0, total > 0 { shown = 1 }
         let horizon = max(0.5, min(1, meanInterval * 1.25))
         desiredSpeed = max(arrivalRate, (Double(total) - shown) / horizon)
+        if link == nil { speed = arrivalRate }
         visibleCount = Int(shown)
         if shown >= Double(total) { finish() }
         else if link == nil {

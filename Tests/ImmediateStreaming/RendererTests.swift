@@ -155,6 +155,24 @@ struct RenderFixture: View {
         }
         check(largestGap <= 4, "steady packets have no repeated catch-up pauses after warmup: \(largestGap) frames")
         paced.finish()
+        let delayed = StreamingTypewriter()
+        var lastDelayedChange = 0, delayedCount = 0, delayedGap = 0
+        for frame in 0..<240 {
+            // First layout is late; subsequent packets keep their original cadence.
+            if frame == 15 || (frame >= 30 && frame % 30 == 0) {
+                let count = (frame / 30 + 1) * 20
+                delayed.receive(String(repeating: "x", count: count), count: count,
+                                streaming: true, now: Double(frame) / 60)
+            }
+            delayed.advance(by: 1.0 / 60)
+            if delayed.visibleCount > delayedCount {
+                if lastDelayedChange >= 60 { delayedGap = max(delayedGap, frame - lastDelayedChange) }
+                lastDelayedChange = frame
+            }
+            delayedCount = delayed.visibleCount
+        }
+        check(delayedGap <= 9, "late first layout recovers to the 150 ms cadence budget: \(delayedGap) frames")
+        delayed.finish()
         let burst = StreamingTypewriter()
         burst.receive(String(repeating: "x", count: 100_000), count: 100_000, streaming: true, now: 0)
         for _ in 0..<54 { burst.advance(by: 1.0 / 60) }

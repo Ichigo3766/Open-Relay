@@ -1,5 +1,8 @@
 # Typewriter streaming validation
 
+This records the preceding iteration. See [EFFICIENCY.md](EFFICIENCY.md) for the
+subsequent optimization pass, additional worst cases and current measurements.
+
 The accepted local implementation is candidate 9. Candidate 10's additional
 prefix cache was tested and removed: its CPU benefit was inconsistent. All data
 is freshly invented; no real instance, account or chat was used. Nothing has been

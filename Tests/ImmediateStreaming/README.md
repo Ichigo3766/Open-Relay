@@ -1,7 +1,8 @@
 # Immediate streaming regression checks
 
 The current local branch additionally prototypes a character-by-character reveal
-over parsed blocks. See [SMOOTHNESS.md](SMOOTHNESS.md) for the current iteration
+over parsed blocks. See [EFFICIENCY.md](EFFICIENCY.md) for the current follow-up,
+[SMOOTHNESS.md](SMOOTHNESS.md) for the preceding iteration
 and [TYPEWRITER.md](TYPEWRITER.md) for the earlier prototype. The transport pipeline is
 still immediate; presentation animates independently without reparsing per frame.
 
@@ -51,12 +52,15 @@ MarkdownView: 2654e0d8254816bb9c1bdcbb73fa43bcc0f9f429.
   snapshots between deltas, tool-separated thinking and continuation preservation.
 - Original-source checks reproduce delayed delivery and the accumulator's
   missed-update window; failure counts are assertions, not distinct bugs.
-- 2,255 Markdown/view checks pass, including the original 253 checks: list and tilde-fence corruption
+- 2,256 Markdown/view checks pass, including the original 253 checks: list and tilde-fence corruption
   reproduced; each incremental input matches a full parse; unchanged chunk
   objects are reused; ordinary fences keep the same parent; preview IDs and
   native text-view lifetimes survive completion.
 - Typewriter checks cover every character budget, formatting, Unicode graphemes,
   final-content equality, cached objects, clock lifetime and Reduce Motion.
+- 767 reasoning checks cover cached grapheme counts and tail-based reveal.
+  Differential parser checks preserve exact output across 11,457 invented inputs.
+  Run them with `bash Tests/ImmediateStreaming/run-reasoning.sh`.
 
 The new path reparses the changing prose document correctly, then reuses unchanged
 render chunks. It is not a claim of a new incremental Markdown syntax parser.
