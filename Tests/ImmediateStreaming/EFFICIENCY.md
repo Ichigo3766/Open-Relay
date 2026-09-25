@@ -145,6 +145,23 @@ correctness and performance evidence; this change does not claim to solve it.
 
 ## Video
 
+The three-column comparison uses the same `video-cadence-thinking` replay:
+
+1. Upstream `b38bfe9`, with only the compiler-compatibility extraction described
+   in [BENCHMARKS.md](BENCHMARKS.md): live thinking text is still ignored.
+2. `da0bc73`: live thinking plus the earlier adaptive typewriter implementation.
+3. `faa2f86`: the current efficiency improvements, with the same typewriter effect.
+
+The middle column includes prior rendering/pacing work; it is not an isolated
+thinking-event-only patch. Each capture receives identical invented text and
+planned packet timing, verified by payload hashes. Align on the first visible
+thinking-status cue, not first text, within one sampled frame. All columns use
+identical cropping, scaling and playback speed. The normal export is 19 seconds
+at 60 Hz sampling; the explicitly labelled quarter-speed copy repeats those
+frames over 76 seconds without motion interpolation. Sampling is not measured
+physical-device FPS. Only the reviewed video export is suitable for sharing;
+raw recordings and test diagnostics remain outside version control.
+
 The full-app replay sends live reasoning deltas, then answer deltas, then a final
 structured snapshot. Screens and sequentially decoded frames confirm thinking
 before completion, character-sized progression, a stable disclosure, and the

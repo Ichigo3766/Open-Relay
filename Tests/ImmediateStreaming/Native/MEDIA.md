@@ -1,5 +1,8 @@
 # Synthetic before/after video
 
+Historical capture notes for the animation-free implementation. The current
+three-stage typewriter comparison is described in [EFFICIENCY.md](../EFFICIENCY.md#video).
+
 Local exports: `normal-speed.mp4` (21.5 seconds) and `quarter-speed.mp4`
 (86 seconds). Both show the same three cases side by side. Media remains outside
 version control and has not been uploaded.
