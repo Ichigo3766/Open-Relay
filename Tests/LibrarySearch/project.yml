@@ -1,0 +1,23 @@
+name: LibrarySearchTests
+options:
+  deploymentTarget:
+    iOS: '18.1'
+settings:
+  base:
+    CODE_SIGNING_ALLOWED: NO
+    GENERATE_INFOPLIST_FILE: YES
+    SWIFT_VERSION: '5.0'
+targets:
+  LibrarySearchUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources: [LibrarySearchUITests.swift]
+    settings:
+      PRODUCT_BUNDLE_IDENTIFIER: org.example.library-search-tests
+schemes:
+  LibrarySearch:
+    build:
+      targets:
+        LibrarySearchUITests: [test]
+    test:
+      targets: [LibrarySearchUITests]
