@@ -5,7 +5,6 @@ import SwiftUI
 /// In-app language picker. Sets AppleLanguages in UserDefaults and prompts
 /// the user to restart the app — no trip to iOS Settings needed.
 struct LanguagePickerView: View {
-    @Environment(\.dismiss) private var dismiss
     @Environment(\.theme) private var theme
 
     @State private var searchText = ""
@@ -70,8 +69,10 @@ struct LanguagePickerView: View {
         AppLanguage(code: "vi",       flag: "🇻🇳", nativeName: "Tiếng Việt",             englishName: "Vietnamese"),
     ]
 
-    private var currentCode: String {
-        UserDefaults.standard.stringArray(forKey: "AppleLanguages")?.first ?? "en"
+    static var selectedLanguageCode: String? {
+        // Ignore the global device-language fallback when there is no app override.
+        guard let domain = Bundle.main.bundleIdentifier else { return nil }
+        return (UserDefaults.standard.persistentDomain(forName: domain)?["AppleLanguages"] as? [String])?.first
     }
 
     private var filteredLanguages: [AppLanguage] {
@@ -85,26 +86,20 @@ struct LanguagePickerView: View {
     }
 
     var body: some View {
-        NavigationStack {
-            List {
-                // System Default option
+        List {
+            Section {
                 systemDefaultRow
-
-                // Language list
+            }
+            Section {
                 ForEach(filteredLanguages) { lang in
                     languageRow(lang)
                 }
             }
-            .listStyle(.plain)
-            .searchable(text: $searchText, prompt: "Search language")
-            .navigationTitle("Language")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { dismiss() }
-                }
-            }
         }
+        .listStyle(.insetGrouped)
+        .searchable(text: $searchText, prompt: "Search language")
+        .navigationTitle("Language")
+        .navigationBarTitleDisplayMode(.inline)
         .alert("Restart Required", isPresented: $showRestartAlert) {
             Button("Restart Now", role: .destructive) {
                 applyLanguage(pendingLocale)
@@ -145,9 +140,8 @@ struct LanguagePickerView: View {
                 Spacer()
 
                 // Checkmark if system default is active
-                let active = !Self.supportedLanguages.contains { $0.code == currentCode }
-                if active {
-                    Image(systemName: "checkmark.circle.fill")
+                if Self.selectedLanguageCode == nil {
+                    Image(systemName: "checkmark")
                         .scaledFont(size: 20)
                         .foregroundStyle(theme.brandPrimary)
                 }
@@ -156,12 +150,13 @@ struct LanguagePickerView: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .accessibilityAddTraits(Self.selectedLanguageCode == nil ? .isSelected : [])
     }
 
     // MARK: - Language Row
 
     private func languageRow(_ lang: AppLanguage) -> some View {
-        let isSelected = currentCode.hasPrefix(lang.code) || lang.code.hasPrefix(currentCode.components(separatedBy: "-").first ?? currentCode)
+        let isSelected = Self.selectedLanguageCode == lang.code
 
         return Button {
             pendingLocale = lang
@@ -184,7 +179,7 @@ struct LanguagePickerView: View {
                 Spacer()
 
                 if isSelected {
-                    Image(systemName: "checkmark.circle.fill")
+                    Image(systemName: "checkmark")
                         .scaledFont(size: 20)
                         .foregroundStyle(theme.brandPrimary)
                 }
@@ -193,7 +188,7 @@ struct LanguagePickerView: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .listRowBackground(isSelected ? theme.brandPrimary.opacity(0.07) : Color.clear)
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
     }
 
     // MARK: - Apply Language
