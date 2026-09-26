@@ -491,6 +491,7 @@ struct ChatSettingsView: View {
     @Environment(\.theme) private var theme
     @Environment(AppDependencyContainer.self) private var dependencies
     @AppStorage("sendOnEnter") private var sendOnEnter = true
+    @AppStorage("showVoiceModeButton") private var showVoiceModeButton = true
     @AppStorage("streamingHaptics") private var streamingHaptics = true
     @AppStorage("titleGenerationEnabled") private var titleGenerationEnabled = true
     @AppStorage("suggestionsEnabled") private var suggestionsEnabled = true
@@ -557,6 +558,15 @@ struct ChatSettingsView: View {
                 NavigationLink("Message Actions") {
                     MessageActionsSettingsView(availableBuiltInActions: availableMessageActions)
                 }
+            }
+
+            Section {
+                Toggle("Show Voice Mode Button", isOn: $showVoiceModeButton)
+                    .tint(theme.brandPrimary)
+            } header: {
+                Text("Composer")
+            } footer: {
+                Text("Show the voice-mode button in the message composer. Microphone dictation remains available. Applies only to Open Relay on this device.")
             }
 
             Section("Input Behavior") {

@@ -756,9 +756,8 @@ struct ChatInputField: View {
                 .accessibilityLabel("Stop Generating")
                 .transition(.scale.combined(with: .opacity))
 
-            } else if canSend {
+            } else if canSend || onVoiceInput == nil {
                 // Send message (or queue it when streaming + message queue is enabled)
-                // Send message
                 Button {
                     Haptics.play(.light)
                     withAnimation(.spring(response: 0.35, dampingFraction: 0.78)) {
@@ -768,15 +767,16 @@ struct ChatInputField: View {
                     onSend()
                 } label: {
                     Circle()
-                        .fill(theme.brandPrimary)
+                        .fill(canSend ? theme.brandPrimary : theme.textTertiary.opacity(0.15))
                         .frame(width: 26 * uiScale, height: 26 * uiScale)
                         .overlay(
                             Image(systemName: "arrow.up")
                                 .scaledFont(size: 11 * uiScale, weight: .bold)
-                                .foregroundStyle(theme.brandOnPrimary)
+                                .foregroundStyle(canSend ? theme.brandOnPrimary : theme.textTertiary)
                         )
                 }
                 .buttonStyle(.plain)
+                .disabled(!canSend)
                 .accessibilityLabel("Send message")
                 .transition(.scale.combined(with: .opacity))
 

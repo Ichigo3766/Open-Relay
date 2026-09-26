@@ -1,0 +1,22 @@
+name: VoiceModeButtonTests
+options:
+  deploymentTarget: {iOS: '18.1'}
+settings:
+  base:
+    CODE_SIGNING_ALLOWED: NO
+    GENERATE_INFOPLIST_FILE: YES
+    SWIFT_VERSION: '5.0'
+targets:
+  VoiceModeButtonUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources: [VoiceModeButtonUITests.swift]
+    settings:
+      PRODUCT_BUNDLE_IDENTIFIER: org.example.voice-mode-button-tests
+schemes:
+  VoiceModeButton:
+    build:
+      targets:
+        VoiceModeButtonUITests: [test]
+    test:
+      targets: [VoiceModeButtonUITests]

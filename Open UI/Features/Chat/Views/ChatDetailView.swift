@@ -143,6 +143,7 @@ struct ChatDetailView: View {
     @AppStorage("chatScrollControls") private var chatScrollControls: ChatScrollControls = .upDown
     @AppStorage("transparentChatToolbar") private var transparentChatToolbar = false
     @AppStorage("suggestionsEnabled") private var suggestionsEnabled = true
+    @AppStorage("showVoiceModeButton") private var showVoiceModeButton = true
     @AppStorage(MessageActionPreferences.orderKey) private var messageActionOrder = ""
     @AppStorage(MessageActionPreferences.hiddenKey) private var hiddenMessageActions = ""
     @AppStorage(MessageActionPreferences.shortcutsKey) private var shortcutMessageActions = ""
@@ -1455,7 +1456,7 @@ struct ChatDetailView: View {
                 onCameraCapture: { showCameraPicker = true },
                 onWebAttachment: { showWebURLAlert = true },
                 // Voice call — gated by permissions.chat.call
-                onVoiceInput: dependencies.authViewModel.chatPermissions.call ? { toggleVoiceInput() } : nil,
+                onVoiceInput: showVoiceModeButton && dependencies.authViewModel.chatPermissions.call ? { toggleVoiceInput() } : nil,
                 apiClient: dependencies.apiClient,
                 notesManager: dependencies.notesManager,
                 conversationManager: dependencies.conversationManager,
