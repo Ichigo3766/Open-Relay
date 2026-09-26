@@ -494,6 +494,7 @@ struct ChatSettingsView: View {
     @AppStorage("streamingHaptics") private var streamingHaptics = true
     @AppStorage("titleGenerationEnabled") private var titleGenerationEnabled = true
     @AppStorage("suggestionsEnabled") private var suggestionsEnabled = true
+    @AppStorage("showNewChatSuggestions") private var showNewChatSuggestions = true
     @AppStorage("temporaryChatDefault") private var temporaryChatDefault = false
     @AppStorage("expandThinkingWhileStreaming") private var expandThinkingWhileStreaming = true
     @AppStorage("streamingAutoScroll") private var streamingAutoScroll = true
@@ -557,6 +558,15 @@ struct ChatSettingsView: View {
                 NavigationLink("Message Actions") {
                     MessageActionsSettingsView(availableBuiltInActions: availableMessageActions)
                 }
+            }
+
+            Section {
+                Toggle("Show New Chat Suggestions", isOn: $showNewChatSuggestions)
+                    .tint(theme.brandPrimary)
+            } header: {
+                Text("New Chats")
+            } footer: {
+                Text("Show suggested prompts on the new chat screen. Applies only to Open Relay on this device; your Open WebUI settings and follow-up suggestions are unchanged.")
             }
 
             Section("Input Behavior") {

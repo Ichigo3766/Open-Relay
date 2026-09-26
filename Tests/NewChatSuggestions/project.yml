@@ -1,0 +1,23 @@
+name: NewChatSuggestionsTests
+options:
+  deploymentTarget:
+    iOS: '18.1'
+settings:
+  base:
+    CODE_SIGNING_ALLOWED: NO
+    GENERATE_INFOPLIST_FILE: YES
+    SWIFT_VERSION: '5.0'
+targets:
+  NewChatSuggestionsUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources: [NewChatSuggestionsUITests.swift]
+    settings:
+      PRODUCT_BUNDLE_IDENTIFIER: org.example.new-chat-suggestions-tests
+schemes:
+  NewChatSuggestions:
+    build:
+      targets:
+        NewChatSuggestionsUITests: [test]
+    test:
+      targets: [NewChatSuggestionsUITests]
