@@ -42,6 +42,13 @@ final class TopEdgeBlurUITests: XCTestCase {
         XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 5))
         XCTAssertTrue(app.textViews["Message"].isHittable)
         capture("\(appearance)-keyboard")
+
+        app.terminate()
+        app.launch()
+        open("top-calibration")
+        // Leave a blank blue region under the status icons for color/extent checks.
+        drag(100)
+        capture("\(appearance)-calibration")
     }
 
     private func open(_ id: String) {

@@ -25,7 +25,7 @@ positions for visual review. The gestures target an iPhone 16 Pro-sized simulato
 Run the same sequence on baseline `b38bfe9` and the changed build. Compare the
 `*-prose-*`, `*-color-0`, and `*-resumed` captures: there should be no light gray
 wash over the dark background, the blur should stay near the status icons, and
-controls/composer should be unchanged. The native effect still adapts contrast to
+controls/composer should be unchanged. The default native effect still adapts contrast to
 the appearance. UI assertions cover interactions; they do not establish blur quality.
 The older-iOS material branch and the toolbar preference are unchanged.
 
@@ -33,5 +33,13 @@ With Pillow installed, also run `python3 check_dark_background.py dark-color-0.p
 on the exported screenshot. It compares empty status/body gutter samples and
 rejects visible background lightening. This fails on the rejected clear-glass
 candidate (`04ccdd6`); inspect the actual screenshots as well as the measurement.
+
+Also run `python3 check_status_calibration.py light-calibration.png dark-calibration.png`.
+This checks the blank blue bubble for unwanted lightening and verifies its edge
+is blurred near the top but sharp by the top safe area's bottom (62pt on this
+simulator). Dark-mode native contrast adjustment is
+allowed. The forced `.soft` candidate (`b33b62f`) fails: in light mode it lightens
+the blue by 108/255, and both appearances blur the edge below the status area.
+The replacement leaves the native style at its default rather than forcing `.soft`.
 
 Share only reviewed synthetic screenshots, not raw result bundles or device logs.

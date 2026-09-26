@@ -21,6 +21,9 @@ def chat(identifier, title, question, answer):
 
 
 CHATS = {
+    "top-calibration": chat("top-calibration", "Color calibration",
+                            "Color calibration" + "\n" * 60 + "End calibration",
+                            "End of the synthetic color sample."),
     "top-prose": chat("top-prose", "Paper gallery", "Describe an imaginary paper gallery.",
                       "\n\n".join(f"## Display {i}\n\n{PARAGRAPH}" for i in range(1, 31))),
     "top-color": chat("top-color", "Color sample", "Please arrange the paper shapes. " + PARAGRAPH * 4,

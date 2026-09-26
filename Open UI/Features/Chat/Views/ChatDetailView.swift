@@ -6505,7 +6505,6 @@ private extension View {
             if edge == .top {
                 // Reserve toolbar space without extending the status-area blur behind it.
                 self.safeAreaInset(edge: edge, spacing: 0, content: content)
-                    .scrollEdgeEffectStyle(.soft, for: .top)
             } else {
                 self.safeAreaBar(edge: edge, spacing: 0, content: content)
                     .scrollEdgeEffectHidden(true, for: .bottom)
