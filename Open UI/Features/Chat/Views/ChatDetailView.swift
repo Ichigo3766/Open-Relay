@@ -143,6 +143,7 @@ struct ChatDetailView: View {
     @AppStorage("chatScrollControls") private var chatScrollControls: ChatScrollControls = .upDown
     @AppStorage("transparentChatToolbar") private var transparentChatToolbar = false
     @AppStorage("suggestionsEnabled") private var suggestionsEnabled = true
+    @AppStorage("showNewChatSuggestions") private var showNewChatSuggestions = true
     @AppStorage(MessageActionPreferences.orderKey) private var messageActionOrder = ""
     @AppStorage(MessageActionPreferences.hiddenKey) private var hiddenMessageActions = ""
     @AppStorage(MessageActionPreferences.shortcutsKey) private var shortcutMessageActions = ""
@@ -3165,11 +3166,11 @@ struct ChatDetailView: View {
                 }
 
                 // ── Suggested prompt cards ──
-                // Only shown when the server has configured suggestions.
+                // Only shown when enabled locally and the server has configured suggestions.
                 // If the admin clears all suggestions (or the server doesn't
                 // return any), this entire block is hidden and the welcome
                 // screen shows only the hero avatar + "How can I help?".
-                if !randomPrompts.isEmpty {
+                if showNewChatSuggestions && !randomPrompts.isEmpty {
                     Spacer().frame(height: 32)
 
                     // Adaptive grid: 2-col iPhone, 4-col iPad
