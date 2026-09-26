@@ -1182,7 +1182,7 @@ struct RootView: View {
                     if viewModel.currentUser != nil
                         || dependencies.serverConfigStore.activeServer != nil {
                         ToolbarItem(placement: .cancellationAction) {
-                            Button {
+                            Button("Close", systemImage: "xmark") {
                                 withAnimation(.spring(response: 0.4, dampingFraction: 0.85)) {
                                     if viewModel.currentUser != nil {
                                         viewModel.phase = .authenticated
@@ -1192,12 +1192,9 @@ struct RootView: View {
                                         viewModel.phase = .serverConnection
                                     }
                                 }
-                            } label: {
-                                Image(systemName: "xmark.circle.fill")
-                                    .symbolRenderingMode(.hierarchical)
-                                    .foregroundStyle(.secondary)
-                                    .font(.system(size: 20))
                             }
+                            .labelStyle(.iconOnly)
+                            .tint(.secondary)
                             .accessibilityLabel("Close server switcher")
                         }
                     }
@@ -1241,14 +1238,11 @@ struct RootView: View {
                 .navigationBarTitleDisplayMode(.inline)
                 .toolbar {
                     ToolbarItem(placement: .cancellationAction) {
-                        Button {
+                        Button("Close", systemImage: "xmark") {
                             showServerSwitcherSheet = false
-                        } label: {
-                            Image(systemName: "xmark.circle.fill")
-                                .symbolRenderingMode(.hierarchical)
-                                .foregroundStyle(.secondary)
-                                .font(.system(size: 20))
                         }
+                        .labelStyle(.iconOnly)
+                        .tint(.secondary)
                         .accessibilityLabel("Dismiss server switcher")
                     }
                 }

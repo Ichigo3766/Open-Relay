@@ -1,0 +1,23 @@
+name: ToolbarCloseTests
+options:
+  deploymentTarget:
+    iOS: '18.1'
+settings:
+  base:
+    CODE_SIGNING_ALLOWED: NO
+    GENERATE_INFOPLIST_FILE: YES
+    SWIFT_VERSION: '5.0'
+targets:
+  ToolbarCloseUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources: [ToolbarCloseUITests.swift]
+    settings:
+      PRODUCT_BUNDLE_IDENTIFIER: org.example.toolbar-close-tests
+schemes:
+  ToolbarClose:
+    build:
+      targets:
+        ToolbarCloseUITests: [test]
+    test:
+      targets: [ToolbarCloseUITests]

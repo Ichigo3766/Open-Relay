@@ -148,16 +148,11 @@ struct EditUserSheet: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button {
+                    Button("Close", systemImage: "xmark") {
                         dismiss()
-                    } label: {
-                        Image(systemName: "xmark")
-                            .scaledFont(size: 14, weight: .semibold)
-                            .foregroundStyle(theme.textSecondary)
-                            .frame(width: 30, height: 30)
-                            .background(theme.surfaceContainer)
-                            .clipShape(Circle())
                     }
+                    .labelStyle(.iconOnly)
+                    .tint(.secondary)
                 }
             }
         }

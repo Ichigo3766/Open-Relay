@@ -349,16 +349,11 @@ struct iPadMainChatView: View {
                 AdminConsoleView()
                     .toolbar {
                         ToolbarItem(placement: .navigationBarLeading) {
-                            Button {
+                            Button("Close", systemImage: "xmark") {
                                 showAdminConsole = false
-                            } label: {
-                                Image(systemName: "xmark")
-                                    .font(.system(size: 14, weight: .medium))
-                                    .foregroundStyle(Color.secondary)
-                                    .frame(width: 32, height: 32)
-                                    .background(Color(uiColor: .systemGray5).opacity(0.6))
-                                    .clipShape(Circle())
                             }
+                            .labelStyle(.iconOnly)
+                            .tint(.secondary)
                         }
                     }
             }
@@ -378,16 +373,11 @@ struct iPadMainChatView: View {
                 MemoriesView()
                     .toolbar {
                         ToolbarItem(placement: .navigationBarLeading) {
-                            Button {
+                            Button("Close", systemImage: "xmark") {
                                 showMemories = false
-                            } label: {
-                                Image(systemName: "xmark")
-                                    .font(.system(size: 14, weight: .medium))
-                                    .foregroundStyle(Color.secondary)
-                                    .frame(width: 32, height: 32)
-                                    .background(Color(uiColor: .systemGray5).opacity(0.6))
-                                    .clipShape(Circle())
                             }
+                            .labelStyle(.iconOnly)
+                            .tint(.secondary)
                         }
                     }
             }
@@ -2792,16 +2782,11 @@ private extension View {
                     NotesListView()
                         .toolbar {
                             ToolbarItem(placement: .navigationBarLeading) {
-                                Button {
+                                Button("Close", systemImage: "xmark") {
                                     showNotes.wrappedValue = false
-                                } label: {
-                                    Image(systemName: "xmark")
-                                        .font(.system(size: 14, weight: .medium))
-                                        .foregroundStyle(Color.secondary)
-                                        .frame(width: 32, height: 32)
-                                        .background(Color(uiColor: .systemGray5).opacity(0.6))
-                                        .clipShape(Circle())
                                 }
+                                .labelStyle(.iconOnly)
+                                .tint(.secondary)
                             }
                         }
                 }
