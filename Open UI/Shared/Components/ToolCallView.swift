@@ -2842,8 +2842,7 @@ struct AssistantMessageContent: View {
 
     /// Holds the result currently being displayed. On a global-cache hit the result
     /// is injected synchronously from `body`; on a cache miss it starts as `nil`
-    /// (showing a plain-text placeholder for one frame) and is populated by an
-    /// async `Task` that runs `parseOrdered` off the main thread.
+    /// and is populated by a `Task` that runs `parseOrdered` off the main thread.
     @State private var resolvedResult: ToolCallParser.OrderedParseResult? = nil
     /// Tracks which content string `resolvedResult` was computed for so we don't
     /// re-trigger async work when `body` re-evaluates with the same content.
@@ -2901,18 +2900,14 @@ struct AssistantMessageContent: View {
                     }
                 }
             }
-            // Return a minimal placeholder: a single text segment with the raw content.
-            // This renders as plain unformatted text for at most one frame before the
-            // async parse completes and SwiftUI swaps in the fully formatted result.
             if let stale = resolvedResult {
                 // If we have a stale result from a prior content version (e.g. during
                 // streaming), show it rather than a raw dump — it looks better.
                 return stale
             }
-            return ToolCallParser.OrderedParseResult(
-                segments: [.text(content)],
-                allToolCalls: []
-            )
+            // Raw content includes tool arguments/results, not just Markdown.
+            // Rendering it before parsing can interpret embedded code as math.
+            return ToolCallParser.OrderedParseResult(segments: [], allToolCalls: [])
         }()
 
         // Log VIZ presence once per parse (preserved from original).
