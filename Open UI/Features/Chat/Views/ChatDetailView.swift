@@ -527,9 +527,8 @@ struct ChatDetailView: View {
                         Color.clear
                             // Keep the glass rim outside the visible status-area band.
                             .glassEffect(.clear, in: Rectangle().inset(by: -geometry.safeAreaInsets.top))
-                            .overlay(theme.background.opacity(theme.isDark ? 0.7 : 0.15))
                             .mask(LinearGradient(stops: [
-                                .init(color: .black, location: 0.8),
+                                .init(color: .black, location: 0.35),
                                 .init(color: .clear, location: 1)
                             ], startPoint: .top, endPoint: .bottom))
                     } else {

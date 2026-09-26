@@ -1,0 +1,23 @@
+name: TopEdgeBlurTests
+options:
+  deploymentTarget:
+    iOS: '18.1'
+settings:
+  base:
+    CODE_SIGNING_ALLOWED: NO
+    GENERATE_INFOPLIST_FILE: YES
+    SWIFT_VERSION: '5.0'
+targets:
+  TopEdgeBlurUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources: [TopEdgeBlurUITests.swift]
+    settings:
+      PRODUCT_BUNDLE_IDENTIFIER: org.example.top-edge-blur-tests
+schemes:
+  TopEdgeBlur:
+    build:
+      targets:
+        TopEdgeBlurUITests: [test]
+    test:
+      targets: [TopEdgeBlurUITests]
