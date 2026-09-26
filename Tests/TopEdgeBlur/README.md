@@ -23,9 +23,15 @@ reverse scrolling, and open the keyboard. Screenshot attachments capture several
 positions for visual review. The gestures target an iPhone 16 Pro-sized simulator.
 
 Run the same sequence on baseline `b38bfe9` and the changed build. Compare the
-`*-prose-*`, `*-color-0`, and `*-resumed` captures: the status-area wash should be
-gone, blurred text should become clear earlier, and controls/composer should be
-unchanged. UI assertions cover interactions; they do not establish blur quality.
+`*-prose-*`, `*-color-0`, and `*-resumed` captures: there should be no light gray
+wash over the dark background, the blur should stay near the status icons, and
+controls/composer should be unchanged. The native effect still adapts contrast to
+the appearance. UI assertions cover interactions; they do not establish blur quality.
 The older-iOS material branch and the toolbar preference are unchanged.
+
+With Pillow installed, also run `python3 check_dark_background.py dark-color-0.png`
+on the exported screenshot. It compares empty status/body gutter samples and
+rejects visible background lightening. This fails on the rejected clear-glass
+candidate (`04ccdd6`); inspect the actual screenshots as well as the measurement.
 
 Share only reviewed synthetic screenshots, not raw result bundles or device logs.

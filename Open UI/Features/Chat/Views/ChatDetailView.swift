@@ -517,21 +517,11 @@ struct ChatDetailView: View {
                     .padding(.bottom, (verticalSizeClass == .compact && viewModel.terminalEnabled && viewModel.selectedTerminalServer != nil) ? keyboard.height : 0)
             }
         }
-        // Status-bar safe-area backdrop stays visible independently of the floating controls.
-        // On iOS 26+ we use glassEffect(.clear) so text scrolling behind the status icons
-        // stays readable as a soft blur (PR #248). On older iOS, ultraThinMaterial fallback.
+        // iOS 26+ uses the native scroll-edge blur; retain the older material fallback.
         .overlay {
             GeometryReader { geometry in
                 Group {
-                    if #available(iOS 26.0, *) {
-                        Color.clear
-                            // Keep the glass rim outside the visible status-area band.
-                            .glassEffect(.clear, in: Rectangle().inset(by: -geometry.safeAreaInsets.top))
-                            .mask(LinearGradient(stops: [
-                                .init(color: .black, location: 0.35),
-                                .init(color: .clear, location: 1)
-                            ], startPoint: .top, endPoint: .bottom))
-                    } else {
+                    if #unavailable(iOS 26.0) {
                         theme.background.opacity(0.8)
                             .background(.ultraThinMaterial)
                             .mask(LinearGradient(stops: [
@@ -6512,8 +6502,14 @@ private extension View {
     @ViewBuilder
     func chatChromeBar<Content: View>(edge: VerticalEdge, @ViewBuilder content: () -> Content) -> some View {
         if #available(iOS 26.0, *) {
-            self.safeAreaBar(edge: edge, spacing: 0, content: content)
-                .scrollEdgeEffectHidden(true, for: [.top, .bottom])
+            if edge == .top {
+                // Reserve toolbar space without extending the status-area blur behind it.
+                self.safeAreaInset(edge: edge, spacing: 0, content: content)
+                    .scrollEdgeEffectStyle(.soft, for: .top)
+            } else {
+                self.safeAreaBar(edge: edge, spacing: 0, content: content)
+                    .scrollEdgeEffectHidden(true, for: .bottom)
+            }
         } else {
             self.safeAreaInset(edge: edge, spacing: 0, content: content)
         }
