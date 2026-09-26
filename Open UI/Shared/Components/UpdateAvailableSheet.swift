@@ -45,15 +45,12 @@ struct UpdateAvailableSheet: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
-                    Button {
+                    Button("Close", systemImage: "xmark") {
                         onDismiss()
                         dismiss()
-                    } label: {
-                        Image(systemName: "xmark.circle.fill")
-                            .font(.system(size: 22))
-                            .foregroundStyle(theme.textTertiary)
-                            .symbolRenderingMode(.hierarchical)
                     }
+                    .labelStyle(.iconOnly)
+                    .tint(.secondary)
                     .accessibilityLabel("Dismiss")
                 }
             }

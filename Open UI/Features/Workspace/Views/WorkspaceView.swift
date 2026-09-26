@@ -84,16 +84,11 @@ struct WorkspaceView: View {
             }
             .toolbar {
                 ToolbarItem(placement: .navigationBarLeading) {
-                    Button {
+                    Button("Close", systemImage: "xmark") {
                         dismiss()
-                    } label: {
-                        Image(systemName: "xmark")
-                            .scaledFont(size: 14, weight: .medium)
-                            .foregroundStyle(theme.textSecondary)
-                            .frame(width: 32, height: 32)
-                            .background(theme.surfaceContainer.opacity(0.6))
-                            .clipShape(Circle())
                     }
+                    .labelStyle(.iconOnly)
+                    .tint(.secondary)
                 }
             }
         }

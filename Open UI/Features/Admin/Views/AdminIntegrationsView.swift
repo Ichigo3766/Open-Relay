@@ -1570,16 +1570,11 @@ struct IntegrationAddAccessSheet: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .navigationBarLeading) {
-                    Button {
+                    Button("Close", systemImage: "xmark") {
                         dismiss()
-                    } label: {
-                        Image(systemName: "xmark")
-                            .font(.system(size: 14, weight: .medium))
-                            .foregroundStyle(Color.secondary)
-                            .frame(width: 32, height: 32)
-                            .background(Color(uiColor: .systemGray5).opacity(0.6))
-                            .clipShape(Circle())
                     }
+                    .labelStyle(.iconOnly)
+                    .tint(.secondary)
                 }
             }
         }
