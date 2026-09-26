@@ -97,3 +97,56 @@ see [PERFORMANCE.md](PERFORMANCE.md).
 Xcode 27 required splitting the existing large `ChatDetailView.body` expression
 into two computed views in the disposable build checkout. The same compiler-only
 split was used for baseline and candidate; it is not part of this change.
+
+## Content-swipe regression
+
+The opening gesture no longer needs an invisible edge strip. A native,
+single-finger pan takes over only when its initial rightward velocity is more
+than 1.5 times its vertical velocity. UIKit supplies the movement threshold;
+there is no long-press delay or added timer. Once accepted, translation in window
+coordinates follows the finger without feeding the moving page's offset back
+into the gesture. Existing release thresholds and animations are unchanged.
+It cooperates with the chat's simultaneous drag observer rather than letting
+that observer cancel an accepted sidebar pan.
+
+The recognizer rejects controls, editable/selected text, and horizontal scrollers.
+Selection is checked again when recognition begins, so a long press that selects
+text before movement keeps ownership. Cancellation closes the partial drawer.
+The pinned iPad sidebar and file-browser gestures are unchanged.
+
+`testContentSwipeOpensSidebar` starts at 35% of the screen width over a message.
+It fails on the edge-only build (`c525121`). The other app tests cover ordinary
+scrolling, small movements, composer editing, selection, and the existing edge
+and menu gestures. `testContentSwipeVideo` records the same synthetic drag on
+either build without assuming that the older build opens the sidebar.
+
+The focused `Gestures` scheme checks direction, controls, UIKit/Litext selection,
+selection beginning after touch-down, and nested horizontal scrolling. The
+`GestureHarness` scheme exercises the production recognizer in real SwiftUI
+scroll views with the chat's low-threshold simultaneous drag observer, including
+a held-then-dragged touch. This small test app uses only
+invented text and never connects to a server.
+
+The comparison recording uses actual simulator touches: one continuous
+reveal/reverse/cancel gesture, a slow opening, a closing drag with a reversal,
+and a flick. A recording-only overlay marks real touch events; it is not in the
+app or this test project. Both panes play at their recorded speed, aligned at
+the first touch, with a final-frame hold. This is a behavior demonstration, not
+an FPS or latency measurement.
+
+Validation on the same iPhone 16 Pro / iOS 27 simulator: Release build, all five
+focused gesture tests, all three harness tests, six full-app interaction/rendering
+tests, and four metric-parser tests passed. The full-app tests ran without the
+recording overlay. Light/dark text-strip pixel differences remained zero. The
+compiler-only extraction documented above also applies to this build; no iPad
+or physical-device interaction run is claimed.
+
+```sh
+cd Tests/SidebarPageCard
+xcodegen generate
+xcodebuild test -project SidebarQA.xcodeproj -scheme Gestures \
+  -destination 'platform=iOS Simulator,id=YOUR_TEST_SIMULATOR_ID'
+xcodebuild test -project SidebarQA.xcodeproj -scheme GestureHarness \
+  -destination 'platform=iOS Simulator,id=YOUR_TEST_SIMULATOR_ID' \
+  -parallel-testing-enabled NO
+```

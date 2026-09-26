@@ -171,6 +171,71 @@ final class SidebarUITests: XCTestCase {
     func testLightSidebar() { exercise("light") }
     func testDarkSidebar() { exercise("dark") }
 
+    private func drag(_ app: XCUIApplication, from: CGVector, to: CGVector, hold: TimeInterval = 0.05) {
+        app.coordinate(withNormalizedOffset: from).press(forDuration: hold,
+            thenDragTo: app.coordinate(withNormalizedOffset: to), withVelocity: .slow, thenHoldForDuration: 0.1)
+    }
+
+    func testContentSwipeOpensSidebar() {
+        let app = prepareSidebarBenchmark()
+        // Start well away from the old edge strip, over both prose and spacing.
+        for y in [0.53, 0.5] {
+            drag(app, from: CGVector(dx: 0.35, dy: y), to: CGVector(dx: 0.9, dy: y))
+            XCTAssertTrue(chat(app, "Paper garden").isHittable)
+            capture(app, "content-swipe-open")
+            app.coordinate(withNormalizedOffset: CGVector(dx: 0.96, dy: 0.5)).tap()
+            XCTAssertFalse(chat(app, "Paper garden").isHittable)
+        }
+    }
+
+    func testContentSwipeVideo() {
+        let app = prepareSidebarBenchmark()
+        Thread.sleep(forTimeInterval: 1)
+        capture(app, "content-swipe-before")
+        print("CONTENT_SWIPE_START \(Date.timeIntervalSinceReferenceDate)")
+        drag(app, from: CGVector(dx: 0.35, dy: 0.5), to: CGVector(dx: 0.9, dy: 0.5))
+        Thread.sleep(forTimeInterval: 2)
+        capture(app, "content-swipe-after")
+    }
+
+    func testContentSwipePreservesScrollingAndTaps() {
+        let app = prepareSidebarBenchmark()
+        // Tiny motion, predominantly vertical motion, and leftward motion must not open.
+        for end in [CGVector(dx: 0.505, dy: 0.5), CGVector(dx: 0.6, dy: 0.25), CGVector(dx: 0.2, dy: 0.5)] {
+            drag(app, from: CGVector(dx: 0.5, dy: 0.5), to: end)
+            XCTAssertFalse(chat(app, "Paper garden").isHittable)
+        }
+        // The recognizer must not prevent a normal vertical scroll from moving text.
+        let answer = app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Assistant:'")).firstMatch
+        let before = answer.frame.minY
+        app.swipeDown(velocity: .slow)
+        XCTAssertGreaterThan(answer.frame.minY, before + 20)
+        XCTAssertFalse(chat(app, "Paper garden").isHittable)
+        tapVisibleMenu(app)
+        XCTAssertTrue(chat(app, "Paper garden").isHittable)
+        chat(app, "Lighthouse sketch").tap()
+        XCTAssertFalse(chat(app, "Paper garden").isHittable)
+        let composer = app.textViews.firstMatch
+        composer.tap()
+        XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 5))
+        composer.typeText("Invented composer text for a gesture check.")
+        composer.coordinate(withNormalizedOffset: CGVector(dx: 0.25, dy: 0.5)).press(forDuration: 0.1,
+            thenDragTo: composer.coordinate(withNormalizedOffset: CGVector(dx: 0.8, dy: 0.5)))
+        XCTAssertFalse(chat(app, "Paper garden").isHittable)
+        XCTAssertTrue(app.keyboards.firstMatch.exists)
+    }
+
+    func testSelectedMessageKeepsItsGesture() {
+        let app = prepareSidebarBenchmark()
+        let text = app.coordinate(withNormalizedOffset: CGVector(dx: 0.35, dy: 0.34))
+        text.press(forDuration: 1)
+        capture(app, "message-selection")
+        XCTAssertTrue(app.buttons["Copy"].waitForExistence(timeout: 3), "Select actual message text")
+        drag(app, from: CGVector(dx: 0.35, dy: 0.34), to: CGVector(dx: 0.8, dy: 0.34))
+        XCTAssertFalse(chat(app, "Paper garden").isHittable)
+        capture(app, "message-selection-after-drag")
+    }
+
     func testDarkSidebarBackground() throws {
         guard #available(iOS 26.0, *) else { throw XCTSkip("Page-card sidebar requires iOS 26") }
         let app = prepareSidebarBenchmark("dark")

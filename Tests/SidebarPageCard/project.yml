@@ -7,7 +7,41 @@ settings:
     CODE_SIGNING_ALLOWED: NO
     GENERATE_INFOPLIST_FILE: YES
     SWIFT_VERSION: '5.0'
+packages:
+  Litext:
+    url: https://github.com/Ichigo3766/Litext.git
+    revision: ebae1b764acd31bae48ba8ab5a7ee17cc698ff55
 targets:
+  GestureHarness:
+    type: application
+    platform: iOS
+    sources:
+      - GestureHarness.swift
+      - ../../Open UI/Shared/Components/SidebarOpeningGesture.swift
+    dependencies:
+      - package: Litext
+    settings:
+      PRODUCT_BUNDLE_IDENTIFIER: org.example.sidebar-gesture-harness
+      INFOPLIST_KEY_UILaunchScreen_Generation: YES
+  GestureHarnessTests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources: GestureHarnessTests.swift
+    dependencies:
+      - target: GestureHarness
+    settings:
+      PRODUCT_BUNDLE_IDENTIFIER: org.example.sidebar-gesture-harness-tests
+      TEST_TARGET_NAME: GestureHarness
+  SidebarGestureTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - SidebarGestureTests.swift
+      - ../../Open UI/Shared/Components/SidebarOpeningGesture.swift
+    dependencies:
+      - package: Litext
+    settings:
+      PRODUCT_BUNDLE_IDENTIFIER: org.example.sidebar-gesture-tests
   SidebarUITests:
     type: bundle.ui-testing
     platform: iOS
@@ -15,6 +49,19 @@ targets:
     settings:
       PRODUCT_BUNDLE_IDENTIFIER: org.example.sidebar-ui-tests
 schemes:
+  GestureHarness:
+    build:
+      targets:
+        GestureHarness: all
+        GestureHarnessTests: [test]
+    test:
+      targets: [GestureHarnessTests]
+  Gestures:
+    build:
+      targets:
+        SidebarGestureTests: [test]
+    test:
+      targets: [SidebarGestureTests]
   UI:
     build:
       targets:

@@ -600,6 +600,25 @@ struct iPadMainChatView: View {
                     .navigationBarTitleDisplayMode(.inline)
                     .toolbarBackground(.hidden, for: .navigationBar)
             }
+            .gesture(SidebarOpeningGesture(
+                isEnabled: !showDrawer,
+                onChanged: { horizontal in
+                    if !isDraggingDrawer {
+                        UIApplication.shared.sendAction(
+                            #selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
+                    }
+                    isDraggingDrawer = true
+                    dragOffset = horizontal
+                },
+                onEnded: { horizontal, velocity, cancelled in
+                    isDraggingDrawer = false
+                    if !cancelled && (horizontal > drawerWidth * 0.05 || velocity > 200) {
+                        openDrawerAnimated()
+                    } else {
+                        closeDrawerAnimated()
+                    }
+                }
+            ))
             .ignoresSafeArea(.keyboard, edges: .bottom)
             // Include the window edges in the mask without moving safe-area content.
             .padding(.leading, usesPageCardSidebar ? containerSafeAreaInsets.leading : 0)
@@ -693,52 +712,6 @@ struct iPadMainChatView: View {
                             }
                         }
                 )
-
-            // MARK: Left-edge strip — swipe right to open (when drawer is closed)
-            // Note: do NOT hide this based on isDraggingDrawer — removing it mid-gesture
-            // cancels the DragGesture before onEnded fires, causing the drawer to open only ~5%.
-            //
-            // The strip is offset below the navigation bar (≈60pt for status bar + nav bar)
-            // so it does NOT intercept taps on the hamburger button in the toolbar. Without
-            // this offset the clear+contentShape layer sits on top of the toolbar and swallows
-            // taps before the Button underneath can fire.
-            if !showDrawer {
-                Color.clear
-                    .frame(width: 44)
-                    .frame(maxHeight: .infinity)
-                    .contentShape(Rectangle())
-                    .gesture(
-                        DragGesture(minimumDistance: 8, coordinateSpace: .local)
-                            .onChanged { value in
-                                let h = value.translation.width
-                                let v = abs(value.translation.height)
-                                guard abs(h) > v, h > 0 else { return }
-                                if !isDraggingDrawer {
-                                    UIApplication.shared.sendAction(
-                                        #selector(UIResponder.resignFirstResponder),
-                                        to: nil, from: nil, for: nil)
-                                }
-                                isDraggingDrawer = true
-                                dragOffset = h
-                            }
-                            .onEnded { value in
-                                guard isDraggingDrawer else { return }
-                                isDraggingDrawer = false
-                                let h = value.translation.width
-                                let v = value.velocity.width
-                                // Low threshold so even a short flick commits the open
-                                if h > drawerWidth * 0.05 || v > 200 {
-                                    openDrawerAnimated()
-                                } else {
-                                    closeDrawerAnimated()
-                                }
-                            }
-                    )
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    // Offset below the status bar + navigation bar so the clear hit-test
-                    // area does not block the hamburger button in the toolbar (~60pt).
-                    .padding(.top, 60)
-            }
 
             // ── Layer 4: AnimatedPhotoPicker at window level ──────────────────
             AnimatedPhotoPicker(

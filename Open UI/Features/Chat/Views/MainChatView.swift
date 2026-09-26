@@ -326,45 +326,7 @@ struct MainChatView: View {
                     .navigationBarTitleDisplayMode(.inline)
                     .toolbarBackground(.hidden, for: .navigationBar)
             }
-            // Left-edge overlay — 20 pt wide strip for swipe-to-open in landscape.
-            // Same rationale as portrait: dedicated overlay blocks all input instantly
-            // the moment a drag is recognised, giving the "content freezes" feel.
-            // Also handles taps so touches on the left half of the hamburger button
-            // (which overlaps this zone) still open the drawer.
-            .overlay(alignment: .leading) {
-                if !showDrawer && !isDraggingFileBrowser && !showFileBrowser {
-                    Color.clear
-                        .frame(width: 20)
-                        .frame(maxHeight: .infinity)
-                        .contentShape(Rectangle())
-                        .onTapGesture { toggleDrawer() }
-                        .gesture(
-                            DragGesture(minimumDistance: 12, coordinateSpace: .local)
-                                .onChanged { value in
-                                    let horizontal = value.translation.width
-                                    let vertical = abs(value.translation.height)
-                                    guard abs(horizontal) > vertical, horizontal > 0 else { return }
-                                    if !isDraggingDrawer {
-                                        UIApplication.shared.sendAction(
-                                            #selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
-                                    }
-                                    isDraggingDrawer = true
-                                    dragOffset = horizontal
-                                }
-                                .onEnded { value in
-                                    guard isDraggingDrawer else { return }
-                                    let horizontal = value.translation.width
-                                    let velocity = value.velocity.width
-                                    isDraggingDrawer = false
-                                    if horizontal > drawerWidth * 0.2 || velocity > 300 {
-                                        openDrawerAnimated()
-                                    } else {
-                                        closeDrawerAnimated()
-                                    }
-                                }
-                        )
-                }
-            }
+            .gesture(sidebarOpeningGesture)
             // Drawer still overlays in landscape (same as portrait)
             .overlay(alignment: .leading) {
                 drawerContent
@@ -434,6 +396,28 @@ struct MainChatView: View {
 
     // MARK: Portrait: ZStack offset layout (original behaviour)
 
+    private var sidebarOpeningGesture: SidebarOpeningGesture {
+        SidebarOpeningGesture(
+            isEnabled: !showDrawer && !isDraggingFileBrowser && !showFileBrowser,
+            onChanged: { horizontal in
+                if !isDraggingDrawer {
+                    UIApplication.shared.sendAction(
+                        #selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
+                }
+                isDraggingDrawer = true
+                dragOffset = horizontal
+            },
+            onEnded: { horizontal, velocity, cancelled in
+                isDraggingDrawer = false
+                if !cancelled && (horizontal > drawerWidth * 0.2 || velocity > 300) {
+                    openDrawerAnimated()
+                } else {
+                    closeDrawerAnimated()
+                }
+            }
+        )
+    }
+
     @ViewBuilder
     private func portraitOverlayLayout(voiceCallBinding: Binding<Bool>) -> some View {
         ZStack(alignment: .leading) {
@@ -443,6 +427,7 @@ struct MainChatView: View {
                     .navigationBarTitleDisplayMode(.inline)
                     .toolbarBackground(.hidden, for: .navigationBar)
             }
+            .gesture(sidebarOpeningGesture)
             // Include the window edges in the mask without moving safe-area content.
             .padding(.leading, usesPageCardSidebar ? containerSafeAreaInsets.leading : 0)
             .padding(.trailing, usesPageCardSidebar ? containerSafeAreaInsets.trailing : 0)
@@ -604,48 +589,6 @@ struct MainChatView: View {
             )
             } // end if isTerminalActiveInCurrentChat
 
-
-            // MARK: Left-edge overlay — 20 pt wide strip that exclusively captures left-edge
-            // swipe-from-edge to open the drawer. Being a dedicated overlay (not simultaneousGesture)
-            // means the moment a drag is recognized it blocks all input beneath — buttons, text
-            // selection, scroll views — so the content freezes instantly as the drawer slides in.
-            // Also handles taps so that touches on the left half of the hamburger button
-            // (which overlaps this zone) still open the drawer reliably.
-            // NOTE: Also disabled when the file browser is open so that swiping from the
-            // left edge cannot open the drawer behind the file browser panel.
-            if !showDrawer && !isDraggingFileBrowser && !showFileBrowser {
-                Color.clear
-                    .frame(width: 20)
-                    .frame(maxHeight: .infinity)
-                    .contentShape(Rectangle())
-                    .onTapGesture { toggleDrawer() }
-                    .gesture(
-                        DragGesture(minimumDistance: 12, coordinateSpace: .local)
-                            .onChanged { value in
-                                let horizontal = value.translation.width
-                                let vertical = abs(value.translation.height)
-                                guard abs(horizontal) > vertical, horizontal > 0 else { return }
-                                if !isDraggingDrawer {
-                                    UIApplication.shared.sendAction(
-                                        #selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
-                                }
-                                isDraggingDrawer = true
-                                dragOffset = horizontal
-                            }
-                            .onEnded { value in
-                                guard isDraggingDrawer else { return }
-                                let horizontal = value.translation.width
-                                let velocity = value.velocity.width
-                                isDraggingDrawer = false
-                                if horizontal > drawerWidth * 0.2 || velocity > 300 {
-                                    openDrawerAnimated()
-                                } else {
-                                    closeDrawerAnimated()
-                                }
-                            }
-                    )
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            }
 
             // MARK: Right edge overlay — exclusively captures right-edge swipe to open file browser.
             // Only shown when terminal is active and file browser is closed.
