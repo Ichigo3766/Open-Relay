@@ -29,6 +29,7 @@ struct MainChatView: View {
 
     /// Controls the workspace sheet presentation.
     @State private var showWorkspace = false
+    @State private var showLibrarySearch = false
 
     /// Controls the calendar sheet presentation.
     @State private var showCalendar = false
@@ -683,6 +684,13 @@ struct MainChatView: View {
 
     private func applySheets<Content: View>(content: Content, voiceCallBinding: Binding<Bool>) -> some View {
         content
+            .fullScreenCover(isPresented: $showLibrarySearch) {
+                if let api = dependencies.apiClient {
+                    LibrarySearchView(api: api, onSelectChat: openSearchChat, onSelectFolder: openFolder)
+                        .themed(with: dependencies.appearanceManager, accessibility: dependencies.accessibilityManager)
+                        .preferredColorScheme(dependencies.appearanceManager.resolvedColorScheme ?? systemColorScheme)
+                }
+            }
             .sheet(isPresented: $showSettings) {
                 SettingsView(
                     viewModel: dependencies.authViewModel,
@@ -1875,15 +1883,13 @@ struct MainChatView: View {
         }
     }
 
-    // MARK: - Drawer Header (Clean Action Bar + Animated Search)
+    // MARK: - Drawer Header
 
-    /// Simplified header: just action buttons (no user name/server URL) + animated search pill.
     /// User identity lives exclusively in the bottom bar.
-    @State private var isSearchFocused: Bool = false
 
     private var drawerHeader: some View {
         VStack(spacing: 0) {
-            // Action row: server icon (left), new chat + chat-management menu (right)
+            // Action row: server icon (left), chat-management menu + search (right)
             HStack(spacing: 8) {
                 // Server favicon — tapping opens Settings
                 Button {
@@ -1896,19 +1902,6 @@ struct MainChatView: View {
                 .accessibilityLabel("Server Settings")
 
                 Spacer()
-
-                // New Chat
-                Button {
-                    closeDrawer()
-                    startNewChat()
-                } label: {
-                    Image(systemName: "square.and.pencil")
-                        .scaledFont(size: 16, weight: .medium)
-                        .foregroundStyle(theme.textSecondary)
-                        .frame(width: 36, height: 36)
-                        .contentShape(Rectangle())
-                }
-                .accessibilityLabel("New Chat")
 
                 // Chat management menu (select, archive, delete, archived/shared chats)
                 Menu {
@@ -1941,19 +1934,29 @@ struct MainChatView: View {
                         Label("Shared Chats", systemImage: "link.circle")
                     }
                 } label: {
-                    Image(systemName: "ellipsis.circle")
+                    Image(systemName: "line.3.horizontal.decrease")
                         .scaledFont(size: 16, weight: .medium)
                         .foregroundStyle(theme.textSecondary)
                         .frame(width: 36, height: 36)
                         .contentShape(Rectangle())
                 }
+                .accessibilityLabel("Chat actions")
+
+                Button {
+                    showLibrarySearch = true
+                } label: {
+                    Image(systemName: "magnifyingglass")
+                        .scaledFont(size: 16, weight: .medium)
+                        .foregroundStyle(theme.textSecondary)
+                        .frame(width: 36, height: 36)
+                        .contentShape(Rectangle())
+                }
+                .accessibilityLabel("Search library")
+                .disabled(dependencies.apiClient == nil)
             }
             .padding(.horizontal, Spacing.md)
             .padding(.top, 14)
             .padding(.bottom, 10)
-
-            // Animated search pill
-            sidebarSearchPill
         }
     }
 
@@ -1991,131 +1994,6 @@ struct MainChatView: View {
                 .strokeBorder(theme.isDark ? Color.white.opacity(0.1) : Color.black.opacity(0.08), lineWidth: 0.5)
         )
     }
-
-    // MARK: - Sidebar Search Pill (Animated)
-
-    private var sidebarSearchPill: some View {
-        HStack(spacing: 8) {
-            // Magnifying glass — shifts to brandPrimary when focused or searching
-            Image(systemName: "magnifyingglass")
-                .scaledFont(size: 13, weight: .medium, context: .list)
-                .foregroundStyle(
-                    (isSearchFocused || !listViewModel.searchText.isEmpty)
-                        ? theme.brandPrimary
-                        : theme.textTertiary
-                )
-                .animation(.easeInOut(duration: 0.2), value: isSearchFocused)
-
-            TextField("Search conversations…", text: $listViewModel.searchText) { focused in
-                withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
-                    isSearchFocused = focused
-                }
-            }
-            .scaledFont(size: 14, context: .list)
-            .foregroundStyle(theme.textPrimary)
-            .tint(theme.brandPrimary)
-
-            // Clear button — appears when there's text
-            if !listViewModel.searchText.isEmpty {
-                Button {
-                    withAnimation(.spring(response: 0.3, dampingFraction: 0.75)) {
-                        listViewModel.searchText = ""
-                    }
-                } label: {
-                    Image(systemName: "xmark.circle.fill")
-                        .scaledFont(size: 14, context: .list)
-                        .foregroundStyle(theme.textTertiary)
-                }
-                .transition(.asymmetric(
-                    insertion: .scale(scale: 0.7).combined(with: .opacity),
-                    removal: .scale(scale: 0.7).combined(with: .opacity)
-                ))
-            }
-
-            // Filter icon (idle) OR cancel (searching)
-            if isSearchFocused || !listViewModel.searchText.isEmpty {
-                Button {
-                    withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
-                        listViewModel.searchText = ""
-                        isSearchFocused = false
-                        UIApplication.shared.sendAction(
-                            #selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
-                    }
-                } label: {
-                    Text("Cancel")
-                        .scaledFont(size: 14, weight: .medium, context: .list)
-                        .foregroundStyle(theme.brandPrimary)
-                }
-                .transition(.asymmetric(
-                    insertion: .move(edge: .trailing).combined(with: .opacity),
-                    removal: .move(edge: .trailing).combined(with: .opacity)
-                ))
-            } else {
-                Menu {
-                    if !listViewModel.conversations.isEmpty {
-                        Button {
-                            withAnimation(.easeInOut(duration: 0.2)) { listViewModel.toggleSelectionMode() }
-                        } label: {
-                            Label("Select Chats", systemImage: "checkmark.circle")
-                        }
-                        Button {
-                            listViewModel.showArchiveAllConfirmation = true
-                        } label: {
-                            Label("Archive All", systemImage: "archivebox")
-                        }
-                        Button(role: .destructive) {
-                            showDeleteAllConfirmation = true
-                        } label: {
-                            Label("Delete All", systemImage: "trash")
-                        }
-                        Divider()
-                    }
-                    Button {
-                        closeDrawer(); showArchivedChats = true
-                    } label: {
-                        Label("Archived Chats", systemImage: "archivebox")
-                    }
-                    Button {
-                        closeDrawer(); showSharedChats = true
-                    } label: {
-                        Label("Shared Chats", systemImage: "link.circle")
-                    }
-                } label: {
-                    Image(systemName: "slider.horizontal.3")
-                        .scaledFont(size: 13, weight: .medium, context: .list)
-                        .foregroundStyle(theme.textTertiary)
-                }
-                .transition(.asymmetric(
-                    insertion: .opacity,
-                    removal: .opacity
-                ))
-            }
-        }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 9)
-        .background(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .fill(
-                    (isSearchFocused || !listViewModel.searchText.isEmpty)
-                        ? theme.surfaceContainer
-                        : theme.surfaceContainer.opacity(0.6)
-                )
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .strokeBorder(
-                    (isSearchFocused || !listViewModel.searchText.isEmpty)
-                        ? theme.brandPrimary.opacity(0.35)
-                        : Color.clear,
-                    lineWidth: 1
-                )
-        )
-        .animation(.spring(response: 0.35, dampingFraction: 0.8), value: isSearchFocused)
-        .animation(.spring(response: 0.35, dampingFraction: 0.8), value: listViewModel.searchText.isEmpty)
-        .padding(.horizontal, Spacing.md)
-        .padding(.bottom, Spacing.sm)
-    }
-
     // MARK: - Sidebar Divider
 
     private var sidebarDivider: some View {
@@ -2210,91 +2088,66 @@ struct MainChatView: View {
         .padding(.bottom, Spacing.sm)
     }
 
-    // MARK: - Search Bar
+    private func openSearchChat(_ id: String) {
+        activeConversationId = id
+        activeChannelId = nil
+        activeFolderWorkspaceId = nil
+        activeFolderForWorkspace = nil
+        SharedDataService.shared.saveLastActiveConversationId(id)
+        closeDrawer()
+    }
 
-    private var searchBar: some View {
-        HStack(spacing: Spacing.sm) {
-            Image(systemName: "magnifyingglass")
-                .scaledFont(size: 14, context: .list)
-                .foregroundStyle(theme.textTertiary)
-
-            TextField("Search conversations...", text: $listViewModel.searchText)
-                .scaledFont(size: 16, context: .list)
-                .foregroundStyle(theme.textPrimary)
-
-            if !listViewModel.searchText.isEmpty {
-                Button {
-                    listViewModel.searchText = ""
-                } label: {
-                    Image(systemName: "xmark.circle.fill")
-                        .scaledFont(size: 14, context: .list)
-                        .foregroundStyle(theme.textTertiary)
+    private func openFolder(_ folderId: String) {
+        let folderVM = listViewModel.folderViewModel
+        activeFolderWorkspaceId = folderId
+        activeConversationId = nil
+        activeChannelId = nil
+        dependencies.activeChatStore.remove(nil)
+        newChatGeneration += 1
+        // Set an immediate placeholder from the flat list (may lack meta)
+        activeFolderForWorkspace = folderVM.folders.first { $0.id == folderId }
+        Task {
+            // Fetch full detail (background image URL, system prompt, models)
+            await folderVM.setActiveFolder(folderId)
+            // Pre-warm the folder background image so ChatDetailView has
+            // an instant cache hit and shows no layout shift.
+            if let bgUrl = folderVM.activeFolderDetail?.backgroundImageUrl,
+               !bgUrl.isEmpty, !bgUrl.hasPrefix("data:"),
+               let api = dependencies.apiClient {
+                let resolvedURL: URL?
+                if bgUrl.hasPrefix("http") {
+                    resolvedURL = URL(string: bgUrl)
+                } else {
+                    resolvedURL = URL(string: api.baseURL + bgUrl)
+                }
+                if let imgURL = resolvedURL {
+                    Task(priority: .userInitiated) {
+                        _ = await ImageCacheService.shared.loadImage(
+                            from: imgURL,
+                            authToken: api.network.authToken,
+                            targetPixelSize: Int(UIScreen.main.bounds.width * UIScreen.main.scale)
+                        )
+                    }
                 }
             }
-
-            if !listViewModel.conversations.isEmpty {
-                Menu {
-                    Button {
-                        withAnimation(.easeInOut(duration: 0.2)) {
-                            listViewModel.toggleSelectionMode()
-                        }
-                    } label: {
-                        Label("Select Chats", systemImage: "checkmark.circle")
-                    }
-
-                    Button {
-                        listViewModel.showArchiveAllConfirmation = true
-                    } label: {
-                        Label("Archive All Chats", systemImage: "archivebox")
-                    }
-
-                    Button(role: .destructive) {
-                        showDeleteAllConfirmation = true
-                    } label: {
-                        Label("Delete All Chats", systemImage: "trash")
-                    }
-
-                    Divider()
-
-                    Button {
-                        closeDrawer()
-                        showArchivedChats = true
-                    } label: {
-                        Label("Archived Chats", systemImage: "archivebox")
-                    }
-
-                    Button {
-                        closeDrawer()
-                        showSharedChats = true
-                    } label: {
-                        Label("Shared Chats", systemImage: "link.circle")
-                    }
-                } label: {
-                    Image(systemName: "ellipsis.circle")
-                        .scaledFont(size: 16, weight: .medium, context: .list)
-                        .foregroundStyle(theme.textSecondary)
-                        .frame(width: 44, height: 44)
-                        .contentShape(Rectangle())
-                }
+            // Load chats — they're fetched lazily and may be empty
+            // if the folder was never expanded in the sidebar.
+            if var flatFolder = folderVM.folders.first(where: { $0.id == folderId }) {
+                flatFolder.isExpanded = true   // satisfy the isExpanded guard in loadChatsIfNeeded
+                await folderVM.loadChatsIfNeeded(for: flatFolder)
             }
-
-            Button {
-                closeDrawer()
-            } label: {
-                Image(systemName: "line.3.horizontal")
-                    .scaledFont(size: 16, weight: .medium, context: .list)
-                    .foregroundStyle(theme.textSecondary)
-                    .frame(width: 44, height: 44)
-                    .contentShape(Rectangle())
+            // Merge: full detail has meta/background, flat list now has chats
+            if let detail = folderVM.activeFolderDetail {
+                var merged = detail
+                if merged.chats.isEmpty,
+                   let flatFolder = folderVM.folders.first(where: { $0.id == folderId }),
+                   !flatFolder.chats.isEmpty {
+                    merged.chats = flatFolder.chats
+                }
+                activeFolderForWorkspace = merged
             }
         }
-        .padding(.horizontal, Spacing.md)
-        .padding(.vertical, Spacing.sm)
-        .background(theme.surfaceContainer.opacity(0.5))
-        .clipShape(RoundedRectangle(cornerRadius: CornerRadius.md, style: .continuous))
-        .padding(.horizontal, Spacing.md)
-        .padding(.top, Spacing.md)
-        .padding(.bottom, Spacing.sm)
+        closeDrawer()
     }
 
     // MARK: - Drawer Section
@@ -2498,57 +2351,7 @@ struct MainChatView: View {
                             SharedDataService.shared.saveLastActiveConversationId(chatId)
                             closeDrawer()
                         },
-                        onSelectFolder: { folderId in
-                            activeFolderWorkspaceId = folderId
-                            activeConversationId = nil
-                            activeChannelId = nil
-                            dependencies.activeChatStore.remove(nil)
-                            newChatGeneration += 1
-                            // Set an immediate placeholder from the flat list (may lack meta)
-                            activeFolderForWorkspace = folderVM.folders.first { $0.id == folderId }
-                            Task {
-                                // Fetch full detail (background image URL, system prompt, models)
-                                await folderVM.setActiveFolder(folderId)
-                                // Pre-warm the folder background image so ChatDetailView has
-                                // an instant cache hit and shows no layout shift.
-                                if let bgUrl = folderVM.activeFolderDetail?.backgroundImageUrl,
-                                   !bgUrl.isEmpty, !bgUrl.hasPrefix("data:"),
-                                   let api = dependencies.apiClient {
-                                    let resolvedURL: URL?
-                                    if bgUrl.hasPrefix("http") {
-                                        resolvedURL = URL(string: bgUrl)
-                                    } else {
-                                        resolvedURL = URL(string: api.baseURL + bgUrl)
-                                    }
-                                    if let imgURL = resolvedURL {
-                                        Task(priority: .userInitiated) {
-                                            _ = await ImageCacheService.shared.loadImage(
-                                                from: imgURL,
-                                                authToken: api.network.authToken,
-                                                targetPixelSize: Int(UIScreen.main.bounds.width * UIScreen.main.scale)
-                                            )
-                                        }
-                                    }
-                                }
-                                // Load chats — they're fetched lazily and may be empty
-                                // if the folder was never expanded in the sidebar.
-                                if var flatFolder = folderVM.folders.first(where: { $0.id == folderId }) {
-                                    flatFolder.isExpanded = true   // satisfy the isExpanded guard in loadChatsIfNeeded
-                                    await folderVM.loadChatsIfNeeded(for: flatFolder)
-                                }
-                                // Merge: full detail has meta/background, flat list now has chats
-                                if let detail = folderVM.activeFolderDetail {
-                                    var merged = detail
-                                    if merged.chats.isEmpty,
-                                       let flatFolder = folderVM.folders.first(where: { $0.id == folderId }),
-                                       !flatFolder.chats.isEmpty {
-                                        merged.chats = flatFolder.chats
-                                    }
-                                    activeFolderForWorkspace = merged
-                                }
-                            }
-                            closeDrawer()
-                        },
+                        onSelectFolder: openFolder,
                         onChatMoved: { chatId, targetFolderId in
                             if let idx = listViewModel.conversations.firstIndex(where: { $0.id == chatId }) {
                                 listViewModel.conversations[idx].folderId = targetFolderId

@@ -44,6 +44,7 @@ struct iPadMainChatView: View {
 
     /// Whether the workspace sheet is visible.
     @State private var showWorkspace = false
+    @State private var showLibrarySearch = false
 
     /// Whether the memories sheet is visible.
     @State private var showMemories = false
@@ -365,6 +366,13 @@ struct iPadMainChatView: View {
             .environment(dependencies)
             .themed(with: dependencies.appearanceManager, accessibility: dependencies.accessibilityManager)
             .presentationCornerRadius(20)
+        }
+        .fullScreenCover(isPresented: $showLibrarySearch) {
+            if let api = dependencies.apiClient {
+                LibrarySearchView(api: api, onSelectChat: openSearchChat, onSelectFolder: openFolder)
+                    .themed(with: dependencies.appearanceManager, accessibility: dependencies.accessibilityManager)
+                    .preferredColorScheme(dependencies.appearanceManager.resolvedColorScheme ?? systemColorScheme)
+            }
         }
         // Workspace sheet
         .sheet(isPresented: $showWorkspace) {
@@ -750,67 +758,79 @@ struct iPadMainChatView: View {
             renamingConversation: $renamingConversation,
             renameText: $renameText,
             dependencies: dependencies,
+            onSearch: { showLibrarySearch = true },
             onNewChat: {
                 startNewChat()
                 if !sidebarAlwaysShown { closeDrawerAnimated() }
             },
-            onSelectFolder: { folderId in
-                let folderVM = listViewModel.folderViewModel
-                activeFolderWorkspaceId = folderId
-                activeConversationId = nil
-                activeChannelId = nil
-                dependencies.activeChatStore.remove(nil)
-                newChatGeneration += 1
-                // Set immediate placeholder from the flat list (may lack meta)
-                activeFolderForWorkspace = folderVM.folders.first { $0.id == folderId }
-                Task {
-                    // Fetch full detail (background image URL, system prompt, models)
-                    await folderVM.setActiveFolder(folderId)
-                    // Pre-warm the folder background image so ChatDetailView has
-                    // an instant cache hit and shows no layout shift.
-                    if let bgUrl = folderVM.activeFolderDetail?.backgroundImageUrl,
-                       !bgUrl.isEmpty, !bgUrl.hasPrefix("data:"),
-                       let api = dependencies.apiClient {
-                        let resolvedURL: URL?
-                        if bgUrl.hasPrefix("http") {
-                            resolvedURL = URL(string: bgUrl)
-                        } else {
-                            resolvedURL = URL(string: api.baseURL + bgUrl)
-                        }
-                        if let imgURL = resolvedURL {
-                            Task(priority: .userInitiated) {
-                                _ = await ImageCacheService.shared.loadImage(
-                                    from: imgURL,
-                                    authToken: api.network.authToken,
-                                    targetPixelSize: Int(UIScreen.main.bounds.width * UIScreen.main.scale)
-                                )
-                            }
-                        }
-                    }
-                    // Load chats — they're fetched lazily and may be empty
-                    // if the folder was never expanded in the sidebar.
-                    if var flatFolder = folderVM.folders.first(where: { $0.id == folderId }) {
-                        flatFolder.isExpanded = true   // satisfy the isExpanded guard in loadChatsIfNeeded
-                        await folderVM.loadChatsIfNeeded(for: flatFolder)
-                    }
-                    // Merge: full detail has meta/background, flat list now has chats
-                    if let detail = folderVM.activeFolderDetail {
-                        var merged = detail
-                        if merged.chats.isEmpty,
-                           let flatFolder = folderVM.folders.first(where: { $0.id == folderId }),
-                           !flatFolder.chats.isEmpty {
-                            merged.chats = flatFolder.chats
-                        }
-                        activeFolderForWorkspace = merged
-                    }
-                }
-                if !sidebarAlwaysShown { closeDrawerAnimated() }
-            },
+            onSelectFolder: openFolder,
             onExport: { conv, format in Task { await exportChat(conv, format: format) } },
             onShowArchivedChats: { showArchivedChats = true },
             onShowSharedChats: { showSharedChats = true },
             onCloseDrawer: sidebarAlwaysShown ? nil : { closeDrawerAnimated() }
         )
+    }
+
+    private func openSearchChat(_ id: String) {
+        activeConversationId = id
+        activeChannelId = nil
+        activeFolderWorkspaceId = nil
+        activeFolderForWorkspace = nil
+        SharedDataService.shared.saveLastActiveConversationId(id)
+        if !sidebarAlwaysShown { closeDrawerAnimated() }
+    }
+
+    private func openFolder(_ folderId: String) {
+        let folderVM = listViewModel.folderViewModel
+        activeFolderWorkspaceId = folderId
+        activeConversationId = nil
+        activeChannelId = nil
+        dependencies.activeChatStore.remove(nil)
+        newChatGeneration += 1
+        // Set immediate placeholder from the flat list (may lack meta)
+        activeFolderForWorkspace = folderVM.folders.first { $0.id == folderId }
+        Task {
+            // Fetch full detail (background image URL, system prompt, models)
+            await folderVM.setActiveFolder(folderId)
+            // Pre-warm the folder background image so ChatDetailView has
+            // an instant cache hit and shows no layout shift.
+            if let bgUrl = folderVM.activeFolderDetail?.backgroundImageUrl,
+               !bgUrl.isEmpty, !bgUrl.hasPrefix("data:"),
+               let api = dependencies.apiClient {
+                let resolvedURL: URL?
+                if bgUrl.hasPrefix("http") {
+                    resolvedURL = URL(string: bgUrl)
+                } else {
+                    resolvedURL = URL(string: api.baseURL + bgUrl)
+                }
+                if let imgURL = resolvedURL {
+                    Task(priority: .userInitiated) {
+                        _ = await ImageCacheService.shared.loadImage(
+                            from: imgURL,
+                            authToken: api.network.authToken,
+                            targetPixelSize: Int(UIScreen.main.bounds.width * UIScreen.main.scale)
+                        )
+                    }
+                }
+            }
+            // Load chats — they're fetched lazily and may be empty
+            // if the folder was never expanded in the sidebar.
+            if var flatFolder = folderVM.folders.first(where: { $0.id == folderId }) {
+                flatFolder.isExpanded = true   // satisfy the isExpanded guard in loadChatsIfNeeded
+                await folderVM.loadChatsIfNeeded(for: flatFolder)
+            }
+            // Merge: full detail has meta/background, flat list now has chats
+            if let detail = folderVM.activeFolderDetail {
+                var merged = detail
+                if merged.chats.isEmpty,
+                   let flatFolder = folderVM.folders.first(where: { $0.id == folderId }),
+                   !flatFolder.chats.isEmpty {
+                    merged.chats = flatFolder.chats
+                }
+                activeFolderForWorkspace = merged
+            }
+        }
+        if !sidebarAlwaysShown { closeDrawerAnimated() }
     }
 
     // MARK: - Drawer Animations
@@ -1194,6 +1214,7 @@ struct iPadSidebarContent: View {
     @Binding var renamingConversation: Conversation?
     @Binding var renameText: String
     let dependencies: AppDependencyContainer
+    let onSearch: () -> Void
     let onNewChat: () -> Void
     /// Called when the folder name/icon is tapped — opens folder workspace in the detail pane.
     var onSelectFolder: ((String) -> Void)?
@@ -1365,15 +1386,6 @@ struct iPadSidebarContent: View {
                     }
                 }
             }
-            ToolbarItem(placement: .topBarTrailing) {
-                Button(action: onNewChat) {
-                    Image(systemName: "square.and.pencil")
-                        .scaledFont(size: 15, weight: .medium, context: .list)
-                        .foregroundStyle(theme.textSecondary)
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("New Chat")
-            }
         }
         .toolbarBackground(.hidden, for: .navigationBar)
     }
@@ -1434,16 +1446,16 @@ struct iPadSidebarContent: View {
 
                 Spacer()
 
-                // New Chat button
-                Button(action: onNewChat) {
-                    Image(systemName: "square.and.pencil")
+                Button(action: onSearch) {
+                    Image(systemName: "magnifyingglass")
                         .scaledFont(size: 14, weight: .semibold)
                         .foregroundStyle(theme.brandPrimary)
                         .frame(width: 32, height: 32)
                         .background(theme.brandPrimary.opacity(0.1))
                         .clipShape(Circle())
                 }
-                .accessibilityLabel("New Chat")
+                .accessibilityLabel("Search library")
+                .disabled(dependencies.apiClient == nil)
 
                 // More menu
                 Menu {
@@ -1498,53 +1510,7 @@ struct iPadSidebarContent: View {
             .padding(.horizontal, Spacing.md)
             .padding(.top, Spacing.md)
             .padding(.bottom, 10)
-
-            // Search pill
-            sidebarSearchPill
         }
-    }
-
-    // MARK: - Sidebar Search Pill
-
-    private var sidebarSearchPill: some View {
-        HStack(spacing: 8) {
-            Image(systemName: "magnifyingglass")
-                .scaledFont(size: 12, weight: .medium, context: .list)
-                .foregroundStyle(listViewModel.searchText.isEmpty ? theme.textTertiary : theme.brandPrimary)
-                .animation(.easeInOut(duration: 0.15), value: listViewModel.searchText.isEmpty)
-
-            TextField("Search conversations…", text: $listViewModel.searchText)
-                .scaledFont(size: 13, context: .list)
-                .foregroundStyle(theme.textPrimary)
-                .tint(theme.brandPrimary)
-
-            if !listViewModel.searchText.isEmpty {
-                Button {
-                    withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
-                        listViewModel.searchText = ""
-                    }
-                } label: {
-                    Image(systemName: "xmark.circle.fill")
-                        .scaledFont(size: 13, context: .list)
-                        .foregroundStyle(theme.textTertiary)
-                }
-                .transition(.scale.combined(with: .opacity))
-            }
-        }
-        .padding(.horizontal, 11)
-        .padding(.vertical, 8)
-        .background(theme.surfaceContainer.opacity(0.7))
-        .clipShape(RoundedRectangle(cornerRadius: 11, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: 11, style: .continuous)
-                .strokeBorder(
-                    listViewModel.searchText.isEmpty ? Color.clear : theme.brandPrimary.opacity(0.3),
-                    lineWidth: 1
-                )
-        )
-        .animation(.easeInOut(duration: 0.2), value: listViewModel.searchText.isEmpty)
-        .padding(.horizontal, Spacing.md)
-        .padding(.bottom, Spacing.sm)
     }
 
     // MARK: - Sidebar Divider
@@ -1555,12 +1521,6 @@ struct iPadSidebarContent: View {
             .frame(height: 1)
             .padding(.horizontal, Spacing.md)
             .padding(.vertical, 6)
-    }
-
-    // MARK: - Search Bar (kept for backwards compatibility)
-
-    private var sidebarSearchBar: some View {
-        sidebarSearchPill
     }
 
     // MARK: - Selection Mode Header
