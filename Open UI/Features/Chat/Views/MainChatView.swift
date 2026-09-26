@@ -135,6 +135,7 @@ struct MainChatView: View {
 
     /// Cached container width from GeometryReader (avoids deprecated UIScreen.main).
     @State private var containerWidth: CGFloat = 360
+    @State private var containerSafeAreaInsets = EdgeInsets()
 
     /// Live drag offset for interactive drawer sliding.
     @State private var dragOffset: CGFloat = 0
@@ -189,6 +190,9 @@ struct MainChatView: View {
     var body: some View {
         @Bindable var bindableRouter = router
         mainContent(voiceCallBinding: $bindableRouter.isVoiceCallPresented)
+            .onGeometryChange(for: EdgeInsets.self) { proxy in
+                proxy.safeAreaInsets
+            } action: { containerSafeAreaInsets = $0 }
             .onGeometryChange(for: CGFloat.self) { proxy in
                 proxy.size.width
             } action: { newWidth in
@@ -227,14 +231,14 @@ struct MainChatView: View {
         mainContentOffset - fileBrowserContentOffset
     }
 
-    /// Highest open fraction of either panel — drives scale and corner radius.
+    /// Highest open fraction of either panel — controls dismissal hit-testing.
     private var maxPanelFraction: CGFloat {
         max(drawerFraction, fileBrowserFraction)
     }
 
-    /// Corner radius of the main content card (0 → 16) based on most-open panel.
-    private var combinedContentCornerRadius: CGFloat {
-        maxPanelFraction * 16
+    private var usesPageCardSidebar: Bool {
+        if #available(iOS 26.0, *) { return true }
+        return false
     }
 
     // MARK: File Browser Computed Properties (right-side panel, mirrors drawer)
@@ -432,27 +436,34 @@ struct MainChatView: View {
     @ViewBuilder
     private func portraitOverlayLayout(voiceCallBinding: Binding<Bool>) -> some View {
         ZStack(alignment: .leading) {
-            // MARK: Main chat content — pushed right as drawer opens (Reddit/Twitter style)
+            // MARK: Main chat content — slides over the sidebar as a rounded page
             NavigationStack {
                 chatContent
                     .navigationBarTitleDisplayMode(.inline)
                     .toolbarBackground(.hidden, for: .navigationBar)
             }
-            // Push the content card — right by drawer, left by file browser
-            .offset(x: combinedContentOffset)
+            // Include the window edges in the mask without moving safe-area content.
+            .padding(.leading, usesPageCardSidebar ? containerSafeAreaInsets.leading : 0)
+            .padding(.trailing, usesPageCardSidebar ? containerSafeAreaInsets.trailing : 0)
+            .background((usesPageCardSidebar ? theme.background : .clear).ignoresSafeArea())
+            .offset(x: usesPageCardSidebar ? 0 : combinedContentOffset)
             .mask {
-                RoundedRectangle(cornerRadius: combinedContentCornerRadius, style: .continuous)
-                    .ignoresSafeArea(.container)
+                if #available(iOS 26.0, *), fileBrowserFraction == 0 {
+                    ConcentricRectangle(corners: .concentric, isUniform: true)
+                        .ignoresSafeArea(.container)
+                } else {
+                    RoundedRectangle(cornerRadius: maxPanelFraction * 16, style: .continuous)
+                        .ignoresSafeArea(.container)
+                }
             }
-            // Blur the main content as panels open, plus extra blur during chat-switch transitions
-            .blur(radius: maxPanelFraction * 8 + contentTransitionBlur)
+            .blur(radius: (usesPageCardSidebar ? fileBrowserFraction : maxPanelFraction) * 8 + contentTransitionBlur)
             // Shadow on the active edge: left when drawer open, right when file browser open
             .shadow(color: .black.opacity(0.18 * drawerFraction), radius: 20, x: -4)
             .shadow(color: .black.opacity(0.18 * fileBrowserFraction), radius: 20, x: 4)
-            // Faint scrim proportional to whichever panel is most open
+            // Keep the file browser's scrim; the sidebar leaves the page undimmed.
             .overlay {
                 Color.black
-                    .opacity(0.12 * maxPanelFraction)
+                    .opacity(0.12 * (usesPageCardSidebar ? fileBrowserFraction : maxPanelFraction))
                     .ignoresSafeArea()
                     .allowsHitTesting(false)
             }
@@ -508,10 +519,16 @@ struct MainChatView: View {
                     )
             }
 
+            // Move the mask, shadow, and dismissal surface together with the page.
+            .offset(x: usesPageCardSidebar ? combinedContentOffset : 0)
+            .ignoresSafeArea(.container, edges: usesPageCardSidebar ? .horizontal : [])
+
             // MARK: Drawer
             drawerContent
                 .frame(width: drawerWidth)
-                .offset(x: effectiveDrawerX)
+                .offset(x: usesPageCardSidebar ? 0 : effectiveDrawerX)
+                .zIndex(usesPageCardSidebar ? -1 : 0)
+                .allowsHitTesting(drawerFraction > 0.01)
                 .accessibilityHidden(drawerFraction < 0.01)
                 .gesture(
                     DragGesture(minimumDistance: 12, coordinateSpace: .local)
@@ -677,6 +694,7 @@ struct MainChatView: View {
                 }
             )
         }
+        .background((usesPageCardSidebar ? theme.sidebarBackground : .clear).ignoresSafeArea())
     }
 
     // MARK: - Sheets (Settings, Notes, Voice Call, Folders, Rename, Export)
@@ -1866,7 +1884,7 @@ struct MainChatView: View {
                 drawerBottomBar
             }
         }
-        .background(theme.background)
+        .background(theme.sidebarBackground)
         .overlay(alignment: .trailing) {
             Rectangle()
                 .fill(theme.isDark ? Color.white.opacity(0.06) : Color.black.opacity(0.08))
@@ -3419,7 +3437,7 @@ struct MainChatView: View {
             .padding(.horizontal, Spacing.md)
             .padding(.vertical, 10)
         }
-        .background(theme.background)
+        .background(theme.sidebarBackground)
     }
 
     // MARK: - Title Generation

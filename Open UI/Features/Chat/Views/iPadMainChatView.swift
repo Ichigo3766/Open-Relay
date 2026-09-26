@@ -68,6 +68,7 @@ struct iPadMainChatView: View {
 
     /// Cached container width from GeometryReader (avoids deprecated UIScreen.main).
     @State private var containerWidth: CGFloat = 768
+    @State private var containerSafeAreaInsets = EdgeInsets()
 
     /// Whether socket reconnect handler has been registered.
     @State private var hasRegisteredSocketHandlers = false
@@ -176,11 +177,19 @@ struct iPadMainChatView: View {
     /// How far the main content card is pushed right.
     private var mainContentOffset: CGFloat { drawerFraction * drawerWidth }
 
+    private var usesPageCardSidebar: Bool {
+        if #available(iOS 26.0, *) { return true }
+        return false
+    }
+
     // MARK: - Body
 
     var body: some View {
         @Bindable var bindableRouter = router
         rootLayout(voiceCallBinding: $bindableRouter.isVoiceCallPresented)
+            .onGeometryChange(for: EdgeInsets.self) { proxy in
+                proxy.safeAreaInsets
+            } action: { containerSafeAreaInsets = $0 }
             .onGeometryChange(for: CGFloat.self) { proxy in
                 proxy.size.width
             } action: { newWidth in
@@ -591,14 +600,25 @@ struct iPadMainChatView: View {
                     .toolbarBackground(.hidden, for: .navigationBar)
             }
             .ignoresSafeArea(.keyboard, edges: .bottom)
-            .offset(x: mainContentOffset)
-            .scaleEffect(1.0 - (drawerFraction * 0.08), anchor: .center)
-            .clipShape(RoundedRectangle(cornerRadius: drawerFraction * 16, style: .continuous))
-            .blur(radius: drawerFraction * 8)
+            // Include the window edges in the mask without moving safe-area content.
+            .padding(.leading, usesPageCardSidebar ? containerSafeAreaInsets.leading : 0)
+            .padding(.trailing, usesPageCardSidebar ? containerSafeAreaInsets.trailing : 0)
+            .background((usesPageCardSidebar ? theme.background : .clear).ignoresSafeArea())
+            .offset(x: usesPageCardSidebar ? 0 : mainContentOffset)
+            .scaleEffect(usesPageCardSidebar ? 1 : 1 - drawerFraction * 0.08)
+            .mask {
+                if #available(iOS 26.0, *) {
+                    ConcentricRectangle(corners: .concentric, isUniform: true)
+                        .ignoresSafeArea(.container)
+                } else {
+                    RoundedRectangle(cornerRadius: drawerFraction * 16, style: .continuous)
+                }
+            }
+            .blur(radius: usesPageCardSidebar ? 0 : drawerFraction * 8)
             .shadow(color: .black.opacity(0.18 * drawerFraction), radius: 20, x: -4)
             .overlay {
                 Color.black
-                    .opacity(0.12 * drawerFraction)
+                    .opacity(usesPageCardSidebar ? 0 : 0.12 * drawerFraction)
                     .ignoresSafeArea()
                     .allowsHitTesting(false)
             }
@@ -633,10 +653,15 @@ struct iPadMainChatView: View {
                     )
             }
 
+            .offset(x: usesPageCardSidebar ? mainContentOffset : 0)
+            .ignoresSafeArea(.container, edges: usesPageCardSidebar ? .horizontal : [])
+
             // MARK: Drawer panel
             drawerPanel
                 .frame(width: drawerWidth)
-                .offset(x: effectiveDrawerX)
+                .offset(x: usesPageCardSidebar ? 0 : effectiveDrawerX)
+                .zIndex(usesPageCardSidebar ? -1 : 0)
+                .allowsHitTesting(drawerFraction > 0.01)
                 .accessibilityHidden(drawerFraction < 0.01)
                 .gesture(
                     DragGesture(minimumDistance: 12, coordinateSpace: .local)
@@ -721,6 +746,7 @@ struct iPadMainChatView: View {
                 }
             )
         }
+        .background((usesPageCardSidebar ? theme.sidebarBackground : .clear).ignoresSafeArea())
     }
 
     // MARK: - Drawer Panel
@@ -1293,7 +1319,7 @@ struct iPadSidebarContent: View {
                 sidebarBottomBar
             }
         }
-        .background(theme.background)
+        .background(theme.sidebarBackground)
         .overlay(alignment: .trailing) {
             Rectangle()
                 .fill(theme.isDark ? Color.white.opacity(0.06) : Color.black.opacity(0.08))
@@ -2595,7 +2621,7 @@ struct iPadSidebarContent: View {
             .padding(.horizontal, Spacing.md)
             .padding(.vertical, 10)
         }
-        .background(theme.background)
+        .background(theme.sidebarBackground)
     }
 }
 

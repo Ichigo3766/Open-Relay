@@ -251,12 +251,10 @@ struct AppTheme: Equatable, Sendable {
     // MARK: - Sidebar
 
     var sidebarBackground: Color {
-        if useTintedBackgrounds {
-            return isDark
-                ? Color(hex: 0x080808).blend(with: accentColor, amount: 0.03)
-                : Color(hex: 0xFAFAFA).blend(with: accentColor, amount: 0.02)
+        if #available(iOS 26.0, *), isDark {
+            return surfaceContainer
         }
-        return isDark ? Color(hex: 0x0A0A0A) : Color(hex: 0xFAFAFA)
+        return background
     }
 
     var sidebarBorder: Color { isDark ? Color(hex: 0x282828) : Color(hex: 0xE5E5E5) }
