@@ -101,6 +101,20 @@ final class SidebarUITests: XCTestCase {
             XCTAssertLessThanOrEqual(contrast, 2, "No straight sidebar divider at the rounded page corner (y=\(y))")
         }
 
+        let pixel = app.frame.width / CGFloat(opened.cgImage!.width)
+        func brightness(_ image: UIImage, x: CGFloat) -> Double {
+            let sample = pixels(image, CGRect(x: x, y: app.frame.height * 0.65, width: pixel, height: 4),
+                                screenWidth: app.frame.width)
+            let channels = sample.enumerated().filter { $0.offset % 4 != 3 }.map { Double($0.element) }
+            return channels.reduce(0, +) / Double(channels.count)
+        }
+        let interior = brightness(opened, x: offset + 3 * pixel)
+        let outlineContrast = (brightness(opened, x: offset) - interior) * (theme == "dark" ? 1 : -1)
+        XCTAssertGreaterThan(outlineContrast, 2, "The open card has a faint outline")
+        XCTAssertLessThan(outlineContrast, 30, "The outline remains low contrast")
+        XCTAssertEqual(brightness(opened, x: offset + pixel), interior, accuracy: 1, "The stroke is only one physical pixel wide")
+        XCTAssertEqual(brightness(closed, x: 0), brightness(closed, x: 3 * pixel), accuracy: 1, "No outline when closed")
+
         // Compare the same text strip before and after translation: it must not
         // be blurred, dimmed, scaled, or shifted vertically by opening the sidebar.
         let sample = CGRect(x: 16, y: app.frame.height * 0.35, width: 36, height: 220)

@@ -1,7 +1,7 @@
 # Sidebar transition measurements
 
 Compared baseline `b38bfe9` with the initial page-card implementation, before the
-final sidebar background-color and divider adjustments, using Release builds,
+final sidebar background-color, divider, and outline adjustments, using Release builds,
 Xcode 27, one iPhone 16 Pro simulator running iOS 27, and the same invented completed chat.
 Both builds used the identical compiler-only extraction documented in
 [README.md](README.md).

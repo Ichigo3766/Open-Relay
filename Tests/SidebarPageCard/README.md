@@ -28,6 +28,14 @@ extending beyond the card. These assertions fail on the initial page-card build
 (maximum RGB contrast: 21 in light mode, 14 in dark mode) and pass after removing
 the divider (at most 2 at both corners in both themes).
 
+The card has a low-contrast outline drawn with the same system-rounded shape as
+its mask: one physical pixel (`1 / displayScale`), white at 10% in dark mode or
+black at 8% in light mode. It fades with the sidebar opening fraction, ignores
+hit testing, and is absent when closed. The pixel checks verify its subtle edge
+contrast and width, while still rejecting a straight divider in the corner cutouts.
+The outline-presence assertion fails on `e975e81` (zero edge contrast in both
+themes); both theme tests and the dark-background check pass with the outline.
+
 Install the app build under test in that simulator, then run:
 
 ```sh

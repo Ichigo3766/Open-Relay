@@ -14,6 +14,7 @@ struct MainChatView: View {
     @Environment(AppDependencyContainer.self) private var dependencies
     @Environment(AppRouter.self) private var router
     @Environment(\.theme) private var theme
+    @Environment(\.displayScale) private var displayScale
     @Environment(\.colorScheme) private var systemColorScheme
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.verticalSizeClass) private var verticalSizeClass
@@ -460,6 +461,15 @@ struct MainChatView: View {
             // Shadow on the active edge: left when drawer open, right when file browser open
             .shadow(color: .black.opacity(0.18 * drawerFraction), radius: 20, x: -4)
             .shadow(color: .black.opacity(0.18 * fileBrowserFraction), radius: 20, x: 4)
+            .overlay {
+                if #available(iOS 26.0, *), fileBrowserFraction == 0 {
+                    ConcentricRectangle(corners: .concentric, isUniform: true)
+                        .stroke(theme.isDark ? Color.white.opacity(0.1) : Color.black.opacity(0.08), lineWidth: 1 / displayScale)
+                        .opacity(drawerFraction)
+                        .ignoresSafeArea(.container)
+                        .allowsHitTesting(false)
+                }
+            }
             // Keep the file browser's scrim; the sidebar leaves the page undimmed.
             .overlay {
                 Color.black
