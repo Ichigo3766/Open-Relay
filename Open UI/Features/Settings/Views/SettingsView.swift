@@ -13,9 +13,6 @@ struct SettingsView: View {
     @Bindable var appearanceManager: AppearanceManager
     @State private var showSignOutConfirmation = false
     @State private var navigationPath = NavigationPath()
-    @State private var showDefaultModelPicker = false
-    @State private var showLanguagePicker = false
-    @State private var showRestartAlert = false
     @State private var availableModels: [AIModel] = []
     @State private var defaultModelId: String?
     @State private var isLoadingModels = false
@@ -63,8 +60,9 @@ struct SettingsView: View {
                             showDivider: false,
                             accessory: isLoadingModels ? .loading : .chevron
                         ) {
-                            showDefaultModelPicker = true
+                            navigationPath.append(SettingsDestination.defaultModel)
                         }
+                        .disabled(isLoadingModels)
                     }
 
                                     // Display & Customization
@@ -98,7 +96,7 @@ struct SettingsView: View {
                             showDivider: false,
                             accessory: .chevron
                         ) {
-                            showLanguagePicker = true
+                            navigationPath.append(SettingsDestination.language)
                         }
                     }
 
@@ -263,6 +261,14 @@ struct SettingsView: View {
                     AppearanceSettingsView(manager: appearanceManager)
                 case .accessibility:
                     AccessibilitySettingsView(manager: dependencies.accessibilityManager)
+                case .defaultModel:
+                    DefaultModelPickerView(
+                        models: availableModels,
+                        selectedModelId: $defaultModelId,
+                        onSave: saveDefaultModel
+                    )
+                case .language:
+                    LanguagePickerView()
                 case .serverManagement:
                     ServerManagementView(viewModel: viewModel)
                 case .serverSwitcher:
@@ -291,18 +297,6 @@ struct SettingsView: View {
                 case .storage:
                     StorageSettingsView()
                 }
-            }
-            .sheet(isPresented: $showDefaultModelPicker) {
-                DefaultModelPickerView(
-                    models: availableModels,
-                    selectedModelId: $defaultModelId,
-                    onSave: saveDefaultModel
-                )
-            }
-            .sheet(isPresented: $showLanguagePicker) {
-                LanguagePickerView()
-                    .presentationDetents([.large])
-                    .presentationDragIndicator(.visible)
             }
             .sheet(isPresented: $showSignOutConfirmation) {
                 SignOutConfirmationSheet(
@@ -336,15 +330,9 @@ struct SettingsView: View {
 
     /// The display name of the currently active app language.
     private var currentLanguageDisplayName: String {
-        let langs = UserDefaults.standard.stringArray(forKey: "AppleLanguages") ?? []
-        if let first = langs.first, !first.hasPrefix("en") {
-            let locale = Locale(identifier: first)
-            // Show native name in that language
-            if let native = locale.localizedString(forIdentifier: first) {
-                return native
-            }
-        }
-        return String(localized: "System Default")
+        LanguagePickerView.supportedLanguages.first {
+            $0.code == LanguagePickerView.selectedLanguageCode
+        }?.nativeName ?? String(localized: "System Default")
     }
 
     private var notificationStatusSubtitle: String {
@@ -398,6 +386,8 @@ enum SettingsDestination: Hashable {
     case profile
     case appearance
     case accessibility
+    case defaultModel
+    case language
     case serverManagement
     case serverSwitcher
     case privacySecurity
@@ -431,52 +421,47 @@ struct DefaultModelPickerView: View {
     }
 
     var body: some View {
-        NavigationStack {
-            List {
-                // Model list
-                ForEach(filteredModels) { model in
-                    Button {
-                        localSelection = model.id
-                    } label: {
-                        HStack {
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(model.name)
-                                    .scaledFont(size: 16)
-                                    .fontWeight(.medium)
-                                HStack(spacing: 4) {
-                                    if model.isMultimodal {
-                                        Label("Vision", systemImage: "photo")
-                                            .scaledFont(size: 10)
-                                            .foregroundStyle(theme.brandPrimary)
-                                    }
+        List {
+            ForEach(filteredModels) { model in
+                Button {
+                    localSelection = model.id
+                } label: {
+                    HStack {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(model.name)
+                                .scaledFont(size: 16)
+                                .fontWeight(.medium)
+                                .foregroundStyle(theme.textPrimary)
+                            HStack(spacing: 4) {
+                                if model.isMultimodal {
+                                    Label("Vision", systemImage: "photo")
+                                        .scaledFont(size: 10)
+                                        .foregroundStyle(theme.brandPrimary)
                                 }
                             }
-                            Spacer()
-                            if localSelection == model.id {
-                                Image(systemName: "checkmark")
-                                    .foregroundStyle(theme.brandPrimary)
-                            }
+                        }
+                        Spacer()
+                        if localSelection == model.id {
+                            Image(systemName: "checkmark")
+                                .foregroundStyle(theme.brandPrimary)
                         }
                     }
-                    .listRowBackground(
-                        localSelection == model.id ? theme.brandPrimary.opacity(0.08) : Color.clear
-                    )
                 }
+                .accessibilityAddTraits(localSelection == model.id ? .isSelected : [])
             }
-            .searchable(text: $searchText, prompt: "Search Models")
-            .navigationTitle("Default Model")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { dismiss() }
+        }
+        .listStyle(.insetGrouped)
+        .searchable(text: $searchText, prompt: "Search Models")
+        .navigationTitle("Default Model")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .confirmationAction) {
+                Button("Save", systemImage: "checkmark") {
+                    onSave(localSelection)
+                    dismiss()
                 }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Save") {
-                        onSave(localSelection)
-                        dismiss()
-                    }
-                    .fontWeight(.semibold)
-                }
+                .labelStyle(.iconOnly)
+                .tint(.secondary)
             }
         }
         .onAppear {
