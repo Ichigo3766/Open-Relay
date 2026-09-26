@@ -1661,6 +1661,7 @@ struct MainChatView: View {
                     // ── FOLDERS SECTION (always visible so user can create new folders) ─
                     let folderVM = listViewModel.folderViewModel
                     let foldersEnabled = dependencies.authViewModel.featurePermissions.folders
+                    let hasFolderSections = foldersEnabled && (!folderVM.featureDisabled || !folderVM.sharedFolders.isEmpty)
                     if foldersEnabled && !folderVM.featureDisabled {
                         drawerFoldersSection(folderVM: folderVM)
                     }
@@ -1673,7 +1674,7 @@ struct MainChatView: View {
                     // ── DIVIDER between Folders & Channels ──────────────
                     let channelsEnabled = dependencies.authViewModel.featurePermissions.channels
                         && (dependencies.authViewModel.backendConfig?.features?.enableChannels ?? true)
-                    if (foldersEnabled && !folderVM.featureDisabled && !folderVM.folders.isEmpty) || (channelsEnabled && !channelListVM.channels.isEmpty) {
+                    if hasFolderSections && channelsEnabled {
                         sidebarDivider
                     }
 
@@ -1745,9 +1746,6 @@ struct MainChatView: View {
                     }
                     } // end if channelsEnabled
 
-                    // ── DIVIDER between Channels & Chats ──────────────
-                    sidebarDivider
-
                     // ── CHATS SECTION (entire section is a drop zone) ─
                     // Compute once — groupedConversations is O(n) + DateFormatter usage;
                     // evaluating it multiple times per render frame wastes CPU during
@@ -1757,6 +1755,9 @@ struct MainChatView: View {
                     let hasAnyChats = !pinnedChats.isEmpty || !groupedChats.isEmpty
 
                     if hasAnyChats || !folderVM.folders.isEmpty {
+                        if hasFolderSections || channelsEnabled {
+                            sidebarDivider
+                        }
                         VStack(alignment: .leading, spacing: 0) {
                             // Collapsible header (also acts as drop zone indicator)
                             Button {
