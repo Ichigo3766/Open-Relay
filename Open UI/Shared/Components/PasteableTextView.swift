@@ -430,10 +430,11 @@ final class PasteInterceptingTextView: UITextView {
         label.numberOfLines = 1
         label.lineBreakMode = .byTruncatingTail
         addSubview(label)
+        // Anchor to the viewport so the placeholder cannot redefine contentSize.
         NSLayoutConstraint.activate([
-            label.leadingAnchor.constraint(equalTo: leadingAnchor),
-            label.topAnchor.constraint(equalTo: topAnchor),
-            label.trailingAnchor.constraint(equalTo: trailingAnchor),
+            label.leadingAnchor.constraint(equalTo: frameLayoutGuide.leadingAnchor),
+            label.topAnchor.constraint(equalTo: frameLayoutGuide.topAnchor),
+            label.trailingAnchor.constraint(equalTo: frameLayoutGuide.trailingAnchor),
         ])
         return label
     }()

@@ -1,0 +1,44 @@
+name: DictationLayoutQA
+options:
+  deploymentTarget: {iOS: '18.1'}
+settings:
+  base:
+    CODE_SIGNING_ALLOWED: NO
+    GENERATE_INFOPLIST_FILE: YES
+    SWIFT_VERSION: '5.0'
+targets:
+  DictationLayoutQA:
+    type: application
+    platform: iOS
+    sources:
+      - Harness.swift
+      - .generated/ComposerLayout.swift
+      - .generated/PasteableTextView.swift
+    settings:
+      PRODUCT_BUNDLE_IDENTIFIER: org.example.dictation-layout-qa
+      INFOPLIST_KEY_UILaunchScreen_Generation: YES
+  DictationLayoutTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources: [LayoutTests.swift]
+    dependencies: [{target: DictationLayoutQA}]
+  DictationFullAppUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources: [FullAppUITests.swift]
+    settings:
+      PRODUCT_BUNDLE_IDENTIFIER: org.example.dictation-full-app-tests
+schemes:
+  DictationLayoutQA:
+    build:
+      targets:
+        DictationLayoutQA: all
+        DictationLayoutTests: [test]
+    test:
+      targets: [DictationLayoutTests]
+  DictationFullApp:
+    build:
+      targets:
+        DictationFullAppUITests: [test]
+    test:
+      targets: [DictationFullAppUITests]

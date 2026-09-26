@@ -1,0 +1,3 @@
+*.xcodeproj/
+.generated/
+__pycache__/
