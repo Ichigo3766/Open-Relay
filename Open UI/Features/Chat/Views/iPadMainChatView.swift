@@ -753,6 +753,7 @@ struct iPadMainChatView: View {
 
     private var drawerPanel: some View {
         iPadSidebarContent(
+            showsTrailingDivider: sidebarAlwaysShown || !usesPageCardSidebar,
             listViewModel: listViewModel,
             channelListVM: channelListVM,
             activeConversationId: $activeConversationId,
@@ -1197,6 +1198,7 @@ struct iPadMainChatView: View {
 // MARK: - iPad Sidebar Content
 
 struct iPadSidebarContent: View {
+    var showsTrailingDivider: Bool
     @Bindable var listViewModel: ChatListViewModel
     var channelListVM: ChannelListViewModel
     @Binding var activeConversationId: String?
@@ -1321,10 +1323,12 @@ struct iPadSidebarContent: View {
         }
         .background(theme.sidebarBackground)
         .overlay(alignment: .trailing) {
-            Rectangle()
-                .fill(theme.isDark ? Color.white.opacity(0.06) : Color.black.opacity(0.08))
-                .frame(width: 0.5)
-                .ignoresSafeArea()
+            if showsTrailingDivider {
+                Rectangle()
+                    .fill(theme.isDark ? Color.white.opacity(0.06) : Color.black.opacity(0.08))
+                    .frame(width: 0.5)
+                    .ignoresSafeArea()
+            }
         }
         // Sidebar has no text inputs that need keyboard avoidance — ignore
         // keyboard safe area so the sidebar layout doesn't shift when a

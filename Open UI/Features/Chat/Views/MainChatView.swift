@@ -1886,10 +1886,12 @@ struct MainChatView: View {
         }
         .background(theme.sidebarBackground)
         .overlay(alignment: .trailing) {
-            Rectangle()
-                .fill(theme.isDark ? Color.white.opacity(0.06) : Color.black.opacity(0.08))
-                .frame(width: 0.5)
-                .ignoresSafeArea()
+            if !usesPageCardSidebar || isLandscapeSplitActive {
+                Rectangle()
+                    .fill(theme.isDark ? Color.white.opacity(0.06) : Color.black.opacity(0.08))
+                    .frame(width: 0.5)
+                    .ignoresSafeArea()
+            }
         }
     }
 

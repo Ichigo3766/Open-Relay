@@ -20,6 +20,14 @@ The mask includes the horizontal safe area while the page's controls retain
 their existing insets. This prevents the screen-sized corner from cutting into
 the menu button in landscape.
 
+The page-card layout omits the sidebar's old full-height trailing divider.
+Earlier-iOS drawers, the pinned iPad sidebar, and the separate landscape terminal
+layout retain their dividers. The light/dark tests compare pixels at both exposed
+rounded corners against the adjacent sidebar surface to catch a straight border
+extending beyond the card. These assertions fail on the initial page-card build
+(maximum RGB contrast: 21 in light mode, 14 in dark mode) and pass after removing
+the divider (at most 2 at both corners in both themes).
+
 Install the app build under test in that simulator, then run:
 
 ```sh

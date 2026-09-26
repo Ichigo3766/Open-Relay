@@ -89,9 +89,20 @@ final class SidebarUITests: XCTestCase {
         capture(app, "\(theme)-open")
         let opened = app.screenshot().image
 
+        // The sidebar must remain continuous behind the rounded page corners;
+        // the old full-height divider must not extend into those cutouts.
+        let offset = min(app.frame.width * (app.frame.width >= 768 ? 0.40 : 0.82), 360)
+        for y in [8.0, app.frame.height - 24] {
+            let edge = CGRect(x: offset - 0.5, y: y, width: 0.5, height: 16)
+            let border = pixels(opened, edge, screenWidth: app.frame.width)
+            let adjacent = pixels(opened, edge.offsetBy(dx: -3, dy: 0), screenWidth: app.frame.width)
+            let contrast = zip(border, adjacent).enumerated().filter { $0.offset % 4 != 3 }
+                .map { abs(Int($0.element.0) - Int($0.element.1)) }.max()!
+            XCTAssertLessThanOrEqual(contrast, 2, "No straight sidebar divider at the rounded page corner (y=\(y))")
+        }
+
         // Compare the same text strip before and after translation: it must not
         // be blurred, dimmed, scaled, or shifted vertically by opening the sidebar.
-        let offset = min(app.frame.width * (app.frame.width >= 768 ? 0.40 : 0.82), 360)
         let sample = CGRect(x: 16, y: app.frame.height * 0.35, width: 36, height: 220)
         let before = pixels(closed, sample, screenWidth: app.frame.width)
         let after = pixels(opened, sample.offsetBy(dx: offset, dy: 0), screenWidth: app.frame.width)
