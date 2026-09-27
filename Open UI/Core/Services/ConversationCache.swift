@@ -26,6 +26,7 @@ actor ConversationCache {
     private let defaults: UserDefaults
     private var generation = UUID()
     private var inFlight: [String: Task<Data, Error>] = [:]
+    private var lastPrunedAt = Date.distantPast
 
     init(directory: URL = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
         .appendingPathComponent(ConversationCache.directoryName), defaults: UserDefaults = .standard) {
@@ -74,7 +75,10 @@ actor ConversationCache {
     }
 
     private func read(scope: String?, id: String, now: Date = .now) -> Entry? {
-        prune(now: now)
+        // Writes still enforce the budget immediately; reads need only periodic cleanup.
+        if now.timeIntervalSince(lastPrunedAt) >= 600 || now < lastPrunedAt || limit == 0 {
+            prune(now: now)
+        }
         guard let scope, !id.hasPrefix("local:"), limit > 0 else { return nil }
         let url = file(scope: scope, id: id)
         guard let size = try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize,
@@ -224,6 +228,7 @@ actor ConversationCache {
 
     func clear() {
         generation = UUID() // Requests already in flight cannot repopulate a cleared cache.
+        lastPrunedAt = .distantPast
         try? FileManager.default.removeItem(at: directory)
     }
 
@@ -232,6 +237,7 @@ actor ConversationCache {
     /// Oldest-accessed files go first. The budget applies across all server/session scopes.
     func prune(now: Date = .now) {
         if limit == 0 { clear(); return }
+        lastPrunedAt = now
         let entries = files().compactMap { url -> (URL, Int, Date, Date)? in
             guard let values = try? url.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey, .creationDateKey]) else { return nil }
             return (url, values.fileSize ?? 0, values.contentModificationDate ?? .distantPast, values.creationDate ?? .distantPast)
