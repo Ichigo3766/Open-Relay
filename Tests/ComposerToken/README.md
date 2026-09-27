@@ -13,3 +13,16 @@ offset and scans the entire preceding draft separately for each trigger. This
 prototype examines the current token once. It retains the existing behavior for
 repeated trigger characters within a word. Benchmarks cover token detection only,
 not keyboard latency or the rest of UITextView layout.
+
+`TMPDIR=<external scratch> bash Tests/ComposerToken/run-coordinator.sh candidate`
+extracts the actual delegate and tests a re-entrant layout refresh for all four
+triggers. The baseline variant intentionally fails: it detects against the
+temporarily restored old text. Capturing the edited token at delegate entry
+keeps whitespace dismissal and query updates correct. This controlled test
+models the numeric full-app trace; simulator integration is checked separately.
+
+The Release iOS 27 app passed three consecutive XCUITest repetitions, checking
+all four trigger pickers and their dismissal after an asserted space insertion.
+The baseline failed that dismissal in two runs; the problem is timing-sensitive,
+not a failure on every edit. The numeric diagnostic records lengths and cursor
+positions only, never draft text.

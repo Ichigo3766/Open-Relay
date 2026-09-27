@@ -211,6 +211,9 @@ struct PasteableTextView: UIViewRepresentable {
         }
 
         func textViewDidChange(_ textView: UITextView) {
+            // Binding/layout updates can synchronously refresh the UIKit view.
+            // Read the edited token before that re-entrant update can replace it.
+            let token = currentToken(in: textView)
             parent.text = textView.text
             if let ptv = textView as? PasteInterceptingTextView {
                 ptv.placeholderLabel.isHidden = !textView.text.isEmpty
@@ -218,20 +221,19 @@ struct PasteableTextView: UIViewRepresentable {
                 PasteableTextView.recalculateHeight(ptv)
             }
 
-            detectTriggers(in: textView)
-        }
-
-        private func detectTriggers(in textView: UITextView) {
-            guard parent.onHashTrigger != nil || parent.onAtTrigger != nil
-                || parent.onSlashTrigger != nil || parent.onDollarTrigger != nil else { return }
-            let token = textView.selectedTextRange.flatMap { selection in
-                ComposerToken(text: textView.text ?? "", utf16Offset:
-                    textView.offset(from: textView.beginningOfDocument, to: selection.start))
-            }
             notifyTrigger("#", token, parent.onHashTrigger, parent.onHashDismiss)
             notifyTrigger("@", token, parent.onAtTrigger, parent.onAtDismiss)
             notifyTrigger("/", token, parent.onSlashTrigger, parent.onSlashDismiss)
             notifyTrigger("$", token, parent.onDollarTrigger, parent.onDollarDismiss)
+        }
+
+        private func currentToken(in textView: UITextView) -> ComposerToken? {
+            guard parent.onHashTrigger != nil || parent.onAtTrigger != nil
+                || parent.onSlashTrigger != nil || parent.onDollarTrigger != nil else { return nil }
+            return textView.selectedTextRange.flatMap { selection in
+                ComposerToken(text: textView.text ?? "", utf16Offset:
+                    textView.offset(from: textView.beginningOfDocument, to: selection.start))
+            }
         }
 
         private func notifyTrigger(_ symbol: Character, _ token: ComposerToken?,
