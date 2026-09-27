@@ -265,12 +265,14 @@ enum ToolCallParser {
         return rx
     }
 
-    /// Quickly reject absent tags via NSString (avoids case-folding every Character
+    /// Quickly reject absent tags via a cached literal regex (avoids scanning every Character
     /// in a long response), but preserve Swift's grapheme-boundary behavior when
-    /// the UTF-16 search finds a possible match (e.g. combining marks).
+    /// the regex finds a possible match (e.g. combining marks).
     private nonisolated static func containsTag(_ tag: String, in text: String,
                                                options: String.CompareOptions = .caseInsensitive) -> Bool {
-        guard (text as NSString).range(of: tag, options: options).location != NSNotFound else { return false }
+        guard let regex = cachedRegex(NSRegularExpression.escapedPattern(for: tag),
+                                      options: options.contains(.caseInsensitive) ? .caseInsensitive : []),
+              regex.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)) != nil else { return false }
         return text.range(of: tag, options: options) != nil
     }
 
@@ -378,12 +380,12 @@ enum ToolCallParser {
 
             let block = match.block
 
-            if block.contains("type=\"tool_calls\"") || block.contains("type='tool_calls'") {
+            if containsTag("type=\"tool_calls\"", in: block, options: []) || containsTag("type='tool_calls'", in: block, options: []) {
                 if let toolCall = parseToolCallBlock(block) {
                     segments.append(.toolCall(toolCall))
                     allToolCalls.append(toolCall)
                 }
-            } else if block.contains("type=\"reasoning\"") || block.contains("type='reasoning'") {
+            } else if containsTag("type=\"reasoning\"", in: block, options: []) || containsTag("type='reasoning'", in: block, options: []) {
                 if let parsed = parseReasoningBlock(block) {
                     segments.append(.reasoning(parsed.data))
                     // Spillover: content that was inside the <details> block AFTER

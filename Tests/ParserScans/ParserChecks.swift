@@ -64,6 +64,21 @@ import Darwin
             }
         }
         for input in fixtures { compare(input) }
+        // Exercise Foundation's non-ASCII case equivalents inside marker names.
+        // These are independent of the candidate regex's interpretation.
+        let letters = Set(pairs.map { $0.0 + $0.1 }.joined().filter { $0.isLetter })
+        for value in Array(0...0x2fff) + Array(0xff00...0xffff) {
+            guard let scalar = Unicode.Scalar(value) else { continue }
+            let variant = String(scalar)
+            for letter in letters where variant.compare(String(letter), options: .caseInsensitive) == .orderedSame {
+                for (open, close) in pairs where open.contains(letter) {
+                    let start = open.replacingOccurrences(of: String(letter), with: variant)
+                    let end = close.replacingOccurrences(of: String(letter), with: variant)
+                    compare(start + "Synthetic thought." + end + " Answer.")
+                    compare(wrapped("Synthetic thought." + end + " Answer."))
+                }
+            }
+        }
         // Deterministic mixtures exercise replacement ordering and malformed tags.
         var seed: UInt64 = 123456789
         for _ in 0..<4000 {
