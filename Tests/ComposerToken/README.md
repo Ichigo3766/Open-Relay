@@ -26,3 +26,7 @@ all four trigger pickers and their dismissal after an asserted space insertion.
 The baseline failed that dismissal in two runs; the problem is timing-sensitive,
 not a failure on every edit. The numeric diagnostic records lengths and cursor
 positions only, never draft text.
+One passing candidate repetition still captured the same 7-to-6-character
+re-entrant replacement, with the setter called through updateUIView. The picker
+nevertheless dismissed correctly, so this was not only a run where the race
+failed to occur. This change does not remove the underlying transient text reset.
