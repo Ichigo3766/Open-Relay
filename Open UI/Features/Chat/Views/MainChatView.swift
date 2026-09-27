@@ -1929,8 +1929,8 @@ struct MainChatView: View {
                 .disabled(dependencies.apiClient == nil)
             }
             .padding(.horizontal, Spacing.md)
-            .padding(.top, 14)
-            .padding(.bottom, 10)
+            .frame(height: 40)
+            .padding(.bottom, 8)
         }
     }
 
