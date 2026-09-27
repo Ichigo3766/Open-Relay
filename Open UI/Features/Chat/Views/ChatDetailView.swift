@@ -470,40 +470,7 @@ struct ChatDetailView: View {
                             .opacity.combined(with: .offset(y: -20))
                         )
                 }
-            }
-        }
-        // Read-aloud player — floats as a self-sizing pill in the top area
-        .overlay(alignment: .top) {
-            let ttsPlayer = dependencies.textToSpeechService.readAloudPlayer
-            let showAnyPlayer = ttsPlayer.isVisible
-                || speakingMessageId != nil
-                || ttsGeneratingMessageId != nil
-            if showAnyPlayer {
-                ReadAloudPlayerBar(
-                    player: ttsPlayer.isVisible ? ttsPlayer : nil,
-                    readFromHere: { text in
-                        guard let messageID = ttsPlayer.messageID else { return }
-                        dependencies.textToSpeechService.speakMessage(
-                            text, messageID: messageID,
-                            title: ttsPlayer.title,
-                            serverSplitOn: dependencies.authViewModel.backendConfig?.audio?.tts?.splitOn)
-                    },
-                    isGenerating: ttsGeneratingMessageId != nil && speakingMessageId == nil,
-                    isPlaying: speakingMessageId != nil || ttsPlayer.isPlaying,
-                    onStop: {
-                        dependencies.textToSpeechService.stop()
-                        speakingMessageId = nil
-                        ttsGeneratingMessageId = nil
-                    },
-                    isUserScrolling: isFingerDriving
-                )
-                .padding(.top, 8)
-                .transition(.asymmetric(
-                    insertion: .opacity.combined(with: .scale(scale: 0.9, anchor: .top)),
-                    removal: .opacity.combined(with: .scale(scale: 0.9, anchor: .top))
-                ))
-                .animation(.spring(response: 0.35, dampingFraction: 0.8), value: showAnyPlayer)
-                .allowsHitTesting(true)
+                readAloudPlayerBar
             }
         }
         .chatChromeBar(edge: .bottom) {
@@ -943,6 +910,42 @@ struct ChatDetailView: View {
     // MARK: - Custom top bar (replaces system nav bar to avoid split-layer hide/show bug)
 
     // MARK: - Custom top bar
+
+    private var showsReadAloudPlayer: Bool {
+        dependencies.textToSpeechService.readAloudPlayer.isVisible
+            || speakingMessageId != nil
+            || ttsGeneratingMessageId != nil
+    }
+
+    @ViewBuilder
+    private var readAloudPlayerBar: some View {
+        let ttsPlayer = dependencies.textToSpeechService.readAloudPlayer
+        if showsReadAloudPlayer {
+            ReadAloudPlayerBar(
+                player: ttsPlayer.isVisible ? ttsPlayer : nil,
+                readFromHere: { text in
+                    guard let messageID = ttsPlayer.messageID else { return }
+                    dependencies.textToSpeechService.speakMessage(
+                        text, messageID: messageID,
+                        title: ttsPlayer.title,
+                        serverSplitOn: dependencies.authViewModel.backendConfig?.audio?.tts?.splitOn)
+                },
+                isGenerating: ttsGeneratingMessageId != nil && speakingMessageId == nil,
+                isPlaying: speakingMessageId != nil || ttsPlayer.isPlaying,
+                onStop: {
+                    dependencies.textToSpeechService.stop()
+                    speakingMessageId = nil
+                    ttsGeneratingMessageId = nil
+                },
+                isUserScrolling: isFingerDriving
+            )
+            .foregroundStyle(theme.textPrimary)
+            .padding(.horizontal, Spacing.sm)
+            .padding(.bottom, 8)
+            .transition(.opacity.combined(with: .scale(scale: 0.9, anchor: .top)))
+            .animation(.spring(response: 0.35, dampingFraction: 0.8), value: showsReadAloudPlayer)
+        }
+    }
 
     private var customTopBar: some View {
         HStack(spacing: Spacing.sm) {

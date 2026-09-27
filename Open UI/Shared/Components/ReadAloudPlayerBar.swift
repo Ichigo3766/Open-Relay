@@ -103,6 +103,7 @@ struct ReadAloudPlayerBar: View {
                     .background(.quaternary, in: Circle())
             }
             .buttonStyle(.plain)
+            .accessibilityLabel("Close audio player")
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
