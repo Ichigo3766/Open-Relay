@@ -151,6 +151,7 @@ struct ToolCallData: Identifiable {
     /// Rich UI HTML embeds returned by the tool. Each string is a full HTML
     /// document to be rendered inline in the chat as an interactive webview.
     let embeds: [String]
+    var terminalFile: TerminalFileAttachment? = nil
 
     /// A display-friendly name (replaces underscores with spaces).
     var displayName: String {
@@ -754,7 +755,9 @@ enum ToolCallParser {
             result: decodeHTMLEntities(result),
             isDone: isDone,
             status: status,
-            embeds: embeds
+            embeds: embeds,
+            terminalFile: isDone && name == "display_file"
+                ? TerminalFileAttachment(result: decodeHTMLEntities(result), arguments: decodeHTMLEntities(arguments)) : nil
         )
     }
 
@@ -2817,6 +2820,9 @@ struct AssistantMessageContent: View {
     var serverBaseURL: String? = nil
     /// APIClient for rendering inline images via AuthenticatedImageView.
     var apiClient: APIClient? = nil
+    var terminalSessionId: String? = nil
+    var terminalMessageId: String = ""
+    var liveTerminalFiles: [TerminalFileAttachment] = []
 
     @State private var resolvedResult: ToolCallParser.OrderedParseResult?
     @State private var resolvedContent = ""
@@ -2926,7 +2932,8 @@ struct AssistantMessageContent: View {
                                 result: tc.result,
                                 isDone: tc.isDone,
                                 status: tc.status,
-                                embeds: messageEmbeds
+                                embeds: messageEmbeds,
+                                terminalFile: tc.terminalFile
                             ))
                             mutableGroups[i] = .toolCalls(items)
                             return mutableGroups
@@ -3053,6 +3060,14 @@ struct AssistantMessageContent: View {
                             Spacer()
                         }
                     }
+                }
+            }
+            if let apiClient {
+                ForEach(TerminalFileAttachment.merged(
+                    ordered.allToolCalls.compactMap(\.terminalFile) + liveTerminalFiles,
+                    sessionId: terminalSessionId
+                )) { file in
+                    TerminalFileAttachmentView(file: file, messageId: terminalMessageId, apiClient: apiClient)
                 }
             }
         }

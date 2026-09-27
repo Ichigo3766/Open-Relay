@@ -261,6 +261,7 @@ final class ChatViewModel {
     var terminalEnabled: Bool = false
     /// The currently selected terminal server (auto-selects first if only one).
     var selectedTerminalServer: TerminalServer?
+    var terminalDisplayFiles: [String: [TerminalFileAttachment]] = [:]
     /// True if the currently selected model has the terminal capability enabled.
     var isTerminalCapableForSelectedModel: Bool {
         selectedModel?.supportsTerminal ?? false
@@ -2477,6 +2478,9 @@ final class ChatViewModel {
 
         // --- Metadata events: ALWAYS process (title, tags, follow-ups) ---
         switch type {
+        case "terminal:display_file":
+            receiveTerminalFile(payload, messageId: messageId, chatId: event["chat_id"] as? String, serverId: nil)
+            return
         case "chat:title":
             var newTitle: String?
             if let titleStr = data["data"] as? String, !titleStr.isEmpty {
@@ -4773,6 +4777,7 @@ final class ChatViewModel {
         // delivering each token as fast as Swift's task scheduler allows.
         let msgId = assistantMessageId
         let updateSessionId = streamingSessionId
+        let terminalServerId = terminalEnabled ? selectedTerminalServer?.id : nil
         acc.onUpdate = { [weak self] content in
             // Guard: if streaming already finished (done:true processed),
             // ignore late-arriving accumulated content dispatches.
@@ -4818,6 +4823,11 @@ final class ChatViewModel {
             }
             // For all other event types, dispatch to main actor normally
             Task { @MainActor in
+                if type == "terminal:display_file" {
+                    self.receiveTerminalFile(data["data"] as? [String: Any], messageId: assistantMessageId,
+                                             chatId: effectiveChatId, serverId: terminalServerId)
+                    return
+                }
                 self.handleChatEvent(
                     event, ack: ack, assistantMessageId: assistantMessageId,
                     modelId: modelId, socketSessionId: socketSessionId,
@@ -4842,6 +4852,22 @@ final class ChatViewModel {
                 self.handleChannelEvent(event, assistantMessageId: assistantMessageId, acc: acc)
             }
         }
+    }
+
+    private func receiveTerminalFile(_ payload: [String: Any]?, messageId: String?, chatId: String?, serverId: String?) {
+        guard let payload, let messageId, let chatId,
+              chatId == (conversationId ?? conversation?.id),
+              conversation?.messages.contains(where: { $0.id == messageId && $0.role == .assistant }) == true,
+              let file = TerminalFileAttachment(event: payload, serverId: serverId, sessionId: chatId) else { return }
+        let key = chatId + "\0" + messageId
+        terminalDisplayFiles[key] = TerminalFileAttachment.merged(
+            (terminalDisplayFiles[key] ?? []) + [file], sessionId: chatId
+        )
+    }
+
+    func terminalFiles(for messageId: String) -> [TerminalFileAttachment] {
+        guard let chatId = conversationId ?? conversation?.id else { return [] }
+        return terminalDisplayFiles[chatId + "\0" + messageId] ?? []
     }
 
     private func handleChatEvent(

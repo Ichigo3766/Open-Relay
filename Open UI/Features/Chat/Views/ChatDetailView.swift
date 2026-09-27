@@ -2881,7 +2881,9 @@ struct ChatDetailView: View {
                 contentOverride: assistantContentOverride[message.id],
                 serverBaseURL: viewModel.serverBaseURL,
                 authToken: viewModel.serverAuthToken,
-                apiClient: dependencies.apiClient
+                apiClient: dependencies.apiClient,
+                terminalSessionId: viewModel.conversationId ?? viewModel.conversation?.id,
+                liveTerminalFiles: viewModel.terminalFiles(for: message.id)
             )
         }
     }
@@ -5723,6 +5725,8 @@ private struct IsolatedAssistantMessage: View {
     var authToken: String? = nil
     /// APIClient for rendering inline images via AuthenticatedImageView.
     var apiClient: APIClient? = nil
+    var terminalSessionId: String? = nil
+    var liveTerminalFiles: [TerminalFileAttachment] = []
 
     @AppStorage("renderAssistantMarkdown") private var renderAssistantMarkdown: Bool = true
 
@@ -5763,7 +5767,7 @@ private struct IsolatedAssistantMessage: View {
         // render path when the user navigates away and back mid-stream.
         let effectiveIsStreaming = isActivelyStreaming
 
-        if effectiveIsStreaming && rawContent.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        if effectiveIsStreaming && liveTerminalFiles.isEmpty && rawContent.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             // Wrap in HStack+Spacer to pin the indicator to the leading edge.
             // Without this, the infinity-width assistant content frame can
             // misplace or stretch the fixed view.
@@ -5785,7 +5789,10 @@ private struct IsolatedAssistantMessage: View {
                     messageEmbeds: message.embeds,
                     authToken: authToken,
                     serverBaseURL: serverBaseURL,
-                    apiClient: apiClient
+                    apiClient: apiClient,
+                    terminalSessionId: terminalSessionId,
+                    terminalMessageId: message.id,
+                    liveTerminalFiles: liveTerminalFiles
                 )
                 .transaction { $0.animation = nil }
             } else {
