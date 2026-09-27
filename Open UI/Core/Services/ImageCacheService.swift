@@ -11,7 +11,11 @@ actor ImageCacheService {
 
     // MARK: - Private Storage
 
-    nonisolated(unsafe) private let memoryCache = NSCache<NSString, UIImage>()
+    private final class ImageVariants: NSObject {
+        let images: [Int: UIImage]
+        init(_ images: [Int: UIImage]) { self.images = images }
+    }
+    nonisolated(unsafe) private let memoryCache = NSCache<NSString, ImageVariants>()
     private let fileManager = FileManager.default
     private let logger = Logger(subsystem: "com.openui", category: "ImageCache")
 
@@ -22,7 +26,7 @@ actor ImageCacheService {
     private let diskCacheSizeLimit: Int = 50 * 1024 * 1024
 
     /// Active download tasks keyed by URL string to deduplicate requests.
-    private var activeTasks: [String: Task<UIImage?, Never>] = [:]
+    private var activeTasks: [String: Task<Data?, Never>] = [:]
 
     // MARK: - Global Concurrency Cap
 
@@ -150,19 +154,17 @@ actor ImageCacheService {
     ///
     /// - Parameter url: The image URL to look up.
     /// - Returns: The cached `UIImage`, or `nil` if not cached.
-    func cachedImage(for url: URL) -> UIImage? {
+    func cachedImage(for url: URL, targetPixelSize: Int = 0) -> UIImage? {
         let key = cacheKey(for: url)
 
         // Memory cache lookup
-        if let memoryImage = memoryCache.object(forKey: key as NSString) {
+        if let memoryImage = memoryCache.object(forKey: key as NSString)?.images[max(0, targetPixelSize)] {
             return memoryImage
         }
 
         // Disk cache lookup — promote to memory with correct bitmap cost
-        if let diskImage = loadFromDisk(key: key) {
-            let cost = bitmapCost(for: diskImage)
-            memoryCache.setObject(diskImage, forKey: key as NSString, cost: cost)
-            return diskImage
+        if let data = loadFromDisk(key: key) {
+            return decodeAndCache(data, key: key, targetPixelSize: targetPixelSize)
         }
 
         return nil
@@ -178,9 +180,9 @@ actor ImageCacheService {
     /// - Parameter url: The image URL to look up.
     /// - Returns: The cached `UIImage` from memory only, or `nil` if not in memory.
     /// Called from SwiftUI view `init` — always on the main actor.
-    @MainActor func cachedImageSync(for url: URL) -> UIImage? {
+    @MainActor func cachedImageSync(for url: URL, targetPixelSize: Int = 0) -> UIImage? {
         let key = cacheKeySync(for: url)
-        return memoryCache.object(forKey: key as NSString)
+        return memoryCache.object(forKey: key as NSString)?.images[max(0, targetPixelSize)]
     }
 
     /// Loads an image from the given URL, using the cache if available.
@@ -208,9 +210,20 @@ actor ImageCacheService {
         let key = cacheKey(for: url)
 
         // Check caches first (no network needed)
-        if let cached = cachedImage(for: url) {
+        if let cached = cachedImage(for: url, targetPixelSize: targetPixelSize) {
             return cached
         }
+
+        guard let data = await loadData(from: url, authToken: authToken, customHeaders: customHeaders) else { return nil }
+        // Another waiter may already have decoded this exact size.
+        if let cached = memoryCache.object(forKey: key as NSString)?.images[max(0, targetPixelSize)] {
+            return cached
+        }
+        return decodeAndCache(data, key: key, targetPixelSize: targetPixelSize)
+    }
+
+    private func loadData(from url: URL, authToken: String?, customHeaders: [String: String]?) async -> Data? {
+        let key = cacheKey(for: url)
 
         // Deduplicate in-flight requests for the same URL
         if let existingTask = activeTasks[key] {
@@ -222,7 +235,7 @@ actor ImageCacheService {
         let cfHost = self.cfServerHost
         let urlSession = self.session(for: url)
 
-        let task = Task<UIImage?, Never> {
+        let task = Task<Data?, Never> {
             // Acquire a download slot — suspends until < maxConcurrentDownloads are active
             await self.acquireDownloadSlot()
             defer { Task { self.releaseDownloadSlot() } }
@@ -269,11 +282,7 @@ actor ImageCacheService {
                 // 304 Not Modified — serve the existing disk-cached image
                 if httpResponse.statusCode == 304 {
                     self.logger.debug("Image 304 Not Modified: \(url.lastPathComponent)")
-                    if let diskImage = self.loadFromDisk(key: key) {
-                        let cost = self.bitmapCost(for: diskImage)
-                        self.memoryCache.setObject(diskImage, forKey: key as NSString, cost: cost)
-                        return diskImage
-                    }
+                    if let data = self.loadFromDisk(key: key) { return data }
                     // Disk file was evicted — fall through to treat as cache miss
                 }
 
@@ -281,6 +290,8 @@ actor ImageCacheService {
                     self.logger.debug("Image load failed for \(url.lastPathComponent): status=\(httpResponse.statusCode)")
                     return nil
                 }
+                guard let source = CGImageSourceCreateWithData(data as CFData, nil),
+                      CGImageSourceGetCount(source) > 0 else { return nil }
 
                 // Persist ETag / Last-Modified for future conditional requests
                 let newEtag = httpResponse.value(forHTTPHeaderField: "ETag")
@@ -289,25 +300,9 @@ actor ImageCacheService {
                     self.saveMetadata(etag: newEtag, lastModified: newLastModified, key: key)
                 }
 
-                // Downsample to target pixel size if requested, otherwise decode normally
-                let image: UIImage
-                if targetPixelSize > 0,
-                   let downsampled = Self.downsampledImage(data: data, maxPixelSize: targetPixelSize) {
-                    image = downsampled
-                } else if let fallback = UIImage(data: data), fallback.size.width > 0 {
-                    image = fallback
-                } else {
-                    return nil
-                }
-
-                // Store in memory with accurate bitmap cost so NSCache evicts correctly
-                let cost = self.bitmapCost(for: image)
-                self.memoryCache.setObject(image, forKey: key as NSString, cost: cost)
-
                 // Store raw (pre-downsample) data on disk for future sessions
                 self.saveToDisk(data: data, key: key)
-
-                return image
+                return data
             } catch {
                 self.logger.error("Image download failed for \(url): \(error.localizedDescription)")
                 return nil
@@ -321,13 +316,29 @@ actor ImageCacheService {
         return result
     }
 
+    private func decodeAndCache(_ data: Data, key: String, targetPixelSize: Int) -> UIImage? {
+        let image = targetPixelSize > 0
+            ? (Self.downsampledImage(data: data, maxPixelSize: targetPixelSize) ?? UIImage(data: data))
+            : UIImage(data: data)
+        guard let image, image.size.width > 0 else { return nil }
+        cache(image, key: key, targetPixelSize: targetPixelSize)
+        return image
+    }
+
+    private func cache(_ image: UIImage, key: String, targetPixelSize: Int) {
+        var images = memoryCache.object(forKey: key as NSString)?.images ?? [:]
+        images[max(0, targetPixelSize)] = image
+        memoryCache.setObject(ImageVariants(images), forKey: key as NSString,
+                              cost: images.values.reduce(0) { $0 + bitmapCost(for: $1) })
+    }
+
     /// Prefetches images for the given URLs in the background.
     ///
     /// - Parameter urls: The image URLs to prefetch.
     func prefetch(urls: [URL]) {
         for url in urls {
             let key = cacheKey(for: url)
-            guard memoryCache.object(forKey: key as NSString) == nil else { continue }
+            guard memoryCache.object(forKey: key as NSString)?.images[0] == nil else { continue }
 
             Task {
                 _ = await loadImage(from: url)
@@ -370,7 +381,7 @@ actor ImageCacheService {
                     for url in batch {
                         // Skip URLs already in memory — no network needed.
                         let key = self.cacheKey(for: url)
-                        guard self.memoryCache.object(forKey: key as NSString) == nil else { continue }
+                        guard self.memoryCache.object(forKey: key as NSString)?.images[0] == nil else { continue }
                         group.addTask {
                             _ = await self.loadImage(from: url, authToken: authToken)
                         }
@@ -387,8 +398,8 @@ actor ImageCacheService {
     ///   - url: The URL key for the image.
     func store(_ image: UIImage, for url: URL) {
         let key = cacheKey(for: url)
-        let cost = bitmapCost(for: image)
-        memoryCache.setObject(image, forKey: key as NSString, cost: cost)
+        memoryCache.removeObject(forKey: key as NSString)
+        cache(image, key: key, targetPixelSize: 0)
 
         if let data = image.jpegData(compressionQuality: 0.85) {
             saveToDisk(data: data, key: key)
@@ -584,12 +595,11 @@ actor ImageCacheService {
         }
     }
 
-    private func loadFromDisk(key: String) -> UIImage? {
+    private func loadFromDisk(key: String) -> Data? {
         guard let directory = diskCacheDirectory else { return nil }
         let fileURL = directory.appendingPathComponent(key)
 
-        guard let data = try? Data(contentsOf: fileURL) else { return nil }
-        return UIImage(data: data)
+        return try? Data(contentsOf: fileURL)
     }
 
     private func clearDiskCache() {
@@ -692,7 +702,7 @@ struct CachedAsyncImage<Content: View, Placeholder: View>: View {
         // Synchronous memory-cache hit: pre-populate so SwiftUI renders the
         // image on the very first pass without a shimmer flash.
         if let url {
-            _loadedImage = State(initialValue: ImageCacheService.shared.cachedImageSync(for: url))
+            _loadedImage = State(initialValue: ImageCacheService.shared.cachedImageSync(for: url, targetPixelSize: targetPixelSize))
         }
     }
 
@@ -707,10 +717,10 @@ struct CachedAsyncImage<Content: View, Placeholder: View>: View {
         // When the URL changes (e.g. switching selected model in the toolbar),
         // immediately update loadedImage from the memory cache (synchronous, zero-cost)
         // or nil it out so the placeholder shows while the new image fetches.
-        .task(id: url) {
+        .task(id: "\(url?.absoluteString ?? "")#\(targetPixelSize)") {
             // Synchronously check memory cache for the new URL first.
             if let newURL = url,
-               let cached = ImageCacheService.shared.cachedImageSync(for: newURL) {
+               let cached = ImageCacheService.shared.cachedImageSync(for: newURL, targetPixelSize: targetPixelSize) {
                 loadedImage = cached
                 return
             }
@@ -738,7 +748,7 @@ struct CachedAsyncImage<Content: View, Placeholder: View>: View {
             authToken: authToken,
             targetPixelSize: targetPixelSize
         )
-        if let fresh {
+        if let fresh, !Task.isCancelled {
             loadedImage = fresh
         }
     }

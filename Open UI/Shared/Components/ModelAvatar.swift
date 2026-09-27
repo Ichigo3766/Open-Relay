@@ -134,7 +134,7 @@ struct UserAvatar: View {
                 // If no image appears by then, the URL is probably dead/deleted.
                 try? await Task.sleep(nanoseconds: 8_000_000_000)
                 // Only flag failure if still no cached image after waiting
-                if ImageCacheService.shared.cachedImageSync(for: imageURL) == nil {
+                if ImageCacheService.shared.cachedImageSync(for: imageURL, targetPixelSize: Int(size * UIScreen.main.scale)) == nil {
                     imageLoadFailed = true
                 }
             }

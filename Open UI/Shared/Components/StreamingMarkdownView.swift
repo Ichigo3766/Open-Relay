@@ -960,10 +960,9 @@ struct MarkdownInlineImageView: View {
             // Download a UIImage copy in the background so save/share work without
             // needing to render the SwiftUI Image back to a bitmap.
             guard loadedRemoteImage == nil else { return }
-            guard let (data, _) = try? await URLSession.shared.data(from: imageURL) else { return }
-            if let img = UIImage(data: data) {
-                await MainActor.run { loadedRemoteImage = img }
-            }
+            let image = await ImageCacheService.shared.loadImage(from: imageURL)
+            guard !Task.isCancelled else { return }
+            loadedRemoteImage = image
         }
     }
 
