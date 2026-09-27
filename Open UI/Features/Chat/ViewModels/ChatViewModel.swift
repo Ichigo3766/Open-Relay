@@ -140,13 +140,14 @@ final class ChatViewModel {
 
     func restoreDictationDraft(for context: DictationContext) throws {
         guard dictationDraftContext != context else { return }
-        if let previous = dictationDraftContext, previous.server == context.server,
-           previous.account == context.account, previous.conversation == nil,
-           context.conversation != nil, conversationId == nil {
+        let previous = dictationDraftContext
+        let isPromotion = previous?.server == context.server && previous?.account == context.account
+            && previous?.conversation == nil && context.conversation != nil && conversationId == nil
+        if isPromotion, let previous {
             try DictationRecoveryStore.shared.move(from: previous, to: context)
         }
         let entry = try DictationRecoveryStore.shared.load(context)
-        let changingIdentity = dictationDraftContext != nil
+        let changingIdentity = previous != nil && !isPromotion
         dictationDraftContext = context
         if changingIdentity || entry != nil { inputText = entry?.draft ?? "" }
     }

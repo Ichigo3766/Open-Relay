@@ -303,6 +303,15 @@ import AVFoundation
         XCTAssertEqual(relaunched.inputText, "", "Sending or clearing a draft must remain cleared")
     }
 
+    func testOrdinaryDraftSurvivesNewChatPromotion() throws {
+        let context = DictationContext(server: "https://example.invalid", account: UUID().uuidString, conversation: nil)
+        let model = ChatDraftQA()
+        try model.restoreDictationDraft(for: context)
+        model.inputText = "Keep this ordinary unsent draft."
+        model.conversation = Conversation(id: "assigned-id")
+        XCTAssertEqual(model.inputText, "Keep this ordinary unsent draft.")
+    }
+
     func testComposerPromotesNewChatEvenWithoutVisibleView() throws {
         let context = DictationContext(server: "https://example.invalid", account: UUID().uuidString, conversation: nil)
         let store = DictationRecoveryStore.shared

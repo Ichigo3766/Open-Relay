@@ -392,7 +392,7 @@ struct ChatDetailView: View {
 
     // MARK: - Body
 
-    var body: some View {
+    @ViewBuilder private var chatContent: some View {
         @Bindable var vm = viewModel
 
         ZStack {
@@ -681,6 +681,10 @@ struct ChatDetailView: View {
                     .padding(.bottom, keyboard.height + 80)
             }
         }
+    }
+
+    var body: some View {
+        chatContent
         // Sheets & alerts
         .sheet(isPresented: $showFilePicker) {
             DocumentPickerView { urls in
@@ -4757,8 +4761,8 @@ struct ChatDetailView: View {
             viewModel.errorMessage = "Could not restore the dictation draft. " + error.localizedDescription
             return
         }
-        service.onError = { [weak viewModel] message in
-            viewModel?.errorMessage = message
+        service.onError = { [weak viewModel, weak service] message in
+            if service?.showsRecovery != true { viewModel?.errorMessage = message }
         }
         service.bind(to: context, isCurrent: { dictationContext == context },
                      draft: { [weak viewModel] in viewModel?.inputText },

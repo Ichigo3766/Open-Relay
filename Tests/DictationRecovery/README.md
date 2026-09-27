@@ -34,7 +34,9 @@ fallback, export without consumption, discard, overlapping attempts, cancellatio
 late responses, durable draft receipts, relaunch, chat/account isolation, new-chat
 promotion, and protection against overwriting unresolved recordings. UI tests
 exercise the actual overlay, native menu and share UI, retry, relaunch, and Dynamic
-Type. Attachments contain only the invented workshop draft and synthetic audio.
+Type. They also assert that every menu item stays above the recovery bar in light,
+dark, and accessibility-size layouts. Attachments contain only the invented
+workshop draft and synthetic audio.
 
 These tests do not benchmark real transcription providers or claim direct Voice
 Memos import. Save to Files is offered through the system share UI. A completed

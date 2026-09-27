@@ -1162,7 +1162,7 @@ struct MainChatView: View {
 
     // MARK: - Lifecycle Handlers (.task, .onChange, .onReceive)
 
-    private func applyLifecycleHandlers<Content: View>(content: Content) -> some View {
+    private func applyLifecycleStateHandlers<Content: View>(content: Content) -> some View {
         content
             .task {
                 if let manager = dependencies.conversationManager {
@@ -1294,6 +1294,11 @@ struct MainChatView: View {
                 // Widget "Channel" button — open the create-channel sheet
                 showCreateChannel = true
             }
+    }
+
+    // Keep the modifier chain within the Swift compiler's expression complexity limit.
+    private func applyLifecycleHandlers<Content: View>(content: Content) -> some View {
+        applyLifecycleStateHandlers(content: content)
             .onReceive(NotificationCenter.default.publisher(for: .openUINewChatWithFocus)) { _ in
                 // Widget "Ask Open Relay" bar — start new chat and auto-focus keyboard
                 startNewChat()

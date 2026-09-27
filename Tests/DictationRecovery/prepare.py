@@ -55,6 +55,11 @@ extension DictationService {
 (out / "DictationRecoveryStore.swift").write_text((root / "Open UI/Core/Services/DictationRecoveryStore.swift").read_text())
 (out / "SelectedTests.swift").write_text((here / ("BaselineTests.swift" if args.baseline else "RecoveryTests.swift")).read_text())
 (out / "Harness.swift").write_text('import SwiftUI\n@main struct Fixture: App { var body: some Scene { WindowGroup { Text("Synthetic baseline") } } }' if args.baseline else (here / "Harness.swift").read_text())
+chat_view = (root / "Open UI/Features/Chat/Views/ChatDetailView.swift").read_text()
+share_sheet = chat_view[chat_view.index("struct ShareSheetView:"):chat_view.index("// MARK: - ScrollView Horizontal Lock")]
+url_identity = chat_view[chat_view.index("extension URL: @retroactive Identifiable {"):]
+url_identity = url_identity[:url_identity.index("\n}") + 2]
+(out / "Sharing.swift").write_text("import SwiftUI\n" + share_sheet + url_identity)
 # Compile the exact draft integration properties/method, without unrelated chat dependencies.
 model = (root / "Open UI/Features/Chat/ViewModels/ChatViewModel.swift").read_text()
 conversation = model[model.index("    var conversation: Conversation?"):model.index("    var availableModels:")]

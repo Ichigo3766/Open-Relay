@@ -9,10 +9,10 @@ final class RecoveryUITests: XCTestCase {
             app.buttons["Stop dictation"].tap()
         }
         XCTAssertTrue(app.buttons["Retry transcription"].waitForExistence(timeout: 8))
-        let statusTop = app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", "Recording saved")).firstMatch.frame.minY
+        let barTop = app.otherElements["dictation-recovery-bar"].frame.minY
         app.buttons["Recording recovery options"].tap()
         capture("menu-position")
-        XCTAssertLessThan(app.buttons["Discard Recording"].frame.maxY, statusTop)
+        assertMenuAboveBar(app, top: barTop)
         app.buttons["Discard Recording"].tap()
     }
 
@@ -42,19 +42,18 @@ final class RecoveryUITests: XCTestCase {
         app.launch()
         XCTAssertTrue(app.buttons["Retry transcription"].waitForExistence(timeout: 5))
         capture("recovered-after-relaunch")
-        let statusTop = app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", "Recording saved")).firstMatch.frame.minY
+        let barTop = app.otherElements["dictation-recovery-bar"].frame.minY
         app.buttons["Recording recovery options"].tap()
         capture("recovery-menu")
         XCTAssertTrue(app.buttons["Save / Share Audio…"].exists)
         XCTAssertTrue(app.buttons["Transcribe on Device"].exists)
-        XCTAssertLessThan(app.buttons["Discard Recording"].frame.maxY, statusTop,
-                          "The native menu must not cover the saved-recording status")
+        assertMenuAboveBar(app, top: barTop)
         app.buttons["Save / Share Audio…"].tap()
         XCTAssertTrue(app.cells["Save to Files"].waitForExistence(timeout: 15))
         capture("export")
-        let dismiss = app.otherElements["PopoverDismissRegion"]
+        let dismiss = app.buttons["Close"]
         XCTAssertTrue(dismiss.waitForExistence(timeout: 5))
-        dismiss.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.3)).tap()
+        dismiss.tap()
         expectation(for: NSPredicate(format: "exists == false"), evaluatedWith: dismiss)
         waitForExpectations(timeout: 10)
         XCTAssertTrue(app.buttons["Retry transcription"].exists, "Cancelled export must preserve recovery")
@@ -88,9 +87,19 @@ final class RecoveryUITests: XCTestCase {
         XCTAssertTrue(app.buttons["Retry transcription"].isHittable)
         XCTAssertTrue(app.buttons["Recording recovery options"].isHittable)
         capture("large-type-recovery")
+        let barTop = app.otherElements["dictation-recovery-bar"].frame.minY
         app.buttons["Recording recovery options"].tap()
+        capture("large-type-menu")
+        assertMenuAboveBar(app, top: barTop)
         app.buttons["Discard Recording"].tap()
         XCTAssertTrue(app.buttons["Record synthetic audio"].isEnabled)
+    }
+
+    private func assertMenuAboveBar(_ app: XCUIApplication, top: CGFloat) {
+        for title in ["Save / Share Audio…", "Transcribe on Device", "Discard Recording"] {
+            XCTAssertLessThan(app.buttons[title].frame.maxY, top,
+                              "The native menu must not cover the recovery bar")
+        }
     }
 
     private func capture(_ name: String) {
