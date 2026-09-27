@@ -268,9 +268,10 @@ enum ToolCallParser {
     /// Quickly reject absent tags via NSString (avoids case-folding every Character
     /// in a long response), but preserve Swift's grapheme-boundary behavior when
     /// the UTF-16 search finds a possible match (e.g. combining marks).
-    private nonisolated static func containsTag(_ tag: String, in text: String) -> Bool {
-        guard (text as NSString).range(of: tag, options: .caseInsensitive).location != NSNotFound else { return false }
-        return text.range(of: tag, options: .caseInsensitive) != nil
+    private nonisolated static func containsTag(_ tag: String, in text: String,
+                                               options: String.CompareOptions = .caseInsensitive) -> Bool {
+        guard (text as NSString).range(of: tag, options: options).location != NSNotFound else { return false }
+        return text.range(of: tag, options: options) != nil
     }
 
     /// Result of parsing assistant content.
@@ -847,13 +848,13 @@ enum ToolCallParser {
 
         // ── Phase 1: Convert raw model reasoning tags ──
         for pair in defaultReasoningTagPairs {
-            guard result.contains(pair.open) else { continue }
+            guard containsTag(pair.open, in: result, options: []) else { continue }
             result = convertReasoningTag(pair, in: result)
         }
         // Keep the existing second-pass ordering for mixed-case nested input.
         for pair in defaultReasoningTagPairs {
             guard !pair.open.hasPrefix("<|"), !pair.open.hasPrefix("◁"),
-                  containsTag(pair.open, in: result), !result.contains(pair.open) else { continue }
+                  containsTag(pair.open, in: result), !containsTag(pair.open, in: result, options: []) else { continue }
             result = convertReasoningTag(pair, in: result)
         }
 
@@ -1076,7 +1077,7 @@ enum ToolCallParser {
         // that might not have been caught above
         let additionalOrphanClosers = ["◁/think▷", "<|end_of_thought|>"]
         for closer in additionalOrphanClosers {
-            if result.contains(closer) {
+            if containsTag(closer, in: result, options: []) {
                 result = result.replacingOccurrences(of: closer, with: "")
             }
         }
@@ -1139,7 +1140,7 @@ enum ToolCallParser {
 
     /// Decodes common HTML entities in attribute values.
     private nonisolated static func decodeHTMLEntities(_ string: String?) -> String? {
-        guard let string, !string.isEmpty else { return string }
+        guard let string, string.utf8.contains(0x26) else { return string }
         return string
             .replacingOccurrences(of: "&quot;", with: "\"")
             .replacingOccurrences(of: "&amp;", with: "&")
