@@ -1,0 +1,4 @@
+// Test-only settings for comparing both revisions with the iOS 27 SDK.
+RELAY_QA_Open_UI = -Xfrontend -solver-expression-time-threshold=60 -Xfrontend -solver-scope-threshold=2000000 -Xfrontend -solver-memory-threshold=2147483648
+RELAY_QA_InternalCollectionsUtilities = -Xfrontend -internalize-at-link
+OTHER_SWIFT_FLAGS = $(inherited) $(RELAY_QA_$(PRODUCT_MODULE_NAME))

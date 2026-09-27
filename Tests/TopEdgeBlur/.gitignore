@@ -1,0 +1,4 @@
+*.xcodeproj/
+DerivedData/
+*.xcresult/
+__pycache__/

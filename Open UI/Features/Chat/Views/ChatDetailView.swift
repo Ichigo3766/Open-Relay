@@ -7,6 +7,15 @@ import MarkdownView
 import Litext
 import os.log
 
+// A hidden navigation bar gets native status blur only on iOS 27 with an iOS 27 SDK build.
+private let hasNativeStatusBlur: Bool = {
+    guard #available(iOS 27.0, *),
+          let sdk = Bundle.main.object(forInfoDictionaryKey: "DTSDKName") as? String,
+          let major = Int(sdk.drop(while: { !$0.isNumber }).prefix(while: \.isNumber))
+    else { return false }
+    return major >= 27
+}()
+
 // MARK: - Scroll Geometry Snapshot
 //
 // A single atomic snapshot of the scroll view's geometry, captured inside
@@ -526,13 +535,13 @@ struct ChatDetailView: View {
                     .padding(.bottom, (verticalSizeClass == .compact && viewModel.terminalEnabled && viewModel.selectedTerminalServer != nil) ? keyboard.height : 0)
             }
         }
-        // Status-bar safe-area backdrop stays visible independently of the floating controls.
-        // On iOS 26+ we use glassEffect(.clear) so text scrolling behind the status icons
-        // stays readable as a soft blur (PR #248). On older iOS, ultraThinMaterial fallback.
+        // Keep the explicit backdrop unless this build supports native status-area blur.
         .overlay {
             GeometryReader { geometry in
                 Group {
-                    if #available(iOS 26.0, *) {
+                    if hasNativeStatusBlur {
+                        EmptyView()
+                    } else if #available(iOS 26.0, *) {
                         Color.clear
                             // Keep the glass rim outside the visible status-area band.
                             .glassEffect(.clear, in: Rectangle().inset(by: -geometry.safeAreaInsets.top))
@@ -6482,9 +6491,15 @@ private struct ChatChromeBarModifier<Bar: View>: ViewModifier {
     let bar: Bar
 
     func body(content: Content) -> some View {
-        if #available(iOS 26.0, *) {
-            // The custom status-bar glass handles the top blur, so hide the native
-            // scroll-edge effect on both edges (avoids a double blur).
+        if #available(iOS 27.0, *), hasNativeStatusBlur {
+            if edge == .top {
+                // Reserve toolbar space without extending the status-area blur behind it.
+                content.safeAreaInset(edge: edge, spacing: 0) { bar }
+            } else {
+                content.safeAreaBar(edge: edge, spacing: 0) { bar }
+                    .scrollEdgeEffectHidden(true, for: .bottom)
+            }
+        } else if #available(iOS 26.0, *) {
             content.safeAreaBar(edge: edge, spacing: 0) { bar }
                 .scrollEdgeEffectHidden(true, for: [.top, .bottom])
         } else {
