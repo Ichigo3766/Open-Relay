@@ -22,7 +22,6 @@ struct CreateFolderSheet: View {
     @State private var backgroundImageUrl: String?
     @State private var folderIcon: String?
 
-
     @State private var selectedPhotoItem: PhotosPickerItem?
     @State private var isUploadingImage = false
 
@@ -110,9 +109,7 @@ struct CreateFolderSheet: View {
             }
             .background(theme.background)
             .task {
-                await withTaskGroup(of: Void.self) { group in
-                    group.addTask { await loadModels() }
-                }
+                await loadModels()
             }
             .onAppear {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
@@ -511,6 +508,7 @@ struct CreateFolderSheet: View {
             )
             .navigationTitle(String(localized: "Select Knowledge"))
             .navigationBarTitleDisplayMode(.inline)
+            .navigationBarBackButtonHidden(true)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Close", systemImage: "xmark") { showKnowledgePicker = false }

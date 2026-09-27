@@ -13,7 +13,7 @@ struct AttachmentPickerResults: View {
     var body: some View {
         List {
             if let search {
-                ForEach(search.sections) { section in
+                ForEach(search.sections.filter { !$0.items.isEmpty || $0.isLoading || $0.failed || $0.hasMore }) { section in
                     Section {
                         ForEach(section.items) { item in
                             HStack {
@@ -50,12 +50,13 @@ struct AttachmentPickerResults: View {
                             }
                         } else if section.hasMore {
                             Button("Load more \(section.id.title.lowercased())") { search.requestMore(section.id) }
-                        } else if section.items.isEmpty {
-                            Text("No results").foregroundStyle(.secondary)
                         }
                     } header: {
                         if sources.count > 1 { Text(section.id.title) }
                     }
+                }
+                if search.sections.allSatisfy({ $0.items.isEmpty && !$0.isLoading && !$0.failed && !$0.hasMore }) {
+                    Text("No results").foregroundStyle(.secondary)
                 }
             }
         }
@@ -91,6 +92,7 @@ struct InlineFilesPickerView: View {
         .toolbarRole(.editor)
         .toolbar(.visible, for: .navigationBar)
         .searchable(text: $query, prompt: "Search files")
+        .searchPresentationToolbarBehavior(.avoidHidingContent)
         .toolbar {
             ToolbarItem(placement: .confirmationAction) {
                 Button("Attach \(selected.count) files", systemImage: "checkmark") {
@@ -125,6 +127,7 @@ struct InlineKnowledgePickerView: View {
             .toolbarRole(.editor)
             .toolbar(.visible, for: .navigationBar)
             .searchable(text: $query, prompt: collection == nil ? "Search knowledge" : "Search documents")
+            .searchPresentationToolbarBehavior(.avoidHidingContent)
             .navigationDestination(item: $browsing) { item in
                 InlineKnowledgePickerView(apiClient: apiClient, collection: item, onItemSelected: onItemSelected)
             }

@@ -11,6 +11,7 @@ struct ServerFilesPickerSheet: View {
                 onFilesSelected(attachments)
                 isPresented = false
             }
+            .navigationBarBackButtonHidden(true)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Close", systemImage: "xmark") { isPresented = false }

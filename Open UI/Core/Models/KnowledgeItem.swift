@@ -21,6 +21,7 @@ struct KnowledgeItem: Identifiable, Equatable, Hashable, Sendable {
     let fileCount: Int?
     var context: String? = nil
     var fileReference: ChatMessageFile? = nil
+    var identity: String { "\(type.rawValue):\(id)" }
 
     enum KnowledgeType: String, Sendable, Equatable, Hashable {
         case folder

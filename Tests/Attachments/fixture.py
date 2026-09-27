@@ -15,14 +15,14 @@ TOKEN = "synthetic-token"
 
 
 def document(index):
-    name = "Orchard guide.txt" if index == 27 else f"Sample document {index:02}.txt"
+    name = "Orchard guide.txt" if index == 67 else f"Sample document {index:02}.txt"
     return {"id": f"document-{index}", "filename": name, "created_at": 1700000000 + index,
             "updated_at": 1700000000 + index, "user_id": USER["id"],
             "meta": {"name": name, "content_type": "text/plain", "size": 42},
             "data": {"status": "completed"}, "content_type": "text/plain", "size": 42}
 
 
-DOCUMENTS = [document(i) for i in range(1, 28)]
+DOCUMENTS = [document(i) for i in range(1, 68)]
 COLLECTIONS = [{"id": f"collection-{i}", "name": f"Sample collection {i:02}",
                 "description": "Invented demonstration documents", "files": [DOCUMENTS[0]],
                 "created_at": 1700000000, "updated_at": 1700000000} for i in range(1, 24)]
@@ -59,6 +59,8 @@ def application():
 
     def reset():
         app["fail_removal"] = False
+        app["fail_search"] = False
+        settings["ui"] = {"defaultUploadContext": "full", "fixtureUnrelatedSetting": "keep"}
         chats.clear()
         chats.update({identifier: make_chat(identifier, title) for identifier, title in [
             ("synthetic-context", "Attachment context"), ("synthetic-removal", "Remove a source")]})
@@ -82,6 +84,9 @@ def application():
         if path == "/fixture/fail-removal":
             app["fail_removal"] = True
             return web.json_response({"enabled": True})
+        if path == "/fixture/fail-search":
+            app["fail_search"] = request.query.get("enabled") == "1"
+            return web.json_response({"enabled": app["fail_search"]})
         if path == "/fixture/recording":
             # UI tests can signal recording boundaries without touching app code.
             app["recording"] = request.query.get("state", "")
@@ -132,11 +137,14 @@ def application():
                 chat["chat"].update(body["chat"])
             return web.json_response(chat)
         if path == "/api/v1/files/search":
+            if app["fail_search"]:
+                return web.json_response({"detail": "Synthetic search failure"}, status=503)
             query = request.query.get("filename", "*")
             skip, limit = int(request.query.get("skip", 0)), int(request.query.get("limit", 50))
             requests.append({"path": path, "query": dict(request.query)})
             matches = [f for f in DOCUMENTS if fnmatch.fnmatchcase(f["filename"].lower(), query.lower())]
-            return web.json_response(matches[skip:skip + limit])
+            page = matches[skip:skip + limit]
+            return web.json_response(page) if page else web.json_response({"detail": "No files found"}, status=404)
         if path == "/api/v1/files": return web.json_response({"items": DOCUMENTS[:3], "total": len(DOCUMENTS)})
         if path.startswith("/api/v1/files/"):
             file = next((f for f in DOCUMENTS if f["id"] == path.split("/")[4]), None)

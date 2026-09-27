@@ -24,8 +24,6 @@ struct EditFolderSheet: View {
     @State private var backgroundImageUrl: String?
     @State private var folderIcon: String?
 
-    // Knowledge loading
-
     // PhotosPicker
     @State private var selectedPhotoItem: PhotosPickerItem?
     @State private var isUploadingImage = false
@@ -113,9 +111,7 @@ struct EditFolderSheet: View {
             }
             .background(theme.background)
             .task {
-                await withTaskGroup(of: Void.self) { group in
-                    group.addTask { await loadModels() }
-                }
+                await loadModels()
             }
         }
         .presentationDetents([.large])
@@ -596,6 +592,7 @@ struct EditFolderSheet: View {
             )
             .navigationTitle(String(localized: "Select Knowledge"))
             .navigationBarTitleDisplayMode(.inline)
+            .navigationBarBackButtonHidden(true)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Close", systemImage: "xmark") { showKnowledgePicker = false }

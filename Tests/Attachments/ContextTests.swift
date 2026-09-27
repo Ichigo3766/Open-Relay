@@ -35,6 +35,9 @@ enum InlineImageStore { static func extractAndReplace(content: String) -> String
         let legacy = try JSONDecoder().decode(ChatMessageFile.self,
             from: Data(#"{"type":"file","url":"legacy","name":"Legacy.txt","contentType":"text/plain"}"#.utf8))
         check(legacy.referenceID == "legacy" && legacy.context == nil, "Old local caches decode")
+        let untyped = ChatMessageFile(url: "legacy-untyped", name: "Legacy.txt")
+        check(untyped.serverDictionary["type"] as? String == "file", "Keep the existing default for untyped file references")
+        check(untyped.isContext, "Untyped legacy documents remain context")
         let parent = ChatMessage(role: .user, content: "Summarize the sample.", files: files)
         let followUp = ChatMessage(role: .user, content: "Summarize it more briefly.")
         let active = [parent, followUp]

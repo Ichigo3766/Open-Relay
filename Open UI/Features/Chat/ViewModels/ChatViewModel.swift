@@ -2051,7 +2051,6 @@ final class ChatViewModel {
 
     // MARK: - Knowledge
 
-
     /// Called when a knowledge item is selected from the `#` picker.
     ///
     /// Adds the item to the selected list (if not already there),
@@ -2130,7 +2129,7 @@ final class ChatViewModel {
     // MARK: - Context Item Removal (Controls Panel)
 
     func removeKnowledgeItem(_ item: KnowledgeItem) {
-        selectedKnowledgeItems.removeAll { $0.id == item.id }
+        selectedKnowledgeItems.removeAll { $0.identity == item.identity }
     }
 
     func removeReferenceChat(_ item: ReferenceChatItem) {
@@ -2368,8 +2367,6 @@ final class ChatViewModel {
         isShowingSkillPicker = false
         skillSearchQuery = ""
     }
-
-
 
     // MARK: - Passive Socket Listener (Cross-Client Stream Observation)
     private func startPassiveSocketListener() {
@@ -4350,6 +4347,7 @@ final class ChatViewModel {
     /// metadata on inactive-branch nodes with stale/empty flat-list data,
     /// which can cause the server to reorder childrenIds.
     private func syncCurrentIdToServer() async {
+        await contextSaveTask?.value
         guard let chatId = conversationId ?? conversation?.id, let manager else { return }
         let modelId = selectedModelId ?? conversation?.model ?? ""
 
@@ -4363,7 +4361,8 @@ final class ChatViewModel {
             model: modelId,
             systemPrompt: conv.systemPrompt,
             chatParams: conv.chatParams,
-            title: conv.title
+            title: conv.title,
+            chatFiles: conv.files
         )
     }
 

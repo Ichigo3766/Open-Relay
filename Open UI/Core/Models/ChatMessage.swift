@@ -221,12 +221,12 @@ nonisolated struct ChatMessageFile: Codable, Hashable, Sendable {
             .trimmingCharacters(in: .whitespaces).lowercased() ?? ""
         let isRasterImage = mime.hasPrefix("image/") && mime != "image/svg+xml"
         return ["doc", "text", "note", "chat", "folder", "collection"].contains(type ?? "")
-            || (type == "file" && !isRasterImage)
+            || ((type ?? "file") == "file" && !isRasterImage)
     }
 
     var serverDictionary: [String: Any] {
         var result = serverMetadata.flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] } ?? [:]
-        result["type"] = type
+        result["type"] = type ?? "file"
         result["id"] = referenceID
         result["url"] = url
         result["name"] = name

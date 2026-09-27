@@ -13,6 +13,7 @@ struct KnowledgeMenuPickerSheet: View {
                 }
                 isPresented = false
             }
+            .navigationBarBackButtonHidden(true)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Close", systemImage: "xmark") { isPresented = false }

@@ -1121,7 +1121,7 @@ struct ChatInputField: View {
     private var knowledgeChipsStrip: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 6) {
-                ForEach(selectedKnowledgeItems) { item in
+                ForEach(selectedKnowledgeItems, id: \.identity) { item in
                     knowledgeChip(item)
                 }
             }

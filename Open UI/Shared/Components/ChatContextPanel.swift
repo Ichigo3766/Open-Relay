@@ -131,7 +131,7 @@ struct ChatContextPanel: View {
                         .disabled(viewModel.isSavingContext)
                     }
                     // Knowledge items (collections / files)
-                    ForEach(viewModel.selectedKnowledgeItems) { item in
+                    ForEach(viewModel.selectedKnowledgeItems, id: \.identity) { item in
                         let isFolder = item.type == .folder
                         let icon: String = isFolder ? "folder.fill" : "books.vertical.fill"
                         let iconColor: Color = isFolder ? .orange : .blue
