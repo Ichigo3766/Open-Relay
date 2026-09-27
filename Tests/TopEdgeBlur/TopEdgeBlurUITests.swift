@@ -23,7 +23,11 @@ final class TopEdgeBlurUITests: XCTestCase {
         alignColorSample()
         capture("\(appearance)-color")
         XCUIDevice.shared.press(.home)
+        let backgrounded = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "state != %d", XCUIApplication.State.runningForeground.rawValue), object: app)
+        wait(for: [backgrounded], timeout: 10)
         app.activate()
+        XCTAssertTrue(app.wait(for: .runningForeground, timeout: 10))
         settle()
         capture("\(appearance)-resumed")
         let composer = app.textViews["Message"]
@@ -38,6 +42,9 @@ final class TopEdgeBlurUITests: XCTestCase {
         scrollToTop()
         drag(-320)
         drag(70)
+        let calibration = app.descendants(matching: .any).matching(NSPredicate(format: "label BEGINSWITH 'You:'")).firstMatch
+        for _ in 0..<3 where calibration.frame.minY > -100 { drag(-150) }
+        XCTAssertLessThanOrEqual(calibration.frame.minY, -100, "Keep the heading outside the color sample.")
         capture("\(appearance)-calibration")
     }
 
