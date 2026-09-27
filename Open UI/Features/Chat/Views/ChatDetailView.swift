@@ -2413,10 +2413,9 @@ struct ChatDetailView: View {
     ///
     /// The **last turn** is defined as the last user message plus any
     /// assistant/system messages that follow it. This group is wrapped in a
-    /// `VStack` with `minHeight: viewportHeight, alignment: .top` — the
-    /// ChatGPT-style trick that makes scroll-to-bottom place the user's
-    /// sent message near the **top** of the viewport, with the AI response
-    /// streaming in below it.
+    /// `VStack` with a viewport minimum height while streaming, so the sent
+    /// message stays near the top as the response grows. Completed turns
+    /// use their natural height without leaving empty space below the reply.
     ///
     /// All earlier messages render at their natural height.
     private var messagesList: some View {
@@ -2454,7 +2453,7 @@ struct ChatDetailView: View {
         let lastUserIdx = messages.lastIndex(where: { $0.role == .user })
         let splitAt = lastUserIdx ?? messages.count
 
-        // Only apply minHeight trick when the window includes the actual last message
+        // Reserve writing space only for the actual last turn, never an older window.
         let windowIncludesEnd = (windowEnd == nil || clampedEnd >= total)
 
         return Group {
@@ -2486,23 +2485,10 @@ struct ChatDetailView: View {
                             .transition(.opacity)
                     }
                 }
-                // Only apply the ChatGPT-style minHeight trick when the total content
-                // actually overflows the viewport. For short conversations that fit
-                // entirely on screen the trick is counter-productive: it inflates the
-                // content height to ~2× the viewport, causing defaultScrollAnchor(.bottom)
-                // to position the view at the bottom of the empty padding — pushing the
-                // real messages above the visible area and triggering a false
-                // "scrolled up" state that shows the ↓ FAB unnecessarily.
+                // A completed turn must not retain the space reserved for streaming.
                 .frame(minHeight: {
-                    guard windowIncludesEnd else { return nil }
-                    let naturalContentHeight = viewState_contentHeight
-                    let containerHeight = viewState_containerHeight
-                    // Suppress minHeight when content already fits within the viewport,
-                    // BUT keep it active during streaming so the pump can pin correctly.
-                    // Use a small tolerance (8pt) to avoid edge cases where content is
-                    // measured as just barely overflowing due to sub-pixel rounding.
-                    guard naturalContentHeight > containerHeight + 8 || viewModel.isStreaming else { return nil }
-                    return max(containerHeight, 0)
+                    guard windowIncludesEnd && viewModel.isStreaming else { return nil }
+                    return max(viewState_containerHeight, 0)
                 }(), alignment: .top)
             }
 
