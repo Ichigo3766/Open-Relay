@@ -19,6 +19,12 @@ func reference(_ text: String, _ offset: Int) -> String? {
 }
 
 func signature(_ token: ComposerToken?) -> String? { token.map { String($0.symbol) + $0.query } }
+@inline(never) func candidateCost(_ text: String, _ offset: Int) -> Int {
+    ComposerToken(text: text, utf16Offset: offset)?.query.count ?? 0
+}
+@inline(never) func baselineCost(_ text: String, _ offset: Int) -> Int {
+    "#@/$".reduce(0) { $0 + (oldQuery(text, offset, $1)?.count ?? 0) }
+}
 var checks = 0
 let examples = ["", "#", "#paper", "word #paper", "word#paper", "#paper ", "#paper#card",
                 "@model", "/command", "$skill", "$one@two", "/one/two", "a\n#paper",
@@ -73,9 +79,9 @@ if CommandLine.arguments.contains("--benchmark") {
                 for item in 0..<batch {
                     let cursor = offset - item % 2
                     if candidate {
-                        checksum += ComposerToken(text: text, utf16Offset: cursor)?.query.count ?? 0
+                        checksum += candidateCost(text, cursor)
                     } else {
-                        for symbol in "#@/$" { checksum += oldQuery(text, cursor, symbol)?.count ?? 0 }
+                        checksum += baselineCost(text, cursor)
                     }
                 }
                 if iteration > 0 { timings.append((cpu() - start) * 1000 / Double(batch)) }
@@ -86,4 +92,36 @@ if CommandLine.arguments.contains("--benchmark") {
       }
     }
     print("CHECKSUM \(checksum)")
+}
+
+if CommandLine.arguments.contains("--editing-benchmark") {
+    func cpu() -> Double {
+        var value = rusage(); getrusage(RUSAGE_SELF, &value)
+        return Double(value.ru_utime.tv_sec + value.ru_stime.tv_sec) + Double(value.ru_utime.tv_usec + value.ru_stime.tv_usec) / 1e6
+    }
+    var checksum = 0
+    for (kind, unit) in [("ascii", "invented paper rover "), ("unicode", "星🌦️e\u{301} rover ")] {
+        for length in [8192, 65536, 262144] {
+            let prefix = String(repeating: unit, count: max(1, length / unit.count))
+            for position in ["end", "middle"] {
+                for candidate in [false, true, true, false] {
+                    var text = prefix + "#map"
+                    let offset = text.utf16.count
+                    var times: [Double] = []
+                    for iteration in 0..<40 {
+                        // A new edit invalidates cached String indexing. The UTF-16
+                        // caret comes from the editor; don't precompute text.utf16.count here.
+                        text.append(iteration.isMultiple(of: 2) ? "a" : "b")
+                        let cursor = position == "end" ? offset + iteration + 1 : offset / 2
+                        let start = cpu()
+                        checksum += candidate ? candidateCost(text, cursor) : baselineCost(text, cursor)
+                        times.append((cpu() - start) * 1000)
+                    }
+                    times.sort()
+                    print("EDIT_TOKEN kind=\(kind) approximate_chars=\(length) cursor=\(position) candidate=\(candidate) median_ms=\(times[20]) p95_ms=\(times[37]) max_ms=\(times[39])")
+                }
+            }
+        }
+    }
+    print("EDIT_CHECKSUM \(checksum)")
 }
