@@ -586,6 +586,8 @@ struct ChatSettingsView: View {
                     .listRowSeparator(.hidden)
             }
 
+            UploadContextSettings()
+
             Section {
                 Picker("Scroll Controls", selection: $chatScrollControls) {
                     ForEach(ChatScrollControls.allCases, id: \.self) { controls in

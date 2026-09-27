@@ -12,6 +12,7 @@ struct UserDefaultParams: Codable, Sendable, Equatable {
 
     // MARK: System Prompt
     var systemPrompt: String?
+    var defaultUploadContext: String?
 
     // MARK: Basic
     var temperature: Double?
@@ -100,6 +101,7 @@ struct UserDefaultParams: Codable, Sendable, Equatable {
     /// Initialise from the raw `ui` dict returned by `GET /api/v1/users/user/settings`.
     /// Reads `ui["system"]` for the system prompt and `ui["params"]` for params.
     init(from uiDict: [String: Any]) {
+        defaultUploadContext = uiDict["defaultUploadContext"] as? String ?? "focused"
         // System prompt lives directly under "ui"
         if let v = uiDict["system"] as? String, !v.isEmpty {
             systemPrompt = v

@@ -37,7 +37,13 @@ struct ChatAttachment: Identifiable {
     /// When `true`, the full extracted text is injected into the request payload
     /// (`data.content`) and `"context": "full"` is added to the file ref.
     /// When `false` (default), focused RAG retrieval is used.
-    var useFullContext: Bool = false
+    /// Nil until the account's upload default is available; a user override is
+    /// always explicit, including Focused Retrieval.
+    var uploadContext: String?
+    var useFullContext: Bool {
+        get { uploadContext == "full" }
+        set { uploadContext = newValue ? "full" : "focused" }
+    }
 
     /// Error message if upload or processing failed.
     var uploadError: String?
@@ -75,6 +81,7 @@ struct ChatAttachment: Identifiable {
 struct ChatInputField: View {
     @Binding var text: String
     @Binding var attachments: [ChatAttachment]
+    var attachmentUsage = AttachmentUsage()
     var placeholder: String = "Message"
     var isKeyboardVisible: Bool = false
     var isEnabled: Bool = true
@@ -359,7 +366,7 @@ struct ChatInputField: View {
         }
         .animation(.spring(response: 0.4, dampingFraction: 0.78), value: attachments.count)
         .sheet(item: $previewingAttachmentId) { wrapper in
-            AttachmentPreviewSheet(attachments: $attachments, attachmentId: wrapper.id)
+            AttachmentPreviewSheet(attachments: $attachments, attachmentId: wrapper.id, usage: attachmentUsage)
         }
     }
 
@@ -1123,43 +1130,38 @@ struct ChatInputField: View {
 
     private func knowledgeChip(_ item: KnowledgeItem) -> some View {
         HStack(spacing: 5) {
-            Image(systemName: item.iconName)
-                .scaledFont(size: 10, weight: .semibold)
-                .foregroundStyle(theme.brandPrimary)
-            Text(item.name)
-                .scaledFont(size: 12, weight: .medium)
-                .foregroundStyle(theme.textPrimary)
-                .lineLimit(1)
-            Text(item.typeBadge)
-                .scaledFont(size: 9, weight: .semibold)
-                .foregroundStyle(theme.textTertiary)
-                .padding(.horizontal, 4)
-                .padding(.vertical, 1)
-                .background(
-                    Capsule().fill(theme.surfaceContainer.opacity(0.8))
-                )
-            Button {
-                withAnimation(.easeOut(duration: 0.15)) {
-                    selectedKnowledgeItems.removeAll { $0.id == item.id }
+            Menu {
+                Picker("Context mode", selection: Binding(
+                    get: { item.context == "full" ? "full" : "focused" },
+                    set: { mode in
+                        guard let index = selectedKnowledgeItems.firstIndex(where: { $0.id == item.id && $0.type == item.type }) else { return }
+                        selectedKnowledgeItems[index].context = mode
+                    }
+                )) {
+                    Text("Focused Retrieval").tag("focused")
+                    Text("Entire Document").tag("full")
                 }
-                Haptics.play(.light)
             } label: {
-                Image(systemName: "xmark")
-                    .scaledFont(size: 8, weight: .bold)
-                    .foregroundStyle(theme.textTertiary)
+                HStack(spacing: 5) {
+                    Image(systemName: item.iconName)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(item.name).lineLimit(1)
+                        Text(attachmentUsage.title(fullContext: item.context == "full"))
+                            .font(.caption2).foregroundStyle(.secondary)
+                    }
+                }
+                .font(.caption)
             }
+            .accessibilityLabel("Context mode for \(item.name)")
+            Button("Remove \(item.name)", systemImage: "xmark") {
+                selectedKnowledgeItems.removeAll { $0.id == item.id && $0.type == item.type }
+            }
+            .labelStyle(.iconOnly)
             .buttonStyle(.plain)
+            .font(.caption)
         }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 5)
-        .background(
-            Capsule()
-                .fill(theme.brandPrimary.opacity(0.08))
-        )
-        .overlay(
-            Capsule()
-                .strokeBorder(theme.brandPrimary.opacity(0.25), lineWidth: 0.5)
-        )
+        .padding(8)
+        .background(theme.brandPrimary.opacity(0.08), in: RoundedRectangle(cornerRadius: 12))
     }
 
     // MARK: - Attachment Strip
@@ -1580,6 +1582,7 @@ struct AttachmentPreviewSheet: View {
     @Binding var attachments: [ChatAttachment]
     /// ID of the attachment being previewed.
     let attachmentId: UUID
+    var usage = AttachmentUsage()
 
     @Environment(\.dismiss) private var dismiss
     @Environment(\.theme) private var theme
@@ -1847,7 +1850,7 @@ struct AttachmentPreviewSheet: View {
             if attachment.isReady {
                 HStack {
                     Spacer()
-                    Text(attachment.useFullContext ? "Using Entire Document" : "Using Focused Retrieval")
+                    Text(usage.title(fullContext: attachment.useFullContext))
                         .scaledFont(size: 12)
                         .foregroundStyle(theme.textSecondary)
                     Toggle("", isOn: Binding(
@@ -1872,6 +1875,7 @@ struct AttachmentPreviewSheet: View {
                         }
                     ))
                     .labelsHidden()
+                    .accessibilityLabel("Use Entire Document")
                     .tint(theme.brandPrimary)
                 }
             }

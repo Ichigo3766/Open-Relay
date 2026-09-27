@@ -132,7 +132,15 @@ final class ChatViewModel {
     /// `ChatDetailView` observes this via `.onChange` and sets `isEditFieldFocused`.
     /// Reset to `false` immediately after focus is granted.
     var shouldFocusInput: Bool = false
-    var attachments: [ChatAttachment] = []
+    var attachments: [ChatAttachment] = [] {
+        didSet {
+            if let mode = activeChatStore?.cachedUserDefaultParams?.defaultUploadContext {
+                for index in attachments.indices where attachments[index].uploadContext == nil {
+                    attachments[index].uploadContext = mode
+                }
+            }
+        }
+    }
     var webSearchEnabled: Bool = false {
         didSet {
             guard !suppressBuiltinFeatureTracking else { return }
@@ -238,8 +246,15 @@ final class ChatViewModel {
     /// Set during `syncUIWithModelDefaults()` and `restoreBuiltinFeatureState()`
     /// so those internal resets aren't misinterpreted as explicit user overrides.
     private var suppressBuiltinFeatureTracking: Bool = false
-    var selectedKnowledgeItems: [KnowledgeItem] = []
-    var knowledgeItems: [KnowledgeItem] = []
+    var selectedKnowledgeItems: [KnowledgeItem] = [] {
+        didSet {
+            if let mode = activeChatStore?.cachedUserDefaultParams?.defaultUploadContext {
+                for index in selectedKnowledgeItems.indices where selectedKnowledgeItems[index].context == nil {
+                    selectedKnowledgeItems[index].context = mode
+                }
+            }
+        }
+    }
     /// Reference chat conversations selected for context in the next message.
     var selectedReferenceChats: [ReferenceChatItem] = []
     /// Notes selected as context for the next message (injected as inline text, not file refs).
@@ -265,7 +280,6 @@ final class ChatViewModel {
     var isTerminalCapableForSelectedModel: Bool {
         selectedModel?.supportsTerminal ?? false
     }
-    var isLoadingKnowledge: Bool = false
     var isShowingKnowledgePicker: Bool = false
     var knowledgeSearchQuery: String = ""
 
@@ -515,6 +529,14 @@ final class ChatViewModel {
     var selectedModel: AIModel? {
         guard let id = selectedModelId else { return nil }
         return availableModels.first { $0.id == id }
+    }
+
+    var attachmentUsage: AttachmentUsage {
+        let model = mentionedModelId.flatMap { id in availableModels.first { $0.id == id } } ?? selectedModel
+        let calling = model?.functionCallingMode == "native" ? "native"
+            : (conversation?.chatParams ?? pendingChatParams)?.functionCalling
+                ?? activeChatStore?.cachedUserDefaultParams?.functionCalling ?? model?.functionCallingMode
+        return AttachmentUsage(capabilities: model?.capabilities, builtinTools: model?.builtinTools ?? [:], functionCalling: calling)
     }
 
     var canSend: Bool {
@@ -2029,58 +2051,6 @@ final class ChatViewModel {
 
     // MARK: - Knowledge
 
-    /// Timestamp of the last knowledge fetch — used for stale-while-revalidate.
-    private var lastKnowledgeFetchTime: Date = .distantPast
-
-    /// Fetches knowledge bases and user files for the `#` picker.
-    ///
-    /// Uses a **stale-while-revalidate** strategy:
-    /// - If cache exists, shows it instantly and refreshes in the background.
-    /// - If no cache, shows a loading state while fetching.
-    /// - Cache is refreshed every time the picker opens (async).
-    func loadKnowledgeItems() {
-        // If we already have cached items, show them immediately
-        // and refresh in the background (stale-while-revalidate)
-        if !knowledgeItems.isEmpty {
-            // Background refresh — no loading indicator
-            Task { await fetchKnowledgeItemsFromServer() }
-            return
-        }
-
-        // No cache — show loading state
-        isLoadingKnowledge = true
-        Task {
-            await fetchKnowledgeItemsFromServer()
-            isLoadingKnowledge = false
-        }
-    }
-
-    /// Fetches folders + knowledge bases + knowledge files from the server
-    /// and updates the cache. All 3 APIs are called concurrently.
-    private func fetchKnowledgeItemsFromServer() async {
-        guard let manager else { return }
-
-        // Fetch all 3 sources concurrently — each is independent and
-        // a single failure shouldn't prevent the others from showing.
-        async let foldersReq: [KnowledgeItem] = {
-            (try? await manager.fetchFolderItems()) ?? []
-        }()
-        async let collectionsReq: [KnowledgeItem] = {
-            (try? await manager.fetchKnowledgeItems()) ?? []
-        }()
-        async let filesReq: [KnowledgeItem] = {
-            (try? await manager.fetchKnowledgeFileItems()) ?? []
-        }()
-
-        let (folders, collections, files) = await (foldersReq, collectionsReq, filesReq)
-
-        // Only update if we got at least something
-        let combined = folders + collections + files
-        if !combined.isEmpty || knowledgeItems.isEmpty {
-            knowledgeItems = combined
-        }
-        lastKnowledgeFetchTime = Date()
-    }
 
     /// Called when a knowledge item is selected from the `#` picker.
     ///
@@ -2088,7 +2058,7 @@ final class ChatViewModel {
     /// removes the `#query` from the input text, and dismisses the picker.
     func selectKnowledgeItem(_ item: KnowledgeItem) {
         // Avoid duplicates
-        guard !selectedKnowledgeItems.contains(where: { $0.id == item.id }) else {
+        guard !selectedKnowledgeItems.contains(where: { $0.id == item.id && $0.type == item.type }) else {
             dismissKnowledgePicker()
             return
         }
@@ -3153,7 +3123,7 @@ final class ChatViewModel {
 
         // Capture and clear knowledge items — they attach to this message only.
         // The server handles RAG retrieval per-message from the files array.
-        let currentKnowledgeItems = selectedKnowledgeItems
+        var currentKnowledgeItems = selectedKnowledgeItems
         selectedKnowledgeItems = []
         // Capture and clear reference chats — they attach to this message only.
         let currentReferenceChats = selectedReferenceChats
@@ -3168,10 +3138,19 @@ final class ChatViewModel {
         selectedSkillIds = []
 
         let currentText = text
-        let currentAttachments = processedAttachments
+        var currentAttachments = processedAttachments
         inputText = ""
         attachments = []
         errorMessage = nil
+
+        await userDefaultParamsTask?.value
+        let defaultContext = activeChatStore?.cachedUserDefaultParams?.defaultUploadContext ?? "focused"
+        for index in currentAttachments.indices where currentAttachments[index].uploadContext == nil {
+            currentAttachments[index].uploadContext = defaultContext
+        }
+        for index in currentKnowledgeItems.indices where currentKnowledgeItems[index].context == nil {
+            currentKnowledgeItems[index].context = defaultContext
+        }
 
         // Build file references from pre-uploaded attachments.
         // Files are uploaded at attach time (uploadAttachmentImmediately),
@@ -6326,6 +6305,12 @@ final class ChatViewModel {
         do {
             let params = try await apiClient.fetchUserDefaultParams()
             activeChatStore?.cachedUserDefaultParams = params
+            for index in attachments.indices where attachments[index].uploadContext == nil {
+                attachments[index].uploadContext = params.defaultUploadContext
+            }
+            for index in selectedKnowledgeItems.indices where selectedKnowledgeItems[index].context == nil {
+                selectedKnowledgeItems[index].context = params.defaultUploadContext
+            }
             logger.debug("User default params fetched from server (hasOverride=\(params.hasAnyOverride))")
             // Re-run restoreToolApprovalMode so the server-stored tool_approval_mode
             // takes effect immediately if no per-conversation override is set.

@@ -1185,8 +1185,7 @@ struct ChatDetailView: View {
             if vm.isShowingKnowledgePicker {
                 KnowledgePickerView(
                     query: vm.knowledgeSearchQuery,
-                    items: vm.knowledgeItems,
-                    isLoading: vm.isLoadingKnowledge,
+                    apiClient: dependencies.apiClient,
                     keyboardHeight: keyboard.height,
                     onSelect: { item in
                         viewModel.selectKnowledgeItem(item)
@@ -1337,6 +1336,7 @@ struct ChatDetailView: View {
             ChatInputField(
                 text: $vm.inputText,
                 attachments: $vm.attachments,
+                attachmentUsage: vm.attachmentUsage,
                 placeholder: placeholderText,
                 isKeyboardVisible: keyboard.isVisible,
                 isEnabled: !vm.isStreaming || vm.enableMessageQueue,
@@ -1409,7 +1409,6 @@ struct ChatDetailView: View {
                             withAnimation(.easeOut(duration: 0.2)) {
                                 viewModel.isShowingKnowledgePicker = true
                             }
-                            viewModel.loadKnowledgeItems()
                         }
                     }
                 },

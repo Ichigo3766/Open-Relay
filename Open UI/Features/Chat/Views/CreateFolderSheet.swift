@@ -22,8 +22,6 @@ struct CreateFolderSheet: View {
     @State private var backgroundImageUrl: String?
     @State private var folderIcon: String?
 
-    @State private var allKnowledgeItems: [KnowledgeItem] = []
-    @State private var isLoadingKnowledge = false
 
     @State private var selectedPhotoItem: PhotosPickerItem?
     @State private var isUploadingImage = false
@@ -113,7 +111,6 @@ struct CreateFolderSheet: View {
             .background(theme.background)
             .task {
                 await withTaskGroup(of: Void.self) { group in
-                    group.addTask { await loadKnowledge() }
                     group.addTask { await loadModels() }
                 }
             }
@@ -438,11 +435,7 @@ struct CreateFolderSheet: View {
                     showKnowledgePicker = true
                 } label: {
                     HStack(spacing: Spacing.xs) {
-                        if isLoadingKnowledge {
-                            ProgressView().controlSize(.small)
-                        } else {
-                            Image(systemName: "book.closed").scaledFont(size: 14)
-                        }
+                        Image(systemName: "book.closed").scaledFont(size: 14)
                         Text("Select Knowledge").scaledFont(size: 14, weight: .medium)
                     }
                     .padding(.horizontal, Spacing.md)
@@ -506,27 +499,22 @@ struct CreateFolderSheet: View {
 
     private var knowledgePickerSheet: some View {
         NavigationStack {
-            KnowledgePickerView(
-                query: "",
-                items: allKnowledgeItems.filter { item in
-                    !attachedKnowledge.contains(where: { $0.id == item.id })
-                },
-                isLoading: isLoadingKnowledge,
-                keyboardHeight: 0,
-                onSelect: { item in
+            InlineKnowledgePickerView(
+                apiClient: apiClient,
+                onItemSelected: { item in
                     let ki = FolderKnowledgeItem(id: item.id, name: item.name, type: item.type.rawValue)
                     if !attachedKnowledge.contains(where: { $0.id == item.id }) {
                         attachedKnowledge.append(ki)
                     }
                     showKnowledgePicker = false
-                },
-                onDismiss: { showKnowledgePicker = false }
+                }
             )
             .navigationTitle(String(localized: "Select Knowledge"))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button(String(localized: "Cancel")) { showKnowledgePicker = false }
+                    Button("Close", systemImage: "xmark") { showKnowledgePicker = false }
+                        .labelStyle(.iconOnly)
                 }
             }
         }
@@ -547,21 +535,6 @@ struct CreateFolderSheet: View {
         isLoadingModels = false
     }
 
-    // MARK: - Knowledge Loading
-
-    private func loadKnowledge() async {
-        guard let api = apiClient else { return }
-        isLoadingKnowledge = true
-        do {
-            async let collectionsReq = api.getKnowledgeItems()
-            async let filesReq = (try? await api.getKnowledgeFileItems()) ?? []
-            let (collections, files) = try await (collectionsReq, filesReq)
-            allKnowledgeItems = collections + files
-        } catch {
-            allKnowledgeItems = []
-        }
-        isLoadingKnowledge = false
-    }
 
     // MARK: - Helpers
 

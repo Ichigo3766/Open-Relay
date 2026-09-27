@@ -56,7 +56,7 @@ struct KnowledgeItem: Identifiable, Equatable, Hashable, Sendable {
         var reference = fileReference ?? ChatMessageFile(type: type.rawValue, url: id, name: name)
         reference.id = id
         reference.type = type.rawValue
-        reference.context = context
+        reference.context = context == "full" ? "full" : nil
         return reference.serverDictionary
     }
 }

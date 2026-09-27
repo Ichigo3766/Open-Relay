@@ -25,8 +25,6 @@ struct EditFolderSheet: View {
     @State private var folderIcon: String?
 
     // Knowledge loading
-    @State private var allKnowledgeItems: [KnowledgeItem] = []
-    @State private var isLoadingKnowledge = false
 
     // PhotosPicker
     @State private var selectedPhotoItem: PhotosPickerItem?
@@ -116,7 +114,6 @@ struct EditFolderSheet: View {
             .background(theme.background)
             .task {
                 await withTaskGroup(of: Void.self) { group in
-                    group.addTask { await loadKnowledge() }
                     group.addTask { await loadModels() }
                 }
             }
@@ -472,12 +469,7 @@ struct EditFolderSheet: View {
                     showKnowledgePicker = true
                 } label: {
                     HStack(spacing: Spacing.xs) {
-                        if isLoadingKnowledge {
-                            ProgressView().controlSize(.small)
-                        } else {
-                            Image(systemName: "book.closed")
-                                .scaledFont(size: 14)
-                        }
+                        Image(systemName: "book.closed").scaledFont(size: 14)
                         Text("Select Knowledge")
                             .scaledFont(size: 14, weight: .medium)
                     }
@@ -592,27 +584,22 @@ struct EditFolderSheet: View {
 
     private var knowledgePickerSheet: some View {
         NavigationStack {
-            KnowledgePickerView(
-                query: "",
-                items: allKnowledgeItems.filter { item in
-                    !attachedKnowledge.contains(where: { $0.id == item.id })
-                },
-                isLoading: isLoadingKnowledge,
-                keyboardHeight: 0,
-                onSelect: { item in
+            InlineKnowledgePickerView(
+                apiClient: apiClient,
+                onItemSelected: { item in
                     let ki = FolderKnowledgeItem(id: item.id, name: item.name, type: item.type.rawValue)
                     if !attachedKnowledge.contains(where: { $0.id == item.id }) {
                         attachedKnowledge.append(ki)
                     }
                     showKnowledgePicker = false
-                },
-                onDismiss: { showKnowledgePicker = false }
+                }
             )
             .navigationTitle(String(localized: "Select Knowledge"))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button(String(localized: "Cancel")) { showKnowledgePicker = false }
+                    Button("Close", systemImage: "xmark") { showKnowledgePicker = false }
+                        .labelStyle(.iconOnly)
                 }
             }
         }
@@ -633,25 +620,6 @@ struct EditFolderSheet: View {
         isLoadingModels = false
     }
 
-    // MARK: - Knowledge Loading
-
-    /// Loads all knowledge sources from the server: collections + files + (folder items as a subset).
-    private func loadKnowledge() async {
-        guard let api = apiClient else { return }
-        isLoadingKnowledge = true
-        do {
-            // Fetch collections, knowledge files, and chat folders in parallel
-            async let collectionsReq = api.getKnowledgeItems()
-            async let filesReq = (try? await api.getKnowledgeFileItems()) ?? []
-
-            let (collections, files) = try await (collectionsReq, filesReq)
-            // Combine: collections + files (both appear in the # picker)
-            allKnowledgeItems = collections + files
-        } catch {
-            allKnowledgeItems = []
-        }
-        isLoadingKnowledge = false
-    }
 
     // MARK: - Helpers
 
