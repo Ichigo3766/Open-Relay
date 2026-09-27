@@ -25,8 +25,8 @@ private let vizLog = Logger(subsystem: "com.openui", category: "VizPipeline")
 /// a background priority queue for cache misses.
 ///
 /// ## Memory
-/// `NSCache` automatically evicts entries under memory pressure, so we never need
-/// to size this manually. Each entry is ~few KB (the parsed segment graph).
+/// Advisory entry and byte-cost limits reduce retention of long streaming
+/// snapshots. `NSCache` may also evict entries under memory pressure.
 actor MessageParseCache {
     static let shared = MessageParseCache()
 
@@ -51,6 +51,8 @@ actor MessageParseCache {
     init() {
         // Allow ~200 entries (typical chat has far fewer assistant messages).
         cache.countLimit = 200
+        // Long streaming snapshots also need a byte budget, not just an entry count.
+        cache.totalCostLimit = 16 * 1024 * 1024
     }
 
     // MARK: - Actor-isolated interface
@@ -97,7 +99,7 @@ actor MessageParseCache {
         }
         let result = ToolCallParser.parseOrdered(content)
         let entry = Entry(result: result, byteCount: content.utf8.count, content: content)
-        cache.setObject(EntryBox(entry), forKey: key as NSString)
+        cache.setObject(EntryBox(entry), forKey: key as NSString, cost: entry.byteCount * 2)
         return result
     }
 
@@ -113,7 +115,7 @@ actor MessageParseCache {
             }
             let result = ToolCallParser.parseOrdered(content)
             let entry = Entry(result: result, byteCount: content.utf8.count, content: content)
-            cache.setObject(EntryBox(entry), forKey: key as NSString)
+            cache.setObject(EntryBox(entry), forKey: key as NSString, cost: entry.byteCount * 2)
             // Yield to the cooperative thread pool every 4 items so the actor
             // doesn't monopolise a thread and starve the main-thread render loop.
             if i % 4 == 3 { await Task.yield() }
