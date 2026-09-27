@@ -218,185 +218,27 @@ struct PasteableTextView: UIViewRepresentable {
                 PasteableTextView.recalculateHeight(ptv)
             }
 
-            // Detect `#` trigger for knowledge base picker
-            detectHashTrigger(in: textView)
-
-            // Detect `@` trigger for model mention picker
-            detectAtTrigger(in: textView)
-
-            // Detect `/` trigger for prompt library picker
-            detectSlashTrigger(in: textView)
-
-            // Detect `$` trigger for skills picker
-            detectDollarTrigger(in: textView)
+            detectTriggers(in: textView)
         }
 
-        /// Scans backwards from the cursor to find a `#` token.
-        ///
-        /// Triggers `onHashTrigger` with the filter query (text after `#`)
-        /// when the cursor is inside a `#word` token at a word boundary.
-        /// Triggers `onHashDismiss` when the `#` context is lost.
-        private func detectHashTrigger(in textView: UITextView) {
-            guard parent.onHashTrigger != nil else { return }
-
-            let text = textView.text ?? ""
-            guard let selectedRange = textView.selectedTextRange else {
-                parent.onHashDismiss?()
-                return
+        private func detectTriggers(in textView: UITextView) {
+            guard parent.onHashTrigger != nil || parent.onAtTrigger != nil
+                || parent.onSlashTrigger != nil || parent.onDollarTrigger != nil else { return }
+            let token = textView.selectedTextRange.flatMap { selection in
+                ComposerToken(text: textView.text ?? "", utf16Offset:
+                    textView.offset(from: textView.beginningOfDocument, to: selection.start))
             }
-
-            let cursorOffset = textView.offset(from: textView.beginningOfDocument, to: selectedRange.start)
-            let prefix = String(text.prefix(cursorOffset))
-
-            // Find the last `#` that's at a word boundary (start of text, or preceded by whitespace)
-            if let hashIndex = prefix.lastIndex(of: "#") {
-                let hashPos = prefix.distance(from: prefix.startIndex, to: hashIndex)
-
-                // Check word boundary: `#` must be at start or preceded by whitespace/newline
-                let isAtStart = hashPos == 0
-                let precededBySpace = hashPos > 0 && {
-                    let beforeIdx = prefix.index(before: hashIndex)
-                    let ch = prefix[beforeIdx]
-                    return ch.isWhitespace || ch.isNewline
-                }()
-
-                if isAtStart || precededBySpace {
-                    let afterHash = String(prefix[prefix.index(after: hashIndex)...])
-                    // The query must not contain whitespace (it's a single token)
-                    if !afterHash.contains(where: { $0.isWhitespace || $0.isNewline }) {
-                        parent.onHashTrigger?(afterHash)
-                        return
-                    }
-                }
-            }
-
-            parent.onHashDismiss?()
+            notifyTrigger("#", token, parent.onHashTrigger, parent.onHashDismiss)
+            notifyTrigger("@", token, parent.onAtTrigger, parent.onAtDismiss)
+            notifyTrigger("/", token, parent.onSlashTrigger, parent.onSlashDismiss)
+            notifyTrigger("$", token, parent.onDollarTrigger, parent.onDollarDismiss)
         }
 
-        /// Scans backwards from the cursor to find an `@` token.
-        ///
-        /// Triggers `onAtTrigger` with the filter query (text after `@`)
-        /// when the cursor is inside an `@word` token at a word boundary.
-        /// Triggers `onAtDismiss` when the `@` context is lost.
-        private func detectAtTrigger(in textView: UITextView) {
-            guard parent.onAtTrigger != nil else { return }
-
-            let text = textView.text ?? ""
-            guard let selectedRange = textView.selectedTextRange else {
-                parent.onAtDismiss?()
-                return
-            }
-
-            let cursorOffset = textView.offset(from: textView.beginningOfDocument, to: selectedRange.start)
-            let prefix = String(text.prefix(cursorOffset))
-
-            // Find the last `@` that's at a word boundary (start of text, or preceded by whitespace)
-            if let atIndex = prefix.lastIndex(of: "@") {
-                let atPos = prefix.distance(from: prefix.startIndex, to: atIndex)
-
-                // Check word boundary: `@` must be at start or preceded by whitespace/newline
-                let isAtStart = atPos == 0
-                let precededBySpace = atPos > 0 && {
-                    let beforeIdx = prefix.index(before: atIndex)
-                    let ch = prefix[beforeIdx]
-                    return ch.isWhitespace || ch.isNewline
-                }()
-
-                if isAtStart || precededBySpace {
-                    let afterAt = String(prefix[prefix.index(after: atIndex)...])
-                    // The query must not contain whitespace (it's a single token)
-                    if !afterAt.contains(where: { $0.isWhitespace || $0.isNewline }) {
-                        parent.onAtTrigger?(afterAt)
-                        return
-                    }
-                }
-            }
-
-            parent.onAtDismiss?()
-        }
-
-        /// Scans backwards from the cursor to find a `/` token.
-        ///
-        /// Triggers `onSlashTrigger` with the filter query (text after `/`)
-        /// when the cursor is inside a `/word` token at a word boundary.
-        /// Triggers `onSlashDismiss` when the `/` context is lost.
-        ///
-        /// This enables the slash command feature for the prompt library,
-        /// following the same pattern as `#` (knowledge) and `@` (model) triggers.
-        private func detectSlashTrigger(in textView: UITextView) {
-            guard parent.onSlashTrigger != nil else { return }
-
-            let text = textView.text ?? ""
-            guard let selectedRange = textView.selectedTextRange else {
-                parent.onSlashDismiss?()
-                return
-            }
-
-            let cursorOffset = textView.offset(from: textView.beginningOfDocument, to: selectedRange.start)
-            let prefix = String(text.prefix(cursorOffset))
-
-            // Find the last `/` that's at a word boundary (start of text, or preceded by whitespace)
-            if let slashIndex = prefix.lastIndex(of: "/") {
-                let slashPos = prefix.distance(from: prefix.startIndex, to: slashIndex)
-
-                // Check word boundary: `/` must be at start or preceded by whitespace/newline
-                let isAtStart = slashPos == 0
-                let precededBySpace = slashPos > 0 && {
-                    let beforeIdx = prefix.index(before: slashIndex)
-                    let ch = prefix[beforeIdx]
-                    return ch.isWhitespace || ch.isNewline
-                }()
-
-                if isAtStart || precededBySpace {
-                    let afterSlash = String(prefix[prefix.index(after: slashIndex)...])
-                    // The query must not contain whitespace (it's a single token)
-                    if !afterSlash.contains(where: { $0.isWhitespace || $0.isNewline }) {
-                        parent.onSlashTrigger?(afterSlash)
-                        return
-                    }
-                }
-            }
-
-            parent.onSlashDismiss?()
-        }
-
-        /// Scans backwards from the cursor to find a `$` token.
-        ///
-        /// Triggers `onDollarTrigger` with the filter query (text after `$`)
-        /// when the cursor is inside a `$word` token at a word boundary.
-        /// Triggers `onDollarDismiss` when the `$` context is lost.
-        private func detectDollarTrigger(in textView: UITextView) {
-            guard parent.onDollarTrigger != nil else { return }
-
-            let text = textView.text ?? ""
-            guard let selectedRange = textView.selectedTextRange else {
-                parent.onDollarDismiss?()
-                return
-            }
-
-            let cursorOffset = textView.offset(from: textView.beginningOfDocument, to: selectedRange.start)
-            let prefix = String(text.prefix(cursorOffset))
-
-            if let dollarIndex = prefix.lastIndex(of: "$") {
-                let dollarPos = prefix.distance(from: prefix.startIndex, to: dollarIndex)
-
-                let isAtStart = dollarPos == 0
-                let precededBySpace = dollarPos > 0 && {
-                    let beforeIdx = prefix.index(before: dollarIndex)
-                    let ch = prefix[beforeIdx]
-                    return ch.isWhitespace || ch.isNewline
-                }()
-
-                if isAtStart || precededBySpace {
-                    let afterDollar = String(prefix[prefix.index(after: dollarIndex)...])
-                    if !afterDollar.contains(where: { $0.isWhitespace || $0.isNewline }) {
-                        parent.onDollarTrigger?(afterDollar)
-                        return
-                    }
-                }
-            }
-
-            parent.onDollarDismiss?()
+        private func notifyTrigger(_ symbol: Character, _ token: ComposerToken?,
+                                   _ trigger: ((String) -> Void)?, _ dismiss: (() -> Void)?) {
+            guard let trigger else { return }
+            if let token, token.symbol == symbol { trigger(token.query) }
+            else { dismiss?() }
         }
 
         func textViewDidBeginEditing(_ textView: UITextView) {
