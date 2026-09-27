@@ -91,6 +91,55 @@ final class AttachmentsUITests: XCTestCase {
         XCTAssertTrue(latestReferences().isEmpty)
         capture("removed-context-reopened")
     }
+    func testRegeneratePreservesContext() {
+        get("/fixture/reset")
+        open("synthetic-context")
+        app.buttons["Regenerate"].firstMatch.tap()
+        let result = app.descendants(matching: .any).matching(NSPredicate(format: "label CONTAINS 'Context received' OR value CONTAINS 'Context received'")).firstMatch
+        XCTAssertTrue(result.waitForExistence(timeout: 30))
+        XCTAssertEqual(latestReferences().first?["context"] as? String, "full")
+        let requests = get("/fixture/state")["requests"] as! [[String: Any]]
+        let body = requests.last(where: { $0["path"] as? String == "/api/chat/completions" })!["body"] as! [String: Any]
+        let user = body["user_message"] as! [String: Any]
+        XCTAssertEqual((user["files"] as! [[String: Any]]).first?["context"] as? String, "full")
+        capture("regenerated-context")
+    }
+    func testEditPreservesContext() {
+        get("/fixture/reset")
+        open("synthetic-context")
+        let bubble = app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'You: Please summarize'")).firstMatch
+        bubble.press(forDuration: 1)
+        XCTAssertTrue(app.buttons["Edit"].waitForExistence(timeout: 5))
+        app.buttons["Edit"].tap()
+        XCTAssertTrue(app.buttons["Save and resend"].waitForExistence(timeout: 5))
+        app.buttons["Save and resend"].tap()
+        let result = app.descendants(matching: .any).matching(NSPredicate(format: "label CONTAINS 'Context received' OR value CONTAINS 'Context received'")).firstMatch
+        XCTAssertTrue(result.waitForExistence(timeout: 30))
+        XCTAssertEqual(latestReferences().first?["context"] as? String, "full")
+        capture("edited-context")
+    }
+    func testOtherClientRemoval() {
+        get("/fixture/reset")
+        get("/fixture/remove")
+        open("synthetic-removal")
+        send()
+        XCTAssertTrue(latestReferences().isEmpty)
+    }
+    func testFailedRemovalRestoresSource() {
+        get("/fixture/reset")
+        open("synthetic-removal")
+        get("/fixture/fail-removal")
+        app.buttons["More chat actions"].tap()
+        app.buttons["Chat Settings"].tap()
+        let remove = app.buttons["Remove Sample document 01.txt"]
+        XCTAssertTrue(remove.waitForExistence(timeout: 10))
+        remove.tap()
+        Thread.sleep(forTimeInterval: 2)
+        XCTAssertTrue(remove.exists)
+        let chats = get("/fixture/state")["chats"] as! [String: [String: Any]]
+        let chat = chats["synthetic-removal"]!["chat"] as! [String: Any]
+        XCTAssertEqual((chat["files"] as! [Any]).count, 1)
+    }
     func testBeforePickers() {
         open("synthetic-context")
         app.buttons["Attachments & tools"].tap()

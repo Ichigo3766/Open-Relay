@@ -2140,7 +2140,6 @@ final class ChatViewModel {
     /// Removing context leaves its historical message attachment intact.
     func removeFile(_ file: ChatMessageFile) {
         guard !isSavingContext else { return }
-        let previous = chatFiles
         chatFiles.removeAll { $0.identity == file.identity }
         guard let chatId = conversationId ?? conversation?.id, let manager,
               !isTemporaryChat else { return }
@@ -2151,7 +2150,9 @@ final class ChatViewModel {
                 try await manager.apiClient.updateChatControls(id: chatId, files: currentFiles)
             } catch {
                 if conversation?.id == chatId {
-                    chatFiles = previous
+                    if !chatFiles.contains(where: { $0.identity == file.identity }) {
+                        chatFiles.append(file)
+                    }
                     errorMessage = "Could not save attachment removal. Please try again."
                 }
             }

@@ -217,8 +217,11 @@ nonisolated struct ChatMessageFile: Codable, Hashable, Sendable {
     var identity: String { "\(type ?? "file"):\(referenceID ?? "")" }
     var isContext: Bool {
         guard referenceID != nil else { return false }
+        let mime = (contentType ?? "").split(separator: ";").first?
+            .trimmingCharacters(in: .whitespaces).lowercased() ?? ""
+        let isRasterImage = mime.hasPrefix("image/") && mime != "image/svg+xml"
         return ["doc", "text", "note", "chat", "folder", "collection"].contains(type ?? "")
-            || (type == "file" && !(contentType ?? "").hasPrefix("image/"))
+            || (type == "file" && !isRasterImage)
     }
 
     var serverDictionary: [String: Any] {

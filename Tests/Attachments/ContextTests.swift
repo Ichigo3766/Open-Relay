@@ -40,6 +40,8 @@ enum InlineImageStore { static func extractAndReplace(content: String) -> String
         let active = [parent, followUp]
         let saved = AttachmentContext.adding(files, to: [])
         check(saved.count == 6, "Raster images do not become persistent retrieval sources")
+        check(ChatMessageFile(type: "file", url: "svg", contentType: "image/svg+xml; charset=utf-8").isContext, "SVG is document context")
+        check(!ChatMessageFile(type: "file", url: "png", contentType: " IMAGE/PNG; charset=utf-8").isContext, "Raster MIME normalization")
         check(AttachmentContext.active(saved, in: active) == saved, "Follow-up preserves sources")
         check(AttachmentContext.active([], in: active).isEmpty, "Empty saved list never resurrects history")
         let removed = saved.filter { $0.referenceID != "sample" }

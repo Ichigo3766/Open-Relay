@@ -58,6 +58,7 @@ def application():
     settings = {"ui": {"defaultUploadContext": "full", "fixtureUnrelatedSetting": "keep"}}
 
     def reset():
+        app["fail_removal"] = False
         chats.clear()
         chats.update({identifier: make_chat(identifier, title) for identifier, title in [
             ("synthetic-context", "Attachment context"), ("synthetic-removal", "Remove a source")]})
@@ -78,6 +79,9 @@ def application():
         if path == "/fixture/remove":
             chats["synthetic-removal"]["chat"]["files"] = []
             return web.json_response({"removed": True})
+        if path == "/fixture/fail-removal":
+            app["fail_removal"] = True
+            return web.json_response({"enabled": True})
         if path == "/fixture/recording":
             # UI tests can signal recording boundaries without touching app code.
             app["recording"] = request.query.get("state", "")
@@ -123,6 +127,8 @@ def application():
             chat = chats[path.split("/")[4]]
             if request.method == "POST" and "chat" in body:
                 requests.append({"path": path, "body": body})
+                if app["fail_removal"] and body["chat"].get("files") == []:
+                    return web.json_response({"detail": "Synthetic save failure"}, status=503)
                 chat["chat"].update(body["chat"])
             return web.json_response(chat)
         if path == "/api/v1/files/search":
