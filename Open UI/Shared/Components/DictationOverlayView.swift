@@ -36,14 +36,33 @@ struct DictationOverlayView: View {
 
     var body: some View {
         HStack(spacing: 10) {
-            cancelButton
-            engineChip
-                .fixedSize()
-            waveformArea
-                .frame(maxWidth: .infinity)
-            HStack(spacing: 8) {
-                durationLabel
-                stopButton
+            if service.showsRecovery && service.state != .processing {
+                recoveryMenu
+                    .recoveryButtonStyle()
+                VStack(alignment: .leading, spacing: 2) {
+                    if case .error(let message) = service.state {
+                        Text(service.attemptTask == nil ? message : "Stopping transcription…")
+                            .font(.subheadline)
+                    }
+                    Text("Recording saved · \(formattedDuration)")
+                        .font(.caption)
+                        .foregroundStyle(theme.textSecondary)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                Button { service.retry() } label: {
+                    Image(systemName: "arrow.clockwise").frame(minWidth: 32, minHeight: 32)
+                }
+                .recoveryButtonStyle()
+                .disabled(service.attemptTask != nil)
+                .accessibilityLabel("Retry transcription")
+            } else {
+                cancelButton
+                engineChip.fixedSize()
+                waveformArea.frame(maxWidth: .infinity)
+                HStack(spacing: 8) {
+                    durationLabel
+                    stopButton
+                }
             }
         }
         .padding(.horizontal, 14)
@@ -59,11 +78,34 @@ struct DictationOverlayView: View {
             radius: 8, x: 0, y: 2
         )
         .padding(.horizontal, 16)
-        .onAppear { startSampling() }
+        .onAppear { if service.state == .listening { startSampling() } }
         .onDisappear { stopSampling() }
         .onChange(of: service.state) { _, newState in
-            if newState == .idle { stopSampling() }
+            if newState == .listening { startSampling() } else { stopSampling() }
         }
+    }
+
+    private var recoveryMenu: some View {
+        Menu {
+            if let url = service.savedAudioURL {
+                ShareLink(item: url) {
+                    Label("Save / Share Audio…", systemImage: "square.and.arrow.up")
+                }
+            }
+            if service.canTranscribeOnDevice {
+                Button { service.retry(onDevice: true) } label: {
+                    Label("Transcribe on Device", systemImage: "brain")
+                }
+                .disabled(service.attemptTask != nil)
+            }
+            Button(role: .destructive) { service.discardRecording() } label: {
+                Label("Discard Recording", systemImage: "trash")
+            }
+        } label: {
+            Image(systemName: "ellipsis").frame(minWidth: 32, minHeight: 32)
+        }
+        .menuOrder(.fixed)
+        .accessibilityLabel("Recording recovery options")
     }
 
     // MARK: - Cancel Button
@@ -80,7 +122,7 @@ struct DictationOverlayView: View {
             }
         }
         .buttonStyle(.plain)
-        .accessibilityLabel("Cancel dictation")
+        .accessibilityLabel(service.state == .processing ? "Stop transcription and keep recording" : "Cancel dictation")
     }
 
     // MARK: - Engine Chip
@@ -125,7 +167,7 @@ struct DictationOverlayView: View {
             )
         }
         .buttonStyle(.plain)
-        .disabled(isSwitchingEngine)
+        .disabled(isSwitchingEngine || service.state != .listening)
         .animation(.easeInOut(duration: 0.15), value: isSwitchingEngine)
         .animation(.easeInOut(duration: 0.15), value: service.activeEngine)
         .accessibilityLabel("STT engine: \(service.currentEngineName). Tap to switch.")
@@ -134,7 +176,7 @@ struct DictationOverlayView: View {
     // MARK: - Stop Button
 
     private var stopButton: some View {
-        Button(action: onStop) {
+        Button(action: { if service.state == .processing { service.cancelAttempt() } else { onStop() } }) {
             ZStack {
                 Circle()
                     .fill(theme.error.opacity(0.15))
@@ -145,7 +187,7 @@ struct DictationOverlayView: View {
             }
         }
         .buttonStyle(.plain)
-        .accessibilityLabel("Stop dictation")
+        .accessibilityLabel(service.state == .processing ? "Stop transcription and keep recording" : "Stop dictation")
     }
 
     // MARK: - Duration Label
@@ -234,6 +276,16 @@ struct DictationOverlayView: View {
     /// Generates a gentle randomised baseline so the waveform looks alive from frame 1.
     private static func makeSeedSamples() -> [CGFloat] {
         (0..<60).map { _ in CGFloat.random(in: 0.04...0.12) }
+    }
+}
+
+private extension View {
+    @ViewBuilder func recoveryButtonStyle() -> some View {
+        if #available(iOS 26, *) {
+            self.buttonStyle(.glass).buttonBorderShape(.circle)
+        } else {
+            self.buttonStyle(.bordered).buttonBorderShape(.circle)
+        }
     }
 }
 

@@ -42,7 +42,15 @@ final class ChatViewModel {
     /// to re-evaluate on every token.
     let streamingStore = StreamingContentStore()
 
-    var conversation: Conversation?
+    var conversation: Conversation? {
+        didSet {
+            guard var context = dictationDraftContext, context.conversation == nil,
+                  let id = conversation?.id else { return }
+            context.conversation = id
+            do { try restoreDictationDraft(for: context) }
+            catch { errorMessage = "Could not move the dictation draft. " + error.localizedDescription }
+        }
+    }
     var availableModels: [AIModel] = []
 
     // MARK: - Folder Context
@@ -121,7 +129,27 @@ final class ChatViewModel {
 
     /// Bumped each time a regenerate begins. Observed by ChatDetailView to trigger scroll-to-bottom.
     var regenerateScrollToken: UUID = UUID()
-    var inputText: String = ""
+    var inputText: String = "" {
+        didSet {
+            guard let dictationDraftContext else { return }
+            do { try DictationRecoveryStore.shared.saveDraft(inputText, for: dictationDraftContext) }
+            catch { errorMessage = "Could not save the dictation draft. " + error.localizedDescription }
+        }
+    }
+    @ObservationIgnored private var dictationDraftContext: DictationContext?
+
+    func restoreDictationDraft(for context: DictationContext) throws {
+        guard dictationDraftContext != context else { return }
+        if let previous = dictationDraftContext, previous.server == context.server,
+           previous.account == context.account, previous.conversation == nil,
+           context.conversation != nil, conversationId == nil {
+            try DictationRecoveryStore.shared.move(from: previous, to: context)
+        }
+        let entry = try DictationRecoveryStore.shared.load(context)
+        let changingIdentity = dictationDraftContext != nil
+        dictationDraftContext = context
+        if changingIdentity || entry != nil { inputText = entry?.draft ?? "" }
+    }
     /// Toggled to `true` by the Ask text-selection action to request keyboard focus.
     /// `ChatDetailView` observes this via `.onChange` and sets `isEditFieldFocused`.
     /// Reset to `false` immediately after focus is granted.

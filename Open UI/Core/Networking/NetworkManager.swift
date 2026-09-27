@@ -578,6 +578,8 @@ final class NetworkManager: NSObject, Sendable {
         additionalFields: [String: String]? = nil,
         authenticated: Bool = true,
         timeout: TimeInterval? = nil,
+        authorization: String? = nil,
+        resourceTimeout: TimeInterval? = nil,
         onProgress: (@Sendable (Int64, Int64) -> Void)? = nil
     ) async throws -> [String: Any] {
         let boundary = "Boundary-\(UUID().uuidString)"
@@ -600,7 +602,7 @@ final class NetworkManager: NSObject, Sendable {
         body.append(Data("\r\n".utf8))
         body.append(Data("--\(boundary)--\r\n".utf8))
 
-        let urlRequest = try buildRequest(
+        var urlRequest = try buildRequest(
             path: path,
             method: .post,
             queryItems: queryItems,
@@ -610,7 +612,20 @@ final class NetworkManager: NSObject, Sendable {
             timeout: timeout
         )
 
-        let (data, response) = try await performRequest(urlRequest)
+        if let authorization { urlRequest.setValue(authorization, forHTTPHeaderField: "Authorization") }
+        let data: Data
+        let response: URLResponse
+        if let resourceTimeout {
+            // Long batch transcription needs upload/conversion headroom in addition
+            // to its server deadline. Other requests keep the existing session limits.
+            let configuration = session.configuration
+            configuration.timeoutIntervalForResource = resourceTimeout
+            let uploadSession = URLSession(configuration: configuration, delegate: certificateDelegate, delegateQueue: nil)
+            defer { uploadSession.finishTasksAndInvalidate() }
+            (data, response) = try await uploadSession.data(for: urlRequest)
+        } else {
+            (data, response) = try await performRequest(urlRequest)
+        }
         try validateHTTPResponse(response, data: data)
 
         guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {

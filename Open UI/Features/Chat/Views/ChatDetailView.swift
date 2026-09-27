@@ -221,9 +221,6 @@ struct ChatDetailView: View {
     // MARK: Chat menu actions
     @State private var showDeleteChatConfirm = false
 
-    // MARK: Dictation
-    @State private var isDictating = false
-
     // MARK: Keyboard
     @State private var keyboard = KeyboardTracker()
 
@@ -421,6 +418,7 @@ struct ChatDetailView: View {
             }
 
             messageListArea
+                .onChange(of: dictationContext) { _, _ in bindDictation() }
 
             // Animated photo picker — legacy inline fallback used only when
             // the parent view has NOT set photoPickerRequestAction (e.g. in
@@ -589,6 +587,7 @@ struct ChatDetailView: View {
             withTransaction(\.animation, nil) { randomPrompts = updated }
         }
         .onAppear {
+            bindDictation()
             viewModel.syncOnEntry()
             // Lock in the background URL on first appear so it survives folder refreshes
             // that return a flat list without meta data.
@@ -1469,8 +1468,7 @@ struct ChatDetailView: View {
                 onDictationStart: dependencies.authViewModel.chatPermissions.stt ? { startDictation() } : nil,
                 onDictationStop: { stopDictation() },
                 onDictationCancel: { cancelDictation() },
-                isDictating: isDictating,
-                dictationService: dependencies.dictationService,
+                dictationService: dependencies.dictationService.context == dictationContext ? dependencies.dictationService : nil,
                 onToolsSheetPresented: {
                     Task { await viewModel.loadTools() }
                     viewModel.loadSkills()
@@ -4726,6 +4724,9 @@ struct ChatDetailView: View {
     }
 
     private func handleDisappear() {
+        if dependencies.dictationService.context == dictationContext {
+            dependencies.dictationService.unbind()
+        }
         keyboard.stop()
         // Stop TTS playback and clear state when navigating away from chat
         if speakingMessageId != nil || ttsGeneratingMessageId != nil {
@@ -4738,31 +4739,44 @@ struct ChatDetailView: View {
 
     // MARK: - Dictation
 
-    private func startDictation() {
+    private var dictationContext: DictationContext? {
+        guard let server = dependencies.serverConfigStore.activeServer,
+              let user = dependencies.authViewModel.currentUser,
+              dependencies.authViewModel.phase == .authenticated else { return nil }
+        if let selected = dependencies.serverConfigStore.activeAccount, selected.userId != user.id { return nil }
+        return DictationContext(server: server.url, account: user.id,
+                                conversation: viewModel.conversationId ?? viewModel.conversation?.id)
+    }
+
+    private func bindDictation() {
         let service = dependencies.dictationService
-        service.onTranscriptReady = { [weak viewModel] text in
-            guard let vm = viewModel else { return }
-            if vm.inputText.isEmpty {
-                vm.inputText = text
-            } else {
-                vm.inputText += " " + text
-            }
+        guard let context = dictationContext else { service.unbind(); return }
+        do { try viewModel.restoreDictationDraft(for: context) }
+        catch {
+            service.unbind()
+            viewModel.errorMessage = "Could not restore the dictation draft. " + error.localizedDescription
+            return
         }
-        service.onError = { _ in
-            Task { @MainActor in isDictating = false }
+        service.onError = { [weak viewModel] message in
+            viewModel?.errorMessage = message
         }
-        isDictating = true
+        service.bind(to: context, isCurrent: { dictationContext == context },
+                     draft: { [weak viewModel] in viewModel?.inputText },
+                     deliver: { [weak viewModel] text in viewModel?.inputText = text })
+    }
+
+    private func startDictation() {
+        bindDictation()
+        let service = dependencies.dictationService
         Task { await service.startDictation() }
     }
 
     private func stopDictation() {
         dependencies.dictationService.stopDictation()
-        isDictating = false
     }
 
     private func cancelDictation() {
         dependencies.dictationService.cancelDictation()
-        isDictating = false
     }
 
     private func toggleVoiceInput() {

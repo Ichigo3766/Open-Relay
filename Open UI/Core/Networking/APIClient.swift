@@ -1878,13 +1878,17 @@ final class APIClient: @unchecked Sendable {
 
     // MARK: - Audio
 
-    func transcribeSpeech(audioData: Data, fileName: String) async throws -> [String: Any] {
+    func transcribeSpeech(audioData: Data, fileName: String, authorization: String? = nil,
+                          timeout: TimeInterval? = nil) async throws -> [String: Any] {
         let mime = mimeType(for: fileName)
         return try await network.uploadMultipart(
             path: "/api/v1/audio/transcriptions",
             fileData: audioData,
             fileName: fileName,
-            mimeType: mime
+            mimeType: mime,
+            timeout: timeout,
+            authorization: authorization,
+            resourceTimeout: timeout.map { $0 + 60 }
         )
     }
 

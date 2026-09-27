@@ -1654,6 +1654,7 @@ final class AuthViewModel {
         }
 
         // Tear down current session (lightweight — no server disconnect)
+        dependencies?.dictationService.unbind()
         stopTokenRefreshTimer()
         dependencies?.socketService?.disconnect()
         dependencies?.activeChatStore.clear()

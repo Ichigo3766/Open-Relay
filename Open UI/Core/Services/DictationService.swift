@@ -58,9 +58,70 @@ final class DictationService {
         }
     }
 
+    let recoveryStore: DictationRecoveryStore
+    private(set) var context: DictationContext?
+    private(set) var pendingRecording: DictationRecoveryStore.Recording?
+    private(set) var attemptTask: Task<Void, Never>?
+    private var attemptID: UUID?
+    private var recordingSession = UUID()
+    private var isCurrentContext: (() -> Bool)?
+    private var currentDraft: (() -> String?)?
+
+    var savedAudioURL: URL? { pendingRecording.map(recoveryStore.audioURL) }
+    var showsRecovery: Bool { pendingRecording != nil && state != .listening && state != .requesting }
+    var canTranscribeOnDevice: Bool {
+        guard let service = onDeviceASRService, service.isAvailable else { return false }
+        return service.state != .loading && service.state != .transcribing
+    }
+
+    init(recoveryStore: DictationRecoveryStore? = nil) {
+        self.recoveryStore = recoveryStore ?? .shared
+    }
+
+    func bind(to context: DictationContext, isCurrent: @escaping () -> Bool,
+              draft: @escaping () -> String?, deliver: @escaping (String) -> Void) {
+        guard isCurrent() else { unbind(); return }
+        let changed = self.context != context
+        if changed { unbind() }
+        self.context = context
+        isCurrentContext = isCurrent
+        currentDraft = draft
+        onTranscriptReady = deliver
+        guard changed || (state != .listening && state != .requesting && attemptTask == nil) else { return }
+        do {
+            pendingRecording = try recoveryStore.load(context)?.recording
+            if let pending = pendingRecording {
+                recordingDuration = pending.duration
+                activeEngine = pending.engine
+                if pending.committed {
+                    // The draft was durably committed before a previous interruption.
+                    if let entry = try recoveryStore.load(context) { deliver(entry.draft) }
+                    try recoveryStore.discard(context)
+                    pendingRecording = nil
+                    state = .idle
+                } else {
+                    state = .error(pending.completed ? "Transcription failed" : "Recording interrupted")
+                }
+            }
+        } catch { fail(error) }
+    }
+
+    /// Navigation/account changes never delete completed or in-progress audio.
+    func unbind() {
+        if state == .listening { finishRecording() }
+        cancelAttempt()
+        recordingSession = UUID()
+        context = nil
+        pendingRecording = nil
+        currentDraft = nil
+        isCurrentContext = nil
+        onTranscriptReady = nil
+        state = .idle
+    }
+
     // MARK: - Callbacks
 
-    /// Fired when transcription is complete. Append the string to the input field.
+    /// Delivers the complete, already-persisted draft (not an uncommitted transcript).
     var onTranscriptReady: ((String) -> Void)?
 
     /// Fired when an error occurs (e.g. permission denied).
@@ -77,7 +138,6 @@ final class DictationService {
 
     /// `AVAudioRecorder` used for both device and server modes.
     private var recorder: AVAudioRecorder?
-    private var recordingURL: URL?
     private var meteringTimer: Timer?
     private var durationTimer: Timer?
 
@@ -95,7 +155,8 @@ final class DictationService {
 
     /// Starts dictation. Picks device or server backend based on `sttEngine` preference.
     func startDictation() async {
-        guard !isActive else { return }
+        guard !isActive, attemptTask == nil, pendingRecording == nil,
+              context != nil, isCurrentContext?() == true else { return }
 
         state = .requesting
         intensity = 0
@@ -105,60 +166,132 @@ final class DictationService {
         activeEngine = shouldUseServerSTT ? "server" : "device"
 
         logger.info("Starting dictation with engine: \(self.activeEngine)")
+        recordingSession = UUID()
         await startRecording()
     }
 
     /// Stops recording and triggers transcription.
     func stopDictation() {
+        guard state == .listening else { return }
+        finishRecording()
+        retry()
+    }
+
+    private func finishRecording() {
+        stopTimers()
+        recordingDuration = recorder?.currentTime ?? recordingDuration
+        recorder?.stop()
+        recorder = nil
+        intensity = 0
+        guard let context, var pending = pendingRecording else { return }
+        pending.duration = recordingDuration
+        pending.completed = true
+        pendingRecording = pending
+        do {
+            try recoveryStore.update(pending, for: context)
+            state = .error("Recording saved")
+        } catch { fail(error) }
+    }
+
+    func cancelAttempt() {
+        attemptID = nil
+        attemptTask?.cancel()
+        // Keep the task until it exits, even if a backend ignores cancellation.
+        if pendingRecording != nil { state = .error("Transcription stopped") }
+    }
+
+    func discardRecording() {
+        cancelAttempt()
+        recordingSession = UUID()
         stopTimers()
         recorder?.stop()
         recorder = nil
-
-        guard let url = recordingURL else {
+        do {
+            if let context { try recoveryStore.discard(context) }
+            pendingRecording = nil
+            intensity = 0
+            recordingDuration = 0
             state = .idle
+        } catch { fail(error) }
+    }
+
+    func retry(onDevice: Bool = false) {
+        guard attemptTask == nil, state != .listening, state != .requesting,
+              let context, let pending = pendingRecording,
+              isCurrentContext?() == true else { return }
+        if pending.committed {
+            discardRecording()
             return
         }
-        recordingURL = nil
-        intensity = 0
-        recordingDuration = 0
+        let client = serverSpeechService?.apiClient
+        // Freeze authorization before the async work; an account switch must not
+        // cause this recording to use the newly selected account's credentials.
+        let authorization = client?.network.authToken.map { "Bearer " + $0 }
+        let localService = onDeviceASRService
+        let useDevice = onDevice || pending.engine != "server"
+        let id = UUID()
+        attemptID = id
+        activeEngine = useDevice ? "device" : "server"
         state = .processing
-
-        if activeEngine == "server" {
-            uploadForServerTranscription(url: url)
-        } else {
-            transcribeOnDevice(url: url)
+        attemptTask = Task { [weak self] in
+            guard let self else { return }
+            defer { self.attemptTask = nil }
+            do {
+                try Task.checkCancellation()
+                guard self.context == context, isCurrentContext?() == true else {
+                    cancelAttempt()
+                    return
+                }
+                let audio = try Data(contentsOf: recoveryStore.audioURL(pending))
+                let text: String
+                if useDevice {
+                    guard let localService, canTranscribeOnDevice else {
+                        throw DictationRecoveryStore.RecoveryError.unavailable
+                    }
+                    text = try await localService.transcribe(audioData: audio, fileName: "Recording.m4a")
+                } else {
+                    guard let client, let authorization else {
+                        throw DictationRecoveryStore.RecoveryError.unavailable
+                    }
+                    let result = try await client.transcribeSpeech(audioData: audio, fileName: "Recording.m4a",
+                                                                   authorization: authorization, timeout: 360)
+                    text = result["text"] as? String ?? ""
+                }
+                try Task.checkCancellation()
+                guard attemptID == id, self.context == context,
+                      pendingRecording?.id == pending.id else { return }
+                guard isCurrentContext?() == true, let draft = currentDraft?(),
+                      let deliver = onTranscriptReady else { cancelAttempt(); return }
+                let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !trimmed.isEmpty else { throw DictationRecoveryStore.RecoveryError.emptyTranscript }
+                let merged = try recoveryStore.commit(trimmed, recordingID: pending.id, draft: draft, context: context)
+                pendingRecording?.committed = true
+                deliver(merged)
+                try recoveryStore.discard(context)
+                pendingRecording = nil
+                recordingDuration = 0
+                state = .idle
+            } catch {
+                guard attemptID == id, self.context == context, pendingRecording?.id == pending.id else { return }
+                fail(error)
+            }
         }
     }
 
     /// Cancels dictation without producing any transcript.
     func cancelDictation() {
-        stopTimers()
-        recorder?.stop()
-        recorder = nil
-        if let url = recordingURL {
-            try? FileManager.default.removeItem(at: url)
-            recordingURL = nil
-        }
-        intensity = 0
-        recordingDuration = 0
-        state = .idle
-        logger.info("Dictation cancelled")
+        if showsRecovery { cancelAttempt() } else { discardRecording() }
     }
 
     /// Switches the ASR engine mid-session (called by the engine chip in the overlay).
     /// Stops the current recording, flips `activeEngine`, saves the preference,
     /// and restarts dictation with the new engine.
     func switchEngine() async {
-        guard isActive else { return }
+        guard state == .listening else { return }
 
         // Stop current recording and discard audio
-        stopTimers()
-        recorder?.stop()
-        recorder = nil
-        if let url = recordingURL {
-            try? FileManager.default.removeItem(at: url)
-            recordingURL = nil
-        }
+        discardRecording()
+        guard pendingRecording == nil else { return }
 
         // Flip engine
         let newEngine: String
@@ -183,6 +316,7 @@ final class DictationService {
     /// Configures the audio session, creates an `AVAudioRecorder`, and starts recording.
     /// Used for both device (Qwen3) and server modes.
     private func startRecording() async {
+        let sessionID = recordingSession
         // Check / request mic permission
         let granted: Bool
         if #available(iOS 17.0, *) {
@@ -194,6 +328,7 @@ final class DictationService {
                 }
             }
         }
+        guard sessionID == recordingSession, isCurrentContext?() == true else { return }
         guard granted else {
             state = .error("Microphone permission denied")
             onError?("Microphone permission denied")
@@ -213,12 +348,6 @@ final class DictationService {
             return
         }
 
-        // Create temp file
-        let tempDir = FileManager.default.temporaryDirectory
-        let fileName = "dictation_\(Int(Date().timeIntervalSince1970)).m4a"
-        let url = tempDir.appendingPathComponent(fileName)
-        recordingURL = url
-
         let settings: [String: Any] = [
             AVFormatIDKey: Int(kAudioFormatMPEG4AAC),
             AVSampleRateKey: 16000.0,
@@ -228,6 +357,10 @@ final class DictationService {
         ]
 
         do {
+            guard let context, let draft = currentDraft?() else { return }
+            let pending = try recoveryStore.begin(context, draft: draft, engine: activeEngine)
+            pendingRecording = pending
+            let url = recoveryStore.audioURL(pending)
             recorder = try AVAudioRecorder(url: url, settings: settings)
             recorder?.isMeteringEnabled = true
             guard recorder?.record() == true else {
@@ -248,130 +381,9 @@ final class DictationService {
         logger.info("Recording started (\(self.activeEngine) mode)")
     }
 
-    // MARK: - Server Transcription
-
-    private func uploadForServerTranscription(url: URL) {
-        guard let service = serverSpeechService else {
-            state = .idle
-            logger.warning("Server STT not available")
-            return
-        }
-
-        Task { [weak self] in
-            guard let self else { return }
-
-            guard FileManager.default.fileExists(atPath: url.path) else {
-                await MainActor.run { self.state = .idle }
-                return
-            }
-
-            guard let client = service.apiClient else {
-                await MainActor.run {
-                    self.state = .error("No server configured")
-                    self.onError?("No server configured")
-                }
-                return
-            }
-
-            do {
-                let audioData = try Data(contentsOf: url)
-                defer { try? FileManager.default.removeItem(at: url) }
-
-                guard audioData.count > 512 else {
-                    self.logger.info("Recording too short (\(audioData.count) bytes), ignoring")
-                    await MainActor.run { self.state = .idle }
-                    return
-                }
-
-                self.logger.info("Uploading dictation audio: \(audioData.count) bytes to server")
-                let result = try await client.transcribeSpeech(
-                    audioData: audioData,
-                    fileName: url.lastPathComponent
-                )
-                self.logger.info("Server transcription response keys: \(result.keys.joined(separator: ", "))")
-
-                let text: String
-                if let transcript = result["text"] as? String {
-                    text = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
-                } else {
-                    self.logger.warning("No 'text' key in response: \(result)")
-                    text = ""
-                }
-
-                await MainActor.run {
-                    self.state = .idle
-                    if !text.isEmpty {
-                        self.logger.info("Server dictation delivered: \(text.count) chars")
-                        self.onTranscriptReady?(text)
-                    } else {
-                        self.logger.info("Server dictation returned empty text")
-                    }
-                }
-            } catch {
-                try? FileManager.default.removeItem(at: url)
-                let msg = error.localizedDescription
-                self.logger.error("Server dictation upload failed: \(msg)")
-                await MainActor.run {
-                    self.state = .error(msg)
-                    self.onError?(msg)
-                }
-            }
-        }
-    }
-
-    // MARK: - On-Device Transcription (Qwen3 ASR)
-
-    private func transcribeOnDevice(url: URL) {
-        guard let asrService = onDeviceASRService else {
-            logger.warning("OnDeviceASRService not available")
-            state = .idle
-            return
-        }
-
-        Task { [weak self] in
-            guard let self else { return }
-
-            guard FileManager.default.fileExists(atPath: url.path) else {
-                await MainActor.run { self.state = .idle }
-                return
-            }
-
-            do {
-                let audioData = try Data(contentsOf: url)
-                defer { try? FileManager.default.removeItem(at: url) }
-
-                guard audioData.count > 512 else {
-                    self.logger.info("Recording too short (\(audioData.count) bytes), ignoring")
-                    await MainActor.run { self.state = .idle }
-                    return
-                }
-
-                self.logger.info("Transcribing dictation on-device: \(audioData.count) bytes")
-                let text = try await asrService.transcribe(
-                    audioData: audioData,
-                    fileName: url.lastPathComponent
-                )
-
-                await MainActor.run {
-                    self.state = .idle
-                    let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-                    if !trimmed.isEmpty {
-                        self.logger.info("On-device dictation delivered: \(trimmed.count) chars")
-                        self.onTranscriptReady?(trimmed)
-                    } else {
-                        self.logger.info("On-device dictation returned empty text")
-                    }
-                }
-            } catch {
-                try? FileManager.default.removeItem(at: url)
-                let msg = error.localizedDescription
-                self.logger.error("On-device transcription failed: \(msg)")
-                await MainActor.run {
-                    self.state = .error(msg)
-                    self.onError?(msg)
-                }
-            }
-        }
+    private func fail(_ error: Error) {
+        state = .error(error.localizedDescription)
+        onError?(error.localizedDescription)
     }
 
     // MARK: - Timers

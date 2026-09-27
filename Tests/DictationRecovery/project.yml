@@ -1,0 +1,39 @@
+name: RecoveryQA
+options:
+  deploymentTarget: {iOS: '18.1'}
+settings:
+  base:
+    CODE_SIGNING_ALLOWED: NO
+    GENERATE_INFOPLIST_FILE: YES
+    SWIFT_VERSION: '5.0'
+targets:
+  RecoveryQA:
+    type: application
+    platform: iOS
+    sources:
+      - Stubs.swift
+      - path: .generated
+        excludes: [SelectedTests.swift]
+    settings:
+      PRODUCT_BUNDLE_IDENTIFIER: org.example.dictation-recovery-qa
+      INFOPLIST_KEY_UILaunchScreen_Generation: YES
+  RecoveryTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources: [.generated/SelectedTests.swift]
+    dependencies: [{target: RecoveryQA}]
+  RecoveryUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources: [RecoveryUITests.swift]
+    dependencies: [{target: RecoveryQA}]
+    settings: {TEST_TARGET_NAME: RecoveryQA}
+schemes:
+  RecoveryQA:
+    build:
+      targets:
+        RecoveryQA: all
+        RecoveryTests: [test]
+        RecoveryUITests: [test]
+    test:
+      targets: [RecoveryTests, RecoveryUITests]

@@ -411,6 +411,7 @@ final class AppDependencyContainer: ServiceContainer {
     ///   or logging out. When `false` (default, used during init), caches are
     ///   preserved so the user doesn't lose their session on app launch.
     func configureServicesForActiveServer(isServerSwitch: Bool = false) {
+        dictationService.unbind()
         // Clear active chat view models on server switch
         activeChatStore.clear()
 

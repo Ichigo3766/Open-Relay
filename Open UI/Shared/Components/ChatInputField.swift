@@ -155,7 +155,6 @@ struct ChatInputField: View {
     var onDictationStart: (() -> Void)?
     var onDictationStop: (() -> Void)?
     var onDictationCancel: (() -> Void)?
-    var isDictating: Bool = false
     /// Pass the live DictationService so the overlay can observe it directly.
     var dictationService: DictationService? = nil
     /// Called when the tools/overflow sheet is about to appear.
@@ -244,7 +243,7 @@ struct ChatInputField: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            if isDictating || dictationService?.state == .processing, let svc = dictationService {
+            if let svc = dictationService, svc.isActive || svc.showsRecovery {
                 // Dictation active — replace entire composer with recording bar
                 DictationOverlayView(
                     service: svc,
@@ -296,7 +295,7 @@ struct ChatInputField: View {
             }
         }
         .padding(.top, Spacing.xs)
-        .animation(.spring(response: 0.3, dampingFraction: 0.8), value: isDictating)
+        .animation(.spring(response: 0.3, dampingFraction: 0.8), value: dictationService?.isActive)
         .animation(.spring(response: 0.3, dampingFraction: 0.8), value: dictationService?.state == .processing)
         // Widget deep link — focus the text field and show keyboard when
         // the user taps the "New Chat" action button on the home screen widget.
@@ -2022,4 +2021,3 @@ private struct PDFKitView: UIViewRepresentable {
         uiView.document = document
     }
 }
-
