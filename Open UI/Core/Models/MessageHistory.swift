@@ -117,17 +117,7 @@ nonisolated struct HistoryNode: Sendable {
         }
 
         if !files.isEmpty {
-            let filesArray: [[String: Any]] = files.compactMap { file -> [String: Any]? in
-                guard let url = file.url else { return nil }
-                var d: [String: Any] = [
-                    "type": file.type ?? "file",
-                    "id": url,
-                    "url": url
-                ]
-                if let name = file.name { d["name"] = name }
-                if let ct = file.contentType { d["content_type"] = ct }
-                return d
-            }
+            let filesArray = files.map(\.serverDictionary)
             if !filesArray.isEmpty { dict["files"] = filesArray }
         }
 
@@ -742,14 +732,7 @@ nonisolated struct MessageHistory: Sendable {
         var files: [ChatMessageFile] = []
         if let rawFiles = msg["files"] as? [[String: Any]] {
             for file in rawFiles {
-                let fileType = file["type"] as? String
-                let fileUrl = file["url"] as? String ?? file["id"] as? String
-                let fileName = file["name"] as? String
-                let contentType = file["content_type"] as? String
-                    ?? (file["meta"] as? [String: Any])?["content_type"] as? String
-                files.append(ChatMessageFile(
-                    type: fileType, url: fileUrl, name: fileName, contentType: contentType
-                ))
+                files.append(ChatMessageFile(serverDictionary: file))
             }
         }
 

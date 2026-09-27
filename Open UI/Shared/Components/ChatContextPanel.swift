@@ -118,7 +118,7 @@ struct ChatContextPanel: View {
                         .padding(.vertical, 4)
                 } else {
                     // Persistent chat files (from chat.files on server)
-                    ForEach(viewModel.chatFiles, id: \.url) { file in
+                    ForEach(viewModel.chatFiles, id: \.identity) { file in
                         let isImage = file.contentType?.hasPrefix("image/") ?? false
                         contextItemRow(
                             icon: isImage ? "photo.fill" : "doc.fill",
@@ -128,6 +128,7 @@ struct ChatContextPanel: View {
                         ) {
                             viewModel.removeFile(file)
                         }
+                        .disabled(viewModel.isSavingContext)
                     }
                     // Knowledge items (collections / files)
                     ForEach(viewModel.selectedKnowledgeItems) { item in
@@ -349,6 +350,7 @@ struct ChatContextPanel: View {
                     .foregroundStyle(.secondary)
             }
             .buttonStyle(.plain)
+            .accessibilityLabel("Remove \(name)")
         }
         .padding(.vertical, 2)
     }

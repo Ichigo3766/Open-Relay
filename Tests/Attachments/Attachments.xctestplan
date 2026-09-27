@@ -1,0 +1,14 @@
+{
+  "configurations": [{"id": "7F0C7F88-6D7B-4279-A1A1-1A82AE943E47", "name": "Synthetic fixture", "options": {}}],
+  "defaultOptions": {
+    "preferredScreenCaptureFormat": "video",
+    "uiTestingScreenshotsLifetime": "keepAlways",
+    "systemAttachmentLifetime": "keepAlways"
+  },
+  "testTargets": [{"target": {
+    "containerPath": "container:AttachmentsTests.xcodeproj",
+    "identifier": "E95601032B07EC64457E9393",
+    "name": "AttachmentsUITests"
+  }}],
+  "version": 1
+}

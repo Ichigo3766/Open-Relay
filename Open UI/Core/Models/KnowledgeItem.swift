@@ -19,6 +19,8 @@ struct KnowledgeItem: Identifiable, Equatable, Hashable, Sendable {
     let type: KnowledgeType
     /// Number of files in a collection (only meaningful for `.collection`).
     let fileCount: Int?
+    var context: String? = nil
+    var fileReference: ChatMessageFile? = nil
 
     enum KnowledgeType: String, Sendable, Equatable, Hashable {
         case folder
@@ -48,19 +50,13 @@ struct KnowledgeItem: Identifiable, Equatable, Hashable, Sendable {
     /// the `/api/chat/completions` endpoint.
     ///
     /// Knowledge bases → `{"type": "collection", "id": "...", "name": "..."}`
-    /// Folders → `{"type": "collection", "id": "...", "name": "..."}`
+    /// Folders → `{"type": "folder", "id": "...", "name": "..."}`
     /// Individual files → `{"type": "file", "id": "...", "name": "..."}`
     func toChatFileRef() -> [String: Any] {
-        let apiType: String
-        switch type {
-        case .folder: apiType = "collection"
-        case .collection: apiType = "collection"
-        case .file: apiType = "file"
-        }
-        return [
-            "type": apiType,
-            "id": id,
-            "name": name
-        ]
+        var reference = fileReference ?? ChatMessageFile(type: type.rawValue, url: id, name: name)
+        reference.id = id
+        reference.type = type.rawValue
+        reference.context = context
+        return reference.serverDictionary
     }
 }

@@ -244,13 +244,13 @@ final class ChatViewModel {
     var selectedReferenceChats: [ReferenceChatItem] = []
     /// Notes selected as context for the next message (injected as inline text, not file refs).
     var selectedNotes: [Note] = []
-    /// IDs of context items that the user has explicitly removed via the Controls panel.
-    /// `collectHistoryFileRefs` skips any stored file whose ID is in this set so the item
-    /// is not re-injected into future RAG requests even though it still lives in history.
-    var removedContextIds: Set<String> = []
-    /// Top-level files attached to this conversation (mirrors OWUI `chat.files`).
-    /// Loaded from `conversation.files` on open; persisted back via `syncConversationHistory`.
-    var chatFiles: [ChatMessageFile] = []
+    /// The saved chat-level list is the source of truth, including an empty list.
+    var chatFiles: [ChatMessageFile] {
+        get { conversation?.files ?? [] }
+        set { conversation?.files = newValue }
+    }
+    @ObservationIgnored private var contextSaveTask: Task<Void, Never>?
+    private(set) var isSavingContext = false
     var isLoadingTools: Bool = false
     /// True once loadTools() has completed at least one fetch.
     /// Distinguishes "never fetched yet" (false) from "fetched and tool is gone" (true).
@@ -482,6 +482,8 @@ final class ChatViewModel {
     }
 
     private func syncToServerViaTree() async {
+        await contextSaveTask?.value
+        chatFiles = AttachmentContext.active(chatFiles, in: conversation?.messages ?? [])
         // Ensure tree nodes have up-to-date content from the flat messages list before
         // syncing to the server. Tree nodes are created with empty content at send/edit time
         // and streaming content only flows into conversation.messages — without this step,
@@ -495,7 +497,7 @@ final class ChatViewModel {
             // Tree not populated — fall back to flat-list sync
             try? await manager.syncConversationMessages(
                 id: chatId, messages: conversation?.messages ?? [], model: modelId,
-                title: conversation?.title, chatParams: conversation?.chatParams)
+                title: conversation?.title, chatParams: conversation?.chatParams, chatFiles: chatFiles)
             return
         }
 
@@ -1184,6 +1186,7 @@ final class ChatViewModel {
                         && serverConversation.title != conversation?.title {
                         conversation?.title = serverConversation.title
                     }
+                    if !isStreaming && !isSavingContext { chatFiles = serverConversation.files }
                     logger.debug("Server sync: no changes detected, skipping")
                     return
                 }
@@ -1280,6 +1283,7 @@ final class ChatViewModel {
     /// when returning from background, because SwiftUI's identity tracking
     /// (via `.id(message.id)`) remains stable throughout the update.
     private func adoptServerMessages(serverConversation: Conversation) {
+        if !isStreaming && !isSavingContext { chatFiles = serverConversation.files }
         guard conversation != nil else {
             // No local conversation yet — just assign directly
             conversation = serverConversation
@@ -2155,33 +2159,33 @@ final class ChatViewModel {
 
     // MARK: - Context Item Removal (Controls Panel)
 
-    /// Removes a knowledge item from the active context.
-    /// Adds the item's ID to `removedContextIds` so `collectHistoryFileRefs` skips
-    /// it in future RAG requests, preventing ghost-re-injection from history nodes.
     func removeKnowledgeItem(_ item: KnowledgeItem) {
         selectedKnowledgeItems.removeAll { $0.id == item.id }
-        removedContextIds.insert(item.id)
     }
 
-    /// Removes a reference chat from the active context.
-    /// Adds the chat's ID to `removedContextIds` so it is not re-injected from history.
     func removeReferenceChat(_ item: ReferenceChatItem) {
         selectedReferenceChats.removeAll { $0.id == item.id }
-        removedContextIds.insert(item.id)
     }
 
-    /// Removes a top-level chat file from this conversation and persists the removal to the server.
-    /// Adds the file ID to `removedContextIds` so it is not re-injected from history refs.
+    /// Removing context leaves its historical message attachment intact.
     func removeFile(_ file: ChatMessageFile) {
-        chatFiles.removeAll { $0.url == file.url }
-        if let fileId = file.url {
-            removedContextIds.insert(fileId)
-        }
-        guard let chatId = conversationId ?? conversation?.id,
-              let manager else { return }
+        guard !isSavingContext else { return }
+        let previous = chatFiles
+        chatFiles.removeAll { $0.identity == file.identity }
+        guard let chatId = conversationId ?? conversation?.id, let manager,
+              !isTemporaryChat else { return }
         let currentFiles = chatFiles
-        Task {
-            try? await manager.apiClient.updateChatControls(id: chatId, files: currentFiles)
+        isSavingContext = true
+        contextSaveTask = Task {
+            do {
+                try await manager.apiClient.updateChatControls(id: chatId, files: currentFiles)
+            } catch {
+                if conversation?.id == chatId {
+                    chatFiles = previous
+                    errorMessage = "Could not save attachment removal. Please try again."
+                }
+            }
+            isSavingContext = false
         }
     }
 
@@ -2394,53 +2398,7 @@ final class ChatViewModel {
         skillSearchQuery = ""
     }
 
-    /// Restores `selectedKnowledgeItems` from the conversation's user messages.
-    ///
-    /// When loading an existing conversation, scans user messages for files
-    /// with `type == "collection"`, `"folder"`, or knowledge `"file"` entries
-    /// and rebuilds the knowledge chips so they persist across navigation.
-    private func restoreKnowledgeItemsFromConversation() {
-        guard let conversation, selectedKnowledgeItems.isEmpty else { return }
 
-        // Collect unique knowledge files from the most recent user message
-        // that has them. Knowledge files are stored with type "collection"/"folder"/"file".
-        let knowledgeTypes: Set<String> = ["collection", "folder"]
-        var restored: [KnowledgeItem] = []
-        var seenIds = Set<String>()
-
-        // Scan from newest to oldest — find the first user message with knowledge files
-        for message in conversation.messages.reversed() where message.role == .user {
-            let knowledgeFiles = message.files.filter { f in
-                guard let type = f.type else { return false }
-                return knowledgeTypes.contains(type)
-            }
-            if !knowledgeFiles.isEmpty {
-                for file in knowledgeFiles {
-                    guard let id = file.url, !seenIds.contains(id) else { continue }
-                    seenIds.insert(id)
-                    let knowledgeType: KnowledgeItem.KnowledgeType
-                    switch file.type {
-                    case "folder": knowledgeType = .folder
-                    case "collection": knowledgeType = .collection
-                    default: knowledgeType = .file
-                    }
-                    restored.append(KnowledgeItem(
-                        id: id,
-                        name: file.name ?? id,
-                        description: nil,
-                        type: knowledgeType,
-                        fileCount: nil
-                    ))
-                }
-                break // Only restore from the most recent user message
-            }
-        }
-
-        if !restored.isEmpty {
-            selectedKnowledgeItems = restored
-            logger.info("Restored \(restored.count) knowledge item(s) from conversation history")
-        }
-    }
 
     // MARK: - Passive Socket Listener (Cross-Client Stream Observation)
     private func startPassiveSocketListener() {
@@ -3107,7 +3065,8 @@ final class ChatViewModel {
                 history: conversation.history,
                 messages: conversation.messages,
                 chatParams: conversation.chatParams,
-                folderId: folderContextId
+                folderId: folderContextId,
+                chatFiles: conversation.files
             )
             // Swap the local ID for the server-assigned one — in-place, no reload.
             self.conversation?.id = created.id
@@ -3294,40 +3253,11 @@ final class ChatViewModel {
 
         // Create user message - store file IDs (not base64) matching Flutter behavior
         let uploadedAttachmentIds = fileRefs.compactMap { $0["id"] as? String }
-        var messageFiles: [ChatMessageFile] = fileRefs.map { ref in
-            // Derive content_type from filename so the Open WebUI web client
-            // knows to append `/content` to the file URL. Without content_type,
-            // the web client constructs `/files/{id}` (returns JSON metadata)
-            // instead of `/files/{id}/content` (returns actual file bytes).
-            // This affects images (broken thumbnails), PDFs, docs, and all files.
-            let name = ref["name"] as? String
-            let contentType: String? = mimeType(for: name ?? "file")
-            return ChatMessageFile(
-                type: ref["type"] as? String,
-                url: ref["id"] as? String,  // Store file ID, not base64
-                name: name,
-                contentType: contentType
-            )
-        }
-        // Also store knowledge items (collection/folder/file) on the user message
-        // so they persist in conversation history and appear on reload.
-        for knowledgeItem in currentKnowledgeItems {
-            messageFiles.append(ChatMessageFile(
-                type: knowledgeItem.type.rawValue,
-                url: knowledgeItem.id,
-                name: knowledgeItem.name,
-                contentType: nil
-            ))
-        }
-        // Store note refs on the user message so they appear as pills in the chat bubble.
-        for note in currentNotes {
-            let noteTitle = note.title.isEmpty ? "Untitled" : note.title
-            messageFiles.append(ChatMessageFile(
-                type: "note",
-                url: note.id,
-                name: noteTitle,
-                contentType: nil
-            ))
+        var messageFiles = fileRefs.map(ChatMessageFile.init(serverDictionary:))
+        messageFiles += currentKnowledgeItems.map { ChatMessageFile(serverDictionary: $0.toChatFileRef()) }
+        messageFiles += currentReferenceChats.map { ChatMessageFile(serverDictionary: $0.toChatFileRef()) }
+        messageFiles += currentNotes.map {
+            ChatMessageFile(type: "note", url: $0.id, name: $0.title.isEmpty ? "Untitled" : $0.title)
         }
         let userMessage = ChatMessage(
             role: .user,
@@ -3371,6 +3301,8 @@ final class ChatViewModel {
         } else {
             conversation?.messages.append(userMessage)
         }
+
+        chatFiles = AttachmentContext.adding(messageFiles, to: chatFiles)
 
         // Assistant placeholder
         let assistantMessageId = UUID().uuidString
@@ -3535,22 +3467,7 @@ final class ChatViewModel {
                 // show the previous attachments as its own attachment pills.
                 let currentMsgFileRefs = allFileRefs
 
-                // Also include file refs from ALL prior user messages so the server
-                // continues RAG retrieval for documents attached in earlier turns.
-                // This mirrors the OpenWebUI web client which always sends the full
-                // accumulated file list — without this, the AI "forgets" attachments
-                // after the first reply.
-                // NOTE: History refs go into request.files only, NOT into userMsgDict["files"].
-                let historyFileRefs = await self.collectHistoryFileRefs(excludingId: userMessage.id)
-                var allFileRefsForRAG = allFileRefs
-                for ref in historyFileRefs {
-                    guard let refId = ref["id"] as? String else { continue }
-                    if !allFileRefsForRAG.contains(where: { ($0["id"] as? String) == refId }) {
-                        allFileRefsForRAG.append(ref)
-                    }
-                }
-
-                if !allFileRefsForRAG.isEmpty { request.files = allFileRefsForRAG }
+                request.files = await self.contextFileRefs(currentFiles: messageFiles)
 
                 // Build the user_message node required by updated OpenWebUI servers.
                 // Without this, the server doesn't link the user message into the history
@@ -4091,45 +4008,8 @@ final class ChatViewModel {
                 ]
                 request.userMessage = userMsgDict
 
-                // Re-include files (notes, knowledge, uploaded files) from the original user node,
-                // plus files from ALL other user messages so the server keeps RAG active.
-                let capturedNotesManager = self.notesManager
-                var fileRefs: [[String: Any]] = []
-                for storedFile in capturedUserNode.files {
-                    guard let fileId = storedFile.url else { continue }
-                    if storedFile.type == "note" {
-                        var ref: [String: Any] = [
-                            "type": "note",
-                            "id": fileId,
-                            "name": storedFile.name ?? "Note",
-                            "status": "processed"
-                        ]
-                        if let note = await capturedNotesManager?.fetchNote(id: fileId) {
-                            ref["data"] = ["content": ["md": note.content]]
-                        }
-                        fileRefs.append(ref)
-                    } else if storedFile.type == "collection" {
-                        fileRefs.append([
-                            "type": "collection",
-                            "id": fileId,
-                            "name": storedFile.name ?? fileId
-                        ])
-                    } else {
-                        var ref: [String: Any] = ["type": storedFile.type ?? "file", "id": fileId]
-                        if let name = storedFile.name { ref["name"] = name }
-                        if let ct = storedFile.contentType { ref["content_type"] = ct }
-                        fileRefs.append(ref)
-                    }
-                }
-                // Merge in file refs from all other user messages (deduped by id).
-                let historyFileRefsRegen = await self.collectHistoryFileRefs(excludingId: capturedUserNode.id)
-                for ref in historyFileRefsRegen {
-                    guard let refId = ref["id"] as? String else { continue }
-                    if !fileRefs.contains(where: { ($0["id"] as? String) == refId }) {
-                        fileRefs.append(ref)
-                    }
-                }
-                if !fileRefs.isEmpty { request.files = fileRefs }
+                request.userMessage?["files"] = capturedUserNode.files.map(\.serverDictionary)
+                request.files = await self.contextFileRefs(currentFiles: capturedUserNode.files)
 
                 // Populate all common request fields
                 await self.populateCommonRequestFields(&request)
@@ -4598,46 +4478,9 @@ final class ChatViewModel {
                 ]
                 request.userMessage = editUserMsgDict
 
-                // Re-include files (notes, knowledge, uploaded files) from the original user node,
-                // plus files from ALL other user messages so the server keeps RAG active.
-                let editNotesManager = self.notesManager
                 let editUserFiles = self.conversation?.history.nodes[lastUser.id]?.files ?? lastUser.files
-                var editFileRefs: [[String: Any]] = []
-                for storedFile in editUserFiles {
-                    guard let fileId = storedFile.url else { continue }
-                    if storedFile.type == "note" {
-                        var ref: [String: Any] = [
-                            "type": "note",
-                            "id": fileId,
-                            "name": storedFile.name ?? "Note",
-                            "status": "processed"
-                        ]
-                        if let note = await editNotesManager?.fetchNote(id: fileId) {
-                            ref["data"] = ["content": ["md": note.content]]
-                        }
-                        editFileRefs.append(ref)
-                    } else if storedFile.type == "collection" {
-                        editFileRefs.append([
-                            "type": "collection",
-                            "id": fileId,
-                            "name": storedFile.name ?? fileId
-                        ])
-                    } else {
-                        var ref: [String: Any] = ["type": storedFile.type ?? "file", "id": fileId]
-                        if let name = storedFile.name { ref["name"] = name }
-                        if let ct = storedFile.contentType { ref["content_type"] = ct }
-                        editFileRefs.append(ref)
-                    }
-                }
-                // Merge in file refs from all other user messages (deduped by id).
-                let historyFileRefsEdit = await self.collectHistoryFileRefs(excludingId: lastUser.id)
-                for ref in historyFileRefsEdit {
-                    guard let refId = ref["id"] as? String else { continue }
-                    if !editFileRefs.contains(where: { ($0["id"] as? String) == refId }) {
-                        editFileRefs.append(ref)
-                    }
-                }
-                if !editFileRefs.isEmpty { request.files = editFileRefs }
+                request.userMessage?["files"] = editUserFiles.map(\.serverDictionary)
+                request.files = await self.contextFileRefs(currentFiles: editUserFiles)
 
                 // Populate all common request fields (model metadata, features, params,
                 // system variables, tool IDs, terminal, background tasks, etc.)
@@ -6784,77 +6627,19 @@ final class ChatViewModel {
         return msgs
     }
 
-    /// Builds a deduplicated list of file reference dicts from ALL user messages in the
-    /// current conversation's history tree, optionally excluding a specific message ID.
-    ///
-    /// This ensures the server always has all previously-uploaded file references so it
-    /// continues RAG retrieval for documents attached in earlier turns of the conversation.
-    ///
-    /// - Parameter excludingId: A user message ID to skip (e.g. the current message whose
-    ///   files are already included via the live fileRefs/allFileRefs array). Pass `nil`
-    ///   to include every user message.
-    private func collectHistoryFileRefs(excludingId: String?) async -> [[String: Any]] {
-        guard let conv = conversation else { return [] }
-
-        // Gather files only from user messages on the ACTIVE branch (flat list).
-        // Using all tree nodes would include sibling/version nodes from inactive
-        // branches — e.g. the old user node after an edit with an attachment
-        // removed — causing the removed file to be re-added to the request.
-        var allStoredFiles: [ChatMessageFile] = []
-        let activeMsgIds = Set(conv.messages.map { $0.id })
-        let userNodes: [HistoryNode]
-        if conv.history.isPopulated {
-            userNodes = conv.history.nodes.values
-                .filter { $0.role == .user && $0.id != excludingId && activeMsgIds.contains($0.id) }
-                .sorted { $0.timestamp < $1.timestamp }
-        } else {
-            // Fallback: use flat messages array
-            userNodes = conv.messages
-                .filter { $0.role == .user && $0.id != excludingId }
-                .map { msg in
-                    HistoryNode(id: msg.id, role: msg.role, content: msg.content,
-                                timestamp: msg.timestamp, files: msg.files)
-                }
-        }
-        for node in userNodes {
-            allStoredFiles.append(contentsOf: node.files)
-        }
-
-        guard !allStoredFiles.isEmpty else { return [] }
-
-        var seenIds = Set<String>()
+    /// Only persisted, active-branch context is carried to subsequent requests.
+    private func contextFileRefs(currentFiles: [ChatMessageFile]) async -> [[String: Any]] {
+        let files = AttachmentContext.active(chatFiles, in: conversation?.messages ?? [])
+            + currentFiles.filter { !$0.isContext }
         var refs: [[String: Any]] = []
-        for storedFile in allStoredFiles {
-            guard let fileId = storedFile.url else { continue }
-            guard !seenIds.contains(fileId) else { continue }
-            // Skip IDs that the user explicitly removed via the Controls panel.
-            // This prevents ghost re-injection from history nodes.
-            guard !removedContextIds.contains(fileId) else { continue }
-            seenIds.insert(fileId)
-
-            if storedFile.type == "note" {
-                var ref: [String: Any] = [
-                    "type": "note",
-                    "id": fileId,
-                    "name": storedFile.name ?? "Note",
-                    "status": "processed"
-                ]
-                if let note = await notesManager?.fetchNote(id: fileId) {
-                    ref["data"] = ["content": ["md": note.content]]
-                }
-                refs.append(ref)
-            } else if storedFile.type == "collection" {
-                refs.append([
-                    "type": "collection",
-                    "id": fileId,
-                    "name": storedFile.name ?? fileId
-                ])
-            } else {
-                var ref: [String: Any] = ["type": storedFile.type ?? "file", "id": fileId, "url": fileId]
-                if let name = storedFile.name { ref["name"] = name }
-                if let ct = storedFile.contentType { ref["content_type"] = ct }
-                refs.append(ref)
+        for file in files {
+            var ref = file.serverDictionary
+            if file.type == "note", let id = file.referenceID,
+               let note = await notesManager?.fetchNote(id: id) {
+                ref["status"] = "processed"
+                ref["data"] = ["content": ["md": note.content]]
             }
+            refs.append(ref)
         }
         return refs
     }
@@ -6930,10 +6715,7 @@ final class ChatViewModel {
                 ]
 
                 if !nonImageFiles.isEmpty {
-                    msgDict["files"] = nonImageFiles.compactMap { f -> [String: Any]? in
-                        guard let id = f.url else { return nil }
-                        return ["type": "file", "id": id, "url": id]
-                    }
+                    msgDict["files"] = nonImageFiles.map(\.serverDictionary)
                 }
 
                 apiMessages.append(msgDict)
@@ -6944,10 +6726,7 @@ final class ChatViewModel {
                 ]
 
                 if !message.files.isEmpty {
-                    msgDict["files"] = message.files.compactMap { f -> [String: Any]? in
-                        guard let id = f.url else { return nil }
-                        return ["type": f.type ?? "file", "id": id, "url": id]
-                    }
+                    msgDict["files"] = message.files.map(\.serverDictionary)
                 } else if !message.attachmentIds.isEmpty {
                     msgDict["files"] = message.attachmentIds.map { id -> [String: Any] in
                         ["type": "file", "id": id, "url": id]

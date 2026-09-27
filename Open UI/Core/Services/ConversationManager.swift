@@ -64,7 +64,8 @@ final class ConversationManager: @unchecked Sendable {
             messages: conversation.messages,
             model: conversation.model,
             systemPrompt: conversation.systemPrompt,
-            title: conversation.title
+            title: conversation.title,
+            chatFiles: conversation.files
         )
     }
 
@@ -77,7 +78,8 @@ final class ConversationManager: @unchecked Sendable {
             model: conversation.model,
             systemPrompt: conversation.systemPrompt,
             chatParams: conversation.chatParams,
-            title: conversation.title
+            title: conversation.title,
+            chatFiles: conversation.files
         )
     }
 
@@ -178,7 +180,8 @@ final class ConversationManager: @unchecked Sendable {
         model: String?,
         systemPrompt: String? = nil,
         title: String? = nil,
-        chatParams: ChatAdvancedParams? = nil
+        chatParams: ChatAdvancedParams? = nil,
+        chatFiles: [ChatMessageFile] = []
     ) async throws {
         try await apiClient.syncConversationMessages(
             id: id,
@@ -186,7 +189,8 @@ final class ConversationManager: @unchecked Sendable {
             model: model,
             systemPrompt: systemPrompt,
             chatParams: chatParams,
-            title: title
+            title: title,
+            chatFiles: chatFiles
         )
     }
 
