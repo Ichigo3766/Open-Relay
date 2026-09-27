@@ -49,6 +49,22 @@ struct ConversationIndex: Codable { let marker: String }
         check(await cache.cached(scope: "scope", id: "restored") != nil, "cache can be re-enabled")
         await cache.clear()
         check(await cache.size() == 0, "explicit clear removes all cached data")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let start = Date.now
+        try seed("current", in: root, validatedAt: start)
+        _ = await cache.cached(scope: "scope", id: "current", now: start)
+        try seed("unused", in: root, validatedAt: start)
+        let hash = SHA256.hash(data: Data("unused".utf8)).map { String(format: "%02x", $0) }.joined()
+        let unused = root.appendingPathComponent("scope-\(hash).plist")
+        try FileManager.default.setAttributes([.creationDate: start.addingTimeInterval(-ConversationCache.retention - 1)], ofItemAtPath: unused.path)
+        _ = await cache.cached(scope: "scope", id: "current", now: start.addingTimeInterval(599))
+        check(FileManager.default.fileExists(atPath: unused.path), "unrelated read does not repeat maintenance before ten minutes")
+        _ = await cache.cached(scope: "scope", id: "current", now: start.addingTimeInterval(600))
+        check(!FileManager.default.fileExists(atPath: unused.path), "next read performs overdue maintenance at ten minutes")
+        defaults.set(0, forKey: ConversationCache.limitKey)
+        await cache.prune()
+        check(await cache.size() == 0, "settings-triggered maintenance applies a reduced budget immediately")
+        await cache.clear()
         defaults.removePersistentDomain(forName: "org.example.relay.cache-checks")
     }
 }
