@@ -217,6 +217,8 @@ final class ChatViewModel {
 
     /// True while a resolve (answer/reject) API call is in-flight for ask_user.
     var isResolvingAskUser: Bool = false
+    var askUserError: String?
+    private var resolvedAskUserCallIds: Set<String> = []
 
     /// Messages queued to send after the current stream completes.
     var messageQueue: [QueuedMessage] = []
@@ -4943,42 +4945,7 @@ final class ChatViewModel {
                 }
 
             case "request:user_input":
-                // Live ask_user request from server during streaming.
-                // Parse and store as `liveAskUserPrompt` so the AskUserCard appears above the input.
-                if let p = payload,
-                   let questions = p["questions"] as? [[String: Any]],
-                   !questions.isEmpty {
-                    let globalAllowOther = p["allow_other"] as? Bool ?? true
-                    let timeoutMs = p["timeout_ms"] as? Int
-                    let parsed: [AskUserQuestion] = questions.compactMap { qDict -> AskUserQuestion? in
-                        guard let id = qDict["id"] as? String, !id.isEmpty,
-                              let qText = qDict["question"] as? String, !qText.isEmpty,
-                              let optsArr = qDict["options"] as? [[String: Any]] else { return nil }
-                        let opts: [AskUserOption] = optsArr.compactMap { o -> AskUserOption? in
-                            guard let lbl = o["label"] as? String, !lbl.isEmpty,
-                                  let desc = o["description"] as? String else { return nil }
-                            return AskUserOption(label: lbl, description: desc)
-                        }
-                        guard !opts.isEmpty else { return nil }
-                        return AskUserQuestion(
-                            id: id, header: qDict["header"] as? String ?? "",
-                            question: qText, options: opts,
-                            allowOther: qDict["allow_other"] as? Bool ?? globalAllowOther
-                        )
-                    }
-                    if !parsed.isEmpty {
-                        // The call_id will be resolved when the user answers via the output array scan
-                        // For live requests we use the assistantMessageId as a placeholder;
-                        // the real callId comes from scanForPendingToolActions() after the output updates.
-                        liveAskUserPrompt = PendingAskUserPrompt(
-                            messageId: assistantMessageId,
-                            callId: "",   // updated by scanForPendingToolActions after output arrives
-                            questions: parsed,
-                            allowOther: globalAllowOther,
-                            timeoutMs: timeoutMs
-                        )
-                    }
-                }
+                receiveAskUser(payload, messageId: assistantMessageId, reply: ack)
 
             default:
                 break
@@ -5012,11 +4979,7 @@ final class ChatViewModel {
                 // For live ask_user: update callId once we have the real output
                 if let livePrompt = liveAskUserPrompt, livePrompt.callId.isEmpty,
                    let info = MessageHistory.findPendingAskUser(messageId: assistantMessageId, in: outputArr) {
-                    liveAskUserPrompt = PendingAskUserPrompt(
-                        messageId: livePrompt.messageId, callId: info.callId,
-                        questions: livePrompt.questions, allowOther: livePrompt.allowOther,
-                        timeoutMs: livePrompt.timeoutMs
-                    )
+                    liveAskUserPrompt?.callId = info.callId
                 }
             }
 
@@ -5033,7 +4996,7 @@ final class ChatViewModel {
                 // Guard: if ask_user is pending, the LLM has finished writing the tool call
                 // but the tool itself is still waiting for user input. Do NOT finalize
                 // streaming yet — we must wait for the user to answer (or time out).
-                // liveAskUserPrompt is cleared in answerAskUser/rejectAskUser, at which
+                // liveAskUserPrompt is cleared in resolveAskUser, at which
                 // point the server resumes and will emit another done:true to finalize.
                 if liveAskUserPrompt != nil {
                     logger.info("done:true (output path) with ask_user pending — deferring finalization until user responds")
@@ -5811,6 +5774,7 @@ final class ChatViewModel {
 
     private func cleanupStreaming() {
         toolEventPrompts.cancelAll()
+        cancelLiveAskUser()
         guard !hasFinishedStreaming else { return }
         stopSwitchStatusPolling()
         hasFinishedStreaming = true
@@ -7453,9 +7417,12 @@ final class ChatViewModel {
 
             // Check for pending ask_user first (takes visual priority)
             if let info = MessageHistory.findPendingAskUser(messageId: message.id, in: rawOutput),
+               !resolvedAskUserCallIds.contains(info.callId),
                let prompt = PendingAskUserPrompt.fromInfo(info) {
-                if liveAskUserPrompt?.callId != prompt.callId {
+                if liveAskUserPrompt == nil,
+                   pendingAskUserPrompt?.messageId != prompt.messageId || pendingAskUserPrompt?.callId != prompt.callId {
                     pendingAskUserPrompt = prompt
+                    askUserError = nil
                 }
                 pendingToolApprovalCall = nil
                 return
@@ -7544,48 +7511,57 @@ final class ChatViewModel {
         }
     }
 
-    /// Submits answers to a pending ask_user call.
-    func answerAskUser(
-        messageId: String, callId: String,
-        answers: [String: AskUserAnswerDraft],
-        timedOut: Bool = false
-    ) async {
-        guard let chatId = conversationId ?? conversation?.id,
-              let apiClient = manager?.apiClient else { return }
-        isResolvingAskUser = true
-        defer { isResolvingAskUser = false }
-        let payload: [String: Any] = answers.mapValues { $0.toServerPayload() }
-        do {
-            _ = try await apiClient.resolveToolCall(
-                chatId: chatId, messageId: messageId, callId: callId,
-                action: "answer",
-                answers: timedOut ? nil : payload,
-                timedOut: timedOut
-            )
-        } catch {
-            logger.error("[HITL] answerAskUser failed: \(error.localizedDescription)")
-            await reloadConversation()
+    private func receiveAskUser(_ payload: [String: Any]?, messageId: String, reply: ((Any?) -> Void)?) {
+        guard let reply else { return }
+        guard liveAskUserPrompt == nil, let payload,
+              var prompt = PendingAskUserPrompt.fromArguments(payload, messageId: messageId) else {
+            reply(["status": "cancelled", "answers": [:]] as [String: Any])
+            return
         }
-        liveAskUserPrompt = nil
+        prompt.reply = reply
+        askUserError = nil
+        liveAskUserPrompt = prompt
         pendingAskUserPrompt = nil
     }
 
-    /// Rejects/cancels the currently pending ask_user call.
-    func rejectAskUser(messageId: String, callId: String) async {
-        guard let chatId = conversationId ?? conversation?.id,
+    private func cancelLiveAskUser() {
+        let reply = liveAskUserPrompt?.reply
+        liveAskUserPrompt = nil
+        reply?(["status": "cancelled", "answers": [:]] as [String: Any])
+    }
+
+    /// Live requests use their socket acknowledgment; saved calls use REST.
+    /// A failed saved response leaves the same card (and its answer draft) intact.
+    func resolveAskUser(_ prompt: PendingAskUserPrompt, answers: [String: AskUserAnswerDraft]? = nil) async {
+        guard !isResolvingAskUser,
+              (liveAskUserPrompt ?? pendingAskUserPrompt)?.id == prompt.id else { return }
+        let payload = answers?.mapValues { $0.toServerPayload() }
+        askUserError = nil
+        if let reply = prompt.reply {
+            if let callId = liveAskUserPrompt?.callId, !callId.isEmpty {
+                resolvedAskUserCallIds.insert(callId)
+            }
+            liveAskUserPrompt = nil
+            pendingAskUserPrompt = nil
+            reply(["status": answers == nil ? "cancelled" : "answered", "answers": payload ?? [:]])
+            return
+        }
+        guard !prompt.callId.isEmpty, let chatId = conversationId ?? conversation?.id,
               let apiClient = manager?.apiClient else { return }
         isResolvingAskUser = true
         defer { isResolvingAskUser = false }
         do {
             _ = try await apiClient.resolveToolCall(
-                chatId: chatId, messageId: messageId, callId: callId, action: "reject"
+                chatId: chatId, messageId: prompt.messageId, callId: prompt.callId,
+                action: answers == nil ? "reject" : "answer", answers: payload
             )
+            resolvedAskUserCallIds.insert(prompt.callId)
+            if pendingAskUserPrompt?.id == prompt.id { pendingAskUserPrompt = nil }
         } catch {
-            logger.error("[HITL] rejectAskUser failed: \(error.localizedDescription)")
+            if pendingAskUserPrompt?.id == prompt.id {
+                askUserError = "Could not send your response. Please try again."
+            }
         }
-        liveAskUserPrompt = nil
-        pendingAskUserPrompt = nil
-        await reloadConversation()
     }
 
     /// Switches tool approval mode and persists the preference.

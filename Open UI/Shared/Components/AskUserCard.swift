@@ -33,17 +33,23 @@ enum AskUserAnswerDraft: Sendable {
 
 /// Parsed pending ask_user prompt, ready for the card UI.
 struct PendingAskUserPrompt {
+    let id = UUID()
     let messageId: String
-    let callId: String
+    var callId: String
     let questions: [AskUserQuestion]
     let allowOther: Bool
     let timeoutMs: Int?
+    var reply: ((Any?) -> Void)?
 
     static func fromInfo(_ info: MessageHistory.PendingAskUserInfo) -> PendingAskUserPrompt? {
-        guard let questionsArr = info.arguments["questions"] as? [[String: Any]],
+        fromArguments(info.arguments, messageId: info.messageId, callId: info.callId)
+    }
+
+    static func fromArguments(_ arguments: [String: Any], messageId: String, callId: String = "") -> PendingAskUserPrompt? {
+        guard let questionsArr = arguments["questions"] as? [[String: Any]],
               !questionsArr.isEmpty else { return nil }
-        let globalAllowOther = info.arguments["allow_other"] as? Bool ?? true
-        let timeoutMs = info.arguments["timeout_ms"] as? Int
+        let globalAllowOther = arguments["allow_other"] as? Bool ?? true
+        let timeoutMs = arguments["timeout_ms"] as? Int
         let parsed: [AskUserQuestion] = questionsArr.compactMap { qDict -> AskUserQuestion? in
             guard let id = qDict["id"] as? String, !id.isEmpty,
                   let qText = qDict["question"] as? String, !qText.isEmpty,
@@ -53,7 +59,7 @@ struct PendingAskUserPrompt {
                       let desc = o["description"] as? String else { return nil }
                 return AskUserOption(label: lbl, description: desc)
             }
-            guard !options.isEmpty else { return nil }
+            guard !options.isEmpty, options.count == optionsArr.count else { return nil }
             return AskUserQuestion(
                 id: id,
                 header: qDict["header"] as? String ?? "",
@@ -62,9 +68,9 @@ struct PendingAskUserPrompt {
                 allowOther: qDict["allow_other"] as? Bool ?? globalAllowOther
             )
         }
-        guard !parsed.isEmpty else { return nil }
+        guard parsed.count == questionsArr.count, Set(parsed.map(\.id)).count == parsed.count else { return nil }
         return PendingAskUserPrompt(
-            messageId: info.messageId, callId: info.callId,
+            messageId: messageId, callId: callId,
             questions: parsed, allowOther: globalAllowOther, timeoutMs: timeoutMs
         )
     }
@@ -76,6 +82,7 @@ struct AskUserCard: View {
     let questions: [AskUserQuestion]
     var allowOther: Bool = true
     var timeoutMs: Int?
+    var errorMessage: String?
     var onSubmit: ([String: AskUserAnswerDraft]) -> Void
     var onCancel: () -> Void
 
@@ -112,6 +119,11 @@ struct AskUserCard: View {
                     optionsSection(for: q)
                 }
                 navigationRow
+                if let errorMessage {
+                    Text(errorMessage)
+                        .font(.footnote)
+                        .foregroundStyle(theme.error)
+                }
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 12)
@@ -163,7 +175,7 @@ struct AskUserCard: View {
             ForEach(Array(q.options.enumerated()), id: \.offset) { idx, opt in
                 optionRow(for: q, option: opt, index: idx)
             }
-            if q.allowOther || allowOther { otherRow(for: q) }
+            if q.allowOther { otherRow(for: q) }
         }
     }
 
@@ -288,4 +300,3 @@ struct AskUserCard: View {
         }
     }
 }  // end AskUserCard
-

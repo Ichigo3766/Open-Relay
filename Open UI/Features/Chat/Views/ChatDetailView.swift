@@ -1381,20 +1381,15 @@ struct ChatDetailView: View {
                     questions: askPrompt.questions,
                     allowOther: askPrompt.allowOther,
                     timeoutMs: vm.liveAskUserPrompt != nil ? askPrompt.timeoutMs : nil,
+                    errorMessage: vm.askUserError,
                     onSubmit: { answers in
-                        let msgId = askPrompt.messageId
-                        let cId = askPrompt.callId
-                        Task { await viewModel.answerAskUser(
-                            messageId: msgId, callId: cId,
-                            answers: answers, timedOut: false
-                        )}
+                        Task { await viewModel.resolveAskUser(askPrompt, answers: answers) }
                     },
                     onCancel: {
-                        let msgId = askPrompt.messageId
-                        let cId = askPrompt.callId
-                        Task { await viewModel.rejectAskUser(messageId: msgId, callId: cId) }
+                        Task { await viewModel.resolveAskUser(askPrompt) }
                     }
                 )
+                .id(askPrompt.id)
                 .disabled(vm.isResolvingAskUser)
             }
 

@@ -10,10 +10,12 @@ import XCTest
         return (try JSONSerialization.jsonObject(with: data) as? [String: Any])?["replies"] as? [[String: Any]] ?? []
     }
 
-    func start() async throws {
+    func start(_ scenario: String = "consent") async throws {
         app.terminate()
         var reset = URLRequest(url: URL(string: "http://127.0.0.1:18191/_test/reset")!)
         reset.httpMethod = "POST"
+        reset.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        reset.httpBody = try JSONSerialization.data(withJSONObject: ["scenario": scenario])
         _ = try await URLSession.shared.data(for: reset)
         app.launchArguments = ["-last_active_conversation_id", "", "-openui.appearance.mode", "light"]
         app.launch()
@@ -88,5 +90,65 @@ import XCTest
         let received = try await replies()
         XCTAssertEqual(received.count, 2)
         XCTAssertTrue(received.allSatisfy { $0["value"] as? Bool == false })
+    }
+
+    func resolves() async throws -> [[String: Any]] {
+        let (data, _) = try await URLSession.shared.data(from: URL(string: "http://127.0.0.1:18191/_test/state")!)
+        return (try JSONSerialization.jsonObject(with: data) as? [String: Any])?["resolves"] as? [[String: Any]] ?? []
+    }
+
+    func selectBlue() {
+        XCTAssertTrue(app.staticTexts["Which paper color?"].waitForExistence(timeout: 30))
+        app.buttons.matching(NSPredicate(format: "label CONTAINS 'A blue sky'")).firstMatch.tap()
+    }
+
+    func testAskUserBefore() async throws {
+        try await start("ask")
+        selectBlue()
+        for _ in 0..<20 {
+            if !(try await resolves()).isEmpty { break }
+            try await Task.sleep(for: .seconds(1))
+        }
+        let calls = try await resolves(), responses = try await replies()
+        XCTAssertEqual(calls.first?["call_id"] as? String, "")
+        XCTAssertTrue(responses.isEmpty, "Baseline never answers the waiting live callback")
+        capture("ask-before-unanswered")
+    }
+
+    func testAskUser() async throws {
+        try await start("ask")
+        XCTAssertTrue(app.staticTexts["Which paper color?"].waitForExistence(timeout: 30))
+        XCTAssertFalse(app.textFields["Type your answer"].exists, "Question disables Other even when global default permits it")
+        capture("ask-question")
+        selectBlue()
+        for _ in 0..<20 {
+            if !(try await replies()).isEmpty { break }
+            try await Task.sleep(for: .seconds(1))
+        }
+        let responses = try await replies(), calls = try await resolves()
+        let answer = responses.first?["value"] as? [String: Any]
+        XCTAssertEqual(answer?["status"] as? String, "answered")
+        let option = (answer?["answers"] as? [String: Any])?["color"] as? [String: Any]
+        XCTAssertEqual(option?["label"] as? String, "Blue")
+        XCTAssertTrue(calls.isEmpty)
+        XCTAssertTrue(app.descendants(matching: .any).matching(NSPredicate(format: "label CONTAINS 'The synthetic tool received your answer.'")).firstMatch.waitForExistence(timeout: 15))
+        capture("ask-after-answered")
+    }
+
+    func testSavedAskUserRetry() async throws {
+        try await start("saved")
+        selectBlue()
+        XCTAssertTrue(app.staticTexts["Could not send your response. Please try again."].waitForExistence(timeout: 20))
+        capture("ask-saved-retry")
+        app.buttons["Submit answers"].tap()
+        for _ in 0..<20 {
+            if try await resolves().count == 2 { break }
+            try await Task.sleep(for: .seconds(1))
+        }
+        let calls = try await resolves()
+        XCTAssertEqual(calls.count, 2)
+        XCTAssertTrue(calls.allSatisfy { $0["call_id"] as? String == "demo-call" })
+        XCTAssertEqual(calls[0] as NSDictionary, calls[1] as NSDictionary, "Retry preserves the selected answer")
+        XCTAssertTrue(app.staticTexts["Which paper color?"].waitForNonExistence(timeout: 10))
     }
 }

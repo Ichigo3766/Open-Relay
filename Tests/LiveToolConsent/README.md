@@ -20,6 +20,14 @@ are no longer logged, including values from password inputs.
 handler from `origin/main`. It intentionally fails because the callback fires
 before the user answers. It requires the recorded baseline at `origin/main`.
 
+Run `python3 Tests/LiveToolConsent/ask_user.py` for 25 additional checks of the
+production parser and response methods with a mocked REST transport. Live answers
+and cancellations use their socket callback, saved calls use REST, duplicate/stale
+taps are ignored, failed saved responses retain the same prompt for retry, and
+stale history cannot restore successfully resolved call IDs.
+The `--baseline` version intentionally fails: the live callback is dropped and
+the app instead sends REST with an empty call ID.
+
 ## Simulator reproduction
 
 Use an isolated simulator and a Python environment containing `aiohttp` and
@@ -33,6 +41,11 @@ directory, and run the `LiveToolConsent` scheme's UI tests:
 - Fixed: `testConsent` verifies no callback precedes the explicit tap, then checks
   the confirmation and input responses received by the server and the notification.
 - `testCancel` checks both cancellation callbacks return `false`.
+- `testAskUserBefore` verifies the original live answer takes the wrong REST route
+  and never reaches the waiting socket caller.
+- `testAskUser` verifies the native callback payload and resumed tool response.
+- `testSavedAskUserRetry` fails the first REST answer, checks the visible retry
+  state, and verifies the second submission preserves the selected answer.
 
 All content is invented. The fixture never imports Open WebUI, contacts a provider,
 or reads a real server's settings or chats. Test logs/result bundles are not published.
@@ -40,4 +53,5 @@ or reads a real server's settings or chats. Test logs/result bundles are not pub
 Prompt state is transient and per chat; it is not a durable approval history.
 Finishing/stopping the stream cancels pending calls. A disconnected socket cannot
 deliver a response to a departed server session; this does not promise replay of
-expired calls. Generic JavaScript execution and `ask_user` are separate workflows.
+expired calls. Generic JavaScript execution is a separate workflow. The native
+question card retains its existing timeout behavior; saved prompts have no timer.
