@@ -13,6 +13,7 @@ struct ChatContextPanel: View {
     @State private var draft: ChatAdvancedParams
     @State private var isFilesExpanded: Bool = true
     @State private var isAdvancedExpanded: Bool = false
+    @State private var variableForm: ChatVariableForm?
 
     init(viewModel: ChatViewModel, params: Binding<ChatAdvancedParams>) {
         self.viewModel = viewModel
@@ -51,12 +52,23 @@ struct ChatContextPanel: View {
             List {
                 filesSection
                 valvesSection
+                if let form = viewModel.makeChatVariableForm() {
+                    Section {
+                        Button { variableForm = form } label: {
+                            Label("Chat Variables", systemImage: "curlybraces")
+                        }
+                        .disabled(viewModel.isStreaming || viewModel.isSavingChatVariables)
+                    }
+                }
                 systemPromptSection
                 advancedSection
             }
             .listStyle(.insetGrouped)
             .navigationTitle("Controls")
             .navigationBarTitleDisplayMode(.inline)
+            .sheet(item: $variableForm) { form in
+                ChatVariablesSheet(viewModel: viewModel, form: form).themed()
+            }
             .task {
                 // Load tools + functions so the Valves section can show them.
                 // loadTools() is cheap if already loaded (returns after populating availableTools).
@@ -66,13 +78,15 @@ struct ChatContextPanel: View {
             }
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { dismiss() }
+                    Button { dismiss() } label: { Image(systemName: "xmark") }
+                        .accessibilityLabel("Cancel")
                 }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Save") {
+                    Button {
                         params = draft
                         dismiss()
-                    }
+                    } label: { Image(systemName: "checkmark") }
+                    .accessibilityLabel("Save")
                     .fontWeight(.semibold)
                 }
                 ToolbarItem(placement: .bottomBar) {

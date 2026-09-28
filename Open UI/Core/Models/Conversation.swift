@@ -26,6 +26,8 @@ nonisolated struct Conversation: Identifiable, Hashable, Sendable {
     var updatedAt: Date
     var model: String?
     var systemPrompt: String?
+    /// Native chat-level variables, separate from prompt substitution variables.
+    var chatVariables: [String: Any] = [:]
 
     /// The tree-based message history — **source of truth** for all messages.
     ///

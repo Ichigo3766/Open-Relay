@@ -317,6 +317,50 @@ final class ChatViewModel {
     var pendingPromptForVariables: PromptItem?
     /// The parsed variables for the pending prompt.
     var pendingPromptVariables: [PromptVariable] = []
+    var chatVariableForm: ChatVariableForm?
+    var isSavingChatVariables = false
+    var isCreatingConversation = false
+    private var pendingChatVariables: [String: Any] = [:]
+    private var chatVariablesDraftGeneration = 0
+
+    func makeChatVariableForm(modelID: String? = nil) -> ChatVariableForm? {
+        guard let model = availableModels.first(where: { $0.id == (modelID ?? selectedModelId) }) else { return nil }
+        let form = ChatVariableForm(model: model, values: conversation?.chatVariables ?? pendingChatVariables,
+            chatID: conversationId ?? conversation?.id, scope: manager?.apiClient.network.conversationCacheScope,
+            draftGeneration: chatVariablesDraftGeneration)
+        return form.fields.isEmpty ? nil : form
+    }
+
+    private func needsChatVariables(modelID: String?) -> Bool {
+        guard let form = makeChatVariableForm(modelID: modelID), form.needsInput else { return false }
+        chatVariableForm = form
+        return true
+    }
+
+    func saveChatVariables(_ input: [String: String], form: ChatVariableForm) async throws {
+        guard !isSavingChatVariables, !isCreatingConversation, !isStreaming, let manager else { throw APIError.cancelled }
+        func isCurrent() -> Bool {
+            !Task.isCancelled && form.draftGeneration == chatVariablesDraftGeneration
+                && form.chatID == (conversationId ?? conversation?.id)
+                && form.scope == self.manager?.apiClient.network.conversationCacheScope
+        }
+        guard isCurrent() else { throw APIError.cancelled }
+        isSavingChatVariables = true
+        defer { isSavingChatVariables = false }
+        var saved = conversation?.chatVariables ?? pendingChatVariables
+        if let id = form.chatID, !id.hasPrefix("local:") {
+            // Refresh before merging to preserve variables belonging to other models/clients.
+            saved = try await manager.fetchConversation(id: id).chatVariables
+            guard isCurrent() else { throw APIError.cancelled }
+        }
+        let values = try form.merging(input, into: saved)
+        if let id = form.chatID, !id.hasPrefix("local:") {
+            try await manager.apiClient.updateChatVariables(id: id, values: values)
+        }
+        guard isCurrent() else { throw APIError.cancelled }
+        if conversation != nil { conversation?.chatVariables = values }
+        else { pendingChatVariables = values }
+    }
     /// The model ID selected via `@` mention in the chat input.
     /// Persists across messages until the user explicitly clears it.
     var mentionedModelId: String?
@@ -552,7 +596,7 @@ final class ChatViewModel {
         let notBlocked = (enableMessageQueue && isStreaming)
             || (!isStreaming
                 && !attachments.contains(where: { $0.type == .audio && $0.isTranscribing }))
-        return notBlocked
+        return notBlocked && !isSavingChatVariables && !isCreatingConversation
             && (!inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                 || !attachments.isEmpty)
     }
@@ -1191,6 +1235,7 @@ final class ChatViewModel {
         do {
             let serverConversation = try await manager.fetchConversation(id: chatId)
             lastSyncTime = Date()
+            if !isSavingChatVariables { conversation?.chatVariables = serverConversation.chatVariables }
 
             let serverMessages = serverConversation.messages
             let localMessages = conversation?.messages ?? []
@@ -3048,6 +3093,9 @@ final class ChatViewModel {
 
     func startNewConversation() {
         conversation = nil
+        pendingChatVariables = [:]
+        chatVariableForm = nil
+        chatVariablesDraftGeneration += 1
         inputText = ""
         attachments = []
         errorMessage = nil
@@ -3100,7 +3148,8 @@ final class ChatViewModel {
                 messages: conversation.messages,
                 chatParams: conversation.chatParams,
                 folderId: folderContextId,
-                chatFiles: conversation.files
+                chatFiles: conversation.files,
+                variables: conversation.chatVariables
             )
             // Swap the local ID for the server-assigned one — in-place, no reload.
             self.conversation?.id = created.id
@@ -3120,6 +3169,7 @@ final class ChatViewModel {
     /// bound `inputText` — this avoids the prompt briefly flashing in the input
     /// field before being sent.
     func sendMessage(directText: String? = nil) async {
+        guard !isSavingChatVariables, !isCreatingConversation else { return }
         let text = (directText ?? inputText).trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty || !attachments.isEmpty else { return }
 
@@ -3147,6 +3197,34 @@ final class ChatViewModel {
         guard let modelId = mentionedModelId ?? selectedModelId else {
             errorMessage = "Please select a model first."
             return
+        }
+        if needsChatVariables(modelID: modelId) {
+            inputText = text
+            return
+        }
+        // Persist variables before consuming the draft. If creation fails, keep
+        // the text and attachments and let the user retry explicitly.
+        if conversation == nil && !isTemporaryChat {
+            let scope = manager.apiClient.network.conversationCacheScope
+            let draftGeneration = chatVariablesDraftGeneration
+            isCreatingConversation = true
+            defer { isCreatingConversation = false }
+            do {
+                var created = try await manager.createConversation(title: String(text.prefix(50)),
+                    model: modelId, folderId: folderContextId, variables: pendingChatVariables)
+                guard scope == self.manager?.apiClient.network.conversationCacheScope,
+                      draftGeneration == chatVariablesDraftGeneration, !Task.isCancelled else { return }
+                created.chatParams = pendingChatParams
+                pendingChatParams = nil
+                conversation = created
+                pendingChatVariables = [:]
+                NotificationService.shared.activeConversationId = created.id
+            } catch {
+                if scope == self.manager?.apiClient.network.conversationCacheScope {
+                    errorMessage = error.localizedDescription
+                }
+                return
+            }
         }
 
         // Process audio attachments depending on transcription mode.
@@ -3317,21 +3395,12 @@ final class ChatViewModel {
         // Ensure conversation exists on server (skip for temporary chats)
         if conversation == nil {
             let chatTitle = String(currentText.prefix(50))
-            var serverId: String?
-            if !isTemporaryChat {
-                do {
-                    let created = try await manager.createConversation(
-                        title: chatTitle, messages: [], model: modelId,
-                        folderId: folderContextId)
-                    serverId = created.id
-                } catch {
-                    logger.warning("Pre-create failed: \(error.localizedDescription)")
-                }
-            }
-            let localId = isTemporaryChat ? "local:\(UUID().uuidString)" : (serverId ?? UUID().uuidString)
+            let localId = "local:\(UUID().uuidString)"
             var newConv = Conversation(
                 id: localId,
                 title: chatTitle, model: modelId, messages: [userMessage])
+            newConv.chatVariables = pendingChatVariables
+            pendingChatVariables = [:]
             // Apply any chat params that were set before the conversation existed
             if let pending = pendingChatParams {
                 newConv.chatParams = pending
@@ -3757,12 +3826,14 @@ final class ChatViewModel {
     /// The streaming pipeline is pre-seeded with the existing content so the typewriter
     /// starts at the END of what's already displayed — old content is never re-streamed.
     func continueLastResponse() async {
+        guard !isSavingChatVariables else { return }
         guard !isStreaming || isExternallyStreaming else { return }
         guard let lastAssistant = conversation?.messages.last(where: { $0.role == .assistant }) else { return }
         let assistantId = lastAssistant.id
         let existingContent = lastAssistant.content
 
         let modelId = lastAssistant.model ?? selectedModelId ?? conversation?.model ?? ""
+        guard !needsChatVariables(modelID: modelId) else { return }
         guard let lastUser = conversation?.messages.last(where: { $0.role == .user }) else { return }
 
         let apiMessages = await buildAPIMessagesAsync()
@@ -3898,6 +3969,7 @@ final class ChatViewModel {
     /// matching the OpenWebUI web client's regeneration behavior for mid-conversation
     /// messages.
     func regenerateResponse(messageId: String) async {
+        guard !isSavingChatVariables, !needsChatVariables(modelID: selectedModelId ?? conversation?.model) else { return }
         guard !isStreaming || isExternallyStreaming else { return }
         guard conversation != nil else { return }
 
@@ -4128,6 +4200,7 @@ final class ChatViewModel {
     /// files (allowing attachment removal); otherwise it inherits the original
     /// node's files unchanged.
     func editMessage(id: String, newContent: String, files: [ChatMessageFile]? = nil) async {
+        guard !isSavingChatVariables, !needsChatVariables(modelID: selectedModelId ?? conversation?.model) else { return }
         guard !isStreaming || isExternallyStreaming else { return }
         guard conversation != nil else { return }
 
@@ -6579,6 +6652,9 @@ final class ChatViewModel {
         var mergedVars = request.variables ?? [:]
         for (k, v) in sysVars { mergedVars[k] = v }
         request.variables = mergedVars
+        if isTemporaryChat || request.chatId == nil || request.chatId?.hasPrefix("local:") == true {
+            request.chatVariables = conversation?.chatVariables ?? pendingChatVariables
+        }
 
         // Also substitute directly into the overridden system prompt string.
         // The server uses params.system as-is without re-substituting variables,

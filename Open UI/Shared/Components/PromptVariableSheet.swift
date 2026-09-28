@@ -14,13 +14,16 @@ import SwiftUI
 struct PromptVariableSheet: View {
     let promptName: String
     let variables: [PromptVariable]
-    let onSave: ([String: String]) -> Void
+    let onSave: ([String: String]) async throws -> Void
     let onCancel: () -> Void
+    var title = "Input Variables"
 
     @Environment(\.theme) private var theme
     @Environment(\.dismiss) private var dismiss
     @State private var values: [String: String] = [:]
     @State private var showValidationErrors = false
+    @State private var isSaving = false
+    @State private var saveError: String?
 
     /// Whether all required fields have been filled.
     private var isValid: Bool {
@@ -54,29 +57,45 @@ struct PromptVariableSheet: View {
                     ForEach(variables) { variable in
                         variableField(variable)
                     }
+                    if let saveError {
+                        Text(saveError).foregroundStyle(.red).font(.callout)
+                    }
                 }
                 .padding(Spacing.lg)
+                .disabled(isSaving)
             }
             .background(theme.background)
-            .navigationTitle("Input Variables")
+            .navigationTitle(title)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") {
+                    Button {
                         onCancel()
                         dismiss()
-                    }
+                    } label: { Image(systemName: "xmark") }
+                    .accessibilityLabel("Cancel")
+                    .disabled(isSaving)
                 }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Save") {
+                    Button {
                         if isValid {
-                            onSave(values)
-                            dismiss()
+                            isSaving = true
+                            saveError = nil
+                            Task {
+                                defer { isSaving = false }
+                                do { try await onSave(values); dismiss() }
+                                catch { saveError = error.localizedDescription }
+                            }
                         } else {
                             showValidationErrors = true
                             Haptics.notify(.warning)
                         }
+                    } label: {
+                        if isSaving { ProgressView() }
+                        else { Image(systemName: "checkmark") }
                     }
+                    .accessibilityLabel("Save")
+                    .disabled(isSaving)
                     .fontWeight(.semibold)
                 }
             }
@@ -86,6 +105,7 @@ struct PromptVariableSheet: View {
         }
         .presentationDetents([.medium, .large])
         .presentationDragIndicator(.visible)
+        .interactiveDismissDisabled(isSaving)
     }
 
     /// Pre-populates fields with default values from variable definitions.
@@ -93,6 +113,8 @@ struct PromptVariableSheet: View {
         for variable in variables {
             if let defaultValue = variable.defaultValue, !defaultValue.isEmpty {
                 values[variable.name] = defaultValue
+            } else if variable.type == .checkbox {
+                values[variable.name] = "false"
             }
         }
     }

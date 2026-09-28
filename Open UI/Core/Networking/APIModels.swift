@@ -291,6 +291,8 @@ struct ChatCompletionRequest: Sendable {
     /// forwarded to the LLM. Always sent as an object (empty `{}` when no vars),
     /// matching web-client behaviour. Required for pipe model compatibility.
     var variables: [String: Any]?
+    /// Fallback for temporary chats; saved conversations use server-side variables.
+    var chatVariables: [String: Any]?
     /// Full model JSON from the server. Sent as `model_item` so the backend can
     /// route the request to the correct pipe function. Required for pipe models;
     /// should be sent for ALL models so the backend has full routing context.
@@ -375,6 +377,7 @@ struct ChatCompletionRequest: Sendable {
         // The top-level `variables` key is kept for pipe model compatibility.
         let resolvedVars = variables ?? [String: Any]()
         data["variables"] = resolvedVars
+        if let chatVariables { data["chat_variables"] = chatVariables }
         data["metadata"] = ["variables": resolvedVars]
 
         // model_item: send when available (critical for pipe routing)

@@ -37,14 +37,16 @@ final class ConversationManager: @unchecked Sendable {
         messages: [ChatMessage] = [],
         model: String? = nil,
         systemPrompt: String? = nil,
-        folderId: String? = nil
+        folderId: String? = nil,
+        variables: [String: Any] = [:]
     ) async throws -> Conversation {
         try await apiClient.createConversation(
             title: title,
             messages: messages,
             model: model,
             systemPrompt: systemPrompt,
-            folderId: folderId
+            folderId: folderId,
+            variables: variables
         )
     }
 

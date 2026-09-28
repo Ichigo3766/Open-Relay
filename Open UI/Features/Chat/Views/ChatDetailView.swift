@@ -820,6 +820,9 @@ struct ChatDetailView: View {
             .presentationDetents([.medium, .large])
             .presentationDragIndicator(.visible)
         }
+        .sheet(item: $viewModel.chatVariableForm) { form in
+            ChatVariablesSheet(viewModel: viewModel, form: form).themed()
+        }
         // Prompt variable input sheet — shown when a selected prompt has {{variables}}
         .sheet(isPresented: Binding<Bool>(
             get: { viewModel.pendingPromptForVariables != nil },

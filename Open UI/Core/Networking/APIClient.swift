@@ -834,7 +834,8 @@ final class APIClient: @unchecked Sendable {
         messages: [ChatMessage],
         chatParams: ChatAdvancedParams? = nil,
         folderId: String? = nil,
-        chatFiles: [ChatMessageFile] = []
+        chatFiles: [ChatMessageFile] = [],
+        variables: [String: Any] = [:]
     ) async throws -> Conversation {
         // Build flat messages array
         let flatMessages = history.createMessagesList()
@@ -878,6 +879,7 @@ final class APIClient: @unchecked Sendable {
         ]
 
         var body: [String: Any] = ["chat": chatData]
+        body["variables"] = variables
         if let folderId { body["folder_id"] = folderId }
 
         let (data, _) = try await network.requestRaw(
@@ -904,7 +906,8 @@ final class APIClient: @unchecked Sendable {
         messages: [ChatMessage],
         model: String? = nil,
         systemPrompt: String? = nil,
-        folderId: String? = nil
+        folderId: String? = nil,
+        variables: [String: Any] = [:]
     ) async throws -> Conversation {
         let chatData = buildChatPayload(
             title: title,
@@ -915,6 +918,7 @@ final class APIClient: @unchecked Sendable {
 
         var body: [String: Any] = ["chat": chatData]
         body["folder_id"] = folderId
+        body["variables"] = variables
 
         let (data, _) = try await network.requestRaw(
             path: "/api/v1/chats/new",
@@ -945,6 +949,14 @@ final class APIClient: @unchecked Sendable {
             method: .post,
             body: ["chat": chatPayload]
         )
+    }
+
+    func updateChatVariables(id: String, values: [String: Any]) async throws {
+        let scope = network.conversationCacheScope
+        _ = try await network.requestRaw(path: "/api/v1/chats/\(id)", method: .post,
+            body: JSONSerialization.data(withJSONObject: ["chat": [:], "variables": values]))
+        if let scope { await ConversationCache.shared.invalidate(scope: scope, id: id) }
+        guard scope == network.conversationCacheScope else { throw APIError.cancelled }
     }
 
     func deleteConversation(id: String) async throws {
@@ -4280,6 +4292,7 @@ final class APIClient: @unchecked Sendable {
             files: chatFiles
         )
         conv.chatParams = chatParams
+        conv.chatVariables = json["variables"] as? [String: Any] ?? [:]
         return conv
     }
 

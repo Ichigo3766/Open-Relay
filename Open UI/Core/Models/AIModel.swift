@@ -87,6 +87,8 @@ struct AIModel: Codable, Identifiable, Hashable, Sendable {
     /// requests for pipe models so the backend can route to the correct pipe function.
     /// Stored as `[String: Any]` (non-Codable) and excluded from Codable synthesis.
     var rawModelItem: [String: Any]?
+    /// Kept in the model cache too, so cached models retain their required inputs.
+    var chatVariablesSchema: Data?
 
     init(
         id: String,
@@ -132,6 +134,10 @@ struct AIModel: Codable, Identifiable, Hashable, Sendable {
         self.actions = actions
         self.suggestionPrompts = suggestionPrompts
         self.rawModelItem = rawModelItem
+        let info = rawModelItem?["info"] as? [String: Any]
+        let meta = (info?["meta"] ?? rawModelItem?["meta"]) as? [String: Any]
+        self.chatVariablesSchema = (meta?["chat_variables_schema"] as? [String: Any])
+            .flatMap { try? JSONSerialization.data(withJSONObject: $0, options: .sortedKeys) }
     }
 
     /// Whether the memory builtin tool is enabled for this model.
@@ -171,6 +177,7 @@ struct AIModel: Codable, Identifiable, Hashable, Sendable {
             && lhs.builtinTools == rhs.builtinTools
             && lhs.tags == rhs.tags
             && lhs.actions == rhs.actions
+            && lhs.chatVariablesSchema == rhs.chatVariablesSchema
     }
 
     func hash(into hasher: inout Hasher) {
@@ -186,6 +193,7 @@ struct AIModel: Codable, Identifiable, Hashable, Sendable {
         case id, name, description, isMultimodal, supportsStreaming, supportsRAG
         case contextLength, capabilities, profileImageURL, toolIds, defaultFeatureIds
         case functionCallingMode, builtinTools, tags, connectionType, isPipeModel, filterIds, actionIds, actions, suggestionPrompts
+        case chatVariablesSchema
         // rawModelItem is intentionally excluded from Codable — it contains
         // [String: Any] which cannot be synthesised. It is populated at runtime
         // from the live model fetch and does not need persistence.
