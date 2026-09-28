@@ -11,6 +11,9 @@ the actual calendar models and extracted API/management methods against syntheti
 transport; only SwiftUI color rendering is stubbed. Checks cover native routes,
 rename-only payload preservation, list/visibility updates, protected calendars,
 default selection, failures, duplicate/overlapping actions, and account switching.
+The 30 checks pass. `--baseline-default` substitutes only the original default
+selector and fails the shared-calendar regression: another owner's default must
+not override the signed-in user's chosen default.
 
 ## Simulator
 
@@ -28,9 +31,18 @@ runner (`CODE_SIGN_IDENTITY=-`); put DerivedData and results outside the repo.
   failed rename retaining the draft, retry preserving sharing/data, creation,
   default change, destructive confirmation/deletion, and relaunch persistence.
 - `testCancel`: dark-mode editor and cancellation without a write.
+- `testFailedActions`: failed default/deletion actions retain state and do not
+  retry automatically.
 
 Run the baseline case separately from the changed-app cases. All fixture records
 are freshly invented. Do not use real accounts or publish raw diagnostic bundles.
+
+Validation: both Release simulator builds passed; the baseline case and all three
+changed-app cases passed on iOS 26.5. The management case also verifies that a
+new event uses the account's selected default when a shared calendar appears
+first. Screenshots were visually reviewed and their metadata checked; they use
+only this synthetic fixture. This verifies client behavior against the fixture,
+not a live calendar provider. Native endpoint compatibility was source-reviewed.
 
 ## Scope
 

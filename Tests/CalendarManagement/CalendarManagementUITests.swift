@@ -64,6 +64,9 @@ import XCTest
         capture("after-calendar-editor")
         app.navigationBars["New Calendar"].buttons["Save"].tap()
         XCTAssertTrue(app.buttons["Actions for Paper Projects"].waitForExistence(timeout: 10))
+        let created = try await state()
+        let newCalendar = (created["calendars"] as? [String: [String: Any]])?.values.first { $0["name"] as? String == "Paper Projects" }
+        XCTAssertEqual(newCalendar?["color"] as? String, "#3b82f6")
         app.buttons["Actions for Paper Projects"].tap()
         capture("after-calendar-actions")
         app.buttons["Make Default"].tap()
@@ -90,5 +93,21 @@ import XCTest
         XCTAssertTrue(app.navigationBars["New Calendar"].waitForNonExistence(timeout: 10))
         let result = try await state()
         XCTAssertEqual((result["writes"] as? [Any])?.count, 0)
+    }
+    func testFailedActions() async throws {
+        try await start(); openManagement()
+        try await post("mode", ["fail": true])
+        app.buttons["Actions for Workshops"].tap(); app.buttons["Make Default"].tap()
+        XCTAssertTrue(app.alerts["Couldn’t update calendar"].waitForExistence(timeout: 10))
+        app.alerts.buttons["OK"].tap()
+        let unchanged = try await state()
+        XCTAssertEqual(((unchanged["calendars"] as? [String: [String: Any]])?["crafts"]?["is_default"]) as? Bool, true)
+        app.buttons["Actions for Workshops"].tap(); app.buttons["Delete Calendar"].tap()
+        app.buttons["Delete Calendar"].tap()
+        XCTAssertTrue(app.alerts["Couldn’t update calendar"].waitForExistence(timeout: 10))
+        app.alerts.buttons["OK"].tap()
+        XCTAssertTrue(app.staticTexts["Workshops"].exists)
+        let retained = try await state()
+        XCTAssertEqual((retained["writes"] as? [Any])?.count, 2)
     }
 }
