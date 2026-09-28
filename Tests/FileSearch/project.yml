@@ -1,0 +1,22 @@
+name: FileSearchTests
+options:
+  deploymentTarget:
+    iOS: '18.1'
+settings:
+  base:
+    GENERATE_INFOPLIST_FILE: YES
+    SWIFT_VERSION: '5.0'
+targets:
+  FileSearchUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources: [FileSearchUITests.swift]
+    settings:
+      PRODUCT_BUNDLE_IDENTIFIER: org.example.relay.file-search-tests
+schemes:
+  FileSearchTests:
+    build:
+      targets:
+        FileSearchUITests: [test]
+    test:
+      targets: [FileSearchUITests]

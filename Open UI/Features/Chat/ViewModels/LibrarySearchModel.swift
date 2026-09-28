@@ -2,7 +2,7 @@ import Foundation
 import Observation
 
 nonisolated enum LibrarySearchSource: String, CaseIterable, Identifiable, Sendable {
-    case chats, folders, knowledge, documents
+    case chats, folders, knowledge, documents, files
 
     var id: Self { self }
     var title: String {
@@ -11,6 +11,7 @@ nonisolated enum LibrarySearchSource: String, CaseIterable, Identifiable, Sendab
         case .folders: return "Folders"
         case .knowledge: return "Knowledge bases"
         case .documents: return "Documents"
+        case .files: return "Files"
         }
     }
     var icon: String {
@@ -19,19 +20,22 @@ nonisolated enum LibrarySearchSource: String, CaseIterable, Identifiable, Sendab
         case .folders: return "folder"
         case .knowledge: return "books.vertical"
         case .documents: return "doc.text"
+        case .files: return "doc"
         }
     }
 }
 
 nonisolated enum LibrarySearchScope: String, CaseIterable, Identifiable, Sendable {
-    case all = "All", chats = "Chats", folders = "Folders", knowledge = "Knowledge"
+    case all = "All", chats = "Chats", documents = "Documents", files = "Files", folders = "Folders", knowledge = "Knowledge"
     var id: Self { self }
     var sources: [LibrarySearchSource] {
         switch self {
         case .all: return LibrarySearchSource.allCases
         case .chats: return [.chats]
+        case .documents: return [.documents]
         case .folders: return [.folders]
         case .knowledge: return [.knowledge, .documents]
+        case .files: return [.files]
         }
     }
 }
@@ -42,10 +46,13 @@ nonisolated struct LibrarySearchResult: Identifiable, Hashable, Sendable {
     let title: String
     var snippet: String = ""
     var context: String = ""
+    var contentType: String = ""
+    var size: Int64?
     var id: String { "\(source.rawValue):\(resourceID)" }
 }
 
 nonisolated struct LibrarySearchPage: Sendable {
+    static let filePageSize = 30
     var items: [LibrarySearchResult]
     var hasMore: Bool
 
@@ -65,7 +72,9 @@ nonisolated struct LibrarySearchPage: Sendable {
             let collection = row["collection"] as? [String: Any]
             return LibrarySearchResult(resourceID: id, source: source, title: title,
                                        snippet: LibrarySearchText.excerpt(text, query: query),
-                                       context: collection?["name"] as? String ?? "")
+                                       context: collection?["name"] as? String ?? "",
+                                       contentType: meta?["content_type"] as? String ?? "",
+                                       size: (meta?["size"] as? NSNumber)?.int64Value)
         }
         let hasMore: Bool
         if source == .folders {
@@ -73,7 +82,8 @@ nonisolated struct LibrarySearchPage: Sendable {
         } else if let total = envelope?["total"] as? Int {
             hasMore = !rows.isEmpty && page * 30 < total
         } else {
-            hasMore = source == .chats && rows.count == 60
+            hasMore = (source == .chats && rows.count == 60)
+                || (source == .files && rows.count == filePageSize)
         }
         return Self(items: items, hasMore: hasMore)
     }
@@ -116,6 +126,16 @@ final class LibrarySearchModel {
     private var generation = UUID()
     private var query = ""
     private(set) var sections: [Section] = []
+
+    /// Keep pagination state intact; hide uploads already represented by a Knowledge result.
+    var visibleSections: [Section] {
+        let documentIDs = Set(sections.filter { $0.id == .documents }.flatMap(\.items).map(\.resourceID))
+        return sections.map { section in
+            var visible = section
+            if section.id == .files { visible.items.removeAll { documentIDs.contains($0.resourceID) } }
+            return visible
+        }
+    }
 
     init(fetch: @escaping Fetch) { self.fetch = fetch }
 

@@ -740,6 +740,20 @@ final class NetworkManager: NSObject, Sendable {
         throw lastError ?? APIError.unknown(underlying: nil)
     }
 
+    /// Downloads an explicitly opened file to disk without retaining its bytes in memory.
+    func downloadFile(path: String) async throws -> URL {
+        let request = try buildRequest(path: path)
+        let (url, response) = try await session.download(for: request)
+        do {
+            try validateHTTPResponse(response, data: Data())
+            try Task.checkCancellation()
+            return url
+        } catch {
+            try? FileManager.default.removeItem(at: url)
+            throw error
+        }
+    }
+
     private func validateHTTPResponse(_ response: URLResponse, data: Data) throws {
         guard let httpResponse = response as? HTTPURLResponse else {
             return

@@ -10,6 +10,7 @@ struct LibrarySearchView: View {
     @State private var scope: LibrarySearchScope = .all
     @State private var model: LibrarySearchModel
     @State private var previewFile: KnowledgeFileEntry?
+    @State private var uploadedFile: LibrarySearchResult?
     @FocusState private var searchFocused: Bool
     private var searchTerm: String { query.trimmingCharacters(in: .whitespacesAndNewlines) }
 
@@ -23,23 +24,27 @@ struct LibrarySearchView: View {
     var body: some View {
         NavigationStack {
             VStack(spacing: 0) {
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 8) {
-                        ForEach(LibrarySearchScope.allCases) { filter in
-                            Button {
-                                scope = filter
-                            } label: {
-                                Text(LocalizedStringKey(filter.rawValue))
-                                    .scaledFont(size: 15, weight: .medium)
-                                    .padding(.horizontal, 17).padding(.vertical, 11)
-                                    .background(scope == filter ? theme.surfaceContainer : Color.clear, in: Capsule())
+                ScrollViewReader { proxy in
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 8) {
+                            ForEach(LibrarySearchScope.allCases) { filter in
+                                Button {
+                                    scope = filter
+                                } label: {
+                                    Text(LocalizedStringKey(filter.rawValue))
+                                        .scaledFont(size: 15, weight: .medium)
+                                        .padding(.horizontal, 17).padding(.vertical, 11)
+                                        .background(scope == filter ? theme.surfaceContainer : Color.clear, in: Capsule())
+                                }
+                                .buttonStyle(.plain)
+                                .accessibilityIdentifier("search-filter-\(filter.id.rawValue)")
+                                .accessibilityAddTraits(scope == filter ? .isSelected : [])
                             }
-                            .buttonStyle(.plain)
-                            .accessibilityIdentifier("search-filter-\(filter.id.rawValue)")
-                            .accessibilityAddTraits(scope == filter ? .isSelected : [])
                         }
+                        .padding(.horizontal, Spacing.md).padding(.vertical, 8)
                     }
-                    .padding(.horizontal, Spacing.md).padding(.vertical, 8)
+                    .accessibilityIdentifier("library-search-filters")
+                    .onChange(of: scope) { _, value in proxy.scrollTo(value, anchor: .center) }
                 }
                 results
             }
@@ -53,6 +58,9 @@ struct LibrarySearchView: View {
             .sheet(item: $previewFile) { file in
                 KnowledgeFilePreviewSheet(file: file, apiClient: api)
             }
+            .sheet(item: $uploadedFile) { file in
+                SearchFilePreview(file: file, api: api)
+            }
         }
     }
 
@@ -60,14 +68,14 @@ struct LibrarySearchView: View {
     private var results: some View {
         if searchTerm.isEmpty {
             ContentUnavailableView("Search your library", systemImage: "magnifyingglass",
-                                   description: Text("Find chats, folders, and text in Knowledge documents."))
+                                   description: Text("Find chats, folders, uploaded filenames, and text in Knowledge documents."))
         } else if !model.sections.isEmpty && model.sections.allSatisfy({ !$0.isLoading && !$0.failed && $0.items.isEmpty }) {
             ContentUnavailableView.search(text: query)
         } else {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 18) {
-                    ForEach(model.sections) { section in
-                        if !section.items.isEmpty || section.isLoading || section.failed {
+                    ForEach(model.visibleSections) { section in
+                        if !section.items.isEmpty || section.isLoading || section.failed || section.hasMore {
                             Text(LocalizedStringKey(section.id.title))
                                 .scaledFont(size: 13, weight: .semibold)
                                 .foregroundStyle(theme.textSecondary)
@@ -121,6 +129,8 @@ struct LibrarySearchView: View {
                     dismiss()
                 case .documents:
                     previewFile = KnowledgeFileEntry(id: item.resourceID, name: item.title)
+                case .files:
+                    uploadedFile = item
                 case .knowledge: break
                 }
             } label: {
@@ -193,6 +203,14 @@ private struct LibrarySearchRow: View {
                 }
                 if !item.context.isEmpty {
                     Text(verbatim: item.context).scaledFont(size: 12).foregroundStyle(theme.textTertiary).lineLimit(1)
+                }
+                if item.source == .files {
+                    let details = [item.contentType, item.size.map {
+                        ByteCountFormatter.string(fromByteCount: $0, countStyle: .file)
+                    } ?? ""].filter { !$0.isEmpty }.joined(separator: " · ")
+                    if !details.isEmpty {
+                        Text(verbatim: details).scaledFont(size: 12).foregroundStyle(theme.textTertiary)
+                    }
                 }
             }
             Spacer(minLength: 0)
