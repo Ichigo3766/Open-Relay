@@ -1,6 +1,8 @@
 # Preserve note content during metadata changes
 
-Baseline: Open Relay 5.9 (`f5b8ce8`); Open WebUI `8bd8b4f`.
+Initial baseline: Open Relay 5.9 (`f5b8ce8`); Open WebUI `8bd8b4f`.
+Rebased on Open Relay 6.0 (`4151a73`): all 18 checks and the full Release
+simulator build pass. The unchanged 6.0 implementation also fails the rename probe.
 
 Run `python3 Tests/NoteContent/run.py`. The production Note model, API methods,
 and manager update method run against a mocked transport with the native server's
