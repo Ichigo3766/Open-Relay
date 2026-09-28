@@ -86,6 +86,27 @@ private final class ImageFixtureProtocol: URLProtocol {
         }
     }
 
+    func testAvatarPrefetchIsBoundedAndImmediatelyUsableAtSmallerSizes() async throws {
+        for userAvatar in [false, true] {
+            let url = url(), before = ImageFixtureProtocol.count()
+            if userAvatar { await cache.prefetchUserAvatar(url: url, authToken: "synthetic-token") }
+            else { await cache.prefetchWithAuth(urls: [url], authToken: "synthetic-token") }
+            for _ in 0..<100 {
+                if cache.cachedImageSync(for: url, targetPixelSize: 256) != nil { break }
+                try await Task.sleep(for: .milliseconds(20))
+            }
+            let prefetched = try XCTUnwrap(cache.cachedImageSync(for: url, targetPixelSize: 256))
+            XCTAssertEqual(prefetched.cgImage?.width, 256)
+            XCTAssertTrue(cache.cachedImageSync(for: url, targetPixelSize: 96) === prefetched)
+            XCTAssertNil(cache.cachedImageSync(for: url), "Originals cannot resolve to thumbnails")
+            XCTAssertNil(cache.cachedImageSync(for: url, targetPixelSize: 512))
+            let original = await cache.loadImage(from: url)
+            XCTAssertEqual(original?.cgImage?.width, 2048)
+            XCTAssertEqual(ImageFixtureProtocol.count() - before, 1)
+            await cache.evict(for: url)
+        }
+    }
+
     func testEvictionClearsEverySize() async {
         let url = url()
         _ = await cache.loadImage(from: url, targetPixelSize: 64)
@@ -108,7 +129,7 @@ private final class ImageFixtureProtocol: URLProtocol {
             UIColor.blue.setFill(); $0.fill(CGRect(x: 0, y: 0, width: 256, height: 128))
         }
         await cache.store(replacement, for: url)
-        XCTAssertNil(cache.cachedImageSync(for: url, targetPixelSize: 64))
+        XCTAssertTrue(cache.cachedImageSync(for: url, targetPixelSize: 64) === replacement)
         XCTAssertTrue(cache.cachedImageSync(for: url) === replacement)
         let thumbnail = await cache.loadImage(from: url, targetPixelSize: 64)
         XCTAssertEqual(thumbnail?.cgImage?.width, 64)

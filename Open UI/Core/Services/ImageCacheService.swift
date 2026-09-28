@@ -182,7 +182,13 @@ actor ImageCacheService {
     /// Called from SwiftUI view `init` — always on the main actor.
     @MainActor func cachedImageSync(for url: URL, targetPixelSize: Int = 0) -> UIImage? {
         let key = cacheKeySync(for: url)
-        return memoryCache.object(forKey: key as NSString)?.images[max(0, targetPixelSize)]
+        guard let images = memoryCache.object(forKey: key as NSString)?.images else { return nil }
+        let size = max(0, targetPixelSize)
+        if let exact = images[size] { return exact }
+        // Display-only lookup: a larger warm image avoids a placeholder flash.
+        // Original-size requests must never receive a downsampled variant.
+        guard size > 0 else { return nil }
+        return images.keys.filter { $0 >= size }.min().flatMap { images[$0] } ?? images[0]
     }
 
     /// Loads an image from the given URL, using the cache if available.
@@ -363,7 +369,7 @@ actor ImageCacheService {
             // or other devices (e.g. avatar updated while app was backgrounded).
             self.evict(for: url)
             self.logger.debug("Prefetching user avatar: \(url.lastPathComponent)")
-            _ = await self.loadImage(from: url, authToken: authToken)
+            _ = await self.loadImage(from: url, authToken: authToken, targetPixelSize: 256)
         }
     }
 
@@ -386,9 +392,9 @@ actor ImageCacheService {
                     for url in batch {
                         // Skip URLs already in memory — no network needed.
                         let key = self.cacheKey(for: url)
-                        guard self.memoryCache.object(forKey: key as NSString)?.images[0] == nil else { continue }
+                        guard self.memoryCache.object(forKey: key as NSString)?.images[256] == nil else { continue }
                         group.addTask {
-                            _ = await self.loadImage(from: url, authToken: authToken)
+                            _ = await self.loadImage(from: url, authToken: authToken, targetPixelSize: 256)
                         }
                     }
                 }
