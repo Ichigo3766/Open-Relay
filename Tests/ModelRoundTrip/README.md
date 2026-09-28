@@ -38,8 +38,10 @@ Use only an isolated simulator with the loopback fixture:
 
 The test opens the real Workspace editor, captures its selections, saves through
 the authenticated client API, and checks the payload received by the fixture.
-Both original 5.9-based runs passed on iOS 26.5. No production instance or model
-provider is used. Rebased-build visual validation is tracked separately.
+Both original 5.9-based runs passed on iOS 26.5. The full Release build and editor
+save test also pass after rebasing on 6.0. The After capture below is from that
+final build; Before is from the original 5.9-based baseline. No production
+instance or model provider is used.
 
 | Before: saved skill shown unchecked | After: independent selections restored |
 |---|---|
