@@ -3270,7 +3270,7 @@ final class APIClient: @unchecked Sendable {
         let noteData: [String: Any] = [
             "content": [
                 "json": NSNull(),
-                "HTML": htmlContent,
+                "html": htmlContent,
                 "md": markdownContent
             ],
             "versions": [] as [Any],
@@ -3303,7 +3303,7 @@ final class APIClient: @unchecked Sendable {
             body["data"] = [
                 "content": [
                     "json": NSNull(),
-                    "HTML": htmlContent ?? "",
+                    "html": htmlContent ?? "",
                     "md": markdownContent ?? ""
                 ]
             ]

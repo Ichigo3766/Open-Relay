@@ -382,11 +382,10 @@ struct NoteEditorView: View {
 
         updatedNote.title = titleText
         updatedNote.content = contentText
-        await notesManager?.updateNote(updatedNote)
-        note = updatedNote
-
+        let saved = await notesManager?.updateNote(updatedNote, contentChanged: contentText != note?.content) == true
+        if saved { note = updatedNote }
         isSaving = false
-        hasChanges = false
+        hasChanges = !saved || titleText != updatedNote.title || contentText != updatedNote.content
     }
 
     // MARK: - AI Features

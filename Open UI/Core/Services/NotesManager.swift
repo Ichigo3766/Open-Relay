@@ -108,20 +108,25 @@ final class NotesManager: @unchecked Sendable {
     ///
     /// Matches the Flutter `NoteUpdater.updateNote()` which posts to
     /// `/api/v1/notes/{id}/update`.
-    func updateNote(_ note: Note) async {
+    /// Only an explicit body edit replaces the server's rich content. Renaming or
+    /// changing local attachment metadata must leave JSON/HTML content intact.
+    @discardableResult
+    func updateNote(_ note: Note, contentChanged: Bool = false) async -> Bool {
         // Always update local cache first
         updateLocalNote(note)
 
-        guard let apiClient, isServerEnabled else { return }
+        guard let apiClient, isServerEnabled else { return true }
 
         do {
             _ = try await apiClient.updateNote(
                 id: note.id,
                 title: note.title,
-                markdownContent: note.content
+                markdownContent: contentChanged ? note.content : nil
             )
+            return true
         } catch {
             logger.warning("Failed to update note on server: \(error.localizedDescription)")
+            return false
         }
     }
 
