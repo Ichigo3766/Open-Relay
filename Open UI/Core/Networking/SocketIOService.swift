@@ -1038,6 +1038,14 @@ final class SocketIOService: NSObject, @unchecked Sendable, URLSessionWebSocketD
         let eventSessionId = extractSessionId(from: event)
         let eventType = (event["data"] as? [String: Any])?["type"] as? String ?? event["type"] as? String ?? "?"
 
+        // These RPCs need a reply even when their chat has no registered view.
+        // Never claim execution succeeded, or fan a single callback out to many views.
+        if let response = ClientExecutionRPC.unsupportedResponse(for: eventType) {
+            guard eventSessionId == nil || eventSessionId == sid else { return }
+            if let ackId { emitAck(ackId, data: response) }
+            return
+        }
+
         handlerLock.lock()
         let handlers = Array(chatHandlers.values)
         handlerLock.unlock()
@@ -1339,4 +1347,26 @@ private struct ChannelHandlerRegistration: Sendable {
     let conversationId: String?
     let sessionId: String?
     let handler: SocketIOService.EventHandler
+}
+
+// MARK: - Client execution RPC
+
+nonisolated enum ClientExecutionRPC {
+    static func unsupportedResponse(for type: String) -> [String: Any]? {
+        let message: String
+        switch type {
+        case "execute": message = "Browser JavaScript execution is not supported in Open Relay."
+        case "execute:python": message = "Browser Python execution is not supported in Open Relay. Use a server-side code interpreter."
+        case "execute:tool": message = "Client-side tool connections are not supported in Open Relay. Use a server-managed tool connection."
+        case "request:chat:completion": message = "Client-side model connections are not supported in Open Relay. Use a server-managed model connection."
+        default: return nil
+        }
+        var response: [String: Any] = ["error": message, "status": false]
+        if type == "execute:python" {
+            response["stdout"] = ""
+            response["stderr"] = message
+            response["result"] = NSNull()
+        }
+        return response
+    }
 }

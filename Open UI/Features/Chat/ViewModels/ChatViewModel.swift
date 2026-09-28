@@ -4846,10 +4846,6 @@ final class ChatViewModel {
         case "confirmation":
             ack?(true)
 
-        case "execute":
-            logger.info("🔧 [Socket] Acknowledging execute event for tool pipeline")
-            ack?(true)
-
         case "context_compaction":
             // Context compaction is a server-side operation that runs before the model
             // generates its response. It can take significant time with local or slow models.
@@ -4928,17 +4924,6 @@ final class ChatViewModel {
             case "chat:tasks:cancel":
                 updateAssistantMessage(id: assistantMessageId, content: acc.content, isStreaming: false)
                 cleanupStreaming()
-
-            case "request:chat:completion":
-                if let ch = payload?["channel"] as? String, !ch.isEmpty {
-                    logger.info("Channel request: \(ch)")
-                }
-
-            case "execute:tool":
-                if let name = payload?["name"] as? String, !name.isEmpty {
-                    let su = ChatStatusUpdate(action: name, description: "Executing \(name)…", done: false)
-                    appendStatusUpdate(id: assistantMessageId, status: su)
-                }
 
             case "request:user_input":
                 // Live ask_user request from server during streaming.
