@@ -74,14 +74,16 @@ struct ChatContextPanel: View {
             }
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { dismiss() }
+                    Button { dismiss() } label: { Image(systemName: "xmark") }
+                        .accessibilityLabel("Cancel")
                         .disabled(viewModel.isCompactingContext)
                 }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Save") {
+                    Button {
                         params = draft
                         dismiss()
-                    }
+                    } label: { Image(systemName: "checkmark") }
+                    .accessibilityLabel("Save")
                     .fontWeight(.semibold)
                     .disabled(viewModel.isCompactingContext)
                 }
