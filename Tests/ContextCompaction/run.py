@@ -7,7 +7,7 @@ import sys
 root = Path(__file__).resolve().parents[2]
 baseline = "--baseline" in sys.argv
 def source(path):
-    return subprocess.check_output(["git", "show", "origin/main:" + path], cwd=root, text=True) if baseline else (root / path).read_text()
+    return subprocess.check_output(["git", "show", "4151a735512d5d6dbc9fd1962fa806517a0d4ea7:" + path], cwd=root, text=True) if baseline else (root / path).read_text()
 with tempfile.TemporaryDirectory(prefix="relay-context-checks-") as directory:
     work = Path(directory)
     production = (source("Open UI/Core/Models/ChatMessage.swift")
