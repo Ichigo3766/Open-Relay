@@ -226,11 +226,11 @@ final class NotesManager: @unchecked Sendable {
     /// Use the server's authoritative result; never silently turn a failed remote pin into a local one.
     func togglePin(_ note: Note) async throws -> Bool {
         let pinned: Bool
-        if let apiClient, !note.isLocalOnly {
-            guard isServerEnabled else { throw NotesError.serverUnavailable }
-            pinned = try await apiClient.toggleNotePin(id: note.id)
-        } else {
+        if note.isLocalOnly {
             pinned = !note.isPinned
+        } else {
+            guard let apiClient, isServerEnabled else { throw NotesError.pinUnavailable }
+            pinned = try await apiClient.toggleNotePin(id: note.id)
         }
         var notes = fetchLocalNotes()
         if let index = notes.firstIndex(where: { $0.id == note.id }) {
@@ -267,6 +267,7 @@ enum NotesError: LocalizedError {
     case serverUnavailable
     case noteNotFound
     case invalidPinResponse
+    case pinUnavailable
 
     var errorDescription: String? {
         switch self {
@@ -276,6 +277,8 @@ enum NotesError: LocalizedError {
             return "Note not found."
         case .invalidPinResponse:
             return "The server did not return the note's pinned state. Refresh Notes before trying again."
+        case .pinUnavailable:
+            return "The server is unavailable. The note's pin has not been changed."
         }
     }
 }

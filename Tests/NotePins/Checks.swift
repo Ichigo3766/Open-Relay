@@ -66,6 +66,11 @@ enum Method { case post }
         manager.cache.append(local)
         check(try await manager.togglePin(local), "local-only pin still works")
         check(api.network.calls.count == calls, "local-only note does not contact server")
+        manager.apiClient = nil
+        do { _ = try await manager.togglePin(note); fatalError("Remote pin silently changed locally") }
+        catch { check(!manager.cache[0].isPinned, "missing connection cannot silently change a remote pin") }
+        check(try await manager.togglePin(local), "explicit local note works without a connection")
+        manager.apiClient = api
         let vm = NotesListViewModel()
         vm.manager = manager
         vm.notes = [note, Note(id: "not-in-cache")]
