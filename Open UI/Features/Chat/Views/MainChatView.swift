@@ -116,6 +116,7 @@ struct MainChatView: View {
     @State private var drawerChatsDropActive: Bool = false
 
     /// Top-level section collapse states (persisted across launches).
+    @AppStorage("sidebar_models_expanded") private var modelsExpanded: Bool = true
     @AppStorage("sidebar_folders_expanded") private var foldersExpanded: Bool = true
     @AppStorage("sidebar_shared_folders_expanded") private var sharedFoldersExpanded: Bool = true
     @AppStorage("sidebar_channels_expanded") private var channelsExpanded: Bool = true
@@ -2185,64 +2186,63 @@ struct MainChatView: View {
 
         if !pinnedModels.isEmpty {
             VStack(alignment: .leading, spacing: 0) {
-                // Section header
-                HStack(spacing: 6) {
-                    Image(systemName: "cpu")
-                        .scaledFont(size: 10, weight: .semibold, context: .list)
-                        .foregroundStyle(theme.textTertiary)
-                    Text("Models")
-                        .scaledFont(size: 12, weight: .medium, context: .list)
-                        .fontWeight(.bold)
-                        .foregroundStyle(theme.textTertiary)
-                        .textCase(.uppercase)
-                        .tracking(0.5)
-                    Spacer()
+                Button {
+                    withAnimation(MicroAnimation.snappy) {
+                        modelsExpanded.toggle()
+                    }
+                    Haptics.play(.light)
+                } label: {
+                    drawerSectionLabel(title: "Models", icon: "cpu", isExpanded: modelsExpanded)
                 }
-                .padding(.horizontal, Spacing.md)
-                .padding(.vertical, Spacing.sm)
+                .buttonStyle(.plain)
+                .accessibilityLabel("Models")
+                .accessibilityValue(modelsExpanded ? "Expanded" : "Collapsed")
+                .accessibilityIdentifier("sidebar-models-header")
 
                 // Pinned model rows
-                ForEach(pinnedModels) { model in
-                    let isSelected = model.id == vm.selectedModelId
-                    Button {
-                        let modelId = model.id
-                        startNewChat()
-                        let newVM = dependencies.activeChatStore.viewModel(for: nil)
-                        newVM.selectModel(modelId)
-                        closeDrawer()
-                    } label: {
-                        HStack(spacing: 8) {
-                            ModelAvatar(
-                                size: 22,
-                                imageURL: vm.resolvedImageURL(for: model),
-                                label: model.shortName,
-                                authToken: vm.serverAuthToken
-                            )
-                            Text(model.shortName)
-                                .scaledFont(size: 14, context: .list)
-                                .fontWeight(isSelected ? .semibold : .regular)
-                                .foregroundStyle(isSelected ? theme.textPrimary : theme.textSecondary)
-                                .lineLimit(1)
-                            Spacer()
-                            if isSelected {
-                                Image(systemName: "checkmark")
-                                    .scaledFont(size: 11, weight: .semibold, context: .list)
-                                    .foregroundStyle(theme.brandPrimary)
-                            }
-                        }
-                        .padding(.horizontal, Spacing.md)
-                        .padding(.vertical, 7)
-                        .background(isSelected ? theme.brandPrimary.opacity(0.08) : Color.clear)
-                        .clipShape(RoundedRectangle(cornerRadius: CornerRadius.sm))
-                        .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    .contextMenu {
-                        Button(role: .destructive) {
-                            vm.togglePinModel(model.id)
-                            Haptics.play(.medium)
+                if modelsExpanded {
+                    ForEach(pinnedModels) { model in
+                        let isSelected = model.id == vm.selectedModelId
+                        Button {
+                            let modelId = model.id
+                            startNewChat()
+                            let newVM = dependencies.activeChatStore.viewModel(for: nil)
+                            newVM.selectModel(modelId)
+                            closeDrawer()
                         } label: {
-                            Label("Unpin", systemImage: "pin.slash")
+                            HStack(spacing: 8) {
+                                ModelAvatar(
+                                    size: 22,
+                                    imageURL: vm.resolvedImageURL(for: model),
+                                    label: model.shortName,
+                                    authToken: vm.serverAuthToken
+                                )
+                                Text(model.shortName)
+                                    .scaledFont(size: 14, context: .list)
+                                    .fontWeight(isSelected ? .semibold : .regular)
+                                    .foregroundStyle(isSelected ? theme.textPrimary : theme.textSecondary)
+                                    .lineLimit(1)
+                                Spacer()
+                                if isSelected {
+                                    Image(systemName: "checkmark")
+                                        .scaledFont(size: 11, weight: .semibold, context: .list)
+                                        .foregroundStyle(theme.brandPrimary)
+                                }
+                            }
+                            .padding(.horizontal, Spacing.md)
+                            .padding(.vertical, 7)
+                            .background(isSelected ? theme.brandPrimary.opacity(0.08) : Color.clear)
+                            .clipShape(RoundedRectangle(cornerRadius: CornerRadius.sm))
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .contextMenu {
+                            Button(role: .destructive) {
+                                vm.togglePinModel(model.id)
+                                Haptics.play(.medium)
+                            } label: {
+                                Label("Unpin", systemImage: "pin.slash")
+                            }
                         }
                     }
                 }

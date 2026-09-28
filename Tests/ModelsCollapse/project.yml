@@ -1,0 +1,22 @@
+name: ModelsCollapseTests
+options:
+  deploymentTarget:
+    iOS: '18.1'
+settings:
+  base:
+    GENERATE_INFOPLIST_FILE: YES
+    SWIFT_VERSION: '5.0'
+targets:
+  ModelsCollapseUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources: [ModelsCollapseUITests.swift]
+    settings:
+      PRODUCT_BUNDLE_IDENTIFIER: org.example.relay.models-collapse-tests
+schemes:
+  ModelsCollapseTests:
+    build:
+      targets:
+        ModelsCollapseUITests: [test]
+    test:
+      targets: [ModelsCollapseUITests]
