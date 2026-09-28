@@ -173,7 +173,7 @@ final class NotesManager: @unchecked Sendable {
     /// Creates a note locally (fallback when server unavailable).
     @discardableResult
     private func createLocalNote(title: String, content: String) -> Note {
-        let note = Note(title: title, content: content)
+        let note = Note(title: title, content: content, isLocalOnly: true)
         var notes = fetchLocalNotes()
         notes.insert(note, at: 0)
         saveLocalNotes(notes)
@@ -223,14 +223,21 @@ final class NotesManager: @unchecked Sendable {
         }
     }
 
-    /// Pins or unpins a note (local-only; OpenWebUI does not have pin for notes).
-    func togglePin(id: String) {
+    /// Use the server's authoritative result; never silently turn a failed remote pin into a local one.
+    func togglePin(_ note: Note) async throws -> Bool {
+        let pinned: Bool
+        if let apiClient, !note.isLocalOnly {
+            guard isServerEnabled else { throw NotesError.serverUnavailable }
+            pinned = try await apiClient.toggleNotePin(id: note.id)
+        } else {
+            pinned = !note.isPinned
+        }
         var notes = fetchLocalNotes()
-        if let index = notes.firstIndex(where: { $0.id == id }) {
-            notes[index].isPinned.toggle()
-            notes[index].updatedAt = .now
+        if let index = notes.firstIndex(where: { $0.id == note.id }) {
+            notes[index].isPinned = pinned
             saveLocalNotes(notes)
         }
+        return pinned
     }
 
     // MARK: - File Operations
@@ -259,6 +266,7 @@ final class NotesManager: @unchecked Sendable {
 enum NotesError: LocalizedError {
     case serverUnavailable
     case noteNotFound
+    case invalidPinResponse
 
     var errorDescription: String? {
         switch self {
@@ -266,6 +274,8 @@ enum NotesError: LocalizedError {
             return "Server is not available. Notes are saved locally."
         case .noteNotFound:
             return "Note not found."
+        case .invalidPinResponse:
+            return "The server did not return the note's pinned state. Refresh Notes before trying again."
         }
     }
 }

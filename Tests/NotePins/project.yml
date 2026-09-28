@@ -1,0 +1,22 @@
+name: NotePins
+options:
+  deploymentTarget:
+    iOS: '18.1'
+settings:
+  base:
+    GENERATE_INFOPLIST_FILE: YES
+    SWIFT_VERSION: '5.0'
+targets:
+  NotePinsUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources: [NotePinsUITests.swift]
+    settings:
+      PRODUCT_BUNDLE_IDENTIFIER: org.example.relay.note-pin-tests
+schemes:
+  NotePins:
+    build:
+      targets:
+        NotePinsUITests: [test]
+    test:
+      targets: [NotePinsUITests]

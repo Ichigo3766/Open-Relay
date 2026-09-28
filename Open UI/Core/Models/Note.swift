@@ -72,7 +72,8 @@ struct Note: Codable, Identifiable, Hashable, Sendable {
             title: title,
             content: markdownContent,
             createdAt: createdAt,
-            updatedAt: updatedAt
+            updatedAt: updatedAt,
+            isPinned: json["is_pinned"] as? Bool ?? false
         )
     }
 

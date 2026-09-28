@@ -3262,6 +3262,12 @@ final class APIClient: @unchecked Sendable {
         try await network.requestJSON(path: "/api/v1/notes/\(id)")
     }
 
+    func toggleNotePin(id: String) async throws -> Bool {
+        let json = try await network.requestJSON(path: "/api/v1/notes/\(id)/pin", method: .post)
+        guard let pinned = json["is_pinned"] as? Bool else { throw NotesError.invalidPinResponse }
+        return pinned
+    }
+
     func createNote(
         title: String,
         markdownContent: String = "",

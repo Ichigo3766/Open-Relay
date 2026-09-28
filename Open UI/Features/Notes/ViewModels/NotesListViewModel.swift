@@ -14,6 +14,7 @@ final class NotesListViewModel {
     var searchText: String = ""
     var isLoading: Bool = false
     var errorMessage: String?
+    private(set) var pinningNoteIDs: Set<String> = []
 
     /// Whether the notes feature is enabled on the server.
     var isFeatureEnabled: Bool = true
@@ -163,9 +164,15 @@ final class NotesListViewModel {
         searchTask?.cancel()
     }
 
-    /// Toggles a note's pinned state (local-only).
-    func togglePin(_ note: Note) {
-        manager?.togglePin(id: note.id)
-        notes = manager?.fetchLocalNotes() ?? []
+    func togglePin(_ note: Note) async {
+        guard let manager, pinningNoteIDs.insert(note.id).inserted else { return }
+        defer { pinningNoteIDs.remove(note.id) }
+        do {
+            let pinned = try await manager.togglePin(note)
+            if let index = notes.firstIndex(where: { $0.id == note.id }) { notes[index].isPinned = pinned }
+            if let index = searchResults?.firstIndex(where: { $0.id == note.id }) { searchResults?[index].isPinned = pinned }
+        } catch {
+            errorMessage = "Could not update the pin. Refresh Notes before retrying. \(error.localizedDescription)"
+        }
     }
 }

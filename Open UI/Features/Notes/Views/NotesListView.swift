@@ -47,6 +47,14 @@ struct NotesListView: View {
         .refreshable {
             await viewModel.refreshNotes()
         }
+        .alert("Could Not Update Note", isPresented: .init(
+            get: { viewModel.errorMessage != nil },
+            set: { if !$0 { viewModel.errorMessage = nil } }
+        )) {
+            Button("OK", role: .cancel) { viewModel.errorMessage = nil }
+        } message: {
+            Text(viewModel.errorMessage ?? "")
+        }
         .task {
             if let manager = dependencies.notesManager {
                 viewModel.configure(with: manager)
@@ -150,7 +158,7 @@ struct NotesListView: View {
         }
         .swipeActions(edge: .leading) {
             Button {
-                viewModel.togglePin(note)
+                Task { await viewModel.togglePin(note) }
             } label: {
                 SwiftUI.Label(
                     isPinned ? "Unpin" : "Pin",
@@ -158,16 +166,18 @@ struct NotesListView: View {
                 )
             }
             .tint(theme.brandPrimary)
+            .disabled(viewModel.pinningNoteIDs.contains(note.id))
         }
         .contextMenu {
             Button {
-                viewModel.togglePin(note)
+                Task { await viewModel.togglePin(note) }
             } label: {
                 SwiftUI.Label(
                     isPinned ? "Unpin" : "Pin",
                     systemImage: isPinned ? "pin.slash" : "pin"
                 )
             }
+            .disabled(viewModel.pinningNoteIDs.contains(note.id))
             Button(role: .destructive) {
                 viewModel.deletingNote = note
             } label: {
