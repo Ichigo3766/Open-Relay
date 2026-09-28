@@ -1,0 +1,29 @@
+name: DictationCaretQA
+options:
+  deploymentTarget: {iOS: '18.1'}
+settings:
+  base:
+    CODE_SIGNING_ALLOWED: NO
+    GENERATE_INFOPLIST_FILE: YES
+    SWIFT_VERSION: '5.0'
+targets:
+  DictationCaretQA:
+    type: application
+    platform: iOS
+    sources: [Harness.swift, ComposerLayout.swift, PasteableTextView.swift]
+    settings:
+      PRODUCT_BUNDLE_IDENTIFIER: org.example.dictation-caret-qa
+      INFOPLIST_KEY_UILaunchScreen_Generation: YES
+  DictationCaretTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources: [CaretTests.swift]
+    dependencies: [{target: DictationCaretQA}]
+schemes:
+  DictationCaretQA:
+    build:
+      targets:
+        DictationCaretQA: all
+        DictationCaretTests: [test]
+    test:
+      targets: [DictationCaretTests]

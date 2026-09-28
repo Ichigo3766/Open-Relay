@@ -121,6 +121,7 @@ struct PasteableTextView: UIViewRepresentable {
         // Only update text if it actually changed (avoids cursor jump)
         if textView.text != text {
             textView.text = text
+            textView.revealSelectionAfterLayout = true
             textChanged = true
         }
         if textView.isEditable != isEnabled { textView.isEditable = isEnabled }
@@ -418,6 +419,17 @@ struct PasteableTextView: UIViewRepresentable {
 /// Custom UITextView subclass that overrides `paste(_:)` to detect images
 /// and files on the system pasteboard before falling through to normal text paste.
 final class PasteInterceptingTextView: UITextView {
+
+    /// A programmatic insertion can arrive before SwiftUI gives the editor its width.
+    var revealSelectionAfterLayout = false
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        if revealSelectionAfterLayout, bounds.width > 0, bounds.height > 0 {
+            revealSelectionAfterLayout = false
+            scrollRangeToVisible(selectedRange)
+        }
+    }
 
     /// Called when pasted content contains images or files.
     var onPasteAttachments: (([ChatAttachment]) -> Void)?
