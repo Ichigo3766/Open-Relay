@@ -34,12 +34,15 @@ import XCTest
     }
     func testExport() async throws {
         try await start()
-        XCTAssertTrue(app.buttons["Copy"].waitForExistence(timeout: 20))
+        XCTAssertTrue(app.cells["Copy"].waitForExistence(timeout: 20))
         XCTAssertFalse(app.alerts["Export Failed"].exists)
         capture("after-pdf-share")
         let paths = try await requests()
         XCTAssertFalse(paths.contains("POST /api/v1/utils/pdf"))
         XCTAssertEqual(paths.filter { $0 == "GET /api/v1/chats/synthetic-pdf" }.count, 1)
         XCTAssertFalse(paths.contains { $0.contains("/files/") })
+        app.cells["Markup"].tap()
+        XCTAssertTrue(app.staticTexts["Paper craft guide"].waitForExistence(timeout: 10))
+        capture("after-pdf-preview")
     }
 }

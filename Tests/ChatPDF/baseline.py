@@ -4,7 +4,7 @@ import subprocess
 import tempfile
 
 root = Path(__file__).resolve().parents[2]
-api = subprocess.check_output(["git", "show", "origin/main:Open UI/Core/Networking/APIClient.swift"], cwd=root, text=True)
+api = subprocess.check_output(["git", "show", "4151a735512d5d6dbc9fd1962fa806517a0d4ea7:Open UI/Core/Networking/APIClient.swift"], cwd=root, text=True)
 method = api.split("    func downloadChatAsPDF(", 1)[1].split("    // MARK: - AI Note Features", 1)[0]
 code = '''
 import Foundation
