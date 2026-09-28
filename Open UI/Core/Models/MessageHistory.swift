@@ -105,6 +105,7 @@ nonisolated struct HistoryNode: Sendable {
             "content": content,
             "timestamp": Int(timestamp.timeIntervalSince1970)
         ]
+        dict["embeds"] = embeds
 
         if role == .assistant {
             if let m = model { dict["model"] = m; dict["modelName"] = m }

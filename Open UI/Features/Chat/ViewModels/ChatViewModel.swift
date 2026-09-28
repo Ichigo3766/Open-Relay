@@ -2466,6 +2466,9 @@ final class ChatViewModel {
 
         // --- Metadata events: ALWAYS process (title, tags, follow-ups) ---
         switch type {
+        case "embeds", "chat:message:embeds":
+            applyMessageEmbeds(payload, messageId: messageId, chatId: event["chat_id"] as? String)
+            return
         case "terminal:display_file":
             receiveTerminalFile(payload, messageId: messageId, chatId: event["chat_id"] as? String, serverId: nil)
             return
@@ -4754,6 +4757,17 @@ final class ChatViewModel {
         return terminalDisplayFiles[chatId + "\0" + messageId] ?? []
     }
 
+    private func applyMessageEmbeds(_ payload: [String: Any]?, messageId: String?, chatId: String?) {
+        guard let messageId, let embeds = payload?["embeds"] as? [String],
+              chatId == nil || chatId == (conversationId ?? conversation?.id) else { return }
+        // Snapshots replace, rather than append: active and passive listeners may both receive one.
+        conversation?.history.updateNode(id: messageId) { $0.embeds = embeds }
+        if let index = conversation?.messages.firstIndex(where: { $0.id == messageId }),
+           conversation?.messages[index].embeds != embeds {
+            conversation?.messages[index].embeds = embeds
+        }
+    }
+
     private func handleChatEvent(
         _ event: [String: Any], ack: ((Any?) -> Void)?,
         assistantMessageId: String, modelId: String,
@@ -4770,6 +4784,10 @@ final class ChatViewModel {
 
         switch type {
         // --- Events that MUST work after streaming finishes ---
+
+        case "embeds", "chat:message:embeds":
+            applyMessageEmbeds(payload, messageId: event["message_id"] as? String ?? assistantMessageId,
+                               chatId: event["chat_id"] as? String ?? effectiveChatId)
 
         case "chat:title":
             // Title can be a direct string or nested in payload

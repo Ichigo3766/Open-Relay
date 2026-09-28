@@ -1,0 +1,22 @@
+name: LiveEmbeds
+options:
+  deploymentTarget:
+    iOS: '18.1'
+settings:
+  base:
+    GENERATE_INFOPLIST_FILE: YES
+    SWIFT_VERSION: '5.0'
+targets:
+  EmbedUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources: [EmbedUITests.swift]
+    settings:
+      PRODUCT_BUNDLE_IDENTIFIER: org.example.relay.embed-tests
+schemes:
+  LiveEmbeds:
+    build:
+      targets:
+        EmbedUITests: [test]
+    test:
+      targets: [EmbedUITests]

@@ -371,6 +371,7 @@ nonisolated struct ChatMessage: Identifiable, Hashable, Sendable {
             && lhs.sources.count == rhs.sources.count
             && lhs.followUps.count == rhs.followUps.count
             && lhs.files.count == rhs.files.count
+            && lhs.embeds == rhs.embeds
             && lhs.error?.content == rhs.error?.content
             && lhs.versions.count == rhs.versions.count
             && (lhs.usage == nil) == (rhs.usage == nil)
@@ -392,7 +393,7 @@ extension ChatMessage: Codable {
     enum CodingKeys: String, CodingKey {
         case id, role, content, timestamp, model, isStreaming
         case attachmentIds, files, sources, statusHistory, followUps
-        case metadata, error, versions, usage
+        case metadata, error, versions, usage, embeds
     }
 
     init(from decoder: Decoder) throws {
@@ -417,8 +418,7 @@ extension ChatMessage: Codable {
         } else {
             usage = nil
         }
-        // embeds are not persisted — they come from the server JSON on each load.
-        embeds = []
+        embeds = (try? c.decode([String].self, forKey: .embeds)) ?? []
         // These fields are runtime-only / not persisted via Codable.
         parentId = nil
         annotation = nil
@@ -443,6 +443,7 @@ extension ChatMessage: Codable {
         try c.encodeIfPresent(metadata, forKey: .metadata)
         try c.encodeIfPresent(error, forKey: .error)
         try c.encode(versions, forKey: .versions)
+        try c.encode(embeds, forKey: .embeds)
         if let usage {
             try c.encode(AnyCodableMap(usage), forKey: .usage)
         }
