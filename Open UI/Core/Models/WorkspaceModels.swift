@@ -1231,6 +1231,9 @@ struct ModelDetail: Identifiable, Sendable {
     var filterIds: [String]
     var defaultFilterIds: [String]
     var actionIds: [String]
+    var skillIds: [String]
+
+    private var paramsSnapshot: ModelConfigurationSnapshot?
 
     // Suggestion Prompts (meta.suggestion_prompts)
     var suggestionPrompts: [SuggestionPrompt]
@@ -1327,6 +1330,7 @@ struct ModelDetail: Identifiable, Sendable {
         self.builtinImageGen = builtinImageGen; self.builtinCodeInterpreter = builtinCodeInterpreter
         self.knowledgeItems = knowledgeItems; self.suggestionPrompts = suggestionPrompts
         self.toolIds = []; self.filterIds = []; self.defaultFilterIds = []; self.actionIds = []
+        self.skillIds = []
         self.ttsVoice = ttsVoice; self.customParams = []
         self.advStreamResponse = nil; self.advStreamDeltaChunkSize = nil; self.advFunctionCalling = nil
         self.advReasoningEffort = nil; self.advReasoningTagsEnabled = nil
@@ -1391,11 +1395,8 @@ struct ModelDetail: Identifiable, Sendable {
         self.toolIds = meta["toolIds"] as? [String] ?? []
         self.filterIds = meta["filterIds"] as? [String] ?? []
         self.defaultFilterIds = meta["defaultFilterIds"] as? [String] ?? []
-        // OpenWebUI stores skill IDs under both "actionIds" and "skillIds" in meta.
-        // Prefer "actionIds" but fall back to "skillIds" for compatibility with the web UI.
-        self.actionIds = meta["actionIds"] as? [String]
-            ?? meta["skillIds"] as? [String]
-            ?? []
+        self.actionIds = meta["actionIds"] as? [String] ?? []
+        self.skillIds = meta["skillIds"] as? [String] ?? []
 
         let caps = meta["capabilities"] as? [String: Any] ?? [:]
         self.capVision = caps["vision"] as? Bool ?? true
@@ -1493,10 +1494,19 @@ struct ModelDetail: Identifiable, Sendable {
             "think", "format", "num_keep", "num_ctx", "num_batch", "num_thread", "num_gpu", "keep_alive"
         ]
         self.customParams = params.filter { !knownParamKeys.contains($0.key) }
-            .map { (key: $0.key, value: "\($0.value)") }.sorted { $0.key < $1.key }
+            .map { entry in
+                let json = try? JSONSerialization.data(withJSONObject: entry.value, options: [.fragmentsAllowed, .sortedKeys])
+                return (key: entry.key, value: json.flatMap { String(data: $0, encoding: .utf8) } ?? "")
+            }.sorted { $0.key < $1.key }
+        paramsSnapshot = ModelConfigurationSnapshot(original: params, editable: buildParamsPayload())
     }
 
     // MARK: - Payload Builders
+
+    /// The editor builds a fresh form value; retain the loaded configuration as its baseline.
+    mutating func preserveUneditedConfiguration(from model: ModelDetail) {
+        paramsSnapshot = model.paramsSnapshot
+    }
 
     func buildParamsPayload() -> [String: Any] {
         var p: [String: Any] = [:]
@@ -1537,8 +1547,10 @@ struct ModelDetail: Identifiable, Sendable {
         if let v = advNumThread { p["num_thread"] = v }
         if let v = advNumGpu { p["num_gpu"] = v }
         if let v = advKeepAlive, !v.isEmpty { p["keep_alive"] = v }
-        for cp in customParams where !cp.key.isEmpty { p[cp.key] = cp.value }
-        return p
+        for cp in customParams where !cp.key.isEmpty {
+            p[cp.key] = (try? JSONSerialization.jsonObject(with: Data(cp.value.utf8), options: .fragmentsAllowed)) ?? cp.value
+        }
+        return paramsSnapshot?.applying(p) ?? p
     }
 
     func buildMetaPayload() -> [String: Any] {
@@ -1597,7 +1609,7 @@ struct ModelDetail: Identifiable, Sendable {
         meta["filterIds"] = filterIds
         meta["defaultFilterIds"] = defaultFilterIds
         meta["actionIds"] = actionIds
-        meta["skillIds"] = actionIds
+        meta["skillIds"] = skillIds
         meta["suggestion_prompts"] = suggestionPrompts.isEmpty
             ? NSNull()
             : suggestionPrompts.map { $0.toJSON() }
@@ -1647,5 +1659,43 @@ struct ModelDetail: Identifiable, Sendable {
         ModelItem(id: id, name: name, description: description, isActive: isActive,
                   profileImageURL: profileImageURL, baseModelId: baseModelId, tags: tags,
                   writeAccess: writeAccess, userId: userId, createdAt: createdAt, updatedAt: updatedAt)
+    }
+}
+
+/// Apply only changed form fields to the original JSON, including nested settings.
+private struct ModelConfigurationSnapshot: Sendable {
+    private let originalData: Data
+    private let editableData: Data
+
+    init?(original: [String: Any], editable: [String: Any]) {
+        guard let originalData = try? JSONSerialization.data(withJSONObject: original),
+              let editableData = try? JSONSerialization.data(withJSONObject: editable) else { return nil }
+        self.originalData = originalData
+        self.editableData = editableData
+    }
+
+    var original: [String: Any] {
+        (try? JSONSerialization.jsonObject(with: originalData)) as? [String: Any] ?? [:]
+    }
+
+    func applying(_ edited: [String: Any]) -> [String: Any] {
+        let baseline = (try? JSONSerialization.jsonObject(with: editableData)) as? [String: Any] ?? [:]
+        return Self.merge(original, baseline: baseline, edited: edited)
+    }
+
+    private static func merge(_ original: [String: Any], baseline: [String: Any], edited: [String: Any]) -> [String: Any] {
+        var result = original
+        for key in Set(baseline.keys).union(edited.keys) {
+            if let before = baseline[key], let after = edited[key],
+               let beforeJSON = try? JSONSerialization.data(withJSONObject: before, options: [.fragmentsAllowed, .sortedKeys]),
+               let afterJSON = try? JSONSerialization.data(withJSONObject: after, options: [.fragmentsAllowed, .sortedKeys]),
+               beforeJSON == afterJSON { continue }
+            if let before = baseline[key] as? [String: Any], let after = edited[key] as? [String: Any] {
+                result[key] = merge(original[key] as? [String: Any] ?? [:], baseline: before, edited: after)
+            } else {
+                result[key] = edited[key]
+            }
+        }
+        return result
     }
 }

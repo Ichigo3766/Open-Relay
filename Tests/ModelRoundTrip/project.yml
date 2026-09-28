@@ -1,0 +1,22 @@
+name: ModelRoundTrip
+options:
+  deploymentTarget:
+    iOS: '18.1'
+settings:
+  base:
+    GENERATE_INFOPLIST_FILE: YES
+    SWIFT_VERSION: '5.0'
+targets:
+  ModelEditorUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources: [ModelEditorUITests.swift]
+    settings:
+      PRODUCT_BUNDLE_IDENTIFIER: org.example.relay.model-editor-tests
+schemes:
+  ModelRoundTrip:
+    build:
+      targets:
+        ModelEditorUITests: [test]
+    test:
+      targets: [ModelEditorUITests]
