@@ -89,21 +89,18 @@ final class ReadAloudPlayer {
                     directory = url
                 }
                 while nextChunk < chunks.count, let generate, let directory {
-                    let (data, contentType) = try await generate(chunks[nextChunk])
-                    try Task.checkCancellation()
-                    guard sessionID == id else { return }
-                    let url = directory.appendingPathComponent("\(nextChunk).\(Self.audioExtension(contentType))")
-                    try data.write(to: url, options: .atomic)
-                    let asset = AVURLAsset(url: url)
-                    let length = try await asset.load(.duration).seconds
-                    try Task.checkCancellation()
-                    guard sessionID == id else { return }
-                    guard length.isFinite, length > 0 else { throw PlaybackError.invalidAudio }
-                    segments.append(Segment(url: url, start: bufferedDuration, duration: length))
-                    bufferedDuration += length
-                    nextChunk += 1
-                    enqueue(segments.count - 1)
-                    playIfRequested()
+                    let text = chunks[nextChunk]
+                    // Keep startup serial. Once audio is queued, a short chunk may
+                    // finish before the following request, so fetch that one too.
+                    // Two requests at most; append in order even if the second wins.
+                    if nextChunk > 0, text.count <= 160, nextChunk + 1 < chunks.count {
+                        let followingText = chunks[nextChunk + 1]
+                        async let followingAudio = generate(followingText)
+                        try await appendAudio(generate(text), directory: directory, sessionID: id)
+                        try await appendAudio(followingAudio, directory: directory, sessionID: id)
+                    } else {
+                        try await appendAudio(generate(text), directory: directory, sessionID: id)
+                    }
                 }
                 guard sessionID == id else { return }
                 isGenerating = false
@@ -118,6 +115,24 @@ final class ReadAloudPlayer {
                 endBackgroundTask()
             }
         }
+    }
+
+    private func appendAudio(_ audio: (Data, String), directory: URL, sessionID id: UUID) async throws {
+        try Task.checkCancellation()
+        guard sessionID == id else { throw CancellationError() }
+        let (data, contentType) = audio
+        let url = directory.appendingPathComponent("\(nextChunk).\(Self.audioExtension(contentType))")
+        try data.write(to: url, options: .atomic)
+        let asset = AVURLAsset(url: url)
+        let length = try await asset.load(.duration).seconds
+        try Task.checkCancellation()
+        guard sessionID == id else { throw CancellationError() }
+        guard length.isFinite, length > 0 else { throw PlaybackError.invalidAudio }
+        segments.append(Segment(url: url, start: bufferedDuration, duration: length))
+        bufferedDuration += length
+        nextChunk += 1
+        enqueue(segments.count - 1)
+        playIfRequested()
     }
 
     func retry() {
