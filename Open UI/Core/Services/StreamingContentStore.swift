@@ -12,6 +12,7 @@ final class StreamingContentStore {
     var streamingSources: [ChatSourceReference] = []
     var streamingError: ChatMessageError?
     var isActive = false
+    var isFinishing: Bool { isActive && updates == nil }
     var streamingModelId: String?
 
     private struct Update: Sendable {

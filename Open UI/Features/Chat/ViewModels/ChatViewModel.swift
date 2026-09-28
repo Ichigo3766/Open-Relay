@@ -2466,6 +2466,9 @@ final class ChatViewModel {
 
         // --- Metadata events: ALWAYS process (title, tags, follow-ups) ---
         switch type {
+        case "chat:outlet":
+            applyOutletMessages(payload, chatId: event["chat_id"] as? String)
+            return
         case "terminal:display_file":
             receiveTerminalFile(payload, messageId: messageId, chatId: event["chat_id"] as? String, serverId: nil)
             return
@@ -4754,6 +4757,33 @@ final class ChatViewModel {
         return terminalDisplayFiles[chatId + "\0" + messageId] ?? []
     }
 
+    /// Backend outlet filters run after completion. Their text is authoritative,
+    /// including empty replacements; never replay an older typewriter tail over it.
+    private func applyOutletMessages(_ payload: [String: Any]?, chatId: String?) {
+        guard let currentId = conversationId ?? conversation?.id,
+              chatId == nil || chatId == currentId,
+              let messages = payload?["messages"] as? [[String: Any]] else { return }
+        for message in messages {
+            guard let id = message["id"] as? String,
+                  let content = message["content"] as? String,
+                  var node = conversation?.history.nodes[id], node.content != content else { continue }
+            // A delayed outlet must not interrupt a newer continuation of this ID.
+            if streamingStore.streamingMessageId == id && streamingStore.isActive && !streamingStore.isFinishing { continue }
+            node.originalContent = node.content
+            node.content = content
+            if let output = message["output"] as? [[String: Any]] { node.output = output }
+            if node.role == .assistant { node.done = true }
+            conversation?.history.nodes[id] = node
+            if let index = conversation?.messages.firstIndex(where: { $0.id == id }) {
+                conversation?.messages[index].content = content
+                conversation?.messages[index].isStreaming = false
+            }
+            if streamingStore.streamingMessageId == id && streamingStore.isFinishing {
+                streamingStore.abortStreaming()
+            }
+        }
+    }
+
     private func handleChatEvent(
         _ event: [String: Any], ack: ((Any?) -> Void)?,
         assistantMessageId: String, modelId: String,
@@ -4770,6 +4800,9 @@ final class ChatViewModel {
 
         switch type {
         // --- Events that MUST work after streaming finishes ---
+
+        case "chat:outlet":
+            applyOutletMessages(payload, chatId: event["chat_id"] as? String ?? effectiveChatId)
 
         case "chat:title":
             // Title can be a direct string or nested in payload

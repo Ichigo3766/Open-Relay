@@ -358,14 +358,10 @@ nonisolated struct ChatMessage: Identifiable, Hashable, Sendable {
         self.subagentDelegationId = subagentDelegationId
     }
 
-    /// O(1) equality check — uses `content.utf8.count` instead of full string
-    /// comparison. During streaming, content only grows so byte count is always
-    /// unique. For completed messages, content is stable. This avoids O(n)
-    /// character-by-character comparison on potentially huge AI responses during
-    /// every SwiftUI diff cycle (~7x/sec during streaming).
+    /// Filters can replace completed text without changing its byte count.
     static func == (lhs: ChatMessage, rhs: ChatMessage) -> Bool {
         lhs.id == rhs.id
-            && lhs.content.utf8.count == rhs.content.utf8.count
+            && lhs.content == rhs.content
             && lhs.isStreaming == rhs.isStreaming
             && lhs.statusHistory.count == rhs.statusHistory.count
             && lhs.sources.count == rhs.sources.count

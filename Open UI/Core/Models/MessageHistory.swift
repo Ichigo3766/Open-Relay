@@ -16,6 +16,7 @@ nonisolated struct HistoryNode: Sendable {
     var childrenIds: [String]
     var role: MessageRole
     var content: String
+    var originalContent: String?
     var timestamp: Date
     var model: String?
     var done: Bool
@@ -68,7 +69,8 @@ nonisolated struct HistoryNode: Sendable {
         feedbackId: String? = nil,
         isInternalMessage: Bool = false,
         subagentDelegationId: String? = nil,
-        output: [[String: Any]] = []
+        output: [[String: Any]] = [],
+        originalContent: String? = nil
     ) {
         self.id = id
         self.parentId = parentId
@@ -91,6 +93,7 @@ nonisolated struct HistoryNode: Sendable {
         self.isInternalMessage = isInternalMessage
         self.subagentDelegationId = subagentDelegationId
         self.output = output
+        self.originalContent = originalContent
     }
 
     // MARK: - Serialization
@@ -111,6 +114,8 @@ nonisolated struct HistoryNode: Sendable {
             dict["modelIdx"] = 0
             dict["done"] = done
         }
+
+        if let originalContent { dict["originalContent"] = originalContent }
 
         if role == .user && !models.isEmpty {
             dict["models"] = models
@@ -700,12 +705,14 @@ nonisolated struct MessageHistory: Sendable {
         // tool calls and reasoning) so the existing ToolCallParser renders everything
         // correctly: text, tool call cards, and reasoning blocks — all in order.
         //
-        // Always prefer the output array when present — even when `content` is non-empty.
+        // Prefer the output array unless an outlet explicitly replaced its text.
         // OpenWebUI 0.10+ stores only a compact tool-result summary blob in `content`
         // (e.g. "📊 Presentazione pronta · 14 slide") while the full rich response
         // (prose + tool call blocks + final answer) lives in the `output` array.
         // Using `content` directly would show the stub instead of the real reply.
-        if let outputArr = msg["output"] as? [[String: Any]], !outputArr.isEmpty {
+        let originalContent = msg["originalContent"] as? String
+        let hasOutletText = originalContent != nil && msg["content"] is String && content != originalContent
+        if !hasOutletText, let outputArr = msg["output"] as? [[String: Any]], !outputArr.isEmpty {
             if let reconstructed = reconstructContentFromOutput(outputArr) {
                 content = reconstructed
             }
@@ -896,7 +903,8 @@ nonisolated struct MessageHistory: Sendable {
             feedbackId: feedbackId,
             isInternalMessage: isInternalMessage,
             subagentDelegationId: subagentDelegationId,
-            output: rawOutput
+            output: rawOutput,
+            originalContent: originalContent
         )
     }
 }
