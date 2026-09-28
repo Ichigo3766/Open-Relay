@@ -73,6 +73,11 @@ struct ChannelDetailView: View {
     
     // Channel settings
     @State private var showChannelSettings = false
+    @State private var showWebhooks = false
+
+    private var canManageWebhooks: Bool {
+        viewModel.channel?.isManager == true || dependencies.authViewModel.currentUser?.role == .admin
+    }
     
     // Error alerts (SEC-005 fix)
     @State private var showOperationError = false
@@ -103,6 +108,11 @@ struct ChannelDetailView: View {
             messageListArea
         }
         .modifier(ContextMenuHost())
+        .sheet(isPresented: $showWebhooks) {
+            if let apiClient = dependencies.apiClient {
+                ChannelWebhooksView(apiClient: apiClient, channelId: viewModel.channelId).themed()
+            }
+        }
         .environment(\.reactionProvider, ChannelReactionProvider())
         .onChange(of: selectedReaction) { _, newEmoji in
             guard let emoji = newEmoji, let msgId = reactionTargetMessageId else { return }
@@ -489,18 +499,26 @@ struct ChannelDetailView: View {
                     .scaledFont(size: 13, weight: .medium)
             }
             
-            if viewModel.canManageChannel {
-                Button {
-                    Task {
-                        async let channelRefresh: () = viewModel.loadChannel()
-                        async let usersRefresh: () = viewModel.loadAllServerUsers()
-                        _ = await (channelRefresh, usersRefresh)
-                        showChannelSettings = true
+            if viewModel.canManageChannel || canManageWebhooks {
+                Menu {
+                    if viewModel.canManageChannel {
+                        Button("Channel Settings", systemImage: "gearshape") {
+                            Task {
+                                async let channelRefresh: () = viewModel.loadChannel()
+                                async let usersRefresh: () = viewModel.loadAllServerUsers()
+                                _ = await (channelRefresh, usersRefresh)
+                                showChannelSettings = true
+                            }
+                        }
+                    }
+                    if canManageWebhooks {
+                        Button("Webhooks", systemImage: "link") { showWebhooks = true }
                     }
                 } label: {
                     Image(systemName: "gearshape")
                         .scaledFont(size: 13, weight: .medium)
                 }
+                .accessibilityLabel("Channel Actions")
             }
         }
     }
@@ -1941,4 +1959,3 @@ private struct ScrollViewEdgeEffectDisabler: UIViewRepresentable {
     }
     func updateUIView(_ uiView: UIView, context: Context) {}
 }
-

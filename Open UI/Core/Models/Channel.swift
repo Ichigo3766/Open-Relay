@@ -47,6 +47,7 @@ struct Channel: Identifiable, Hashable, Sendable {
     var archivedAt: Date?
     /// Server-computed write access — `true` means the current user can post. Nil if not yet loaded.
     var writeAccess: Bool?
+    var isManager: Bool = false
     
     // Local-only state
     var unreadCount: Int = 0
@@ -176,6 +177,7 @@ struct Channel: Identifiable, Hashable, Sendable {
         channel.lastMessage = lastMessage
         // Trust server's computed write permission directly
         channel.writeAccess = json["write_access"] as? Bool
+        channel.isManager = json["is_manager"] as? Bool ?? false
         
         // Parse inline `users` array from ChannelListItemResponse / ChannelFullResponse.
         // The server returns this for DM (and group) channels, including presence_state.

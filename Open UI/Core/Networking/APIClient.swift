@@ -5546,14 +5546,30 @@ final class APIClient: @unchecked Sendable {
     // MARK: - Channel Webhooks
 
     /// Gets webhooks for a channel.
-    func getChannelWebhooks(channelId: String) async throws -> [[String: Any]] {
+    func getChannelWebhooks(channelId: String) async throws -> [ChannelWebhook] {
         let (data, _) = try await network.requestRaw(
             path: "/api/v1/channels/\(channelId)/webhooks"
         )
-        guard let array = try JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
-            return []
+        return try JSONDecoder().decode([ChannelWebhook].self, from: data)
+    }
+
+    func saveChannelWebhook(channelId: String, webhook: ChannelWebhook?, name: String) async throws -> ChannelWebhook {
+        let path = webhook.map { "/api/v1/channels/\(channelId)/webhooks/\($0.id)/update" }
+            ?? "/api/v1/channels/\(channelId)/webhooks/create"
+        // Native updates replace the profile image; preserve it when renaming.
+        let body: [String: Any] = ["name": name, "profile_image_url": webhook?.profileImageURL as Any? ?? NSNull()]
+        let (data, _) = try await network.requestRaw(path: path, method: .post,
+            body: JSONSerialization.data(withJSONObject: body))
+        return try JSONDecoder().decode(ChannelWebhook.self, from: data)
+    }
+
+    func deleteChannelWebhook(channelId: String, webhookId: String) async throws {
+        let (data, _) = try await network.requestRaw(
+            path: "/api/v1/channels/\(channelId)/webhooks/\(webhookId)/delete", method: .delete)
+        guard try JSONDecoder().decode(Bool.self, from: data) else {
+            throw NSError(domain: "ChannelWebhook", code: 1,
+                userInfo: [NSLocalizedDescriptionKey: "The webhook was not deleted. Refresh and try again."])
         }
-        return array
     }
 
     /// Searches users (for @mention picker and access management).
