@@ -1,0 +1,22 @@
+name: PickerCloseControls
+options:
+  deploymentTarget:
+    iOS: '18.1'
+settings:
+  base:
+    GENERATE_INFOPLIST_FILE: YES
+    SWIFT_VERSION: '5.0'
+targets:
+  PickerCloseControlsUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources: [PickerCloseControlsUITests.swift]
+    settings:
+      PRODUCT_BUNDLE_IDENTIFIER: org.example.relay.picker-close-tests
+schemes:
+  PickerCloseControls:
+    build:
+      targets:
+        PickerCloseControlsUITests: [test]
+    test:
+      targets: [PickerCloseControlsUITests]

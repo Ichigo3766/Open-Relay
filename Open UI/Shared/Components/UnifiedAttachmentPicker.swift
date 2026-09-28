@@ -40,14 +40,9 @@ struct UnifiedAttachmentPicker: View {
                     .scaledFont(size: 17, weight: .semibold)
                     .foregroundStyle(theme.textPrimary)
                 Spacer()
-                Button {
+                SheetCloseButton {
                     onDismiss()
-                } label: {
-                    Image(systemName: "xmark.circle.fill")
-                        .scaledFont(size: 22)
-                        .foregroundStyle(theme.textTertiary)
                 }
-                .buttonStyle(.plain)
             }
             .padding(.horizontal, Spacing.screenPadding)
             .padding(.bottom, 14)

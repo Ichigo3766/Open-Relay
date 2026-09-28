@@ -105,7 +105,7 @@ struct ModelSelectorSheet: View {
         }
         .background(theme.background)
         .presentationDetents([.medium, .large])
-        .presentationDragIndicator(.hidden)
+        .presentationDragIndicator(.visible)
         .presentationCornerRadius(20)
         .presentationBackground(theme.background)
         // Disable background interaction so UIKit can use a cheaper,
@@ -132,13 +132,6 @@ struct ModelSelectorSheet: View {
 
     private var sheetHeader: some View {
         ZStack {
-            // Drag handle
-            RoundedRectangle(cornerRadius: 2.5, style: .continuous)
-                .fill(theme.textTertiary.opacity(0.3))
-                .frame(width: 36, height: 5)
-                .padding(.top, 8)
-                .frame(maxWidth: .infinity, alignment: .center)
-
             // Title + count
             HStack(spacing: 6) {
                 Text("Models")
@@ -159,12 +152,10 @@ struct ModelSelectorSheet: View {
             }
             .padding(.top, 8)
 
-            // Done button
+            // Close button
             HStack {
                 Spacer()
-                Button("Done") { dismiss() }
-                    .scaledFont(size: 17, weight: .semibold)
-                    .foregroundStyle(theme.brandPrimary)
+                SheetCloseButton { dismiss() }
                     .padding(.trailing, 20)
                     .padding(.top, 8)
             }
