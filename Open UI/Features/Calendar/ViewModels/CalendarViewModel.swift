@@ -92,11 +92,14 @@ final class CalendarViewModel {
     }
 
     func loadEventsForDisplayedMonth() async {
+        let scope = apiClient.network.conversationCacheScope
         let (start, end) = monthRange(for: displayedMonth)
         do {
             let fetched = try await apiClient.getCalendarEvents(start: start, end: end)
+            guard scope == apiClient.network.conversationCacheScope else { return }
             events = fetched
         } catch {
+            guard scope == apiClient.network.conversationCacheScope else { return }
             errorMessage = error.localizedDescription
         }
     }
@@ -158,32 +161,20 @@ final class CalendarViewModel {
 
     // MARK: - CRUD
 
-    func createEvent(
-        calendarId: String,
-        title: String,
-        description: String?,
-        startAt: Date,
-        endAt: Date?,
-        allDay: Bool,
-        location: String?,
-        alertMinutes: Int?
-    ) async {
-        let meta: CalendarEventMeta? = alertMinutes.map { CalendarEventMeta(alertMinutes: $0) }
-        let req = CalendarEventCreateRequest(
-            calendarId: calendarId,
-            title: title,
-            description: description,
-            startAt: Int64(startAt.timeIntervalSince1970 * 1_000_000_000),
-            endAt: endAt.map { Int64($0.timeIntervalSince1970 * 1_000_000_000) },
-            allDay: allDay,
-            location: location,
-            meta: meta
-        )
-        do {
-            let created = try await apiClient.createCalendarEvent(req)
-            events.append(created)
-        } catch {
-            errorMessage = error.localizedDescription
+    func eventForEditing(_ event: CalendarEvent) async throws -> CalendarEvent {
+        // Fetch the series dates, not the displayed recurrence instance's dates.
+        try await apiClient.getCalendarEvent(id: event.id)
+    }
+
+    func saveEvent(_ draft: CalendarEventDraft) async throws {
+        let saved = try await apiClient.saveCalendarEvent(draft)
+        if selectedEvent?.id == saved.id { selectedEvent = saved }
+        events.removeAll { $0.id == saved.id }
+        events.append(saved)
+        errorMessage = nil
+        await loadEventsForDisplayedMonth()
+        if let errorMessage {
+            self.errorMessage = "The event was saved, but the calendar couldn’t refresh. \(errorMessage)"
         }
     }
 

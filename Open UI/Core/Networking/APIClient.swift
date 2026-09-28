@@ -3687,14 +3687,22 @@ final class APIClient: @unchecked Sendable {
         return try JSONDecoder().decode([CalendarEvent].self, from: data)
     }
 
-    func createCalendarEvent(_ request: CalendarEventCreateRequest) async throws -> CalendarEvent {
-        let bodyData = try JSONEncoder().encode(request)
+    func getCalendarEvent(id: String) async throws -> CalendarEvent {
+        let scope = network.conversationCacheScope
+        let (data, _) = try await network.requestRaw(path: "/api/v1/calendars/events/\(id)")
+        guard scope == network.conversationCacheScope else { throw APIError.cancelled }
+        return try JSONDecoder().decode(CalendarEvent.self, from: data)
+    }
+
+    func saveCalendarEvent(_ draft: CalendarEventDraft) async throws -> CalendarEvent {
+        let scope = network.conversationCacheScope
+        let path = draft.id.map { "/api/v1/calendars/events/\($0)/update" }
+            ?? "/api/v1/calendars/events/create"
         let (data, _) = try await network.requestRaw(
-            path: "/api/v1/calendars/events/create",
-            method: .post,
-            body: bodyData,
-            contentType: "application/json"
+            path: path, method: .post,
+            body: JSONSerialization.data(withJSONObject: draft.requestBody())
         )
+        guard scope == network.conversationCacheScope else { throw APIError.cancelled }
         return try JSONDecoder().decode(CalendarEvent.self, from: data)
     }
 
