@@ -1,0 +1,22 @@
+name: ToolOAuth
+options:
+  deploymentTarget:
+    iOS: '18.1'
+settings:
+  base:
+    GENERATE_INFOPLIST_FILE: YES
+    SWIFT_VERSION: '5.0'
+targets:
+  ToolOAuthUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources: [ToolOAuthUITests.swift]
+    settings:
+      PRODUCT_BUNDLE_IDENTIFIER: org.example.relay.tool-oauth-tests
+schemes:
+  ToolOAuth:
+    build:
+      targets:
+        ToolOAuthUITests: [test]
+    test:
+      targets: [ToolOAuthUITests]

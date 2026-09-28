@@ -98,6 +98,7 @@ struct ChatInputField: View {
     var tools: [ToolItem]
     @Binding var selectedToolIds: Set<String>
     var isLoadingTools: Bool = false
+    var onRefreshTools: (() async -> Void)? = nil
     /// True once tools have been fetched at least once from the server.
     /// Used to distinguish "never fetched" (show pills) from "fetched and tool gone" (hide pill).
     var toolsHaveLoaded: Bool = false
@@ -197,6 +198,7 @@ struct ChatInputField: View {
     /// UI chrome scale (buttons, icons, touch targets) — mirrors AccessibilityManager.uiScale.
     private var uiScale: CGFloat { accessibilityScale.scale(for: .ui) }
     @State private var showToolsSheet = false
+    @State private var connectingTool: ToolItem?
     @State private var previewingAttachmentId: AttachmentID? = nil
 
     // MARK: - Expand-to-compose state (Slack-style swipe-up)
@@ -320,6 +322,7 @@ struct ChatInputField: View {
                 tools: tools,
                 selectedToolIds: $selectedToolIds,
                 isLoadingTools: isLoadingTools,
+                onRefreshTools: onRefreshTools,
                 onFileAttachment: onFileAttachment,
                 onPhotoAttachment: onPhotoAttachment,
                 onCameraCapture: onCameraCapture,
@@ -348,6 +351,12 @@ struct ChatInputField: View {
         }
         .onChange(of: showToolsSheet) { _, isPresented in
             if isPresented { onToolsSheetPresented?() }
+        }
+        .sheet(item: $connectingTool) { tool in
+            if let apiClient {
+                ToolConnectionView(tool: tool, apiClient: apiClient, onRefresh: onRefreshTools,
+                    onDisable: { selectedToolIds.remove(tool.id) }).themed()
+            }
         }
         // When tools finish loading, prune any starred IDs that no longer exist.
         // This permanently removes orphaned favorites caused by deleted/removed tools
@@ -928,10 +937,11 @@ struct ChatInputField: View {
                 let isSelected = selectedToolIds.contains(id)
                 pills.append(QuickPill(
                     id: id,
-                    icon: "wrench",
+                    icon: tool?.isAuthenticated == false ? "link" : "wrench",
                     label: displayName,
-                    isActive: isSelected,
+                    isActive: isSelected && tool?.isAuthenticated != false,
                     action: {
+                        if let tool, !tool.isAuthenticated { connectingTool = tool; return }
                         withAnimation(.easeOut(duration: 0.15)) {
                             if isSelected {
                                 selectedToolIds.remove(id)

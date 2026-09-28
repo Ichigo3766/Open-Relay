@@ -738,6 +738,12 @@ struct ChatDetailView: View {
             }
         }
         // Sheets & alerts
+        .sheet(item: Binding(get: { viewModel.toolConnectionRequested }, set: { viewModel.toolConnectionRequested = $0 })) { tool in
+            if let api = dependencies.apiClient {
+                ToolConnectionView(tool: tool, apiClient: api, onRefresh: { await viewModel.loadTools() },
+                    onDisable: { viewModel.selectedToolIds.remove(tool.id) }).themed()
+            }
+        }
         .sheet(isPresented: $showFilePicker) {
             DocumentPickerView { urls in
                 Task {
@@ -1429,6 +1435,7 @@ struct ChatDetailView: View {
                 tools: vm.availableTools,
                 selectedToolIds: $vm.selectedToolIds,
                 isLoadingTools: vm.isLoadingTools,
+                onRefreshTools: { await viewModel.loadTools() },
                 toolsHaveLoaded: vm.toolsHaveLoaded,
                 terminalEnabled: vm.terminalEnabled,
                 isTerminalAvailable: !vm.availableTerminalServers.isEmpty && vm.isTerminalCapableForSelectedModel,

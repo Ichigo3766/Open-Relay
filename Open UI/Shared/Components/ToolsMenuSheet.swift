@@ -12,6 +12,7 @@ struct ToolItem: Identifiable, Hashable {
     var hasUserValves: Bool
     /// True if this item is a toggle-filter function (not a regular tool).
     var isFunctionTool: Bool
+    var isAuthenticated: Bool
 
     init(
         id: String = UUID().uuidString,
@@ -19,7 +20,8 @@ struct ToolItem: Identifiable, Hashable {
         description: String? = nil,
         isEnabled: Bool = false,
         hasUserValves: Bool = false,
-        isFunctionTool: Bool = false
+        isFunctionTool: Bool = false,
+        isAuthenticated: Bool = true
     ) {
         self.id = id
         self.name = name
@@ -27,6 +29,7 @@ struct ToolItem: Identifiable, Hashable {
         self.isEnabled = isEnabled
         self.hasUserValves = hasUserValves
         self.isFunctionTool = isFunctionTool
+        self.isAuthenticated = isAuthenticated
     }
 }
 
@@ -55,6 +58,7 @@ struct ToolsMenuSheet: View {
     var tools: [ToolItem]
     @Binding var selectedToolIds: Set<String>
     var isLoadingTools: Bool = false
+    var onRefreshTools: (() async -> Void)? = nil
     var onFileAttachment: (() -> Void)?
     var onPhotoAttachment: (() -> Void)?
     var onCameraCapture: (() -> Void)?
@@ -107,6 +111,7 @@ struct ToolsMenuSheet: View {
     @State private var toolsExpanded = true
     @State private var navPath = NavigationPath()
     @State private var selectedDetent: PresentationDetent = .medium
+    @State private var connectingTool: ToolItem?
 
     // MARK: - Quick Pills (shared AppStorage key with ChatInputField)
     @AppStorage("quickPills") private var quickPillsData: String = ""
@@ -138,6 +143,12 @@ struct ToolsMenuSheet: View {
         .presentationDetents([.medium, .large], selection: $selectedDetent)
         .presentationDragIndicator(.hidden)
         .presentationCornerRadius(CornerRadius.modal)
+        .sheet(item: $connectingTool) { tool in
+            if let apiClient {
+                ToolConnectionView(tool: tool, apiClient: apiClient, onRefresh: onRefreshTools,
+                    onDisable: { selectedToolIds.remove(tool.id) }).themed()
+            }
+        }
         .onChange(of: navPath.isEmpty) { _, isEmpty in
             if isEmpty {
                 withAnimation(.easeInOut(duration: 0.25)) {
@@ -754,11 +765,12 @@ struct ToolsMenuSheet: View {
     }
 
     private func toolTile(tool: ToolItem) -> some View {
-        let isSelected = selectedToolIds.contains(tool.id)
+        let isSelected = tool.isAuthenticated && selectedToolIds.contains(tool.id)
 
         return HStack(spacing: 0) {
             // Main toggle area
             Button {
+                guard tool.isAuthenticated else { connectingTool = tool; return }
                 withAnimation(MicroAnimation.snappy) {
                     if isSelected {
                         selectedToolIds.remove(tool.id)
@@ -827,13 +839,17 @@ struct ToolsMenuSheet: View {
                         .accessibilityLabel("Configure \(tool.name) valves")
                     }
 
-                    togglePill(isOn: isSelected)
+                    if tool.isAuthenticated {
+                        togglePill(isOn: isSelected)
+                    } else {
+                        Label("Connect", systemImage: "link").font(.caption)
+                    }
                 }
                 .padding(Spacing.sm)
             }
             .buttonStyle(.plain)
             .accessibilityLabel(tool.name)
-            .accessibilityValue(isSelected ? "Enabled" : "Disabled")
+            .accessibilityValue(tool.isAuthenticated ? (isSelected ? "Enabled" : "Disabled") : "Connection required")
             .accessibilityAddTraits(.isToggle)
         }
         .background(tileBackground(isOn: isSelected))

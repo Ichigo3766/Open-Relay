@@ -160,7 +160,8 @@ final class ConversationManager: @unchecked Sendable {
             let description = meta?["description"] as? String ?? raw["description"] as? String
             let isActive = raw["is_active"] as? Bool ?? meta?["enabled"] as? Bool ?? false
             let hasUserValves = raw["has_user_valves"] as? Bool ?? false
-            return ToolItem(id: id, name: name, description: description, isEnabled: isActive, hasUserValves: hasUserValves)
+            return ToolItem(id: id, name: name, description: description, isEnabled: isActive,
+                hasUserValves: hasUserValves, isAuthenticated: raw["authenticated"] as? Bool ?? true)
         }
     }
 
