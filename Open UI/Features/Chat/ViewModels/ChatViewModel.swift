@@ -213,6 +213,8 @@ final class ChatViewModel {
     /// Has a countdown timer; expires by rejecting automatically.
     var liveAskUserPrompt: PendingAskUserPrompt?
 
+    let toolEventPrompts = ChatEventPrompts()
+
     /// True while a resolve (answer/reject) API call is in-flight for ask_user.
     var isResolvingAskUser: Bool = false
 
@@ -1677,6 +1679,8 @@ final class ChatViewModel {
     }
 
     deinit {
+        let prompts = toolEventPrompts
+        Task { @MainActor in prompts.cancelAll() }
         configurationObservers.forEach { NotificationCenter.default.removeObserver($0) }
         let fgObserver = foregroundObserver
         let bgObserver = backgroundObserver
@@ -4840,11 +4844,9 @@ final class ChatViewModel {
                 appendSources(id: assistantMessageId, sources: sources)
             }
 
-        case "notification":
-            if let msg = payload?["content"] as? String { logger.info("Notification: \(msg)") }
-
-        case "confirmation":
-            ack?(true)
+        case "notification", "confirmation", "input":
+            toolEventPrompts.receive(type: type ?? "", payload: payload,
+                                    active: !hasFinishedStreaming, reply: ack)
 
         case "execute":
             logger.info("🔧 [Socket] Acknowledging execute event for tool pipeline")
@@ -5808,6 +5810,7 @@ final class ChatViewModel {
     }
 
     private func cleanupStreaming() {
+        toolEventPrompts.cancelAll()
         guard !hasFinishedStreaming else { return }
         stopSwitchStatusPolling()
         hasFinishedStreaming = true

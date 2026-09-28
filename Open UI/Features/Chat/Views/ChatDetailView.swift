@@ -889,6 +889,7 @@ struct ChatDetailView: View {
             Text(downloadErrorMessage)
         }
         // MARK: Action event modifiers (input dialog, confirmation, notification toast)
+        .modifier(ChatEventPromptModifier(prompts: viewModel.toolEventPrompts))
         .applyActionEventModifiers(
             actionInputRequest: $actionInputRequest,
             actionConfirmRequest: $actionConfirmRequest,

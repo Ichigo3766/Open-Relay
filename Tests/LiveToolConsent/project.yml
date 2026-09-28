@@ -1,0 +1,23 @@
+name: LiveToolConsent
+options:
+  deploymentTarget:
+    iOS: '18.0'
+targets:
+  ConsentUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources:
+      - ConsentUITests.swift
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: org.example.relay.consent-tests
+        GENERATE_INFOPLIST_FILE: YES
+        SWIFT_VERSION: '5.0'
+schemes:
+  LiveToolConsent:
+    build:
+      targets:
+        ConsentUITests: all
+    test:
+      targets:
+        - ConsentUITests

@@ -520,7 +520,9 @@ final class SocketIOService: NSObject, @unchecked Sendable, URLSessionWebSocketD
     /// Sends a Socket.IO ACK packet in response to a server event that carried an ack ID.
     /// The server uses `sio.call()` to send events that require a client acknowledgement;
     /// the client must reply with `43<ackId>[responseValue]` so the server's await can resume.
-    func emitAck(_ ackId: Int, data: Any?) {
+    func emitAck(_ ackId: Int, data: Any?, sessionId: String?) {
+        // A prompt may outlive its connection. Never reuse its ack ID on a new session.
+        guard let sessionId, isConnected, sid == sessionId else { return }
         let payload: [Any]
         if let data {
             payload = [data]
@@ -1030,6 +1032,7 @@ final class SocketIOService: NSObject, @unchecked Sendable, URLSessionWebSocketD
     }
 
     private func dispatchChatEvent(_ event: [String: Any], ackId: Int? = nil) {
+        let connectionId = sid
         let chatId = event["chat_id"] as? String
         if let chatId, let scope = ConversationCache.scope(server: serverConfig.url,
             token: authToken, headers: serverConfig.customHeaders) {
@@ -1056,8 +1059,8 @@ final class SocketIOService: NSObject, @unchecked Sendable, URLSessionWebSocketD
                 // so __event_call__ handlers can reply and unblock sio.call() on the server.
                 let ackCallback: ((Any?) -> Void)? = ackId.map { id in
                     { [weak self] data in
-                        self?.logger.info("🔁 [Socket] emitAck id=\(id, privacy: .public) data=\(String(describing: data), privacy: .public)")
-                        self?.emitAck(id, data: data)
+                        self?.logger.info("🔁 [Socket] emitAck id=\(id, privacy: .public)")
+                        self?.emitAck(id, data: data, sessionId: connectionId)
                     }
                 }
                 reg.handler(event, ackCallback)
