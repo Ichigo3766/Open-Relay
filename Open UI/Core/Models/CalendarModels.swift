@@ -8,7 +8,7 @@ struct OWCalendar: Codable, Identifiable, Sendable {
     let id: String
     let userId: String
     var name: String
-    var color: String
+    var color: String?
     var isDefault: Bool
     var isSystem: Bool
 
@@ -23,7 +23,7 @@ struct OWCalendar: Codable, Identifiable, Sendable {
 
     /// SwiftUI `Color` from the hex string stored in `color`.
     var swiftUIColor: Color {
-        Color(hex: color) ?? .blue
+        color.flatMap { Color(hex: $0) } ?? .blue
     }
 }
 
@@ -208,4 +208,3 @@ struct CalendarEventCreateRequest: Encodable {
         case meta
     }
 }
-
