@@ -31,6 +31,8 @@ import Foundation
         let values = try typed.merging(["enabled": "false", "count": "0", "topic": "paper\r\nfolds"], into: ["other": ["list": [1, 2]]])
         check(values["enabled"] as? Bool == false, "native boolean")
         check(values["count"] as? Double == 0, "native number")
+        check(try form([["key": "scale", "type": "range", "step": 0.25]])
+            .merging(["scale": "0.75"], into: [:])["scale"] as? Double == 0.75, "fractional range value")
         check(values["topic"] as? String == "paper\nfolds", "normalize CRLF")
         check((values["other"] as? [String: [Int]])?["list"] == [1, 2], "preserve unknown structured values")
         for invalid in ["not-number", "nan", "inf", "-1", "9"] {
@@ -80,6 +82,26 @@ import Foundation
         try await draft.saveChatVariables(["topic": "paper"], form: form(required, chat: "local:demo"))
         check(draft.manager!.apiClient.writes == 0, "temporary never creates server chat")
         check(draft.conversation!.chatVariables["topic"] as? String == "paper", "temporary values retained")
+        draft.chatVariablesDraftGeneration = 1
+        do { try await draft.saveChatVariables(["topic": "wrong draft"], form: form(required, chat: "local:demo")); check(false, "reused draft") }
+        catch { check(draft.conversation!.chatVariables["topic"] as? String == "paper", "reset draft rejects stale form") }
+        let streaming = Harness(); streaming.isStreaming = true
+        do { try await streaming.saveChatVariables(["topic": "paper"], form: original); check(false, "streaming save") }
+        catch { check(streaming.manager!.fetches == 0, "streaming prevents save") }
+        let creating = Harness(); creating.isCreatingConversation = true
+        do { try await creating.saveChatVariables(["topic": "paper"], form: original); check(false, "create overlapping save") }
+        catch { check(creating.manager!.fetches == 0, "creation prevents overlapping save") }
+        let wire = WireClient()
+        try await wire.updateChatVariables(id: "craft-chat", values: values)
+        let body = try JSONSerialization.jsonObject(with: wire.network.body!) as! [String: Any]
+        check(wire.network.path == "/api/v1/chats/craft-chat", "native save path")
+        check((body["chat"] as? [String: Any])?.isEmpty == true, "variable-only patch leaves history untouched")
+        check((body["variables"] as? [String: Any])?["enabled"] as? Bool == false, "wire boolean preserved")
+        check((body["variables"] as? [String: Any])?["count"] as? Int == 0, "wire number preserved")
+        check(await ConversationCache.shared.invalidations == 1, "cache invalidation after save")
+        wire.network.onWrite = { wire.network.conversationCacheScope = "other-account" }
+        do { try await wire.updateChatVariables(id: "craft-chat", values: values); check(false, "late wire save") }
+        catch { check(true, "wire scope change detected") }
         print("\(count) checks passed")
     }
 }

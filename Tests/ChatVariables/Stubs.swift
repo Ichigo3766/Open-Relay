@@ -24,3 +24,19 @@ final class Manager {
         fetches += 1; onFetch?(); return stored
     }
 }
+
+final class WireNetwork {
+    enum Method { case post }
+    var conversationCacheScope: String? = "synthetic-scope"
+    var body: Data?
+    var path: String?
+    var onWrite: (() -> Void)?
+    func requestRaw(path: String, method: Method, body: Data) async throws -> (Data, Int) {
+        self.path = path; self.body = body; onWrite?(); return (Data(), 200)
+    }
+}
+actor ConversationCache {
+    static let shared = ConversationCache()
+    var invalidations = 0
+    func invalidate(scope: String, id: String) { invalidations += 1 }
+}

@@ -1420,7 +1420,7 @@ struct ChatDetailView: View {
                 attachmentUsage: vm.attachmentUsage,
                 placeholder: placeholderText,
                 isKeyboardVisible: keyboard.isVisible,
-                isEnabled: !vm.isStreaming || vm.enableMessageQueue,
+                isEnabled: !vm.isCreatingConversation && (!vm.isStreaming || vm.enableMessageQueue),
                 onSend: { Task { await viewModel.sendMessage() } },
                 onStopGenerating: vm.isStreaming ? { viewModel.stopStreaming() } : nil,
                 webSearchEnabled: $vm.webSearchEnabled,
@@ -1580,6 +1580,7 @@ struct ChatDetailView: View {
                     Task { await viewModel.handleToolApprovalModeChange(to: mode) }
                 }
             )
+            .disabled(vm.isCreatingConversation)
         }
         .background(Color.clear)
         .animation(.easeOut(duration: 0.2), value: vm.isShowingKnowledgePicker)

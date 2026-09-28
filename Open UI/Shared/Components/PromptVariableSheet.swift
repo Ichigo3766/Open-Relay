@@ -503,14 +503,14 @@ struct PromptVariableSheet: View {
 
         let binding = Binding<Double>(
             get: { currentVal },
-            set: { values[variable.name] = String(Int($0)) }
+            set: { values[variable.name] = String($0) }
         )
 
         return VStack(alignment: .leading, spacing: 4) {
             HStack {
                 Slider(value: binding, in: minVal...maxVal, step: stepVal)
                     .tint(theme.brandPrimary)
-                Text("\(Int(currentVal))")
+                Text(currentVal.formatted())
                     .scaledFont(size: 13, weight: .semibold)
                     .foregroundStyle(theme.textSecondary)
                     .frame(minWidth: 30)

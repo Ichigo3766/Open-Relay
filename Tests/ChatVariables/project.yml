@@ -1,0 +1,22 @@
+name: ChatVariables
+options:
+  deploymentTarget:
+    iOS: '18.1'
+settings:
+  base:
+    GENERATE_INFOPLIST_FILE: YES
+    SWIFT_VERSION: '5.0'
+targets:
+  VariablesUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources: [VariablesUITests.swift]
+    settings:
+      PRODUCT_BUNDLE_IDENTIFIER: org.example.relay.variables-tests
+schemes:
+  ChatVariables:
+    build:
+      targets:
+        VariablesUITests: [test]
+    test:
+      targets: [VariablesUITests]
