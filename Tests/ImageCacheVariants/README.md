@@ -15,5 +15,9 @@ display sizes, and never satisfies an original-size request with a thumbnail.
 A recognized but incomplete PNG must not save a validator: otherwise the retry
 receives a 304 and repeatedly reuses the undecodable bytes. This regression
 fails without clearing failed decodes and their validators and passes with it.
-The full app still needs integration
-checks for inline display/export and existing authentication/invalidation paths.
+
+A Release iOS 27 full-app check scrolled through eight synthetic inline images,
+switched to another chat, and reopened the images (40 gestures total). Request
+counts were 16 initially / 24 cumulative on the baseline and 8 / 8 with this
+change. Native tests establish original-resolution reuse and request headers;
+the scrolling check alone does not establish export behavior.
