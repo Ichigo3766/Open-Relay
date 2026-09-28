@@ -3266,14 +3266,7 @@ struct MainChatView: View {
                 showExportShareSheet = true
 
             case .pdf:
-                guard let api = dependencies.apiClient else { return }
-                // Use the server's raw message format for PDF generation.
-                // The API fetches the full chat JSON and passes native messages
-                // to the PDF renderer, avoiding any format mismatches.
-                let pdfData = try await api.downloadChatAsPDF(chatId: fullConversation.id)
-                let url = tmpDir.appendingPathComponent("\(title).pdf")
-                try pdfData.write(to: url)
-                exportFileURL = url
+                exportFileURL = try await ChatPDFExporter.export(title: title, messages: messages)
                 showExportShareSheet = true
             }
         } catch {

@@ -1150,11 +1150,7 @@ struct iPadMainChatView: View {
                 exportFileURL = url
                 showExportShareSheet = true
             case .pdf:
-                guard let api = dependencies.apiClient else { return }
-                let pdfData = try await api.downloadChatAsPDF(chatId: fullConversation.id)
-                let url = tmpDir.appendingPathComponent("\(title).pdf")
-                try pdfData.write(to: url)
-                exportFileURL = url
+                exportFileURL = try await ChatPDFExporter.export(title: title, messages: messages)
                 showExportShareSheet = true
             }
         } catch {

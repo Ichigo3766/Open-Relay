@@ -3858,58 +3858,6 @@ final class APIClient: @unchecked Sendable {
         return nil
     }
 
-    // MARK: - Util APIs
-
-    /// Downloads a chat as PDF. Fetches the full conversation from the server
-    /// and walks the history tree to get ordered messages in the format
-    /// the PDF renderer expects.
-    func downloadChatAsPDF(chatId: String) async throws -> Data {
-        let (chatData, _) = try await network.requestRaw(path: "/api/v1/chats/\(chatId)")
-        guard let chatJson = try JSONSerialization.jsonObject(with: chatData) as? [String: Any] else {
-            throw APIError.responseDecoding(underlying: NSError(domain: "API", code: -1, userInfo: [NSLocalizedDescriptionKey: "Invalid chat data"]), data: chatData)
-        }
-
-        let chat = chatJson["chat"] as? [String: Any] ?? [:]
-        let title = chat["title"] as? String ?? chatJson["title"] as? String ?? "Chat"
-
-        var orderedMessages: [[String: Any]] = []
-
-        if let history = chat["history"] as? [String: Any],
-           let messagesMap = history["messages"] as? [String: [String: Any]],
-           let currentId = history["currentId"] as? String {
-            var chain: [[String: Any]] = []
-            var cursor: String? = currentId
-            while let id = cursor, let msg = messagesMap[id] {
-                var m = msg
-                m["id"] = id
-                chain.append(m)
-                cursor = msg["parentId"] as? String
-            }
-            chain.reverse()
-            orderedMessages = chain
-        } else {
-            orderedMessages = chat["messages"] as? [[String: Any]] ?? []
-        }
-
-        let safeMessages: [[String: Any]] = orderedMessages.map { msg in
-            var m = msg
-            if m["content"] == nil || m["content"] is NSNull {
-                m["content"] = ""
-            }
-            return m
-        }
-
-        let body: [String: Any] = ["title": title, "messages": safeMessages]
-        let bodyData = try JSONSerialization.data(withJSONObject: body)
-        let (data, _) = try await network.requestRaw(
-            path: "/api/v1/utils/pdf",
-            method: .post,
-            body: bodyData,
-            timeout: 120
-        )
-        return data
-    }
-
     // MARK: - AI Note Features
 
     func generateNoteTitle(content: String, modelId: String) async throws -> String? {
