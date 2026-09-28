@@ -371,10 +371,6 @@ final class ChatViewModel {
     /// so it can detect when a new stream has started (e.g., via queue drain) and
     /// skip cleanup that would otherwise tear down the new stream.
     private var streamingSessionId: Int = 0
-    /// Tracks the content length at the last `extractAndApplyTasksFromContent` call.
-    /// Prevents the O(n) task-extraction scan from running on every single token;
-    /// it only fires when the content has grown by ≥ 100 chars since the last scan.
-    private var lastTaskExtractionLength: Int = 0
     private var activeTaskId: String?
     private var recoveryTimer: Timer?
     /// Cancellable delay task for the initial recovery timer delay.
@@ -2477,6 +2473,10 @@ final class ChatViewModel {
 
         // --- Metadata events: ALWAYS process (title, tags, follow-ups) ---
         switch type {
+        case "chat:message:tasks":
+            applyTaskUpdate(payload)
+            return
+
         case "chat:title":
             var newTitle: String?
             if let titleStr = data["data"] as? String, !titleStr.isEmpty {
@@ -4861,6 +4861,9 @@ final class ChatViewModel {
         switch type {
         // --- Events that MUST work after streaming finishes ---
 
+        case "chat:message:tasks":
+            applyTaskUpdate(payload)
+
         case "chat:title":
             // Title can be a direct string or nested in payload
             var newTitle: String?
@@ -5878,22 +5881,13 @@ final class ChatViewModel {
         )
     }
 
-    /// Updates a task status locally and syncs to server.
-    /// Called from TaskListView when the user taps a task row.
-    func updateTaskStatus(taskId: String, newStatus: String) {
-        // Update locally immediately (optimistic)
-        if let idx = tasks.firstIndex(where: { $0.id == taskId }) {
-            tasks[idx].status = newStatus
-        }
-        if let idx = conversation?.tasks.firstIndex(where: { $0.id == taskId }) {
-            conversation?.tasks[idx].status = newStatus
-        }
-        // Sync to server
-        guard let chatId = conversationId ?? conversation?.id,
-              let apiClient = manager?.apiClient else { return }
-        Task {
-            _ = try? await apiClient.updateChatTask(chatId: chatId, taskId: taskId, status: newStatus)
-        }
+    private func applyTaskUpdate(_ payload: [String: Any]?) {
+        guard let rawTasks = payload?["tasks"] as? [[String: Any]],
+              let data = try? JSONSerialization.data(withJSONObject: rawTasks),
+              let updated = try? JSONDecoder().decode([ChatTask].self, from: data),
+              Set(updated.map(\.id)).count == updated.count else { return }
+        tasks = updated
+        conversation?.tasks = updated
     }
 
     private func cleanupStreaming() {
@@ -5913,7 +5907,6 @@ final class ChatViewModel {
         }
         selfInitiatedStream = false
         activeTaskId = nil
-        lastTaskExtractionLength = 0
 
         // Always fire the notification — the UNUserNotificationCenterDelegate's
         // willPresent handler suppresses the banner when the user is actively
@@ -7136,124 +7129,6 @@ final class ChatViewModel {
         return "An unexpected error occurred"
     }
 
-    /// Extracts and updates tasks from a create_tasks or update_task tool call block
-    /// embedded in the streaming assistant message content.
-    /// Only processes tool calls that are fully complete (isDone == true) to avoid
-    /// parsing truncated/invalid JSON that arrives token-by-token during streaming.
-    private func extractAndApplyTasksFromContent(_ content: String) {
-        guard content.contains("create_tasks") || content.contains("update_task") else { return }
-
-        let ordered = ToolCallParser.parseOrdered(content)
-        for segment in ordered.segments {
-            guard case .toolCall(let tc) = segment else { continue }
-            guard tc.name == "create_tasks" || tc.name == "update_task" else { continue }
-            // Only process complete tool calls — streaming delivers truncated JSON
-            // in the arguments attribute which JSONSerialization cannot parse.
-            guard tc.isDone else { continue }
-
-            if tc.name == "create_tasks" {
-                // Prefer tc.result (server-authoritative, contains assigned IDs),
-                // fall back to tc.arguments using robust multi-strategy parsing.
-                let taskDict = parseTaskJSON(tc.result) ?? parseTaskJSON(tc.arguments)
-                if let taskArray = taskDict?["tasks"] as? [[String: Any]] {
-                    let parsed = taskArray.compactMap { t -> ChatTask? in
-                        guard let id = t["id"] as? String,
-                              let content = t["content"] as? String,
-                              let status = t["status"] as? String
-                        else { return nil }
-                        return ChatTask(id: id, content: content, status: status)
-                    }
-                    if !parsed.isEmpty {
-                        tasks = parsed
-                        conversation?.tasks = parsed
-                    }
-                }
-            } else if tc.name == "update_task" {
-                // Prefer tc.result — server returns the full updated task list after each update_task call.
-                // Fall back to single-task delta from tc.arguments if result is unavailable.
-                if let resultDict = parseTaskJSON(tc.result),
-                   let taskArray = resultDict["tasks"] as? [[String: Any]] {
-                    let parsed = taskArray.compactMap { t -> ChatTask? in
-                        guard let id = t["id"] as? String,
-                              let content = t["content"] as? String,
-                              let status = t["status"] as? String
-                        else { return nil }
-                        return ChatTask(id: id, content: content, status: status)
-                    }
-                    if !parsed.isEmpty {
-                        tasks = parsed
-                        conversation?.tasks = parsed
-                    }
-                } else {
-                    // Fallback: apply a single-task status change from arguments
-                    let argsDict = parseTaskJSON(tc.arguments)
-                    if let json = argsDict,
-                       let taskId = json["id"] as? String ?? json["task_id"] as? String,
-                       let newStatus = json["status"] as? String {
-                        if let idx = tasks.firstIndex(where: { $0.id == taskId }) {
-                            tasks[idx].status = newStatus
-                        }
-                        if let convIdx = conversation?.tasks.firstIndex(where: { $0.id == taskId }) {
-                            conversation?.tasks[convIdx].status = newStatus
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    /// Robustly parses a JSON string into a `[String: Any]` dictionary.
-    /// Handles four encoding variations seen in server-sent tool call attributes:
-    /// 1. Plain JSON object string
-    /// 2. Double-encoded: outer JSON is a string whose value is a JSON object
-    /// 3. Backslash-escaped quotes (`\"`) that must be stripped before parsing
-    /// 4. Regex extraction of individual task objects as a last resort
-    private func parseTaskJSON(_ source: String?) -> [String: Any]? {
-        guard let source, !source.isEmpty else { return nil }
-
-        // Strategy 1: direct parse
-        if let data = source.data(using: .utf8),
-           let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
-            return json
-        }
-
-        // Strategy 2: double-encoded — outer value is a JSON string wrapping another JSON object
-        if let data = source.data(using: .utf8),
-           let str = try? JSONSerialization.jsonObject(with: data) as? String,
-           let innerData = str.data(using: .utf8),
-           let json = try? JSONSerialization.jsonObject(with: innerData) as? [String: Any] {
-            return json
-        }
-
-        // Strategy 3: strip backslash-escaped quotes produced by HTML attribute encoding
-        let unescaped = source.replacingOccurrences(of: "\\\"", with: "\"")
-        if let data = unescaped.data(using: .utf8),
-           let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
-            return json
-        }
-
-        // Strategy 4: regex extraction — pull task objects directly from the raw string
-        let taskPattern = #"\{[^{}]*"id"\s*:\s*"[^"]+[^{}]*"content"\s*:\s*"[^"]+[^{}]*"status"\s*:\s*"[^"]+"[^{}]*\}"#
-        if let regex = try? NSRegularExpression(pattern: taskPattern),
-           let tasksRange = source.range(of: #""tasks"\s*:\s*\["#, options: .regularExpression) {
-            let searchString = String(source[tasksRange.lowerBound...])
-            let nsSearch = searchString as NSString
-            let matches = regex.matches(in: searchString, range: NSRange(location: 0, length: nsSearch.length))
-            let taskDicts: [[String: Any]] = matches.compactMap { match in
-                let raw = nsSearch.substring(with: match.range)
-                guard let d = raw.data(using: .utf8),
-                      let obj = try? JSONSerialization.jsonObject(with: d) as? [String: Any]
-                else { return nil }
-                return obj
-            }
-            if !taskDicts.isEmpty {
-                return ["tasks": taskDicts]
-            }
-        }
-
-        return nil
-    }
-
     private func updateAssistantMessage(
         id: String, content: String, isStreaming: Bool,
         sources: [ChatSourceReference]? = nil,
@@ -7354,16 +7229,6 @@ final class ChatViewModel {
             if let statusHistory { conversation?.messages[index].statusHistory = statusHistory }
             if let error { conversation?.messages[index].error = error }
         }
-
-        // Extract and apply task list updates live from the streaming content.
-        // Gate on a 100-char delta to avoid the O(n) string scan on every token.
-        // The function also guards internally (only fires when the magic keywords are present),
-        // so normal messages pay only the cheap length comparison.
-        if content.count - lastTaskExtractionLength >= 100 {
-            lastTaskExtractionLength = content.count
-            extractAndApplyTasksFromContent(content)
-        }
-
     }
 
     private func appendStatusUpdate(id: String, status: ChatStatusUpdate) {

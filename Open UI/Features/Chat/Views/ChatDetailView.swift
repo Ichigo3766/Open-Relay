@@ -1284,10 +1284,7 @@ struct ChatDetailView: View {
             if !vm.tasks.isEmpty {
                 TaskListView(
                     tasks: vm.tasks,
-                    isStreaming: vm.isStreaming,
-                    onToggleStatus: { taskId, newStatus in
-                        viewModel.updateTaskStatus(taskId: taskId, newStatus: newStatus)
-                    }
+                    isStreaming: vm.isStreaming
                 )
                 .transition(.asymmetric(
                     insertion: .move(edge: .bottom).combined(with: .opacity),

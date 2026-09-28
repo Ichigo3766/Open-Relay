@@ -1325,24 +1325,6 @@ final class APIClient: @unchecked Sendable {
         return (try? JSONSerialization.jsonObject(with: data) as? [String: Any]) ?? [:]
     }
 
-    /// Updates a single task's status for the given chat.
-    /// `POST /api/v1/tasks/{chat_id}/update` with body `{"task_id": ..., "status": ...}`
-    @discardableResult
-    func updateChatTask(chatId: String, taskId: String, status: String) async throws -> ChatTask? {
-        let body: [String: Any] = ["task_id": taskId, "status": status]
-        let (data, _) = try await network.requestRaw(
-            path: "/api/v1/tasks/\(chatId)/update",
-            method: .post,
-            body: try JSONSerialization.data(withJSONObject: body)
-        )
-        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let id = json["id"] as? String,
-              let content = json["content"] as? String,
-              let taskStatus = json["status"] as? String
-        else { return nil }
-        return ChatTask(id: id, content: content, status: taskStatus)
-    }
-
     // MARK: - User Settings
 
     func getUserSettings() async throws -> [String: Any] {

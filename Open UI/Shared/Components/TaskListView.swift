@@ -12,7 +12,6 @@ struct TaskListView: View {
     /// reopening a chat with existing in_progress tasks doesn't show a spurious
     /// spinner when nothing is actually happening.
     var isStreaming: Bool = false
-    var onToggleStatus: ((String, String) -> Void)?
 
     @State private var isExpanded: Bool = false
     @Environment(\.theme) private var theme
@@ -77,10 +76,7 @@ struct TaskListView: View {
                     ScrollView(.vertical, showsIndicators: false) {
                         VStack(spacing: 0) {
                             ForEach(tasks) { task in
-                                TaskRowView(
-                                    task: task,
-                                    onToggle: { onToggleStatus?(task.id, nextStatus(for: task)) }
-                                )
+                                TaskRowView(task: task)
 
                                 if task.id != tasks.last?.id {
                                     Divider()
@@ -131,56 +127,38 @@ struct TaskListView: View {
             }
         }
     }
-
-    // MARK: - Status cycling
-
-    /// Returns the next logical status when tapping a task row.
-    private func nextStatus(for task: ChatTask) -> String {
-        switch task.status {
-        case "pending":     return "in_progress"
-        case "in_progress": return "completed"
-        case "completed":   return "pending"
-        case "cancelled":   return "pending"
-        default:            return "completed"
-        }
-    }
 }
 
 // MARK: - Task Row
 
 private struct TaskRowView: View {
     let task: ChatTask
-    var onToggle: (() -> Void)?
 
     @Environment(\.theme) private var theme
 
     var body: some View {
-        Button(action: { onToggle?() }) {
-            HStack(spacing: 12) {
-                // Status icon
-                statusIcon
-                    .frame(width: 20, height: 20)
+        HStack(spacing: 12) {
+            statusIcon
+                .frame(width: 20, height: 20)
+                .accessibilityHidden(true)
 
-                // Task content
-                Text(task.content)
-                    .scaledFont(size: 13)
-                    .foregroundStyle(task.isCancelled || task.isCompleted ? theme.textTertiary : theme.textPrimary)
-                    .strikethrough(task.isCompleted || task.isCancelled, color: theme.textTertiary)
-                    .multilineTextAlignment(.leading)
-                    .lineLimit(2)
+            Text(task.content)
+                .scaledFont(size: 13)
+                .foregroundStyle(task.isCancelled || task.isCompleted ? theme.textTertiary : theme.textPrimary)
+                .strikethrough(task.isCompleted || task.isCancelled, color: theme.textTertiary)
+                .multilineTextAlignment(.leading)
+                .lineLimit(2)
 
-                Spacer(minLength: 0)
-
-                // Status badge (only for in_progress and cancelled)
-                if task.isInProgress || task.isCancelled {
-                    statusBadge
-                }
+            Spacer(minLength: 0)
+            if task.isInProgress || task.isCancelled {
+                statusBadge
             }
-            .padding(.horizontal, Spacing.screenPadding)
-            .padding(.vertical, 9)
-            .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .padding(.horizontal, Spacing.screenPadding)
+        .padding(.vertical, 9)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(task.content)
+        .accessibilityValue(task.status.replacingOccurrences(of: "_", with: " "))
     }
 
     @ViewBuilder

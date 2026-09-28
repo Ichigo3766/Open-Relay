@@ -1,0 +1,22 @@
+name: NativeTaskStatus
+options:
+  deploymentTarget:
+    iOS: '18.0'
+settings:
+  base:
+    GENERATE_INFOPLIST_FILE: YES
+    SWIFT_VERSION: '5.0'
+targets:
+  TaskUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources: [TaskUITests.swift]
+    settings:
+      PRODUCT_BUNDLE_IDENTIFIER: org.example.relay.task-tests
+schemes:
+  NativeTaskStatus:
+    build:
+      targets:
+        TaskUITests: [test]
+    test:
+      targets: [TaskUITests]
