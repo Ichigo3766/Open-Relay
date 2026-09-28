@@ -388,10 +388,11 @@ private struct HTMLFullscreenView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
-                    Button("Done") {
+                    Button("Done", systemImage: "xmark") {
                         dismiss()
                     }
-                    .fontWeight(.semibold)
+                    .labelStyle(.iconOnly)
+                    .tint(.secondary)
                 }
 
                 ToolbarItemGroup(placement: .topBarTrailing) {

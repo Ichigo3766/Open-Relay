@@ -253,19 +253,21 @@ struct EventWebhookEditorSheet: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { viewModel.showEditor = false; dismiss() }
+                    Button("Cancel", systemImage: "xmark") { viewModel.showEditor = false; dismiss() }
+                        .labelStyle(.iconOnly)
+                        .tint(.secondary)
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     if viewModel.isSaving {
                         ProgressView().controlSize(.small)
                     } else {
-                        Button("Save") {
+                        Button("Save", systemImage: "checkmark") {
                             Task {
                                 await viewModel.saveWebhook()
                                 dismiss()
                             }
                         }
-                        .fontWeight(.semibold)
+                        .labelStyle(.iconOnly)
                         .disabled(viewModel.editorURL.trimmingCharacters(in: .whitespaces).isEmpty)
                     }
                 }

@@ -1346,8 +1346,10 @@ struct iPadSidebarContent: View {
                             listViewModel.exitSelectionMode()
                         }
                     } label: {
-                        Text("Cancel").foregroundStyle(theme.brandPrimary)
+                        Label("Cancel", systemImage: "xmark")
                     }
+                    .labelStyle(.iconOnly)
+                    .tint(.secondary)
                 } else {
                     Menu {
                         if !listViewModel.conversations.isEmpty {
@@ -3262,10 +3264,12 @@ private struct iPadRenameSheet: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { dismiss() }
+                    Button("Cancel", systemImage: "xmark") { dismiss() }
+                        .labelStyle(.iconOnly)
+                        .tint(.secondary)
                 }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Save") {
+                    Button("Save", systemImage: "checkmark") {
                         let newTitle = renameText.trimmingCharacters(in: .whitespacesAndNewlines)
                         guard !newTitle.isEmpty else { return }
                         listViewModel.renamingConversation = conversation
@@ -3273,7 +3277,7 @@ private struct iPadRenameSheet: View {
                         Task { await listViewModel.commitRename() }
                         dismiss()
                     }
-                    .fontWeight(.semibold)
+                    .labelStyle(.iconOnly)
                     .disabled(renameText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
             }

@@ -145,12 +145,15 @@ struct FeedbackDetailSheet: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { dismiss() }
+                    Button("Cancel", systemImage: "xmark") { dismiss() }
+                        .labelStyle(.iconOnly)
+                        .tint(.secondary)
                 }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Save") {
+                    Button("Save", systemImage: "checkmark") {
                         Task { await save() }
                     }
+                    .labelStyle(.iconOnly)
                     .disabled(isSaving)
                     .overlay {
                         if isSaving {

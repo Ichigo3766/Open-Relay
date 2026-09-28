@@ -44,11 +44,11 @@ struct FullscreenContentEditor: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
-                    Button("Done") {
+                    Button("Done", systemImage: "checkmark") {
                         isFocused = false
                         dismiss()
                     }
-                    .scaledFont(size: 16, weight: .semibold)
+                    .labelStyle(.iconOnly)
                     .foregroundStyle(theme.brandPrimary)
                 }
                 ToolbarItem(placement: .topBarLeading) {

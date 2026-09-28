@@ -433,14 +433,15 @@ struct DefaultPermissionsSheet: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { dismiss() }
-                        .foregroundStyle(theme.textPrimary)
+                    Button("Cancel", systemImage: "xmark") { dismiss() }
+                        .labelStyle(.iconOnly)
+                        .tint(.secondary)
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     if viewModel.isSavingDefaults {
                         ProgressView().controlSize(.small)
                     } else {
-                        Button("Save") {
+                        Button("Save", systemImage: "checkmark") {
                             Task {
                                 await viewModel.saveDefaultPermissions()
                                 if viewModel.defaultsSaveSuccess {
@@ -448,7 +449,7 @@ struct DefaultPermissionsSheet: View {
                                 }
                             }
                         }
-                        .fontWeight(.semibold)
+                        .labelStyle(.iconOnly)
                         .foregroundStyle(theme.brandPrimary)
                     }
                 }

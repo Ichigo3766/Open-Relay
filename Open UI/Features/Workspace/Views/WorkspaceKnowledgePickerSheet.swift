@@ -85,9 +85,9 @@ struct WorkspaceKnowledgePickerSheet: View {
             .searchable(text: $searchText, prompt: selectedSegment == .collections ? "Search Collection" : "Search Files")
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
-                    Button("Cancel") { onDismiss() }
-                        .scaledFont(size: 16)
-                        .foregroundStyle(theme.textSecondary)
+                    Button("Cancel", systemImage: "xmark") { onDismiss() }
+                        .labelStyle(.iconOnly)
+                        .tint(.secondary)
                 }
                 if selectedSegment == .files {
                     ToolbarItem(placement: .topBarTrailing) {

@@ -1633,8 +1633,9 @@ struct AttachmentPreviewSheet: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Done") { dismiss() }
-                        .foregroundStyle(theme.brandPrimary)
+                    Button("Done", systemImage: "xmark") { dismiss() }
+                        .labelStyle(.iconOnly)
+                        .tint(.secondary)
                 }
                 // Copy button for content tab
                 if attachment.type == .file, selectedTab == .content,

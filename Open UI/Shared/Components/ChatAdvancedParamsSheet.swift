@@ -34,14 +34,16 @@ struct ChatAdvancedParamsSheet: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { dismiss() }
+                    Button("Cancel", systemImage: "xmark") { dismiss() }
+                        .labelStyle(.iconOnly)
+                        .tint(.secondary)
                 }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Save") {
+                    Button("Save", systemImage: "checkmark") {
                         params = draft
                         dismiss()
                     }
-                    .fontWeight(.semibold)
+                    .labelStyle(.iconOnly)
                 }
                 ToolbarItem(placement: .bottomBar) {
                     Button(role: .destructive) {

@@ -102,11 +102,13 @@ struct EditFolderSheet: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button(String(localized: "Cancel")) { dismiss() }
+                    Button(String(localized: "Cancel"), systemImage: "xmark") { dismiss() }
+                        .labelStyle(.iconOnly)
+                        .tint(.secondary)
                 }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button(String(localized: "Save")) { save() }
-                        .fontWeight(.semibold)
+                    Button(String(localized: "Save"), systemImage: "checkmark") { save() }
+                        .labelStyle(.iconOnly)
                 }
             }
             .background(theme.background)
@@ -568,7 +570,9 @@ struct EditFolderSheet: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button(String(localized: "Cancel")) { showModelPicker = false }
+                    Button(String(localized: "Cancel"), systemImage: "xmark") { showModelPicker = false }
+                        .labelStyle(.iconOnly)
+                        .tint(.secondary)
                 }
             }
         }

@@ -79,7 +79,9 @@ struct ShareChatSheet: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Close") { dismiss() }
+                    Button("Close", systemImage: "xmark") { dismiss() }
+                        .labelStyle(.iconOnly)
+                        .tint(.secondary)
                 }
             }
             .overlay(alignment: .top) {
@@ -219,7 +221,9 @@ struct ShareChatSheet: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Close") { showSharedChatDetail = false }
+                    Button("Close", systemImage: "xmark") { showSharedChatDetail = false }
+                        .labelStyle(.iconOnly)
+                        .tint(.secondary)
                 }
             }
         }

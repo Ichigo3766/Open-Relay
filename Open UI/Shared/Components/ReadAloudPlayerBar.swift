@@ -388,7 +388,9 @@ struct ReadAloudPlayerBar: View {
             .navigationTitle("Transcript")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .confirmationAction) {
-                Button("Done") { showingTranscript = false }
+                Button("Done", systemImage: "xmark") { showingTranscript = false }
+                    .labelStyle(.iconOnly)
+                    .tint(.secondary)
             }}
         }
         .presentationDetents([.medium, .large])

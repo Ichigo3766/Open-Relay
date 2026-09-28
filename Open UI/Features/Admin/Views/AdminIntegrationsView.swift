@@ -740,22 +740,24 @@ struct EditToolServerSheet: View {
             }
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") {
+                    Button("Cancel", systemImage: "xmark") {
                         viewModel.editingToolServerIndex = nil
                         dismiss()
                     }
+                    .labelStyle(.iconOnly)
+                    .tint(.secondary)
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     if viewModel.isSavingEditedToolServer {
                         ProgressView().controlSize(.small)
                     } else {
-                        Button("Save") {
+                        Button("Save", systemImage: "checkmark") {
                             Task {
                                 await viewModel.saveToolServerEdit()
                                 dismiss()
                             }
                         }
-                        .fontWeight(.semibold)
+                        .labelStyle(.iconOnly)
                         .disabled(viewModel.editToolURL.isEmpty)
                     }
                 }
@@ -971,22 +973,24 @@ struct AddToolServerSheet: View {
             }
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") {
+                    Button("Cancel", systemImage: "xmark") {
                         viewModel.isShowingAddToolServer = false
                         dismiss()
                     }
+                    .labelStyle(.iconOnly)
+                    .tint(.secondary)
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     if viewModel.isSavingAddToolServer {
                         ProgressView().controlSize(.small)
                     } else {
-                        Button("Save") {
+                        Button("Save", systemImage: "checkmark") {
                             Task {
                                 await viewModel.addToolServer()
                                 dismiss()
                             }
                         }
-                        .fontWeight(.semibold)
+                        .labelStyle(.iconOnly)
                         .disabled(viewModel.addToolURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                     }
                 }
@@ -1115,22 +1119,24 @@ struct EditTerminalSheet: View {
             }
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") {
+                    Button("Cancel", systemImage: "xmark") {
                         viewModel.editingTerminalIndex = nil
                         dismiss()
                     }
+                    .labelStyle(.iconOnly)
+                    .tint(.secondary)
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     if viewModel.isSavingEditedTerminal {
                         ProgressView().controlSize(.small)
                     } else {
-                        Button("Save") {
+                        Button("Save", systemImage: "checkmark") {
                             Task {
                                 await viewModel.saveTerminalEdit()
                                 dismiss()
                             }
                         }
-                        .fontWeight(.semibold)
+                        .labelStyle(.iconOnly)
                         .disabled(viewModel.editTermURL.isEmpty)
                     }
                 }
@@ -1226,22 +1232,24 @@ struct AddTerminalSheet: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") {
+                    Button("Cancel", systemImage: "xmark") {
                         viewModel.isShowingAddTerminal = false
                         dismiss()
                     }
+                    .labelStyle(.iconOnly)
+                    .tint(.secondary)
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     if viewModel.isSavingAddTerminal {
                         ProgressView().controlSize(.small)
                     } else {
-                        Button("Add") {
+                        Button("Add", systemImage: "checkmark") {
                             Task {
                                 await viewModel.addTerminal()
                                 dismiss()
                             }
                         }
-                        .fontWeight(.semibold)
+                        .labelStyle(.iconOnly)
                         .disabled(viewModel.addTermURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                     }
                 }

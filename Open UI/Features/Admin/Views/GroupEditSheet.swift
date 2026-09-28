@@ -69,8 +69,9 @@ struct GroupEditSheet: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { onDismiss() }
-                        .foregroundStyle(theme.textPrimary)
+                    Button("Cancel", systemImage: "xmark") { onDismiss() }
+                        .labelStyle(.iconOnly)
+                        .tint(.secondary)
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     saveButton
@@ -153,7 +154,7 @@ struct GroupEditSheet: View {
             ProgressView()
                 .controlSize(.small)
         } else {
-            Button("Save") {
+            Button("Save", systemImage: "checkmark") {
                 Task {
                     if isEditing {
                         await viewModel.updateGroup()
@@ -165,7 +166,7 @@ struct GroupEditSheet: View {
                     }
                 }
             }
-            .fontWeight(.semibold)
+            .labelStyle(.iconOnly)
             .foregroundStyle(theme.brandPrimary)
             .disabled(viewModel.editName.trimmingCharacters(in: .whitespaces).isEmpty)
         }

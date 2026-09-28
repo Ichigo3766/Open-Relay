@@ -634,18 +634,19 @@ struct KnowledgeEditorView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
-                    Button("Cancel") { showWebPageSheet = false }
-                        .scaledFont(size: 16).foregroundStyle(theme.textSecondary)
+                    Button("Cancel", systemImage: "xmark") { showWebPageSheet = false }
+                        .labelStyle(.iconOnly)
+                        .tint(.secondary)
                 }
                 ToolbarItem(placement: .topBarTrailing) {
                     if isUploadingFile {
                         ProgressView().tint(theme.brandPrimary)
                     } else {
-                        Button("Add") {
+                        Button("Add", systemImage: "checkmark") {
                             showWebPageSheet = false
                             Task { await addWebPage() }
                         }
-                        .scaledFont(size: 16, weight: .semibold)
+                        .labelStyle(.iconOnly)
                         .foregroundStyle(theme.brandPrimary)
                         .disabled(webPageURL.trimmingCharacters(in: .whitespaces).isEmpty)
                     }
@@ -707,18 +708,19 @@ struct KnowledgeEditorView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
-                    Button("Cancel") { showTextContentSheet = false }
-                        .scaledFont(size: 16).foregroundStyle(theme.textSecondary)
+                    Button("Cancel", systemImage: "xmark") { showTextContentSheet = false }
+                        .labelStyle(.iconOnly)
+                        .tint(.secondary)
                 }
                 ToolbarItem(placement: .topBarTrailing) {
                     if isUploadingFile {
                         ProgressView().tint(theme.brandPrimary)
                     } else {
-                        Button("Save") {
+                        Button("Save", systemImage: "checkmark") {
                             showTextContentSheet = false
                             Task { await addTextContent() }
                         }
-                        .scaledFont(size: 16, weight: .semibold)
+                        .labelStyle(.iconOnly)
                         .foregroundStyle(theme.brandPrimary)
                         .disabled(
                             textContentTitle.trimmingCharacters(in: .whitespaces).isEmpty ||
@@ -737,17 +739,18 @@ struct KnowledgeEditorView: View {
     @ToolbarContentBuilder
     private var toolbarContent: some ToolbarContent {
         ToolbarItem(placement: .topBarLeading) {
-            Button("Cancel") {
+            Button("Cancel", systemImage: "xmark") {
                 if hasChanges { showDiscardConfirm = true } else { dismiss() }
             }
-            .scaledFont(size: 16).foregroundStyle(theme.textSecondary)
+            .labelStyle(.iconOnly)
+            .tint(.secondary)
         }
         ToolbarItem(placement: .topBarTrailing) {
             if isSaving {
                 ProgressView().tint(theme.brandPrimary)
             } else {
-                Button("Save") { save() }
-                    .scaledFont(size: 16, weight: .semibold)
+                Button("Save", systemImage: "checkmark") { save() }
+                    .labelStyle(.iconOnly)
                     .foregroundStyle(theme.brandPrimary)
                     .disabled(name.trimmingCharacters(in: .whitespaces).isEmpty)
             }
@@ -1304,9 +1307,9 @@ struct KnowledgeFilePreviewSheet: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
-                    Button("Done") { dismiss() }
-                        .scaledFont(size: 16, weight: .semibold)
-                        .foregroundStyle(theme.brandPrimary)
+                    Button("Done", systemImage: "xmark") { dismiss() }
+                        .labelStyle(.iconOnly)
+                        .tint(.secondary)
                 }
             }
         }

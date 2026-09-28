@@ -48,8 +48,9 @@ struct NotesPickerSheet: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { isPresented = false }
-                        .foregroundStyle(theme.brandPrimary)
+                    Button("Cancel", systemImage: "xmark") { isPresented = false }
+                        .labelStyle(.iconOnly)
+                        .tint(.secondary)
                 }
             }
             .searchable(text: $searchText, prompt: "Search notes")

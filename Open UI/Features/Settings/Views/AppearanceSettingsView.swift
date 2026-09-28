@@ -450,19 +450,21 @@ struct AppearanceSettingsView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") {
+                    Button("Cancel", systemImage: "xmark") {
                         showColorWheel = false
                     }
+                    .labelStyle(.iconOnly)
+                    .tint(.secondary)
                 }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Apply") {
+                    Button("Apply", systemImage: "checkmark") {
                         withAnimation(.spring(response: 0.35, dampingFraction: 0.7)) {
                             manager.setCustomColor(wheelColor)
                         }
                         showColorWheel = false
                         Haptics.play(.medium)
                     }
-                    .fontWeight(.semibold)
+                    .labelStyle(.iconOnly)
                 }
             }
         }

@@ -146,9 +146,11 @@ struct AddServerSheet: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") {
+                    Button("Cancel", systemImage: "xmark") {
                         cancelAndRestore()
                     }
+                    .labelStyle(.iconOnly)
+                    .tint(.secondary)
                 }
             }
             // Cloudflare Bot Fight Mode challenge — reuses full existing flow

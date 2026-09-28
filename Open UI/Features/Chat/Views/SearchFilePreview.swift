@@ -36,6 +36,8 @@ struct SearchFilePreview: View {
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Close", systemImage: "xmark") { dismiss() }
+                        .labelStyle(.iconOnly)
+                        .tint(.secondary)
                 }
                 if let url {
                     ToolbarItem(placement: .primaryAction) {

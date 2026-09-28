@@ -654,22 +654,24 @@ struct EditOpenAIConnectionSheet: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") {
+                    Button("Cancel", systemImage: "xmark") {
                         viewModel.editingOpenAIIndex = nil
                         dismiss()
                     }
+                    .labelStyle(.iconOnly)
+                    .tint(.secondary)
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     if viewModel.isSavingEditedOpenAI {
                         ProgressView().controlSize(.small)
                     } else {
-                        Button("Save") {
+                        Button("Save", systemImage: "checkmark") {
                             Task {
                                 await viewModel.saveOpenAIConnectionEdit()
                                 dismiss()
                             }
                         }
-                        .fontWeight(.semibold)
+                        .labelStyle(.iconOnly)
                         .disabled(viewModel.editOpenAIURL.isEmpty)
                     }
                 }
@@ -883,22 +885,24 @@ struct AddOpenAIConnectionSheet: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") {
+                    Button("Cancel", systemImage: "xmark") {
                         viewModel.isShowingAddOpenAI = false
                         dismiss()
                     }
+                    .labelStyle(.iconOnly)
+                    .tint(.secondary)
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     if viewModel.isSavingAddOpenAI {
                         ProgressView().controlSize(.small)
                     } else {
-                        Button("Add") {
+                        Button("Add", systemImage: "checkmark") {
                             Task {
                                 await viewModel.addOpenAIConnection()
                                 dismiss()
                             }
                         }
-                        .fontWeight(.semibold)
+                        .labelStyle(.iconOnly)
                         .disabled(viewModel.addOpenAIURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                     }
                 }
@@ -1084,22 +1088,24 @@ struct EditOllamaConnectionSheet: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") {
+                    Button("Cancel", systemImage: "xmark") {
                         viewModel.editingOllamaIndex = nil
                         dismiss()
                     }
+                    .labelStyle(.iconOnly)
+                    .tint(.secondary)
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     if viewModel.isSavingEditedOllama {
                         ProgressView().controlSize(.small)
                     } else {
-                        Button("Save") {
+                        Button("Save", systemImage: "checkmark") {
                             Task {
                                 await viewModel.saveOllamaConnectionEdit()
                                 dismiss()
                             }
                         }
-                        .fontWeight(.semibold)
+                        .labelStyle(.iconOnly)
                         .disabled(viewModel.editOllamaURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                     }
                 }
@@ -1286,22 +1292,24 @@ struct AddOllamaConnectionSheet: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") {
+                    Button("Cancel", systemImage: "xmark") {
                         viewModel.isShowingAddOllama = false
                         dismiss()
                     }
+                    .labelStyle(.iconOnly)
+                    .tint(.secondary)
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     if viewModel.isSavingAddOllama {
                         ProgressView().controlSize(.small)
                     } else {
-                        Button("Add") {
+                        Button("Add", systemImage: "checkmark") {
                             Task {
                                 await viewModel.addOllamaConnection()
                                 dismiss()
                             }
                         }
-                        .fontWeight(.semibold)
+                        .labelStyle(.iconOnly)
                         .disabled(viewModel.addOllamaURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                     }
                 }

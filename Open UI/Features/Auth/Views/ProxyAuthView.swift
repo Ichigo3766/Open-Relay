@@ -543,9 +543,11 @@ struct ProxyAuthView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") {
+                    Button("Cancel", systemImage: "xmark") {
                         onDismiss()
                     }
+                    .labelStyle(.iconOnly)
+                    .tint(.secondary)
                 }
             }
             .alert("Sign In Timed Out", isPresented: $didFail) {

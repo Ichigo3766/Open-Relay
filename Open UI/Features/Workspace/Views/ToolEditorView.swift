@@ -86,18 +86,18 @@ struct ValvesSheet: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
-                    Button("Cancel") { dismiss() }
-                        .scaledFont(size: 16)
-                        .foregroundStyle(theme.textSecondary)
+                    Button("Cancel", systemImage: "xmark") { dismiss() }
+                        .labelStyle(.iconOnly)
+                        .tint(.secondary)
                 }
                 ToolbarItem(placement: .topBarTrailing) {
                     if isSaving {
                         ProgressView().tint(theme.brandPrimary)
                     } else {
-                        Button("Save") {
+                        Button("Save", systemImage: "checkmark") {
                             Task { await save() }
                         }
-                        .scaledFont(size: 16, weight: .semibold)
+                        .labelStyle(.iconOnly)
                         .foregroundStyle(theme.brandPrimary)
                         .disabled(propertyKeys.isEmpty)
                     }
@@ -800,20 +800,20 @@ struct ToolEditorView: View {
     @ToolbarContentBuilder
     private var toolbarContent: some ToolbarContent {
         ToolbarItem(placement: .topBarLeading) {
-            Button("Cancel") {
+            Button("Cancel", systemImage: "xmark") {
                 if hasChanges { showDiscardConfirm = true } else { dismiss() }
             }
-            .scaledFont(size: 16)
-            .foregroundStyle(theme.textSecondary)
+            .labelStyle(.iconOnly)
+            .tint(.secondary)
         }
         ToolbarItem(placement: .topBarTrailing) {
             if isSaving {
                 ProgressView().tint(theme.brandPrimary)
             } else {
-                Button("Save") {
+                Button("Save", systemImage: "checkmark") {
                     Task { await save() }
                 }
-                .scaledFont(size: 16, weight: .semibold)
+                .labelStyle(.iconOnly)
                 .foregroundStyle(theme.brandPrimary)
                 .disabled(name.trimmingCharacters(in: .whitespaces).isEmpty
                           || toolId.trimmingCharacters(in: .whitespaces).isEmpty)

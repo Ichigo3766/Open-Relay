@@ -242,10 +242,12 @@ private struct ShortcutMessageActionEditor: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { dismiss() }
+                    Button("Cancel", systemImage: "xmark") { dismiss() }
+                        .labelStyle(.iconOnly)
+                        .tint(.secondary)
                 }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Save") {
+                    Button("Save", systemImage: "checkmark") {
                         onSave(ShortcutMessageAction(
                             id: action.id,
                             name: trimmedName,
@@ -254,6 +256,7 @@ private struct ShortcutMessageActionEditor: View {
                         ))
                         dismiss()
                     }
+                    .labelStyle(.iconOnly)
                     .disabled(!canSave)
                 }
             }

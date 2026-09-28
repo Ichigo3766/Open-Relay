@@ -131,8 +131,10 @@ struct ChatListView: View {
         ToolbarItem(placement: .topBarLeading) {
             if viewModel.isSelectionMode {
                 Button { viewModel.exitSelectionMode() } label: {
-                    Text("Cancel")
+                    Label("Cancel", systemImage: "xmark")
                 }
+                .labelStyle(.iconOnly)
+                .tint(.secondary)
                 .accessibilityLabel(Text("Exit selection mode"))
             } else {
                 Menu {

@@ -205,9 +205,11 @@ struct CloudflareChallengeView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") {
+                    Button("Cancel", systemImage: "xmark") {
                         onDismiss()
                     }
+                    .labelStyle(.iconOnly)
+                    .tint(.secondary)
                 }
             }
             .alert("Verification Timed Out", isPresented: $didFail) {

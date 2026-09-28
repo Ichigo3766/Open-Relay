@@ -423,7 +423,9 @@ struct AutomationDetailView: View {
     @ToolbarContentBuilder
     private var toolbarContent: some ToolbarContent {
         ToolbarItem(placement: .cancellationAction) {
-            Button("Close") { dismiss() }
+            Button("Close", systemImage: "xmark") { dismiss() }
+                .labelStyle(.iconOnly)
+                .tint(.secondary)
         }
         ToolbarItem(placement: .destructiveAction) {
             Button { showDeleteConfirm = true } label: {
@@ -453,7 +455,7 @@ struct AutomationDetailView: View {
             if isSaving {
                 ProgressView().scaleEffect(0.8)
             } else if hasChanges {
-                Button("Save") {
+                Button("Save", systemImage: "checkmark") {
                     Task {
                         isSaving = true
                         await listVM.updateAutomation(
@@ -467,7 +469,7 @@ struct AutomationDetailView: View {
                         hasChanges = false
                     }
                 }
-                .fontWeight(.semibold)
+                .labelStyle(.iconOnly)
             }
         }
     }

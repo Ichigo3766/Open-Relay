@@ -74,16 +74,18 @@ struct CreateAutomationSheet: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { dismiss() }
+                    Button("Cancel", systemImage: "xmark") { dismiss() }
+                        .labelStyle(.iconOnly)
+                        .tint(.secondary)
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     if isCreating {
                         ProgressView().scaleEffect(0.8)
                     } else {
-                        Button("Create") {
+                        Button("Create", systemImage: "checkmark") {
                             Task { await create() }
                         }
-                        .fontWeight(.semibold)
+                        .labelStyle(.iconOnly)
                         .disabled(!canCreate)
                     }
                 }

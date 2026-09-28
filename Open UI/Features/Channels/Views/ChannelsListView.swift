@@ -685,10 +685,12 @@ struct CreateChannelSheet: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { dismiss() }
+                    Button("Cancel", systemImage: "xmark") { dismiss() }
+                        .labelStyle(.iconOnly)
+                        .tint(.secondary)
                 }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button(isEditMode ? "Update" : "Create") {
+                    Button(isEditMode ? "Update" : "Create", systemImage: "checkmark") {
                         let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
                         let desc = description.trimmingCharacters(in: .whitespacesAndNewlines)
                         if editingChannel != nil {
@@ -700,7 +702,7 @@ struct CreateChannelSheet: View {
                         }
                         dismiss()
                     }
-                    .fontWeight(.semibold)
+                    .labelStyle(.iconOnly)
                     .disabled(channelType == .dm
                         ? selectedGroupMemberIds.isEmpty  // DM: need at least 1 user selected
                         : name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
@@ -1557,7 +1559,9 @@ struct NewDMSheet: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { onCancel() }
+                    Button("Cancel", systemImage: "xmark") { onCancel() }
+                        .labelStyle(.iconOnly)
+                        .tint(.secondary)
                         .disabled(isLoading)
                 }
             }

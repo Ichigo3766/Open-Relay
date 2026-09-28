@@ -569,13 +569,16 @@ struct ServerManagementView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { isEditing = false }
+                    Button("Cancel", systemImage: "xmark") { isEditing = false }
+                        .labelStyle(.iconOnly)
+                        .tint(.secondary)
                 }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Save") {
+                    Button("Save", systemImage: "checkmark") {
                         saveEdits()
                         isEditing = false
                     }
+                    .labelStyle(.iconOnly)
                     .disabled(editingURL.isEmpty)
                 }
             }

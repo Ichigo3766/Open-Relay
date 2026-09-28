@@ -90,18 +90,18 @@ struct UserValvesSheet: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
-                    Button("Cancel") { dismiss() }
-                        .scaledFont(size: 16)
-                        .foregroundStyle(theme.textSecondary)
+                    Button("Cancel", systemImage: "xmark") { dismiss() }
+                        .labelStyle(.iconOnly)
+                        .tint(.secondary)
                 }
                 ToolbarItem(placement: .topBarTrailing) {
                     if isSaving {
                         ProgressView().tint(theme.brandPrimary)
                     } else {
-                        Button("Save") {
+                        Button("Save", systemImage: "checkmark") {
                             Task { await save() }
                         }
-                        .scaledFont(size: 16, weight: .semibold)
+                        .labelStyle(.iconOnly)
                         .foregroundStyle(theme.brandPrimary)
                         .disabled(propertyKeys.isEmpty)
                     }

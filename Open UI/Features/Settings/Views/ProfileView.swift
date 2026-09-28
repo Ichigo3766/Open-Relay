@@ -454,10 +454,12 @@ struct ProfileView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { showAddVariableSheet = false }
+                    Button("Cancel", systemImage: "xmark") { showAddVariableSheet = false }
+                        .labelStyle(.iconOnly)
+                        .tint(.secondary)
                 }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Save") {
+                    Button("Save", systemImage: "checkmark") {
                         let trimmedKey = newVarKey.trimmingCharacters(in: .whitespaces).uppercased()
                         guard !trimmedKey.isEmpty else {
                             variableKeyError = "Variable name cannot be empty."
@@ -476,7 +478,7 @@ struct ProfileView: View {
                         editingVariableKey = nil
                         Task { await saveVariables() }
                     }
-                    .fontWeight(.semibold)
+                    .labelStyle(.iconOnly)
                     .disabled(newVarKey.trimmingCharacters(in: .whitespaces).isEmpty)
                 }
             }

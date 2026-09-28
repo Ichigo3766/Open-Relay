@@ -79,10 +79,11 @@ struct ReferenceChatPickerView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") {
+                    Button("Cancel", systemImage: "xmark") {
                         isPresented = false
                     }
-                    .foregroundStyle(theme.brandPrimary)
+                    .labelStyle(.iconOnly)
+                    .tint(.secondary)
                 }
             }
         }

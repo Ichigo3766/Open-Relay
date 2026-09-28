@@ -764,10 +764,12 @@ struct AddUserSheet: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { dismiss() }
+                    Button("Cancel", systemImage: "xmark") { dismiss() }
+                        .labelStyle(.iconOnly)
+                        .tint(.secondary)
                 }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Add") {
+                    Button("Add", systemImage: "checkmark") {
                         Task {
                             await viewModel.addUser()
                             if viewModel.addError == nil {
@@ -775,7 +777,7 @@ struct AddUserSheet: View {
                             }
                         }
                     }
-                    .fontWeight(.semibold)
+                    .labelStyle(.iconOnly)
                     .disabled(viewModel.addName.isEmpty || viewModel.addEmail.isEmpty || viewModel.addPassword.isEmpty || viewModel.isAddingUser)
                 }
             }

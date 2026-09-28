@@ -68,7 +68,9 @@ struct VoiceSettingsHubView: View {
         .toolbar {
             if presentedInCall {
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Done") { dismiss() }
+                    Button("Done", systemImage: "xmark") { dismiss() }
+                        .labelStyle(.iconOnly)
+                        .tint(.secondary)
                 }
             }
         }

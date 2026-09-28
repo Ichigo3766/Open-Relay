@@ -37,11 +37,12 @@ struct OllamaModelManagerSheet: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Done") {
+                    Button("Done", systemImage: "xmark") {
                         viewModel.cancelAllActiveTasks()
                         dismiss()
                     }
-                    .fontWeight(.semibold)
+                    .labelStyle(.iconOnly)
+                    .tint(.secondary)
                 }
             }
         }

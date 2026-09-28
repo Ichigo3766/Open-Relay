@@ -528,10 +528,15 @@ struct BannerEditorSheet: View {
             .navigationTitle(viewModel.editingBanner == nil ? "Add Banner" : "Edit Banner")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .cancellationAction) { Button("Cancel") { viewModel.showBannerEditor = false; dismiss() } }
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel", systemImage: "xmark") { viewModel.showBannerEditor = false; dismiss() }
+                        .labelStyle(.iconOnly)
+                        .tint(.secondary)
+                }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Save") { viewModel.commitBannerEdit(); dismiss() }
-                        .fontWeight(.semibold).disabled(viewModel.bannerEditorContent.isEmpty)
+                    Button("Save", systemImage: "checkmark") { viewModel.commitBannerEdit(); dismiss() }
+                        .labelStyle(.iconOnly)
+                        .disabled(viewModel.bannerEditorContent.isEmpty)
                 }
             }
         }

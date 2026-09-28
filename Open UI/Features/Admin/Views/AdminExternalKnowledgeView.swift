@@ -295,16 +295,18 @@ struct ExternalKnowledgeEditorSheet: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { viewModel.showEditor = false; dismiss() }
+                    Button("Cancel", systemImage: "xmark") { viewModel.showEditor = false; dismiss() }
+                        .labelStyle(.iconOnly)
+                        .tint(.secondary)
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     if viewModel.isCreating {
                         ProgressView().controlSize(.small)
                     } else {
-                        Button(viewModel.editingItemId != nil ? "Save" : "Create") {
+                        Button(viewModel.editingItemId != nil ? "Save" : "Create", systemImage: "checkmark") {
                             Task { await viewModel.saveSource(); dismiss() }
                         }
-                        .fontWeight(.semibold)
+                        .labelStyle(.iconOnly)
                         .disabled(!viewModel.formIsValid || !viewModel.testPassed)
                     }
                 }

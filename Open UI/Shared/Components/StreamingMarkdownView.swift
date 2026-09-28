@@ -1090,9 +1090,9 @@ private struct FullscreenImageViewer: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
-                    Button("Done") { dismiss() }
-                        .foregroundStyle(.white)
-                        .fontWeight(.semibold)
+                    Button("Done", systemImage: "xmark") { dismiss() }
+                        .labelStyle(.iconOnly)
+                        .tint(.secondary)
                 }
                 ToolbarItemGroup(placement: .topBarTrailing) {
                     if let uiImage = image {
@@ -1213,8 +1213,9 @@ struct FullCodeView: View {
                 .navigationBarTitleDisplayMode(.inline)
                 .toolbar {
                     ToolbarItem(placement: .topBarLeading) {
-                        Button("Done") { dismiss() }
-                            .fontWeight(.semibold)
+                        Button("Done", systemImage: "xmark") { dismiss() }
+                            .labelStyle(.iconOnly)
+                            .tint(.secondary)
                     }
                     ToolbarItemGroup(placement: .topBarTrailing) {
                         Button {

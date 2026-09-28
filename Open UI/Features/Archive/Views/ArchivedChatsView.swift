@@ -310,7 +310,9 @@ struct ArchivedChatsView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Close") { showPreview = false }
+                    Button("Close", systemImage: "xmark") { showPreview = false }
+                        .labelStyle(.iconOnly)
+                        .tint(.secondary)
                 }
             }
         }

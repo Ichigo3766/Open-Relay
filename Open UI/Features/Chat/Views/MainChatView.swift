@@ -1007,10 +1007,12 @@ struct MainChatView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { renamingConversation = nil }
+                    Button("Cancel", systemImage: "xmark") { renamingConversation = nil }
+                        .labelStyle(.iconOnly)
+                        .tint(.secondary)
                 }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Save") {
+                    Button("Save", systemImage: "checkmark") {
                         let newTitle = renameText.trimmingCharacters(in: .whitespacesAndNewlines)
                         guard !newTitle.isEmpty else { return }
                         listViewModel.renamingConversation = conv
@@ -1018,7 +1020,7 @@ struct MainChatView: View {
                         Task { await listViewModel.commitRename() }
                         renamingConversation = nil
                     }
-                    .fontWeight(.semibold)
+                    .labelStyle(.iconOnly)
                     .disabled(renameText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
             }

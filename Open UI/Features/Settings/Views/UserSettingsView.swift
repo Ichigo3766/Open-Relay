@@ -39,7 +39,9 @@ struct UserSettingsView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { dismiss() }
+                    Button("Cancel", systemImage: "xmark") { dismiss() }
+                        .labelStyle(.iconOnly)
+                        .tint(.secondary)
                         .disabled(isSaving)
                 }
                 ToolbarItem(placement: .confirmationAction) {
@@ -47,10 +49,10 @@ struct UserSettingsView: View {
                         ProgressView()
                             .controlSize(.small)
                     } else {
-                        Button("Save") {
+                        Button("Save", systemImage: "checkmark") {
                             Task { await save() }
                         }
-                        .fontWeight(.semibold)
+                        .labelStyle(.iconOnly)
                     }
                 }
                 ToolbarItem(placement: .bottomBar) {

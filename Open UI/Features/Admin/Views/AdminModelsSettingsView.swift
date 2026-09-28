@@ -455,7 +455,9 @@ struct AdminModelsManageSheet: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Done") { dismiss() }
+                    Button("Done", systemImage: "xmark") { dismiss() }
+                        .labelStyle(.iconOnly)
+                        .tint(.secondary)
                 }
             }
         }
@@ -578,13 +580,15 @@ struct AdminModelsGlobalSettingsSheet: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { dismiss() }
+                    Button("Cancel", systemImage: "xmark") { dismiss() }
+                        .labelStyle(.iconOnly)
+                        .tint(.secondary)
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     if viewModel.isSaving {
                         ProgressView().controlSize(.small)
                     } else {
-                        Button("Save") {
+                        Button("Save", systemImage: "checkmark") {
                             Task {
                                 await viewModel.save()
                                 if viewModel.errorMessage == nil {
@@ -592,7 +596,7 @@ struct AdminModelsGlobalSettingsSheet: View {
                                 }
                             }
                         }
-                        .fontWeight(.semibold)
+                        .labelStyle(.iconOnly)
                     }
                 }
             }

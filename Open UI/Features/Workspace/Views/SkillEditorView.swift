@@ -334,20 +334,20 @@ struct SkillEditorView: View {
     @ToolbarContentBuilder
     private var toolbarContent: some ToolbarContent {
         ToolbarItem(placement: .topBarLeading) {
-            Button("Cancel") {
+            Button("Cancel", systemImage: "xmark") {
                 if hasChanges { showDiscardConfirm = true } else { dismiss() }
             }
-            .scaledFont(size: 16)
-            .foregroundStyle(theme.textSecondary)
+            .labelStyle(.iconOnly)
+            .tint(.secondary)
         }
         ToolbarItem(placement: .topBarTrailing) {
             if isSaving {
                 ProgressView().tint(theme.brandPrimary)
             } else {
-                Button("Save") {
+                Button("Save", systemImage: "checkmark") {
                     Task { await save() }
                 }
-                .scaledFont(size: 16, weight: .semibold)
+                .labelStyle(.iconOnly)
                 .foregroundStyle(theme.brandPrimary)
                 .disabled(name.trimmingCharacters(in: .whitespaces).isEmpty
                           || slug.trimmingCharacters(in: .whitespaces).isEmpty)

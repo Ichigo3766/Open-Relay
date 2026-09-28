@@ -270,7 +270,9 @@ struct SharedChatsView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Close") { showPreview = false }
+                    Button("Close", systemImage: "xmark") { showPreview = false }
+                        .labelStyle(.iconOnly)
+                        .tint(.secondary)
                 }
                 // Quick copy link from preview
                 if let conv = previewConversation,
