@@ -4280,6 +4280,7 @@ final class APIClient: @unchecked Sendable {
             files: chatFiles
         )
         conv.chatParams = chatParams
+        conv.contextUsage = ChatContextUsage.parse(json["context_usage"])
         return conv
     }
 

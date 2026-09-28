@@ -106,6 +106,51 @@ final class ChatViewModel {
     /// Populated from the server on load and updated in real-time during streaming.
     var tasks: [ChatTask] = []
     var errorMessage: String?
+    var isCompactingContext = false
+    var contextNeedsRefresh = false
+    var contextCompactionNotice: String?
+    var contextCompactionError: String?
+
+    /// Refresh-only recovery avoids repeating a compaction whose response may have been lost.
+    func compactContext(refreshOnly: Bool = false) async {
+        guard !isCompactingContext, !isStreaming, refreshOnly || !contextNeedsRefresh,
+              let chatId = conversationId ?? conversation?.id, !chatId.hasPrefix("local:"),
+              let manager else { return }
+        let scope = manager.apiClient.network.conversationCacheScope
+        func isCurrent() -> Bool {
+            scope == self.manager?.apiClient.network.conversationCacheScope
+                && chatId == (conversationId ?? conversation?.id)
+        }
+        isCompactingContext = true
+        contextNeedsRefresh = true
+        contextCompactionError = nil
+        contextCompactionNotice = nil
+        defer { isCompactingContext = false }
+        do {
+            if !refreshOnly {
+                let result = try await manager.apiClient.compactChat(id: chatId, model: selectedModelId)
+                guard isCurrent() else { return }
+                contextCompactionNotice = result.message
+            }
+            if let scope { await ConversationCache.shared.invalidate(scope: scope, id: chatId) }
+            guard isCurrent() else { return }
+            let refreshed = try await manager.fetchConversation(id: chatId)
+            guard isCurrent() else { return }
+            applyContextMetadata(refreshed)
+        } catch {
+            guard isCurrent() else { return }
+            contextCompactionError = error.localizedDescription
+        }
+    }
+
+    private func applyContextMetadata(_ refreshed: Conversation) {
+        guard refreshed.id == (conversationId ?? conversation?.id) else { return }
+        conversation?.contextUsage = refreshed.contextUsage
+        for (id, node) in refreshed.history.nodes {
+            conversation?.history.updateNode(id: id) { $0.contextSummary = node.contextSummary }
+        }
+        contextNeedsRefresh = false
+    }
 
     /// Bumped each time a regenerate begins. Observed by ChatDetailView to trigger scroll-to-bottom.
     var regenerateScrollToken: UUID = UUID()
@@ -552,7 +597,7 @@ final class ChatViewModel {
         let notBlocked = (enableMessageQueue && isStreaming)
             || (!isStreaming
                 && !attachments.contains(where: { $0.type == .audio && $0.isTranscribing }))
-        return notBlocked
+        return notBlocked && !isCompactingContext && !contextNeedsRefresh
             && (!inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                 || !attachments.isEmpty)
     }
@@ -1191,6 +1236,10 @@ final class ChatViewModel {
         do {
             let serverConversation = try await manager.fetchConversation(id: chatId)
             lastSyncTime = Date()
+            if !isCompactingContext,
+               manager.apiClient.network.conversationCacheScope == self.manager?.apiClient.network.conversationCacheScope {
+                applyContextMetadata(serverConversation)
+            }
 
             let serverMessages = serverConversation.messages
             let localMessages = conversation?.messages ?? []
@@ -3120,6 +3169,7 @@ final class ChatViewModel {
     /// bound `inputText` — this avoids the prompt briefly flashing in the input
     /// field before being sent.
     func sendMessage(directText: String? = nil) async {
+        guard !isCompactingContext, !contextNeedsRefresh else { return }
         let text = (directText ?? inputText).trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty || !attachments.isEmpty else { return }
 
@@ -3757,6 +3807,7 @@ final class ChatViewModel {
     /// The streaming pipeline is pre-seeded with the existing content so the typewriter
     /// starts at the END of what's already displayed — old content is never re-streamed.
     func continueLastResponse() async {
+        guard !isCompactingContext, !contextNeedsRefresh else { return }
         guard !isStreaming || isExternallyStreaming else { return }
         guard let lastAssistant = conversation?.messages.last(where: { $0.role == .assistant }) else { return }
         let assistantId = lastAssistant.id
@@ -3898,6 +3949,7 @@ final class ChatViewModel {
     /// matching the OpenWebUI web client's regeneration behavior for mid-conversation
     /// messages.
     func regenerateResponse(messageId: String) async {
+        guard !isCompactingContext, !contextNeedsRefresh else { return }
         guard !isStreaming || isExternallyStreaming else { return }
         guard conversation != nil else { return }
 
@@ -4128,6 +4180,7 @@ final class ChatViewModel {
     /// files (allowing attachment removal); otherwise it inherits the original
     /// node's files unchanged.
     func editMessage(id: String, newContent: String, files: [ChatMessageFile]? = nil) async {
+        guard !isCompactingContext, !contextNeedsRefresh else { return }
         guard !isStreaming || isExternallyStreaming else { return }
         guard conversation != nil else { return }
 
@@ -7298,6 +7351,11 @@ final class ChatViewModel {
     private func refreshConversationMetadata(chatId: String, assistantMessageId: String) async throws {
         guard let manager else { return }
         let refreshed = try await manager.fetchConversation(id: chatId)
+
+        if !isCompactingContext,
+           manager.apiClient.network.conversationCacheScope == self.manager?.apiClient.network.conversationCacheScope {
+            applyContextMetadata(refreshed)
+        }
 
         // Update title
         if !refreshed.title.isEmpty && refreshed.title != "New Chat" {

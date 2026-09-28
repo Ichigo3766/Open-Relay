@@ -52,6 +52,7 @@ nonisolated struct Conversation: Identifiable, Hashable, Sendable {
     var chatParams: ChatAdvancedParams?
     /// Tasks created and managed by the model's built-in task management tools.
     var tasks: [ChatTask]
+    var contextUsage: ChatContextUsage?
 
     /// Top-level files attached to this conversation (mirrors OWUI `chat.files`).
     ///

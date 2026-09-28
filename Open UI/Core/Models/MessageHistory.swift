@@ -46,6 +46,8 @@ nonisolated struct HistoryNode: Sendable {
     /// server-derived metadata (e.g. from `function_call_output`) are preserved
     /// even when the node is on an inactive branch.
     nonisolated(unsafe) var output: [[String: Any]]
+    /// Server-created checkpoint used to compact the context of later turns.
+    var contextSummary: String?
 
     init(
         id: String = UUID().uuidString,
@@ -68,7 +70,8 @@ nonisolated struct HistoryNode: Sendable {
         feedbackId: String? = nil,
         isInternalMessage: Bool = false,
         subagentDelegationId: String? = nil,
-        output: [[String: Any]] = []
+        output: [[String: Any]] = [],
+        contextSummary: String? = nil
     ) {
         self.id = id
         self.parentId = parentId
@@ -91,6 +94,7 @@ nonisolated struct HistoryNode: Sendable {
         self.isInternalMessage = isInternalMessage
         self.subagentDelegationId = subagentDelegationId
         self.output = output
+        self.contextSummary = contextSummary
     }
 
     // MARK: - Serialization
@@ -192,6 +196,7 @@ nonisolated struct HistoryNode: Sendable {
         if !output.isEmpty {
             dict["output"] = output
         }
+        if let contextSummary { dict["contextSummary"] = contextSummary }
 
         return dict
     }
@@ -896,7 +901,8 @@ nonisolated struct MessageHistory: Sendable {
             feedbackId: feedbackId,
             isInternalMessage: isInternalMessage,
             subagentDelegationId: subagentDelegationId,
-            output: rawOutput
+            output: rawOutput,
+            contextSummary: msg["contextSummary"] as? String ?? msg["context_summary"] as? String
         )
     }
 }
