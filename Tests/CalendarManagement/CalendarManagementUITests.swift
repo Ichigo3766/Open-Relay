@@ -27,6 +27,7 @@ import XCTest
         let shot = XCTAttachment(screenshot: app.screenshot()); shot.name = name; shot.lifetime = .keepAlways; add(shot)
     }
     func openManagement() {
+        capture("after-calendar-menu")
         app.buttons["Manage Calendars"].tap()
         XCTAssertTrue(app.navigationBars["Calendars"].waitForExistence(timeout: 10))
     }
@@ -75,6 +76,9 @@ import XCTest
         try await start(reset: false); openManagement()
         XCTAssertTrue(app.staticTexts["Paper Projects"].exists)
         XCTAssertFalse(app.staticTexts["Workshops"].exists)
+        app.navigationBars["Calendars"].buttons["Close"].tap()
+        app.buttons["Add"].tap()
+        XCTAssertTrue(app.buttons.matching(NSPredicate(format: "label CONTAINS 'Paper Projects'")).firstMatch.waitForExistence(timeout: 10), "New events use the signed-in user's default, not a shared calendar's default")
     }
     func testCancel() async throws {
         try await start(appearance: "dark"); openManagement()

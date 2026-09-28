@@ -15,6 +15,7 @@ def calendar(id, name, **extra):
 def reset():
     STATE.clear(); STATE.update(writes=[], fail=False)
     CALENDARS.clear()
+    CALENDARS["shared"] = calendar("shared", "Shared Templates", user_id="craft-guest", is_default=True)
     CALENDARS["crafts"] = calendar("crafts", "Crafts", is_default=True)
     CALENDARS["workshops"] = calendar("workshops", "Workshops", color="#22c55e")
     CALENDARS["__scheduled_tasks__"] = calendar("__scheduled_tasks__", "Scheduled Tasks", is_system=True)
@@ -52,7 +53,8 @@ async def handle(request):
                 if item["is_default"]: return web.json_response({"detail": "Default calendar."}, status=400)
                 del CALENDARS[id]; result = {"status": True}
             elif path.endswith("/default"):
-                for value in CALENDARS.values(): value["is_default"] = value["id"] == id
+                for value in CALENDARS.values():
+                    if value["user_id"] == USER["id"]: value["is_default"] = value["id"] == id
                 result = item
             else:
                 item.update(body); result = item

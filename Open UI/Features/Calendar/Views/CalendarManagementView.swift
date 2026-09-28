@@ -19,6 +19,7 @@ struct CalendarManagementView: View {
                         VStack(alignment: .leading) {
                             Text(calendar.name)
                             if calendar.isSystem { Text("System calendar").font(.caption).foregroundStyle(.secondary) }
+                            else if calendar.userId != userId { Text("Shared calendar").font(.caption).foregroundStyle(.secondary) }
                             else if calendar.isDefault { Text("Default").font(.caption).foregroundStyle(.secondary) }
                         }
                         Spacer()

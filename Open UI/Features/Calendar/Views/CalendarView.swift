@@ -22,7 +22,7 @@ struct CalendarView: View {
         .interactiveDismissDisabled()
         .task {
             if viewModel == nil, let api = dependencies.apiClient {
-                let vm = CalendarViewModel(apiClient: api)
+                let vm = CalendarViewModel(apiClient: api, userId: dependencies.authViewModel.currentUser?.id)
                 viewModel = vm
                 await vm.load()
             }

@@ -35,6 +35,7 @@ enum CalendarViewMode: String, CaseIterable {
 final class CalendarViewModel {
     private let apiClient: APIClient
     private let calendarScope: String?
+    private let calendarUserId: String?
     var isManagingCalendars = false
 
     // MARK: - State
@@ -72,9 +73,10 @@ final class CalendarViewModel {
 
     // MARK: - Init
 
-    init(apiClient: APIClient) {
+    init(apiClient: APIClient, userId: String? = nil) {
         self.apiClient = apiClient
         calendarScope = apiClient.network.conversationCacheScope
+        calendarUserId = userId
     }
 
     // MARK: - Loading
@@ -355,7 +357,9 @@ final class CalendarViewModel {
     }
 
     var defaultCalendarId: String? {
-        calendars.first(where: { $0.isDefault })?.id ?? calendars.first?.id
+        let owned = calendars.filter { !$0.isSystem && $0.userId == calendarUserId }
+        return owned.first(where: { $0.isDefault })?.id ?? owned.first?.id
+            ?? calendars.first(where: { !$0.isSystem })?.id
     }
 
     /// Returns user-editable calendars (non-system).

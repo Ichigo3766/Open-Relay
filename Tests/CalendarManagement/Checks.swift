@@ -30,7 +30,7 @@ import Foundation
             do { try await api.deleteCalendar(id: workshops.id); check(false, "invalid success") }
             catch { check(true, "invalid delete response rejected") }
         }
-        let vm = ActionProbe(apiClient: api)
+        let vm = ActionProbe(apiClient: api, userId: owner)
         vm.calendars = [crafts, workshops, shared, system]
         vm.visibleCalendarIds = [crafts.id, shared.id]
         var renamed = workshops; renamed.name = "Paper Workshops"
@@ -39,7 +39,7 @@ import Foundation
         check(vm.calendars.count == 4 && vm.calendars[1].name == renamed.name, "replace existing calendar")
         check(!vm.visibleCalendarIds.contains(workshops.id), "rename does not reveal hidden calendar")
         check(try body(api)["name"] as? String == renamed.name, "trim name")
-        var fresh = workshops; fresh = OWCalendar(id: "new", userId: owner, name: "New", color: "#ffffff", isDefault: false, isSystem: false)
+        let fresh = OWCalendar(id: "new", userId: owner, name: "New", color: "#ffffff", isDefault: false, isSystem: false)
         api.network.response = try data(fresh)
         try await vm.saveCalendar(nil, name: "New", color: "#ffffff")
         check(vm.calendars.count == 5 && vm.visibleCalendarIds.contains("new"), "new calendar immediately available")
@@ -49,20 +49,31 @@ import Foundation
         do { try await vm.removeCalendar(system); check(false, "system delete") } catch {}
         do { try await vm.removeCalendar(crafts); check(false, "default delete") } catch {}
         do { try await vm.makeDefaultCalendar(shared, userId: owner); check(false, "shared default") } catch {}
+        do { try await vm.makeDefaultCalendar(system, userId: owner); check(false, "system default") } catch {}
         check(api.network.calls.count == beforeInvalid, "protected mutations never sent")
         var chosen = workshops; chosen.isDefault = true
         api.network.response = try data(chosen)
         try await vm.makeDefaultCalendar(workshops, userId: owner)
         check(!vm.calendars[0].isDefault && vm.calendars[1].isDefault, "replace own default")
         check(vm.calendars[2].isDefault, "do not alter shared owner's default")
+        vm.calendars = [shared, vm.calendars[0], vm.calendars[1]]
+        check(vm.defaultCalendarId == workshops.id, "shared default cannot override the user's selected default")
+        vm.calendars = [crafts, renamed, shared, system, fresh]
+        vm.calendars[1].isDefault = true
+        vm.calendars[0].isDefault = false
         api.network.fail = true
         let beforeFailure = api.network.calls.count
         do { try await vm.saveCalendar(nil, name: "Failed", color: "#ffffff"); check(false, "fail save") } catch {}
         check(api.network.calls.count == beforeFailure + 1 && vm.calendars.count == 5, "one failed attempt, state retained")
         check(!vm.isManagingCalendars, "failure clears busy flag")
+        do { try await vm.makeDefaultCalendar(crafts, userId: owner); check(false, "fail default") } catch {}
+        check(vm.calendars[1].isDefault && !vm.calendars[0].isDefault, "failed default preserves selection")
         do { try await vm.removeCalendar(fresh); check(false, "fail delete") } catch {}
         check(vm.calendars.contains { $0.id == fresh.id }, "failed delete retains item")
         api.network.fail = false
+        api.network.response = Data("{\"status\":false}".utf8)
+        do { try await vm.removeCalendar(fresh); check(false, "false delete") } catch {}
+        check(vm.calendars.contains { $0.id == fresh.id }, "false delete response retains item")
         vm.events = [CalendarEvent(calendarId: fresh.id, title: "Paper", startAt: Date(), endAt: nil), CalendarEvent(calendarId: crafts.id, title: "Fold", startAt: Date(), endAt: nil)]
         vm.selectedEvent = vm.events[0]
         api.network.response = Data("{\"status\":true}".utf8)
@@ -85,6 +96,8 @@ import Foundation
         check(vm.calendars[1].name == renamed.name, "late response not applied")
         let beforeStale = api.network.calls.count
         do { try await vm.removeCalendar(fresh); check(false, "stale account action") } catch {}
+        do { try await vm.makeDefaultCalendar(crafts, userId: owner); check(false, "stale account default") } catch {}
+        do { try await vm.saveCalendar(nil, name: "Stale", color: "#ffffff"); check(false, "stale account create") } catch {}
         check(api.network.calls.count == beforeStale, "stale screen cannot mutate new account")
         print("\(count) checks passed")
     }
