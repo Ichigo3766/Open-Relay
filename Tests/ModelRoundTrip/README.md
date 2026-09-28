@@ -5,13 +5,13 @@
 Run `bash Tests/ModelRoundTrip/run.sh` with Xcode selected. Set `TMPDIR` to
 choose where compiler artifacts are written.
 
-The tests compile the production model and its dependencies, with only unrelated
-channel-message rendering stubbed. They cover:
+The tests compile the production model and its dependencies, with unrelated
+channel-message rendering and attachment serialization stubbed. They cover:
 
 - Independent Action and Skill IDs, including removals and skills-only models.
-- Metadata and parameter preservation during a rename and a second save.
-- Unknown nested capabilities/tools, default features, model variables, terminal
-  settings, translations, and attachment metadata.
+- Parameter preservation during a rename and a second save.
+- Preservation of the upstream 6.0 metadata handling, including native TTS and
+  capability-aware default features, unknown capabilities/tools, and translations.
 - JSON numbers, Booleans, objects, arrays, null, and strings resembling JSON.
 - Deliberate removals, new JSON/plain-text parameters, and Boolean-to-number edits.
 - The original configuration baseline carried into a rebuilt editor form.
@@ -20,6 +20,10 @@ The initial checks reproduced ten failures on the upstream 5.9 model code
 (`f5b8ce8`; 9/19 passed). The fixed version passes all 27 checks, including the
 additional editor/removal/type-change checks. Existing Swift 5 Sendable warnings
 in unrelated models are not suppressed by the runner.
+
+Rebased on 6.0 (`4151a73`): the release already preserves unknown model metadata.
+This patch now builds on that implementation rather than replacing it. Remaining
+changes separate Actions/Skills and preserve parameter types and unedited values.
 
 ## Simulator check
 
@@ -34,7 +38,8 @@ Use only an isolated simulator with the loopback fixture:
 
 The test opens the real Workspace editor, captures its selections, saves through
 the authenticated client API, and checks the payload received by the fixture.
-Both runs passed on iOS 26.5. No production instance or model provider is used.
+Both original 5.9-based runs passed on iOS 26.5. No production instance or model
+provider is used. Rebased-build visual validation is tracked separately.
 
 | Before: saved skill shown unchecked | After: independent selections restored |
 |---|---|

@@ -5,6 +5,16 @@ struct ChannelMessage: Hashable, Sendable {
     static func fromJSON(_ json: [String: Any]) -> ChannelMessage? { nil }
 }
 
+// Knowledge attachment serialization is outside this model-editor harness.
+struct ChatMessageFile: Hashable, Sendable {
+    var type: String?
+    var url: String?
+    var name: String?
+    var id: String? = nil
+    var context: String? = nil
+    var serverDictionary: [String: Any] { [:] }
+}
+
 @main struct Checks {
     @MainActor static func main() throws {
         var failures = 0
