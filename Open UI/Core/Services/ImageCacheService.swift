@@ -320,7 +320,12 @@ actor ImageCacheService {
         let image = targetPixelSize > 0
             ? (Self.downsampledImage(data: data, maxPixelSize: targetPixelSize) ?? UIImage(data: data))
             : UIImage(data: data)
-        guard let image, image.size.width > 0 else { return nil }
+        guard let image, image.size.width > 0 else {
+            // A recognized header can still be undecodable. Do not keep its
+            // bytes or validator, which would turn retries into 304 failures.
+            evict(key: key)
+            return nil
+        }
         cache(image, key: key, targetPixelSize: targetPixelSize)
         return image
     }
@@ -420,7 +425,10 @@ actor ImageCacheService {
     /// re-fetch returns a 304 (image deleted, meta still present → disk miss →
     /// nil), causing avatars to show the placeholder forever after a refresh.
     func evict(for url: URL) {
-        let key = cacheKey(for: url)
+        evict(key: cacheKey(for: url))
+    }
+
+    private func evict(key: String) {
         memoryCache.removeObject(forKey: key as NSString)
         if let directory = diskCacheDirectory {
             let fileURL = directory.appendingPathComponent(key)

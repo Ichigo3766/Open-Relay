@@ -1,4 +1,5 @@
 import SwiftUI
+import ImageIO
 import XCTest
 
 // Fresh synthetic pixels only. This protocol intercepts a reserved domain;
@@ -7,16 +8,24 @@ private final class ImageFixtureProtocol: URLProtocol {
     static let lock = NSLock()
     static var pixels = Data()
     static var requests = 0
+    static var conditional = false
+    static var lastRequest: URLRequest?
+    static var status = 200
     override class func canInit(with request: URLRequest) -> Bool {
         request.url?.host == "image-fixture.invalid"
     }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
     override func startLoading() {
-        Self.lock.lock(); Self.requests += 1; let data = Self.pixels; Self.lock.unlock()
-        let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil,
-                                       headerFields: ["Cache-Control": "no-store"])!
+        Self.lock.lock()
+        Self.requests += 1
+        Self.lastRequest = request
+        let data = Self.pixels, conditional = Self.conditional, status = Self.status
+        Self.lock.unlock()
+        let unchanged = conditional && request.value(forHTTPHeaderField: "If-None-Match") != nil
+        let response = HTTPURLResponse(url: request.url!, statusCode: unchanged ? 304 : status, httpVersion: nil,
+                                       headerFields: conditional ? ["ETag": "synthetic-image"] : ["Cache-Control": "no-store"])!
         client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
-        client?.urlProtocol(self, didLoad: data)
+        client?.urlProtocol(self, didLoad: unchanged ? Data() : data)
         client?.urlProtocolDidFinishLoading(self)
     }
     override func stopLoading() {}
@@ -30,7 +39,12 @@ private final class ImageFixtureProtocol: URLProtocol {
         let pixels = UIGraphicsImageRenderer(size: CGSize(width: 2048, height: 1024), format: format).pngData {
             UIColor.orange.setFill(); $0.fill(CGRect(x: 0, y: 0, width: 2048, height: 1024))
         }
-        ImageFixtureProtocol.lock.lock(); ImageFixtureProtocol.pixels = pixels; ImageFixtureProtocol.lock.unlock()
+        ImageFixtureProtocol.lock.lock()
+        ImageFixtureProtocol.pixels = pixels
+        ImageFixtureProtocol.conditional = false
+        ImageFixtureProtocol.status = 200
+        ImageFixtureProtocol.lastRequest = nil
+        ImageFixtureProtocol.lock.unlock()
         XCTAssertTrue(URLProtocol.registerClass(ImageFixtureProtocol.self))
     }
     override func tearDown() { URLProtocol.unregisterClass(ImageFixtureProtocol.self) }
@@ -121,6 +135,46 @@ private final class ImageFixtureProtocol: URLProtocol {
         let zero = await cache.loadImage(from: url)
         XCTAssertEqual(original?.cgImage?.width, 2048)
         XCTAssertTrue(original === zero)
+        await cache.evict(for: url)
+    }
+
+    func testAuthenticationHeadersAndFailedRequestRetry() async {
+        let url = url(), before = ImageFixtureProtocol.count()
+        ImageFixtureProtocol.lock.lock(); ImageFixtureProtocol.status = 401; ImageFixtureProtocol.lock.unlock()
+        let denied = await cache.loadImage(from: url, authToken: "synthetic-token",
+                                          customHeaders: ["X-Fixture": "synthetic"], targetPixelSize: 64)
+        XCTAssertNil(denied)
+        ImageFixtureProtocol.lock.lock()
+        let request = ImageFixtureProtocol.lastRequest
+        ImageFixtureProtocol.status = 200
+        ImageFixtureProtocol.lock.unlock()
+        XCTAssertEqual(request?.value(forHTTPHeaderField: "Authorization"), "Bearer synthetic-token")
+        XCTAssertEqual(request?.value(forHTTPHeaderField: "X-Fixture"), "synthetic")
+        let retry = await cache.loadImage(from: url, authToken: "synthetic-token", targetPixelSize: 64)
+        XCTAssertEqual(retry?.cgImage?.width, 64)
+        XCTAssertEqual(ImageFixtureProtocol.count() - before, 2)
+        await cache.evict(for: url)
+    }
+
+    func testTruncatedDownloadIsNotPersistedWithValidator() async throws {
+        let url = url()
+        ImageFixtureProtocol.lock.lock(); let valid = ImageFixtureProtocol.pixels; ImageFixtureProtocol.lock.unlock()
+        let truncated = try XCTUnwrap((33..<valid.count).lazy.compactMap { length -> Data? in
+            let prefix = Data(valid.prefix(length))
+            guard let source = CGImageSourceCreateWithData(prefix as CFData, nil),
+                  CGImageSourceGetCount(source) > 0,
+                  UIImage(data: prefix) == nil else { return nil }
+            return prefix
+        }.first, "Synthetic PNG must expose a recognized but undecodable truncated header")
+        ImageFixtureProtocol.lock.lock()
+        ImageFixtureProtocol.pixels = truncated
+        ImageFixtureProtocol.conditional = true
+        ImageFixtureProtocol.lock.unlock()
+        let first = await cache.loadImage(from: url)
+        XCTAssertNil(first)
+        ImageFixtureProtocol.lock.lock(); ImageFixtureProtocol.pixels = valid; ImageFixtureProtocol.lock.unlock()
+        let retry = await cache.loadImage(from: url)
+        XCTAssertEqual(retry?.cgImage?.width, 2048, "A failed decode must not retain a validator that turns retries into 304 failures")
         await cache.evict(for: url)
     }
 }
