@@ -18,6 +18,10 @@ login `demo@example.test` / `synthetic`. POST `/_test/probe` to exercise four
 Socket.IO calls for a chat that is not open. Baseline replies time out; fixed
 replies contain a descriptive error and `status: false`.
 
+Verified with the Release simulator app on iOS 26.5: all four calls timed out on
+the 6.0-based baseline; all four returned the expected error through the real
+Socket.IO transport after the fix. The full Release build also passes.
+
 This deliberately does not implement a browser JavaScript/Pyodide runtime or
 client-managed provider credentials. Server-managed tools, terminals, and model
 requests are unchanged. Unsupported calls no longer pretend to execute or leave
