@@ -11,7 +11,9 @@ nonisolated enum ChatPDFExporter {
 
     static func write(title: String, messages: [ChatMessage]) throws -> URL {
         let text = NSMutableAttributedString(string: "")
+        var headings: [NSRange] = []
         func append(_ value: String, size: CGFloat = 12, bold: Bool = false) {
+            if bold { headings.append(NSRange(location: text.length, length: (value as NSString).length + 2)) }
             text.append(NSAttributedString(string: value + "\n\n", attributes: [
                 NSAttributedString.Key(kCTFontAttributeName as String): CTFontCreateWithName(
                     (bold ? "Helvetica-Bold" : "Helvetica") as CFString, size, nil),
@@ -57,8 +59,16 @@ nonisolated enum ChatPDFExporter {
         var pageNumber = 1
         while position < text.length {
             try Task.checkCancellation()
-            let frame = CTFramesetterCreateFrame(framesetter, CFRange(location: position, length: 0), path, nil)
-            let visible = CTFrameGetVisibleStringRange(frame)
+            var frame = CTFramesetterCreateFrame(framesetter, CFRange(location: position, length: 0), path, nil)
+            var visible = CTFrameGetVisibleStringRange(frame)
+            // Move an orphan heading to the next page, but allow oversized headings to paginate.
+            while let heading = headings.last(where: {
+                $0.location > position && $0.location < position + visible.length
+                    && NSMaxRange($0) >= position + visible.length
+            }) {
+                frame = CTFramesetterCreateFrame(framesetter, CFRange(location: position, length: heading.location - position), path, nil)
+                visible = CTFrameGetVisibleStringRange(frame)
+            }
             guard visible.length > 0 else { throw Failure.layout }
             context.beginPDFPage(nil)
             context.textMatrix = .identity

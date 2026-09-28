@@ -39,6 +39,8 @@ import PDFKit
         for index in 0..<pdf.pageCount {
             check(pdf.page(at: index)!.bounds(for: .mediaBox) == CGRect(x: 0, y: 0, width: 612, height: 792), "Consistent page size")
             check(pdf.page(at: index)!.string!.hasSuffix("\(index + 1)"), "Page footer")
+            let lines = pdf.page(at: index)!.string!.components(separatedBy: .newlines).filter { !$0.isEmpty && Int($0) == nil }
+            check(lines.last != "Tool: count_points", "Keep a tool heading with its content")
         }
         if let output = ProcessInfo.processInfo.environment["PDF_REVIEW_OUTPUT"] {
             try FileManager.default.copyItem(at: url, to: URL(fileURLWithPath: output))
