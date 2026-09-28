@@ -1,6 +1,7 @@
 # Web search consent
 
-Baseline: Open Relay 5.9 (`f5b8ce8`), Open WebUI `8bd8b4f`.
+Initial baseline: Open Relay 5.9 (`f5b8ce8`), Open WebUI `8bd8b4f`.
+Rebased and validated on Open Relay 6.0 (`4151a73`).
 
 `python3 Tests/WebSearchConsent/run.py` compiles the production feature decoder and
 consent state against a mocked API. It checks 18 cases plus routing of send,
@@ -26,3 +27,12 @@ the app build, and run the `WebSearchConsent` scheme:
 
 All fixture data is invented. It contacts no search provider or private server.
 The UI checks cover chat consent; voice audio/provider behavior is not benchmarked.
+
+The full Release simulator build and both fixed UI tests passed on the 6.0-based
+patch. The baseline capture is from the 5.9-based app; the decoder regression also
+reproduces on 6.0. All 18 focused checks pass. Only reviewed synthetic captures
+are included, not test logs or simulator diagnostics.
+
+| Before: request sent without asking | After: explicit confirmation | Cancel: draft retained |
+|---|---|---|
+| ![Before](Screenshots/before.png) | ![Confirmation](Screenshots/confirmation.png) | ![Cancelled](Screenshots/cancel.png) |
