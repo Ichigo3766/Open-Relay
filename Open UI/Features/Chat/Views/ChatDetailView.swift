@@ -757,6 +757,7 @@ struct ChatDetailView: View {
             CameraPickerView { image in processCameraImage(image) }
                 .ignoresSafeArea()
         }
+        .modifier(WebSearchConsentAlert(consent: viewModel.isVoiceMode ? nil : viewModel.webSearchConsent))
         .alert("Add Web Link", isPresented: $showWebURLAlert) {
             TextField("https://example.com", text: $webURLInput)
                 .textContentType(.URL)
@@ -4853,6 +4854,7 @@ struct ChatDetailView: View {
     }
 
     private func handleDisappear() {
+        viewModel.webSearchConsent.cancelPending()
         if dependencies.dictationService.context == dictationContext {
             dependencies.dictationService.unbind()
         }

@@ -1,0 +1,24 @@
+name: WebSearchConsent
+options:
+  deploymentTarget:
+    iOS: '18.0'
+targets:
+  SearchConsentUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources:
+      - SearchConsentUITests.swift
+    settings:
+      GENERATE_INFOPLIST_FILE: YES
+      PRODUCT_BUNDLE_IDENTIFIER: com.example.search-consent-tests
+      CODE_SIGNING_ALLOWED: YES
+      CODE_SIGN_IDENTITY: '-'
+      SWIFT_VERSION: '5.0'
+schemes:
+  WebSearchConsent:
+    build:
+      targets:
+        SearchConsentUITests: [test]
+    test:
+      targets:
+        - SearchConsentUITests

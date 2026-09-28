@@ -144,8 +144,10 @@ final class ChatViewModel {
             }
         }
     }
+    let webSearchConsent = WebSearchConsent()
     var webSearchEnabled: Bool = false {
         didSet {
+            if !webSearchEnabled { webSearchConsent.reset() }
             guard !suppressBuiltinFeatureTracking else { return }
             if webSearchEnabled {
                 userDisabledBuiltinFeatures.remove("web_search")
@@ -779,6 +781,7 @@ final class ChatViewModel {
     private(set) var isConfigured: Bool = false
 
     func configure(with manager: ConversationManager, socket: SocketIOService? = nil, store: ActiveChatStore? = nil, asr: OnDeviceASRService? = nil, notes: NotesManager? = nil) {
+        webSearchConsent.reset()
         self.manager = manager
         self.notesManager = notes
         self.socketService = socket
@@ -3122,7 +3125,7 @@ final class ChatViewModel {
     func sendMessage(directText: String? = nil) async {
         let text = (directText ?? inputText).trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty || !attachments.isEmpty else { return }
-
+        guard await authorizeWebSearch() else { return }
 
         // If message queue is enabled and we're currently streaming, enqueue the text
         // (only text messages can be queued — attachments are sent normally when not streaming)
@@ -3759,6 +3762,7 @@ final class ChatViewModel {
     func continueLastResponse() async {
         guard !isStreaming || isExternallyStreaming else { return }
         guard let lastAssistant = conversation?.messages.last(where: { $0.role == .assistant }) else { return }
+        guard await authorizeWebSearch() else { return }
         let assistantId = lastAssistant.id
         let existingContent = lastAssistant.content
 
@@ -3900,6 +3904,7 @@ final class ChatViewModel {
     func regenerateResponse(messageId: String) async {
         guard !isStreaming || isExternallyStreaming else { return }
         guard conversation != nil else { return }
+        guard await authorizeWebSearch() else { return }
 
         // Cancel any in-flight completion task from the previous stream.
         // Without this, sendMessage's completionTask continues running its
@@ -4130,6 +4135,7 @@ final class ChatViewModel {
     func editMessage(id: String, newContent: String, files: [ChatMessageFile]? = nil) async {
         guard !isStreaming || isExternallyStreaming else { return }
         guard conversation != nil else { return }
+        guard await authorizeWebSearch() else { return }
 
         // ── Tree-first edit (replicates OpenWebUI exactly) ─────────────────
         // 1. Look up the old user node in the history tree.
@@ -6482,8 +6488,7 @@ final class ChatViewModel {
     ///
     /// Call this after constructing the basic ChatCompletionRequest and before sending.
     private func populateCommonRequestFields(_ request: inout ChatCompletionRequest) async {
-        // Refresh model metadata to pick up live admin changes
-        await refreshSelectedModelMetadata()
+        // Model defaults were refreshed before consent and before draft/history changes.
         if var mi = selectedModel?.rawModelItem {
             // Ensure owned_by and object are non-null strings for pipe model routing.
             // The single-model endpoint omits these fields; without them the server's
@@ -6641,6 +6646,20 @@ final class ChatViewModel {
             logger.debug("[chat request body]\n\(str)")
         }
         #endif
+    }
+
+    func authorizeWebSearch() async -> Bool {
+        // Refresh first: a newly enabled model default must not bypass consent.
+        let revision = webSearchConsent.revision
+        await refreshSelectedModelMetadata()
+        guard revision == webSearchConsent.revision, !Task.isCancelled else { return false }
+        guard webSearchEnabled else { return true }
+        guard let api = manager?.apiClient else { return false }
+        do { return try await webSearchConsent.request(using: api) }
+        catch {
+            errorMessage = "Could not check web search confirmation. Please try again."
+            return false
+        }
     }
 
     /// Builds chat features by merging user toggles with the model's admin-configured

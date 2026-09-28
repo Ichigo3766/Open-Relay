@@ -110,6 +110,11 @@ extension VoiceCallViewModel {
         }
         errorMessage = nil
         callState = .connecting
+        guard await chat.authorizeWebSearch() else {
+            fail(chat.errorMessage ?? "Web search was not approved. Turn it off or try again.")
+            return
+        }
+        guard callState == .connecting else { return }
         ttsService.stop()
         ttsService.readAloudPlayer.stop()
 
@@ -174,6 +179,7 @@ extension VoiceCallViewModel {
         try? session.setCategory(.playAndRecord, mode: .default,
                                  options: [.defaultToSpeaker, .allowBluetoothHFP, .allowBluetoothA2DP, .mixWithOthers])
         try? session.setActive(true)
+        chatViewModel?.webSearchConsent.cancelPending()
         chatViewModel?.isVoiceMode = false
     }
 
@@ -408,4 +414,3 @@ extension VoiceCallViewModel {
         }
     }
 }
-

@@ -101,6 +101,8 @@ struct BackendConfig: Codable, Sendable {
         let enableSignupPasswordConfirmation: Bool?
         let enableLoginForm: Bool?
         let enableWebSearch: Bool?
+        let enableWebSearchConfirmation: Bool?
+        let webSearchConfirmationContent: String?
         let enableImageGeneration: Bool?
         let enableCommunitySharing: Bool?
         let enableAdminExport: Bool?
@@ -130,6 +132,8 @@ struct BackendConfig: Codable, Sendable {
             case enableSignupPasswordConfirmation = "enable_signup_password_confirmation"
             case enableLoginForm = "enable_login_form"
             case enableWebSearch = "enable_web_search"
+            case enableWebSearchConfirmation = "enable_web_search_confirmation"
+            case webSearchConfirmationContent = "web_search_confirmation_content"
             case enableImageGeneration = "enable_image_generation"
             case enableCommunitySharing = "enable_community_sharing"
             case enableAdminExport = "enable_admin_export"
@@ -154,6 +158,8 @@ struct BackendConfig: Codable, Sendable {
             enableSignupPasswordConfirmation = try container.decodeIfPresent(Bool.self, forKey: .enableSignupPasswordConfirmation)
             enableLoginForm = try container.decodeIfPresent(Bool.self, forKey: .enableLoginForm)
             enableWebSearch = try container.decodeIfPresent(Bool.self, forKey: .enableWebSearch)
+            enableWebSearchConfirmation = try container.decodeIfPresent(Bool.self, forKey: .enableWebSearchConfirmation)
+            webSearchConfirmationContent = try container.decodeIfPresent(String.self, forKey: .webSearchConfirmationContent)
             enableImageGeneration = try container.decodeIfPresent(Bool.self, forKey: .enableImageGeneration)
             enableCommunitySharing = try container.decodeIfPresent(Bool.self, forKey: .enableCommunitySharing)
             enableAdminExport = try container.decodeIfPresent(Bool.self, forKey: .enableAdminExport)

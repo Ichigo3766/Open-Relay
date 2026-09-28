@@ -72,6 +72,8 @@ struct VoiceCallView: View {
             .ignoresSafeArea()
         )
         .animation(.spring(response: 0.4, dampingFraction: 0.8), value: viewModel.callState)
+        .modifier(WebSearchConsentAlert(consent: viewModel.chatViewModel?.webSearchConsent))
+        .onDisappear { viewModel.chatViewModel?.webSearchConsent.cancelPending() }
         .task {
             await initializeCall()
         }
