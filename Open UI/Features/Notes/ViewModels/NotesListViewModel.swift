@@ -27,7 +27,11 @@ final class NotesListViewModel {
     private let logger = Logger(subsystem: "com.openui", category: "NotesListVM")
 
     /// Cached search results (updated asynchronously by `performSearch`).
-    private var searchResults: [Note]?
+    private var searchResults: [Note] = []
+    var isSearching = false
+    var hasMoreSearchResults = false
+    private var searchPage = 0
+    private var searchGeneration = UUID()
 
     /// Task for debounced search.
     private var searchTask: Task<Void, Never>?
@@ -36,11 +40,7 @@ final class NotesListViewModel {
 
     /// Notes filtered by search text.
     var filteredNotes: [Note] {
-        if searchText.isEmpty { return notes }
-        return searchResults ?? notes.filter {
-            $0.title.localizedCaseInsensitiveContains(searchText) ||
-            $0.content.localizedCaseInsensitiveContains(searchText)
-        }
+        searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? notes : searchResults
     }
 
     /// Pinned notes.
@@ -108,6 +108,7 @@ final class NotesListViewModel {
         notes = await manager.fetchNotes()
         isFeatureEnabled = manager.isServerEnabled
         isLoading = false
+        if !searchText.isEmpty { triggerSearch() }
     }
 
     /// Refreshes the notes list from the server.
@@ -115,6 +116,7 @@ final class NotesListViewModel {
         guard let manager else { return }
         notes = await manager.fetchNotes()
         isFeatureEnabled = manager.isServerEnabled
+        if !searchText.isEmpty { triggerSearch() }
     }
 
     /// Creates a new note on the server and returns it.
@@ -143,24 +145,56 @@ final class NotesListViewModel {
 
     /// Triggers a debounced server-side search. Call from onChange of searchText.
     func triggerSearch() {
-        searchTask?.cancel()
-        guard searchText.count >= 2 else {
-            searchResults = nil
-            return
-        }
+        clearSearch()
+        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else { return }
+        let generation = searchGeneration
+        isSearching = true
         searchTask = Task {
             try? await Task.sleep(for: .milliseconds(300))
-            guard !Task.isCancelled, let manager else { return }
-            let results = await manager.searchNotes(query: searchText)
-            guard !Task.isCancelled else { return }
-            searchResults = results
+            guard !Task.isCancelled, searchGeneration == generation else { return }
+            await fetchSearchPage(query: query, page: 1, generation: generation)
         }
     }
 
     /// Clears search results when search text is cleared.
     func clearSearch() {
-        searchResults = nil
         searchTask?.cancel()
+        searchGeneration = UUID()
+        searchResults = []
+        searchPage = 0
+        isSearching = false
+        hasMoreSearchResults = false
+        errorMessage = nil
+    }
+
+    func loadMoreSearchResults() async {
+        guard hasMoreSearchResults, !isSearching else { return }
+        await retrySearch()
+    }
+
+    func retrySearch() async {
+        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty, !isSearching else { return }
+        isSearching = true
+        await fetchSearchPage(query: query, page: searchPage + 1, generation: searchGeneration)
+    }
+
+    private func fetchSearchPage(query: String, page: Int, generation: UUID) async {
+        guard let manager else { isSearching = false; return }
+        errorMessage = nil
+        defer { if searchGeneration == generation { isSearching = false } }
+        do {
+            let result = try await manager.searchNotes(query: query, page: page)
+            guard !Task.isCancelled, searchGeneration == generation else { return }
+            let existing = Set(searchResults.map(\.id))
+            searchResults += result.notes.filter { !existing.contains($0.id) }
+            searchPage = page
+            hasMoreSearchResults = !result.notes.isEmpty && searchResults.count < result.total
+        } catch {
+            guard !Task.isCancelled, searchGeneration == generation else { return }
+            errorMessage = "Couldn't search notes. Try again."
+        }
     }
 
     /// Toggles a note's pinned state (local-only).

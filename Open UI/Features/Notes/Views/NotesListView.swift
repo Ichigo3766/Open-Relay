@@ -12,7 +12,7 @@ struct NotesListView: View {
         Group {
             if viewModel.isLoading && viewModel.notes.isEmpty {
                 loadingView
-            } else if viewModel.notes.isEmpty {
+            } else if viewModel.notes.isEmpty && viewModel.searchText.isEmpty {
                 emptyStateView
             } else {
                 notesList
@@ -31,6 +31,8 @@ struct NotesListView: View {
             text: $viewModel.searchText,
             prompt: "Search Notes"
         )
+        .onChange(of: viewModel.searchText) { _, _ in viewModel.triggerSearch() }
+        .onDisappear { viewModel.clearSearch() }
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 Button {
@@ -106,6 +108,17 @@ struct NotesListView: View {
 
     private var notesList: some View {
         List {
+            if viewModel.isSearching {
+                ProgressView("Searching notes…")
+            } else if let error = viewModel.errorMessage {
+                Section {
+                    Text(error)
+                    Button("Retry") { Task { await viewModel.retrySearch() } }
+                }
+            } else if !viewModel.searchText.isEmpty && viewModel.filteredNotes.isEmpty {
+                Text("No matching notes")
+                    .foregroundStyle(.secondary)
+            }
             // Pinned section
             if !viewModel.pinnedNotes.isEmpty {
                 Section {
@@ -129,6 +142,9 @@ struct NotesListView: View {
                         noteRow(note, isPinned: false)
                     }
                 }
+            }
+            if viewModel.hasMoreSearchResults && !viewModel.isSearching && viewModel.errorMessage == nil {
+                Button("Load More") { Task { await viewModel.loadMoreSearchResults() } }
             }
         }
         .listStyle(.insetGrouped)

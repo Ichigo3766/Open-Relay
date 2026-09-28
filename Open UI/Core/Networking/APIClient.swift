@@ -3328,15 +3328,18 @@ final class APIClient: @unchecked Sendable {
         }
     }
 
-    func searchNotes(query: String) async throws -> [[String: Any]] {
+    func searchNotes(query: String, page: Int = 1) async throws -> (items: [[String: Any]], total: Int) {
         let (data, _) = try await network.requestRaw(
             path: "/api/v1/notes/search",
-            queryItems: [URLQueryItem(name: "query", value: query)]
+            queryItems: [URLQueryItem(name: "query", value: query), URLQueryItem(name: "page", value: String(page))]
         )
-        if let array = try JSONSerialization.jsonObject(with: data) as? [[String: Any]] {
-            return array
+        let json = try JSONSerialization.jsonObject(with: data)
+        if let response = json as? [String: Any],
+           let items = response["items"] as? [[String: Any]], let total = response["total"] as? Int, total >= 0 {
+            return (items, total)
         }
-        return []
+        if let array = json as? [[String: Any]] { return (array, array.count) }
+        throw DecodingError.dataCorrupted(.init(codingPath: [], debugDescription: "Invalid notes search response"))
     }
 
     // MARK: - Profile & Account

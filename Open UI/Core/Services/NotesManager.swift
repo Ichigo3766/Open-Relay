@@ -200,27 +200,19 @@ final class NotesManager: @unchecked Sendable {
 
     // MARK: - Search
 
-    /// Searches notes — uses server-side search when available for comprehensive results,
-    /// falls back to local cache filtering when offline.
-    func searchNotes(query: String) async -> [Note] {
-        // Try server-side search first (covers all notes, not just cached)
+    /// Search the server when available; never replace an authoritative empty page with cache matches.
+    func searchNotes(query: String, page: Int = 1) async throws -> (notes: [Note], total: Int) {
         if let apiClient, isServerEnabled {
-            do {
-                let results = try await apiClient.searchNotes(query: query)
-                let notes = results.compactMap { Note.fromServerJSON($0) }
-                if !notes.isEmpty { return notes }
-            } catch {
-                logger.debug("Server notes search failed, falling back to local: \(error.localizedDescription)")
-            }
+            let results = try await apiClient.searchNotes(query: query, page: page)
+            return (results.items.compactMap { Note.fromServerJSON($0) }, results.total)
         }
-
-        // Fallback to local cache search
         let lowered = query.lowercased()
-        return fetchLocalNotes().filter {
+        let matches = fetchLocalNotes().filter {
             $0.title.lowercased().contains(lowered) ||
             $0.content.lowercased().contains(lowered) ||
             $0.tags.contains { $0.lowercased().contains(lowered) }
         }
+        return (page == 1 ? matches : [], matches.count)
     }
 
     /// Pins or unpins a note (local-only; OpenWebUI does not have pin for notes).

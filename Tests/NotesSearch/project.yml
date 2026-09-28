@@ -1,0 +1,22 @@
+name: NotesSearch
+options:
+  deploymentTarget:
+    iOS: '18.0'
+targets:
+  NotesUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources:
+      - NotesUITests.swift
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: org.example.relay.notes-tests
+        GENERATE_INFOPLIST_FILE: YES
+        SWIFT_VERSION: '5.0'
+schemes:
+  NotesSearch:
+    build:
+      targets:
+        NotesUITests: all
+    test:
+      targets: [NotesUITests]
