@@ -3579,15 +3579,24 @@ final class APIClient: @unchecked Sendable {
     }
 
     func updateAutomation(id: String, name: String, prompt: String, modelId: String, rrule: String) async throws -> Automation {
-        let bodyDict: [String: Any] = [
-            "name": name,
-            "data": [
-                "prompt": prompt,
-                "model_id": modelId,
-                "rrule": rrule
-            ] as [String: Any]
-        ]
+        // The update endpoint replaces the form, including fields not editable here.
+        // Read the latest configuration so editing does not reset targets or reactivate a task.
+        let (snapshot, _) = try await network.requestRaw(path: "/api/v1/automations/\(id)")
+        guard let existing = try JSONSerialization.jsonObject(with: snapshot) as? [String: Any],
+              var taskData = existing["data"] as? [String: Any],
+              existing["is_active"] is Bool else {
+            throw APIError.responseDecoding(underlying: DecodingError.dataCorrupted(
+                .init(codingPath: [], debugDescription: "Invalid automation configuration")
+            ), data: snapshot)
+        }
+        var bodyDict = existing.filter { ["name", "data", "folder_id", "meta", "is_active"].contains($0.key) }
+        taskData["prompt"] = prompt
+        taskData["model_id"] = modelId
+        taskData["rrule"] = rrule
+        bodyDict["name"] = name
+        bodyDict["data"] = taskData
         let bodyData = try JSONSerialization.data(withJSONObject: bodyDict)
+        try Task.checkCancellation()
         let (data, _) = try await network.requestRaw(
             path: "/api/v1/automations/\(id)/update",
             method: .post,

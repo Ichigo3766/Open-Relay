@@ -456,7 +456,7 @@ struct AutomationDetailView: View {
                 Button("Save") {
                     Task {
                         isSaving = true
-                        await listVM.updateAutomation(
+                        let saved = await listVM.updateAutomation(
                             id: automation.id,
                             name: name,
                             prompt: prompt,
@@ -464,7 +464,7 @@ struct AutomationDetailView: View {
                             rrule: currentRRule
                         )
                         isSaving = false
-                        hasChanges = false
+                        if saved { hasChanges = false }
                     }
                 }
                 .fontWeight(.semibold)

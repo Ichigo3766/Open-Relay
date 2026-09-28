@@ -146,7 +146,7 @@ final class AutomationsViewModel {
 
     // MARK: - Update
 
-    func updateAutomation(id: String, name: String, prompt: String, modelId: String, rrule: String) async {
+    func updateAutomation(id: String, name: String, prompt: String, modelId: String, rrule: String) async -> Bool {
         do {
             let updated = try await apiClient.updateAutomation(id: id, name: name, prompt: prompt, modelId: modelId, rrule: rrule)
             if let idx = automations.firstIndex(where: { $0.id == id }) {
@@ -156,8 +156,10 @@ final class AutomationsViewModel {
             selectedAutomation = updated
             Haptics.play(.light)
             toastMessage = "Saved"
+            return true
         } catch {
             errorMessage = "Failed to save: \(error.localizedDescription)"
+            return false
         }
     }
 

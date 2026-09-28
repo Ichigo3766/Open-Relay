@@ -23,7 +23,7 @@ struct AutomationData: Codable, Sendable {
     var prompt: String
     var modelId: String
     var rrule: String
-    var terminal: String?
+    var terminal: AutomationTerminal?
     /// When set, the automation is pointed at a channel instead of creating a new chat.
     var target: AutomationTarget?
 
@@ -45,6 +45,16 @@ struct AutomationData: Codable, Sendable {
                 target = nil
             }
         }
+    }
+}
+
+struct AutomationTerminal: Codable, Sendable {
+    var serverId: String
+    var cwd: String?
+
+    enum CodingKeys: String, CodingKey {
+        case serverId = "server_id"
+        case cwd
     }
 }
 
