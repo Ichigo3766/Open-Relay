@@ -35,7 +35,12 @@ import XCTest
     }
     func send(_ text: String) {
         let input = app.textViews.firstMatch
-        input.tap(); input.typeText(text); app.buttons["Send message"].tap()
+        for _ in 0..<3 where !app.keyboards.firstMatch.exists {
+            input.tap()
+            _ = app.keyboards.firstMatch.waitForExistence(timeout: 3)
+        }
+        XCTAssertTrue(app.keyboards.firstMatch.exists)
+        input.typeText(text); app.buttons["Send message"].tap()
     }
     func waitForCompletions(_ count: Int) async throws -> [String: Any] {
         for _ in 0..<100 {

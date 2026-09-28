@@ -43,3 +43,15 @@ simultaneous multi-model selection or a schema editor. Map/month inputs retain
 the existing text-entry fallback. A refresh-before-merge preserves unrelated
 variable keys, but the server has no compare-and-swap API: concurrent edits to
 the same key remain last-writer-wins.
+
+## Verification
+
+68 focused checks and the Release iOS Simulator build pass. All three fixed
+app cases above pass on iOS 26.5, including a fractional slider value of 0.75,
+HTTP 503 recovery, saved-chat reopen and temporary-chat promotion. The baseline
+case reproduces the missing form/request values. The fixture verifies the
+client contract; it does not test model-provider behavior.
+
+The four committed screenshots and their metadata were reviewed. They contain
+only the synthetic fixture and native controls, with no private instance data,
+personal content, credentials or raw diagnostic logs.
