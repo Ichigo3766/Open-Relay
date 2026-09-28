@@ -26,16 +26,15 @@ nonisolated enum LibrarySearchSource: String, CaseIterable, Identifiable, Sendab
 }
 
 nonisolated enum LibrarySearchScope: String, CaseIterable, Identifiable, Sendable {
-    case all = "All", chats = "Chats", documents = "Documents", files = "Files", folders = "Folders", knowledge = "Knowledge"
+    case all = "All", chats = "Chats", files = "Files", folders = "Folders", knowledge = "Knowledge"
     var id: Self { self }
     var sources: [LibrarySearchSource] {
         switch self {
         case .all: return LibrarySearchSource.allCases
         case .chats: return [.chats]
-        case .documents: return [.documents]
         case .folders: return [.folders]
         case .knowledge: return [.knowledge, .documents]
-        case .files: return [.files]
+        case .files: return [.documents, .files]
         }
     }
 }

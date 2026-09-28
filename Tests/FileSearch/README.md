@@ -19,14 +19,18 @@ The fixture invents all models, files, text, and account information from scratc
 
 The tests connect to `http://127.0.0.1:18191` and use the fixture's demo sign-in.
 They cover light/dark search, pagination, PDF/text previews, sharing, empty
-results, failures, retry, cancellation, and metadata-only search requests.
+results, failures, retry, cancellation, combined filename/content search,
+deduplication, and the absence of unsolicited original-file downloads.
 `/_test/metrics` exposes only the fixture's in-memory request paths, query
 parameters, and an authorization boolean—not credentials or external logs.
 Named screenshot attachments are retained in the XCTest result bundle.
 
-Files search uses the native filename/wildcard search API; it does not add
-full-text search across arbitrary uploads. Documents is a separate top-level
-filter for the existing Knowledge document-content search. Knowledge still
-includes its bases and documents.
-Opening a file explicitly downloads that file to temporary disk for Quick Look
-and sharing. Search rows do not download original files or thumbnails.
+One Files filter combines the native filename/wildcard API with existing
+Knowledge document-content search, deduplicating by file ID. It does not add
+full-text search across arbitrary uploads. Knowledge still includes its bases
+and documents. Each source retains independent pagination and error handling.
+Filename results request metadata only; Knowledge results fetch extracted text
+for matching excerpts, not the original file bytes.
+Opening an upload result explicitly downloads that file to temporary disk for
+Quick Look and sharing. Knowledge matches retain the existing document-text
+preview. Search rows do not download original files or thumbnails.

@@ -41,6 +41,7 @@ import XCTest
         app.keyboards.buttons["Search"].tap()
     }
     func filesFilter() {
+        XCTAssertFalse(app.buttons["search-filter-Documents"].exists)
         let button = app.buttons["search-filter-Files"]
         if !button.isHittable { app.scrollViews["library-search-filters"].swipeLeft() }
         button.tap()
@@ -48,6 +49,16 @@ import XCTest
     func shot(_ name: String) {
         let attachment = XCTAttachment(screenshot: app.screenshot())
         attachment.name = name; attachment.lifetime = .keepAlways; add(attachment)
+    }
+    func scrollToResult(_ element: XCUIElement) {
+        // XCTest can report offscreen rows behind the bottom search bar as hittable.
+        for _ in 0..<20 {
+            if element.exists && element.isHittable,
+               element.frame.minY >= results.frame.minY,
+               element.frame.maxY < app.buttons["Close search"].frame.minY - 8 { return }
+            results.swipeUp(velocity: .slow)
+        }
+        XCTFail("Search result did not scroll into view")
     }
     func resetFixture() async throws {
         var request = URLRequest(url: URL(string: "http://127.0.0.1:18191/_test/reset")!)
@@ -63,17 +74,16 @@ import XCTest
     }
     func testFilesLight() { exercise("light") }
     func testFilesDark() { exercise("dark") }
-    func testDocumentsFilter() {
-        launch(); openSearch()
-        app.buttons["search-filter-Documents"].tap()
+    func testFilesSearchesKnowledgeContents() {
+        launch(); openSearch(); filesFilter()
         search("imaginary")
         XCTAssertTrue(results.staticTexts["Paper guide.pdf"].waitForExistence(timeout: 10))
         XCTAssertTrue(results.staticTexts.matching(NSPredicate(format: "label CONTAINS 'imaginary boat'")).firstMatch.waitForExistence(timeout: 10))
         XCTAssertFalse(results.staticTexts["Paper plan 01.pdf"].exists)
-        shot("documents-light")
+        shot("files-content-match-light")
         app.buttons["Close search"].tap()
     }
-    func testSearchDoesNotDownload() async throws {
+    func testSearchDoesNotDownloadOriginals() async throws {
         launch(); openSearch(); filesFilter()
         try await resetFixture()
         search("paper")
@@ -81,7 +91,13 @@ import XCTest
         results.swipeUp(); results.swipeDown()
         let (data, _) = try await URLSession.shared.data(from: URL(string: "http://127.0.0.1:18191/_test/metrics")!)
         let requests = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [[String: Any]])
-        XCTAssertFalse(requests.contains { ($0["path"] as? String)?.hasSuffix("/content") == true })
+        // Knowledge excerpts use /data/content; original file bytes use /{id}/content.
+        XCTAssertFalse(requests.contains {
+            let path = $0["path"] as? String ?? ""
+            return path.hasSuffix("/content") && !path.hasSuffix("/data/content")
+        })
+        XCTAssertTrue(requests.contains { $0["path"] as? String == "/api/v1/knowledge/search/files" })
+        XCTAssertEqual(results.staticTexts.matching(identifier: "Paper guide.pdf").count, 1)
         let searches = requests.filter { $0["path"] as? String == "/api/v1/files/search" }
         XCTAssertFalse(searches.isEmpty)
         XCTAssertTrue(searches.allSatisfy { $0["authorized"] as? Bool == true })
@@ -96,8 +112,10 @@ import XCTest
         launch(appearance); openSearch(); filesFilter(); search("paper")
         XCTAssertTrue(results.staticTexts["Paper guide.pdf"].waitForExistence(timeout: 10))
         XCTAssertTrue(results.staticTexts["Paper plan 01.pdf"].exists)
+        XCTAssertTrue(results.staticTexts.matching(NSPredicate(format: "label CONTAINS 'imaginary boat'")).firstMatch.waitForExistence(timeout: 10))
+        XCTAssertEqual(results.staticTexts.matching(identifier: "Paper guide.pdf").count, 1)
         shot("files-\(appearance)")
-        results.staticTexts["Paper guide.pdf"].tap()
+        results.staticTexts["Paper plan 01.pdf"].tap()
         XCTAssertTrue(app.buttons["Save or share file"].waitForExistence(timeout: 15))
         XCTAssertTrue(app.staticTexts["Paper workshop guide"].waitForExistence(timeout: 15))
         shot("file-preview-\(appearance)")
@@ -108,15 +126,12 @@ import XCTest
         app.buttons["Close"].firstMatch.tap()
         XCTAssertTrue(results.waitForExistence(timeout: 5))
         let more = app.buttons["search-more-files"]
-        for _ in 0..<15 {
-            if more.isHittable { break }
-            results.swipeUp()
-        }
-        XCTAssertTrue(more.isHittable); more.tap()
-        results.swipeUp()
-        XCTAssertTrue(results.staticTexts["Paper notes.txt"].waitForExistence(timeout: 10))
+        scrollToResult(more); more.tap()
+        let notes = results.staticTexts["Paper notes.txt"]
+        XCTAssertTrue(notes.waitForExistence(timeout: 10))
+        scrollToResult(notes)
         XCTAssertFalse(more.exists)
-        results.staticTexts["Paper notes.txt"].tap()
+        notes.tap()
         XCTAssertTrue(app.buttons["Save or share file"].waitForExistence(timeout: 10))
         XCTAssertTrue(app.textViews.matching(NSPredicate(format: "value CONTAINS 'Fold a square sheet'")).firstMatch.waitForExistence(timeout: 15))
         shot("text-preview-\(appearance)")

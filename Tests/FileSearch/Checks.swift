@@ -17,9 +17,8 @@ import Foundation
         var checks = 0
         func check(_ value: Bool, _ label: String) { checks += 1; precondition(value, label) }
         func data(_ value: Any) throws -> Data { try JSONSerialization.data(withJSONObject: value) }
-        check(LibrarySearchScope.files.sources == [.files], "Files does not trigger Knowledge content search")
-        check(LibrarySearchScope.documents.sources == [.documents], "Documents directly searches Knowledge document contents")
-        check(LibrarySearchScope.allCases.contains(.documents), "Documents is a top-level filter")
+        check(LibrarySearchScope.files.sources == [.documents, .files], "Files combines Knowledge contents and uploaded filenames")
+        check(LibrarySearchScope.allCases.map(\.rawValue) == ["All", "Chats", "Files", "Folders", "Knowledge"], "One Files filter, no separate Documents filter")
         check(LibrarySearchScope.knowledge.sources == [.knowledge, .documents], "Knowledge unchanged")
         check(LibrarySearchScope.all.sources.contains(.files), "All includes Files")
         let file: [String: Any] = ["id": "paper-1", "filename": "stored.pdf", "meta": ["name": "Paper guide.pdf", "content_type": "application/pdf", "size": 8_000_000_000 as Int64]]
@@ -72,12 +71,26 @@ import Foundation
         check(model.visibleSections.first { $0.id == .files }!.items.count == 2, "Additional uploads remain visible")
         check(!model.sections.first { $0.id == .files }!.hasMore, "Pagination completes")
         await model.search("paper", scope: .files, debounce: .zero)
-        check(model.visibleSections.flatMap(\.items).contains { $0.resourceID == "shared" }, "Files includes Knowledge-linked uploads")
-        check(model.sections.count == 1, "Files-only scope")
+        check(model.visibleSections.flatMap(\.items).filter { $0.resourceID == "shared" }.count == 1, "Files deduplicates Knowledge-linked uploads")
+        check(model.sections.map(\.id) == [.documents, .files], "Files searches both sources")
+        check(model.visibleSections.flatMap(\.items).contains { $0.resourceID == "upload-1" }, "Files retains standalone uploads")
+        await model.loadMore(.files)
+        check(model.visibleSections.flatMap(\.items).filter { $0.resourceID == "shared" }.count == 1, "Pagination keeps cross-source duplicates hidden")
+        check(model.visibleSections.flatMap(\.items).contains { $0.resourceID == "upload-2" }, "Combined search retains pagination")
+
+        for failedSource in LibrarySearchScope.files.sources {
+            let partial = LibrarySearchModel { source, _, _ in
+                if source == failedSource { throw URLError(.notConnectedToInternet) }
+                return LibrarySearchPage(items: [LibrarySearchResult(resourceID: "match", source: source, title: "Guide")], hasMore: false)
+            }
+            await partial.search("paper", scope: .files, debounce: .zero)
+            check(partial.sections.first { $0.id == failedSource }!.failed, "Each source exposes its own error")
+            check(partial.visibleSections.flatMap(\.items).count == 1, "One source failing does not hide the other")
+        }
 
         var release: CheckedContinuation<LibrarySearchPage, Error>?
         let race = LibrarySearchModel { source, query, _ in
-            if query == "slow" { return try await withCheckedThrowingContinuation { release = $0 } }
+            if query == "slow" && source == .files { return try await withCheckedThrowingContinuation { release = $0 } }
             return LibrarySearchPage(items: [LibrarySearchResult(resourceID: query, source: source, title: query)], hasMore: false)
         }
         let old = Task { await race.search("slow", scope: .files, debounce: .zero) }
