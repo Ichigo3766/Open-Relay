@@ -36,6 +36,8 @@ struct NoteEditorView: View {
         dependencies.apiClient
     }
 
+    private var canEdit: Bool { note?.canEdit == true }
+
     var body: some View {
         Group {
             if isLoading {
@@ -53,71 +55,73 @@ struct NoteEditorView: View {
         }
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
-            ToolbarItem(placement: .topBarTrailing) {
-                HStack(spacing: Spacing.sm) {
-                    // AI features menu
-                    Menu {
-                        Button {
-                            Task { await generateTitle() }
-                        } label: {
-                            SwiftUI.Label(
-                                isGeneratingTitle ? "Generating..." : "Generate Title",
-                                systemImage: "sparkles"
-                            )
-                        }
-                        .disabled(isGeneratingTitle || contentText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            if canEdit {
+                ToolbarItem(placement: .topBarTrailing) {
+                    HStack(spacing: Spacing.sm) {
+                        // AI features menu
+                        Menu {
+                            Button {
+                                Task { await generateTitle() }
+                            } label: {
+                                SwiftUI.Label(
+                                    isGeneratingTitle ? "Generating..." : "Generate Title",
+                                    systemImage: "sparkles"
+                                )
+                            }
+                            .disabled(isGeneratingTitle || contentText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
 
-                        Button {
-                            Task { await enhanceContent() }
+                            Button {
+                                Task { await enhanceContent() }
+                            } label: {
+                                SwiftUI.Label(
+                                    isEnhancing ? "Enhancing…" : "Enhance with AI",
+                                    systemImage: "wand.and.stars"
+                                )
+                            }
+                            .disabled(isEnhancing || contentText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                         } label: {
-                            SwiftUI.Label(
-                                isEnhancing ? "Enhancing…" : "Enhance with AI",
-                                systemImage: "wand.and.stars"
-                            )
+                            if isGeneratingTitle || isEnhancing {
+                                ProgressView()
+                                    .controlSize(.small)
+                            } else {
+                                Image(systemName: "sparkles")
+                            }
                         }
-                        .disabled(isEnhancing || contentText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                    } label: {
-                        if isGeneratingTitle || isEnhancing {
+                        .accessibilityLabel("AI Features")
+
+                        // Preview toggle
+                        Button {
+                            isPreviewMode.toggle()
+                        } label: {
+                            Image(systemName: isPreviewMode ? "pencil" : "eye")
+                        }
+                        .accessibilityLabel(isPreviewMode ? "Edit" : "Preview")
+
+                        // Audio recording
+                        Button {
+                            showAudioRecorder = true
+                        } label: {
+                            Image(systemName: "mic.circle")
+                        }
+                        .accessibilityLabel("Record audio")
+
+                        // File attachment
+                        Button {
+                            showFilePicker = true
+                        } label: {
+                            Image(systemName: "paperclip")
+                        }
+                        .accessibilityLabel("Attach file")
+
+                        // Save indicator
+                        if isSaving {
                             ProgressView()
                                 .controlSize(.small)
-                        } else {
-                            Image(systemName: "sparkles")
+                        } else if hasChanges {
+                            Circle()
+                                .fill(theme.brandPrimary)
+                                .frame(width: 8, height: 8)
                         }
-                    }
-                    .accessibilityLabel("AI Features")
-
-                    // Preview toggle
-                    Button {
-                        isPreviewMode.toggle()
-                    } label: {
-                        Image(systemName: isPreviewMode ? "pencil" : "eye")
-                    }
-                    .accessibilityLabel(isPreviewMode ? "Edit" : "Preview")
-
-                    // Audio recording
-                    Button {
-                        showAudioRecorder = true
-                    } label: {
-                        Image(systemName: "mic.circle")
-                    }
-                    .accessibilityLabel("Record audio")
-
-                    // File attachment
-                    Button {
-                        showFilePicker = true
-                    } label: {
-                        Image(systemName: "paperclip")
-                    }
-                    .accessibilityLabel("Attach file")
-
-                    // Save indicator
-                    if isSaving {
-                        ProgressView()
-                            .controlSize(.small)
-                    } else if hasChanges {
-                        Circle()
-                            .fill(theme.brandPrimary)
-                            .frame(width: 8, height: 8)
                     }
                 }
             }
@@ -155,7 +159,7 @@ struct NoteEditorView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: Spacing.md) {
                     // Title
-                    if isPreviewMode {
+                    if isPreviewMode || !canEdit {
                         Text(titleText.isEmpty ? "Untitled" : titleText)
                             .scaledFont(size: 28, weight: .bold)
                             .foregroundStyle(theme.textPrimary)
@@ -167,6 +171,11 @@ struct NoteEditorView: View {
                     }
 
                     // Metadata
+                    if !note.canEdit {
+                        Label("Read Only", systemImage: "lock")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                    }
                     HStack(spacing: Spacing.md) {
                         Text("\(note.wordCount) words")
                             .scaledFont(size: 12, weight: .medium)
@@ -197,7 +206,7 @@ struct NoteEditorView: View {
                     }
 
                     // Content area — fills remaining screen height
-                    if isPreviewMode {
+                    if isPreviewMode || !canEdit {
                         markdownPreview
                     } else {
                         markdownEditor(screenHeight: geometry.size.height)
@@ -367,6 +376,7 @@ struct NoteEditorView: View {
     }
 
     private func scheduleAutoSave() {
+        guard canEdit else { return }
         hasChanges = true
         autoSaveTask?.cancel()
         autoSaveTask = Task {
@@ -377,7 +387,7 @@ struct NoteEditorView: View {
     }
 
     private func saveNote() async {
-        guard var updatedNote = note else { return }
+        guard canEdit, var updatedNote = note else { return }
         isSaving = true
 
         updatedNote.title = titleText
@@ -393,7 +403,7 @@ struct NoteEditorView: View {
 
     /// Generates a title for the note using AI.
     private func generateTitle() async {
-        guard let apiClient,
+        guard canEdit, let apiClient,
               !contentText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         else { return }
 
@@ -424,7 +434,7 @@ struct NoteEditorView: View {
 
     /// Enhances the note content using AI.
     private func enhanceContent() async {
-        guard let apiClient,
+        guard canEdit, let apiClient,
               !contentText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         else { return }
 
@@ -454,7 +464,7 @@ struct NoteEditorView: View {
     }
 
     private func handleAudioRecording(_ result: RecordingResult) {
-        guard var updatedNote = note else { return }
+        guard canEdit, var updatedNote = note else { return }
 
         let attachment = AudioAttachment(
             fileName: result.fileName,
@@ -481,7 +491,7 @@ struct NoteEditorView: View {
     }
 
     private func handleFileImport(_ result: Result<[URL], Error>) {
-        guard case .success(let urls) = result, var updatedNote = note else { return }
+        guard canEdit, case .success(let urls) = result, var updatedNote = note else { return }
 
         for url in urls {
             guard url.startAccessingSecurityScopedResource() else { continue }

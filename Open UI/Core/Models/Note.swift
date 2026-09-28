@@ -18,6 +18,10 @@ struct Note: Codable, Identifiable, Hashable, Sendable {
     var isPinned: Bool
     var folderId: String?
     var isLocalOnly: Bool
+    /// Present on native note-detail responses; nil preserves older server/cache behavior.
+    var writeAccess: Bool?
+
+    var canEdit: Bool { writeAccess != false }
 
     init(
         id: String = UUID().uuidString,
@@ -30,7 +34,8 @@ struct Note: Codable, Identifiable, Hashable, Sendable {
         fileAttachments: [FileAttachmentRef] = [],
         isPinned: Bool = false,
         folderId: String? = nil,
-        isLocalOnly: Bool = false
+        isLocalOnly: Bool = false,
+        writeAccess: Bool? = nil
     ) {
         self.id = id
         self.title = title
@@ -43,6 +48,7 @@ struct Note: Codable, Identifiable, Hashable, Sendable {
         self.isPinned = isPinned
         self.folderId = folderId
         self.isLocalOnly = isLocalOnly
+        self.writeAccess = writeAccess
     }
 
     // MARK: - Server JSON Parsing
@@ -72,7 +78,8 @@ struct Note: Codable, Identifiable, Hashable, Sendable {
             title: title,
             content: markdownContent,
             createdAt: createdAt,
-            updatedAt: updatedAt
+            updatedAt: updatedAt,
+            writeAccess: json["write_access"] as? Bool
         )
     }
 
@@ -127,6 +134,7 @@ struct Note: Codable, Identifiable, Hashable, Sendable {
             && lhs.content == rhs.content
             && lhs.updatedAt == rhs.updatedAt
             && lhs.isPinned == rhs.isPinned
+            && lhs.writeAccess == rhs.writeAccess
     }
 
     func hash(into hasher: inout Hasher) {

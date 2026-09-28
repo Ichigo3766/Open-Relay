@@ -109,6 +109,7 @@ final class NotesManager: @unchecked Sendable {
     /// Matches the Flutter `NoteUpdater.updateNote()` which posts to
     /// `/api/v1/notes/{id}/update`.
     func updateNote(_ note: Note) async {
+        guard note.canEdit else { return }
         // Always update local cache first
         updateLocalNote(note)
 
