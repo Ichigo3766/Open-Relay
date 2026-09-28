@@ -34,6 +34,8 @@ enum CalendarViewMode: String, CaseIterable {
 @MainActor
 final class CalendarViewModel {
     private let apiClient: APIClient
+    private let calendarScope: String?
+    var isManagingCalendars = false
 
     // MARK: - State
 
@@ -72,6 +74,7 @@ final class CalendarViewModel {
 
     init(apiClient: APIClient) {
         self.apiClient = apiClient
+        calendarScope = apiClient.network.conversationCacheScope
     }
 
     // MARK: - Loading
@@ -196,6 +199,50 @@ final class CalendarViewModel {
         } catch {
             errorMessage = error.localizedDescription
         }
+    }
+
+    // MARK: - Calendar management
+
+    private func manageCalendar<T>(_ action: () async throws -> T) async throws -> T {
+        guard !isManagingCalendars, calendarScope == apiClient.network.conversationCacheScope else {
+            throw APIError.cancelled
+        }
+        isManagingCalendars = true
+        defer { isManagingCalendars = false }
+        let result = try await action()
+        guard calendarScope == apiClient.network.conversationCacheScope else { throw APIError.cancelled }
+        return result
+    }
+
+    func saveCalendar(_ calendar: OWCalendar?, name: String, color: String?) async throws {
+        let name = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty, calendar?.isSystem != true else { throw APIError.cancelled }
+        let saved = try await manageCalendar {
+            try await apiClient.saveCalendar(id: calendar?.id, name: name, color: color)
+        }
+        if let index = calendars.firstIndex(where: { $0.id == saved.id }) {
+            calendars[index] = saved
+        } else {
+            calendars.append(saved)
+            visibleCalendarIds.insert(saved.id)
+        }
+    }
+
+    func makeDefaultCalendar(_ calendar: OWCalendar, userId: String) async throws {
+        guard !calendar.isSystem, calendar.userId == userId else { throw APIError.cancelled }
+        let saved = try await manageCalendar { try await apiClient.setDefaultCalendar(id: calendar.id) }
+        for index in calendars.indices where calendars[index].userId == saved.userId {
+            calendars[index].isDefault = calendars[index].id == saved.id
+        }
+    }
+
+    func removeCalendar(_ calendar: OWCalendar) async throws {
+        guard !calendar.isSystem, !calendar.isDefault else { throw APIError.cancelled }
+        try await manageCalendar { try await apiClient.deleteCalendar(id: calendar.id) }
+        calendars.removeAll { $0.id == calendar.id }
+        visibleCalendarIds.remove(calendar.id)
+        events.removeAll { $0.calendarId == calendar.id }
+        if selectedEvent?.calendarId == calendar.id { selectedEvent = nil }
     }
 
     // MARK: - Computed Helpers

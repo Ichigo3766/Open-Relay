@@ -1,0 +1,22 @@
+name: CalendarManagement
+options:
+  deploymentTarget:
+    iOS: '18.1'
+settings:
+  base:
+    GENERATE_INFOPLIST_FILE: YES
+    SWIFT_VERSION: '5.0'
+targets:
+  CalendarManagementUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources: [CalendarManagementUITests.swift]
+    settings:
+      PRODUCT_BUNDLE_IDENTIFIER: org.example.relay.calendar-management-tests
+schemes:
+  CalendarManagement:
+    build:
+      targets:
+        CalendarManagementUITests: [test]
+    test:
+      targets: [CalendarManagementUITests]

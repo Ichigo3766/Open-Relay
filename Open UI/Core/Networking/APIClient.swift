@@ -3667,6 +3667,29 @@ final class APIClient: @unchecked Sendable {
         return try JSONDecoder().decode([OWCalendar].self, from: data)
     }
 
+    func saveCalendar(id: String?, name: String, color: String?) async throws -> OWCalendar {
+        var body: [String: Any] = ["name": name]
+        if let color { body["color"] = color }
+        let path = id.map { "/api/v1/calendars/\($0)/update" } ?? "/api/v1/calendars/create"
+        let (data, _) = try await network.requestRaw(path: path, method: .post,
+            body: JSONSerialization.data(withJSONObject: body))
+        return try JSONDecoder().decode(OWCalendar.self, from: data)
+    }
+
+    func setDefaultCalendar(id: String) async throws -> OWCalendar {
+        let (data, _) = try await network.requestRaw(path: "/api/v1/calendars/\(id)/default", method: .post)
+        return try JSONDecoder().decode(OWCalendar.self, from: data)
+    }
+
+    func deleteCalendar(id: String) async throws {
+        let (data, _) = try await network.requestRaw(path: "/api/v1/calendars/\(id)/delete", method: .delete)
+        guard let result = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              result["status"] as? Bool == true else {
+            throw NSError(domain: "Calendar", code: 1,
+                userInfo: [NSLocalizedDescriptionKey: "The calendar was not deleted. Refresh and try again."])
+        }
+    }
+
     func getCalendarEvents(start: Date, end: Date) async throws -> [CalendarEvent] {
         let iso8601Formatter: DateFormatter = {
             let f = DateFormatter()
