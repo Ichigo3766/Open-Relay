@@ -28,6 +28,9 @@ if not baseline:
     manager_method = manager[manager.index("    func togglePin("):manager.index("    // MARK: - File Operations")]
     vm_method = vm[vm.index("    func togglePin("):vm.rindex("}")]
     errors = manager[manager.index("enum NotesError:"):]
+    raw = read("Open UI/Core/Networking/NetworkManager.swift").split("    func requestRaw(", 1)[1].split("    func requestRawAbsoluteURL(", 1)[0]
+    assert "performRequestWithRetry" not in raw
+    assert "requestRaw(" in api_method and "requestJSON(" not in api_method
     checks = (root / "Tests/NotePins/Checks.swift").read_text().replace("// API", api_method).replace("// MANAGER", manager_method).replace("// VIEWMODEL", vm_method)
     model += errors
     assert "isLocalOnly: true" in manager

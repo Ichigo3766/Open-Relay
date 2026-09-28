@@ -7,11 +7,11 @@ enum Method { case post }
     var fail = false
     var suspend = false
     var pending: CheckedContinuation<Void, Never>?
-    func requestJSON(path: String, method: Method) async throws -> [String: Any] {
+    func requestRaw(path: String, method: Method) async throws -> (Data, Int) {
         calls.append(path)
         if suspend { await withCheckedContinuation { pending = $0 } }
         if fail { throw NSError(domain: "Synthetic", code: 503) }
-        return reply
+        return (try JSONSerialization.data(withJSONObject: reply), 200)
     }
 }
 @MainActor final class APIClient {

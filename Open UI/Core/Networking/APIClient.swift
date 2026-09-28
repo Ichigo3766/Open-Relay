@@ -3263,8 +3263,10 @@ final class APIClient: @unchecked Sendable {
     }
 
     func toggleNotePin(id: String) async throws -> Bool {
-        let json = try await network.requestJSON(path: "/api/v1/notes/\(id)/pin", method: .post)
-        guard let pinned = json["is_pinned"] as? Bool else { throw NotesError.invalidPinResponse }
+        // A toggle is not idempotent: never automatically retry an uncertain result.
+        let (data, _) = try await network.requestRaw(path: "/api/v1/notes/\(id)/pin", method: .post)
+        guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let pinned = json["is_pinned"] as? Bool else { throw NotesError.invalidPinResponse }
         return pinned
     }
 
