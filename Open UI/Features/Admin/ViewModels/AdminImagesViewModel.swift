@@ -91,14 +91,12 @@ final class AdminImagesViewModel {
 
     // MARK: - Verify URL
 
-    func verifyURL() async {
-        guard let api = apiClient else { return }
+    func verifyURL(url: String, key: String) async {
+        guard let api = apiClient, !isVerifying else { return }
         isVerifying = true
         verifyResult = nil
         do {
-            // Save first so the server uses the current URL
-            config = try await api.updateImageConfig(config)
-            let result = try await api.verifyImageConfigURL()
+            let result = try await api.verifyImageConfigURL(engine: "comfyui", url: url, key: key)
             verifyResult = result
             logger.info("URL verify result: \(result)")
         } catch {

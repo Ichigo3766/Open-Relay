@@ -6015,18 +6015,15 @@ final class APIClient: @unchecked Sendable {
         return try decoder.decode([ImageModelItem].self, from: data)
     }
 
-    /// GET `/api/v1/images/config/url/verify` — returns true if ComfyUI/A1111 URL is reachable.
-    func verifyImageConfigURL() async throws -> Bool {
-        let (data, _) = try await network.requestRaw(path: "/api/v1/images/config/url/verify")
-        // Response is a plain JSON boolean
-        if let result = try? JSONDecoder().decode(Bool.self, from: data) {
-            return result
-        }
-        // Fallback: check for string "true"
-        if let str = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) {
-            return str == "true"
-        }
-        return false
+    /// Verify a ComfyUI/Automatic1111 connection without saving image configuration.
+    func verifyImageConfigURL(engine: String, url: String, key: String? = nil) async throws -> Bool {
+        var payload = ["engine": engine, "url": url]
+        payload["key"] = key
+        let (data, _) = try await network.requestRaw(
+            path: "/api/v1/images/verify", method: .post,
+            body: try JSONSerialization.data(withJSONObject: payload)
+        )
+        return try JSONDecoder().decode(Bool.self, from: data)
     }
 
     // MARK: - Retrieval / Documents Config

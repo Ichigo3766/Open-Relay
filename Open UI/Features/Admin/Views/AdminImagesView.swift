@@ -303,7 +303,7 @@ struct AdminImagesView: View {
                 Spacer()
 
                 Button {
-                    Task { await viewModel.verifyURL() }
+                    Task { await viewModel.verifyURL(url: baseURL.wrappedValue, key: apiKey.wrappedValue) }
                 } label: {
                     Group {
                         if viewModel.isVerifying {
@@ -320,6 +320,7 @@ struct AdminImagesView: View {
                     .frame(width: 32, height: 32)
                 }
                 .buttonStyle(.plain)
+                .disabled(viewModel.isVerifying)
             }
             .padding(.horizontal, Spacing.md)
             .padding(.vertical, Spacing.chatBubblePadding)
