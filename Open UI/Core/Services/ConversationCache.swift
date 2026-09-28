@@ -22,10 +22,31 @@ actor ConversationCache {
         }
     }
 
+    /// JSONSerialization creates immutable Foundation values (no mutable options).
+    /// Carry that validated tree to model construction instead of decoding again.
+    nonisolated struct Response: @unchecked Sendable {
+        let json: [String: Any]
+        let chat: [String: Any]
+
+        init(data: Data, id: String) throws {
+            guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  json["id"] as? String == id, let chat = json["chat"] as? [String: Any] else {
+                throw APIError.responseDecoding(underlying: CocoaError(.coderReadCorrupt), data: nil)
+            }
+            self.json = json
+            self.chat = chat
+        }
+    }
+
+    nonisolated struct CachedResponse: Sendable {
+        let entry: Entry
+        let response: Response
+    }
+
     private let directory: URL
     private let defaults: UserDefaults
     private var generation = UUID()
-    private var inFlight: [String: Task<Data, Error>] = [:]
+    private var inFlight: [String: Task<Response, Error>] = [:]
 
     init(directory: URL = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
         .appendingPathComponent(ConversationCache.directoryName), defaults: UserDefaults = .standard) {
@@ -54,10 +75,10 @@ actor ConversationCache {
         directory.appendingPathComponent(scope + "-" + Self.digest(Data(id.utf8)) + ".plist")
     }
 
-    func cached(scope: String?, id: String, now: Date = .now) -> Entry? {
+    func cached(scope: String?, id: String, now: Date = .now) -> CachedResponse? {
         guard let entry = read(scope: scope, id: id, now: now),
-              Self.conversation(entry.data, id: id) != nil else { return nil }
-        return entry
+              let response = try? Response(data: entry.data, id: id) else { return nil }
+        return CachedResponse(entry: entry, response: response)
     }
 
     func cachedIndex(scope: String?) -> ConversationIndex? {
@@ -90,14 +111,15 @@ actor ConversationCache {
 
     /// Only navigation may opt into the short freshness window. Recovery and actions validate every time.
     func load(scope: String?, id: String, preferRecent: Bool = false,
-              fetch: @escaping @Sendable (String?) async throws -> (Data, HTTPURLResponse)) async throws -> Data {
-        guard let scope, !id.hasPrefix("local:") else { return try await fetch(nil).0 }
-        let entry = cached(scope: scope, id: id)
-        if preferRecent, let entry, entry.isRecent() { return entry.data }
+              fetch: @escaping @Sendable (String?) async throws -> (Data, HTTPURLResponse)) async throws -> Response {
+        guard let scope, !id.hasPrefix("local:") else { return try await Response(data: fetch(nil).0, id: id) }
+        let cached = cached(scope: scope, id: id)
+        let entry = cached?.entry
+        if preferRecent, let cached, cached.entry.isRecent() { return cached.response }
         let revision = generation
         let key = scope + ":" + id + ":" + revision.uuidString
         if let pending = inFlight[key] { return try await pending.value }
-        let task = Task<Data, Error> {
+        let task = Task<Response, Error> {
             defer { self.inFlight[key] = nil }
             do {
                 var (data, response) = try await fetch(entry?.etag)
@@ -110,14 +132,15 @@ actor ConversationCache {
                 } else if response.statusCode != 200 {
                     throw APIError.httpError(statusCode: response.statusCode, message: nil, data: nil)
                 }
-                guard let chat = Self.conversation(data, id: id) else {
+                let decoded = response.statusCode == 304 ? cached?.response : try? Response(data: data, id: id)
+                guard let decoded else {
                     self.invalidate(scope: scope, id: id)
                     throw APIError.responseDecoding(underlying: CocoaError(.coderReadCorrupt), data: nil)
                 }
                 if revision == self.generation {
                     let control = (response.value(forHTTPHeaderField: "Cache-Control") ?? "").lowercased()
                     if control.contains("no-store") || response.value(forHTTPHeaderField: "Vary") == "*"
-                        || Self.hasUnfinishedMessages(chat) {
+                        || Self.hasUnfinishedMessages(decoded.chat) {
                         self.invalidate(scope: scope, id: id)
                     } else {
                         var freshFor = control.contains("no-cache") ? 0
@@ -134,7 +157,7 @@ actor ConversationCache {
                             validatedAt: .now, freshFor: freshFor), scope: scope, id: id)
                     }
                 }
-                return data
+                return decoded
             } catch {
                 if case APIError.httpError(let code, _, _) = error,
                    [403, 404, 410].contains(code) { self.invalidate(scope: scope, id: id) }
@@ -144,12 +167,6 @@ actor ConversationCache {
         }
         inFlight[key] = task
         return try await task.value
-    }
-
-    nonisolated private static func conversation(_ data: Data, id: String) -> [String: Any]? {
-        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              json["id"] as? String == id else { return nil }
-        return json["chat"] as? [String: Any]
     }
 
     nonisolated private static func hasUnfinishedMessages(_ chat: [String: Any]) -> Bool {

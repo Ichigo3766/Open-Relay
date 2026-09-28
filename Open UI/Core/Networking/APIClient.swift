@@ -787,33 +787,30 @@ final class APIClient: @unchecked Sendable {
     func cachedConversation(id: String) async -> (conversation: Conversation, isRecent: Bool, validatedAt: Date)? {
         let revision = await ConversationCache.shared.currentRevision()
         let scope = network.conversationCacheScope
-        guard let entry = await ConversationCache.shared.cached(scope: scope, id: id),
-              let conversation = try? await decodeConversation(entry.data),
-              scope == network.conversationCacheScope,
+        guard let cached = await ConversationCache.shared.cached(scope: scope, id: id) else { return nil }
+        let conversation = await decodeConversation(cached.response)
+        guard scope == network.conversationCacheScope,
               revision == (await ConversationCache.shared.currentRevision()) else { return nil }
-        return (conversation, entry.isRecent(), entry.validatedAt)
+        return (conversation, cached.entry.isRecent(), cached.entry.validatedAt)
     }
 
     func getConversation(id: String, preferRecent: Bool = false) async throws -> Conversation {
         let scope = network.conversationCacheScope
-        let data = try await ConversationCache.shared.load(scope: scope, id: id, preferRecent: preferRecent) { [self] etag in
+        let response = try await ConversationCache.shared.load(scope: scope, id: id, preferRecent: preferRecent) { [self] etag in
             let result = try await network.requestRaw(path: "/api/v1/chats/\(id)",
                 ifNoneMatch: etag, deduplicate: false)
             guard scope == (await network.conversationCacheScope) else { throw APIError.cancelled }
             return result
         }
-        let conversation = try await decodeConversation(data)
+        let conversation = await decodeConversation(response)
         guard scope == network.conversationCacheScope else { throw APIError.cancelled }
         return conversation
     }
 
-    private func decodeConversation(_ data: Data) async throws -> Conversation {
+    private func decodeConversation(_ response: ConversationCache.Response) async -> Conversation {
         // Parsing history and extracting inline images must stay off the main actor.
-        try await Task.detached(priority: .userInitiated) { [self] in
-            guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-                throw APIError.responseDecoding(underlying: CocoaError(.coderReadCorrupt), data: nil)
-            }
-            return self.parseFullConversation(json)
+        await Task.detached(priority: .userInitiated) { [self] in
+            self.parseFullConversation(response.json)
         }.value
     }
 
