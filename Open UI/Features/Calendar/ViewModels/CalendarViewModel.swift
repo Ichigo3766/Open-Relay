@@ -167,12 +167,17 @@ final class CalendarViewModel {
     }
 
     func saveEvent(_ draft: CalendarEventDraft) async throws {
+        let selectedInstance = selectedEvent?.instanceId
         let saved = try await apiClient.saveCalendarEvent(draft)
         if selectedEvent?.id == saved.id { selectedEvent = saved }
         events.removeAll { $0.id == saved.id }
         events.append(saved)
         errorMessage = nil
         await loadEventsForDisplayedMonth()
+        if selectedEvent?.id == saved.id,
+           let refreshed = events.first(where: { $0.id == saved.id && $0.instanceId == selectedInstance }) {
+            selectedEvent = refreshed
+        }
         if let errorMessage {
             self.errorMessage = "The event was saved, but the calendar couldn’t refresh. \(errorMessage)"
         }

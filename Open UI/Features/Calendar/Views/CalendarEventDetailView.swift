@@ -52,6 +52,7 @@ struct CalendarEventDetailView: View {
     private var reminderLabel: String {
         guard let mins = event.meta?.alertMinutes else { return "" }
         switch mins {
+        case ..<0: return "None"
         case 0: return "At time of event"
         case 5: return "5 minutes before"
         case 10: return "10 minutes before"
