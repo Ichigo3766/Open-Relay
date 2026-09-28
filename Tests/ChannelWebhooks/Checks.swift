@@ -10,6 +10,20 @@ import Foundation
         check(hook.postingURL(serverURL: "https://example.test/relay/")?.absoluteString == "https://example.test/relay/api/v1/channels/webhooks/paper-hook/synthetic-secret", "server prefix preserved")
         check(hook.postingURL(serverURL: "https://ignored:ignored@example.test/?credential=ignored#ignored")?.absoluteString == "https://example.test/api/v1/channels/webhooks/paper-hook/synthetic-secret", "unrelated credentials removed")
         check(hook.postingURL(serverURL: "file:///tmp") == nil, "no local URL")
+        var channelJSON: [String: Any] = ["id": "crafts", "user_id": "craft-user", "name": "Crafts", "is_manager": true]
+        let managed = Channel.fromJSON(channelJSON)!
+        check(managed.isManager, "native channel manager flag")
+        channelJSON.removeValue(forKey: "is_manager")
+        check(!Channel.fromJSON(channelJSON)!.isManager, "missing manager flag not permissive")
+        var permission = PermissionProbe()
+        check(!permission.canManageWebhooks, "unloaded permissions hidden")
+        permission.viewModel.channel = managed
+        permission.dependencies.authViewModel.currentUser = PermissionUser(role: .user)
+        check(permission.canManageWebhooks, "manager can access integration controls")
+        permission.viewModel.channel?.isManager = false
+        check(!permission.canManageWebhooks, "ordinary member cannot access controls")
+        permission.dependencies.authViewModel.currentUser?.role = .admin
+        check(permission.canManageWebhooks, "administrator can access controls")
         let api = APIClient()
         api.network.response = Data("[".utf8) + data + Data("]".utf8)
         let listed = try await api.getChannelWebhooks(channelId: "crafts")
@@ -76,6 +90,10 @@ import Foundation
         do { try await vm.save(nil, name: "Wrong account"); check(false, "wrong account request") }
         catch { check(api.network.calls.count == staleCalls, "stale screen cannot send to new account") }
         check(vm.postingURL(for: hook) == nil, "stale screen cannot copy secret")
+        api.network.conversationCacheScope = "synthetic-scope"
+        api.network.response = Data("[".utf8) + data + Data("]".utf8)
+        await vm.load()
+        check(vm.webhooks.isEmpty && vm.errorMessage != nil, "late account list cannot surface old secrets")
         print("\(count) checks passed")
     }
 }

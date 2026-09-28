@@ -1,0 +1,22 @@
+name: ChannelWebhooks
+options:
+  deploymentTarget:
+    iOS: '18.1'
+settings:
+  base:
+    GENERATE_INFOPLIST_FILE: YES
+    SWIFT_VERSION: '5.0'
+targets:
+  ChannelWebhooksUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources: [ChannelWebhooksUITests.swift]
+    settings:
+      PRODUCT_BUNDLE_IDENTIFIER: org.example.relay.channel-webhook-tests
+schemes:
+  ChannelWebhooks:
+    build:
+      targets:
+        ChannelWebhooksUITests: [test]
+    test:
+      targets: [ChannelWebhooksUITests]

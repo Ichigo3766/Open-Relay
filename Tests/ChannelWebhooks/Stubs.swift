@@ -1,6 +1,11 @@
 import Foundation
 
 enum APIError: Error { case cancelled }
+struct ChannelMessage: Sendable { static func fromJSON(_ value: [String: Any]) -> ChannelMessage? { nil } }
+struct PermissionUser { enum Role { case admin, user }; var role: Role }
+struct PermissionAuth { var currentUser: PermissionUser? }
+struct PermissionDependencies { var authViewModel = PermissionAuth() }
+struct PermissionVM { var channel: Channel? }
 final class Network {
     enum Method: Equatable { case get, post, delete }
     var conversationCacheScope: String? = "synthetic-scope"

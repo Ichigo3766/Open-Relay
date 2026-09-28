@@ -19,12 +19,17 @@ wire += "final class APIClient { let network = Network(); var baseURL = \"https:
 for name in ["getChannelWebhooks", "saveChannelWebhook", "deleteChannelWebhook"]:
     wire += method(source, "    func " + name + "(") + "\n"
 wire += "}\n"
-vm = (root / "Open UI/Features/Channels/ViewModels/ChannelWebhooksViewModel.swift").read_text().replace("@Observable ", "")
+view = (root / "Open UI/Features/Channels/Views/ChannelDetailView.swift").read_text()
+wire += "struct PermissionProbe { var viewModel = PermissionVM(); var dependencies = PermissionDependencies()\n"
+wire += method(view, "    private var canManageWebhooks:").replace("private var", "var") + "\n}\n"
+vm = (root / "Open UI/Features/Channels/ViewModels/ChannelWebhooksViewModel.swift").read_text()
 with tempfile.TemporaryDirectory(prefix="relay-webhooks-") as directory:
     work = Path(directory)
     (work / "Wire.swift").write_text(wire)
     (work / "State.swift").write_text(vm)
     subprocess.run(["swiftc", "-swift-version", "5", str(work / "Wire.swift"), str(work / "State.swift"),
         str(root / "Open UI/Core/Models/ChannelWebhook.swift"),
+        str(root / "Open UI/Core/Models/Channel.swift"),
+        str(root / "Open UI/Core/Extensions/TimestampParser.swift"),
         str(root / "Tests/ChannelWebhooks/Checks.swift"), "-o", str(work / "checks")], check=True)
     subprocess.run([str(work / "checks")], check=True)
