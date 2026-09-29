@@ -77,6 +77,7 @@ final class ChatViewModel {
     var selectedModelId: String?
     var isStreaming: Bool = false {
         didSet {
+            if oldValue && !isStreaming { noteChatSession?.revision += 1 }
             // Update the store's streamingConversationId so the sidebar spinner
             // can react purely by observing one property on the @Observable store,
             // bypassing the @ObservationIgnored viewModels dictionary entirely.
@@ -121,8 +122,10 @@ final class ChatViewModel {
     func restoreDictationDraft(for context: DictationContext) throws {
         guard dictationDraftContext != context else { return }
         let previous = dictationDraftContext
+        let previousWasDraft = previous?.conversation == nil
+            || previous?.conversation == noteChatSession.map { "note-draft:\($0.noteId)" }
         let isPromotion = previous?.server == context.server && previous?.account == context.account
-            && previous?.conversation == nil && context.conversation != nil && conversationId == nil
+            && previousWasDraft && context.conversation != nil && conversationId == nil
         if isPromotion, let previous {
             try DictationRecoveryStore.shared.move(from: previous, to: context)
         }
@@ -336,6 +339,8 @@ final class ChatViewModel {
     // MARK: - Private State
 
     let conversationId: String?
+    var noteChatSession: NoteChatSession?
+    private(set) var isCreatingNoteChat = false
     private var manager: ConversationManager?
     private var socketService: SocketIOService?
     /// Weak reference to the shared ASR service, set via configure().
@@ -552,7 +557,7 @@ final class ChatViewModel {
         let notBlocked = (enableMessageQueue && isStreaming)
             || (!isStreaming
                 && !attachments.contains(where: { $0.type == .audio && $0.isTranscribing }))
-        return notBlocked
+        return notBlocked && !isCreatingNoteChat
             && (!inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                 || !attachments.isEmpty)
     }
@@ -3147,6 +3152,25 @@ final class ChatViewModel {
         guard let modelId = mentionedModelId ?? selectedModelId else {
             errorMessage = "Please select a model first."
             return
+        }
+
+        if let noteChatSession {
+            guard !isCreatingNoteChat else { return }
+            isCreatingNoteChat = true
+            defer { isCreatingNoteChat = false }
+            do {
+                try noteChatSession.checkSession()
+                if conversation == nil {
+                    conversation = try await noteChatSession.create()
+                    if let conversation { activeChatStore?.retain(self, for: conversation.id) }
+                }
+                isTemporaryChat = false
+            } catch is CancellationError {
+                return
+            } catch {
+                errorMessage = "Couldn’t create the note chat. Your message has not been sent. Please try again."
+                return
+            }
         }
 
         // Process audio attachments depending on transcription mode.

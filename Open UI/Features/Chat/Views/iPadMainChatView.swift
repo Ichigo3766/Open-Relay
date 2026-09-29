@@ -292,6 +292,7 @@ struct iPadMainChatView: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: .openUINewChatWithFocus)) { _ in
             // Widget "Ask Open Relay" bar — start new chat and auto-focus keyboard
+            showNotes = false
             startNewChat()
             // Give the view time to settle before requesting keyboard focus
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
@@ -861,6 +862,7 @@ struct iPadMainChatView: View {
             // Three-column layout: chat + terminal browser side by side
             HStack(spacing: 0) {
                 chatDetailContent
+                    .disabled(showNotes)
                     .frame(maxWidth: .infinity)
 
                 if showTerminalBrowser {
@@ -915,6 +917,7 @@ struct iPadMainChatView: View {
             }
         } else {
             chatDetailContent
+                .disabled(showNotes)
         }
     }
 
@@ -3141,6 +3144,7 @@ private extension View {
                 // Works both on warm launch (app running) and after cold-start restore
                 // (SharedDataService was already updated before this notification fired).
                 if let conversationId = notification.object as? String {
+                    showNotes.wrappedValue = false
                     activeConversationId.wrappedValue = conversationId
                     activeChannelId.wrappedValue = nil
                     SharedDataService.shared.saveLastActiveConversationId(conversationId)

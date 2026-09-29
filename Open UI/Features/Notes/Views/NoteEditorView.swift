@@ -21,6 +21,10 @@ struct NoteEditorView: View {
     @State private var isEnhancing = false
     @State private var aiErrorMessage: String?
     @State private var autoSaveTask: Task<Void, Never>?
+    @State private var noteChatSession: NoteChatSession?
+    @State private var noteChatDraft: ChatViewModel?
+    @State private var linkedChat: Conversation?
+    @State private var isOpeningChat = false
 
     @Environment(AppDependencyContainer.self) private var dependencies
     @Environment(\.theme) private var theme
@@ -53,6 +57,16 @@ struct NoteEditorView: View {
         }
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button {
+                    Task { await openChat() }
+                } label: {
+                    if isOpeningChat { ProgressView() }
+                    else { Image(systemName: "bubble.left.and.bubble.right") }
+                }
+                .accessibilityLabel("Chat about note")
+                .disabled(note == nil || isOpeningChat || isSaving || hasChanges)
+            }
             ToolbarItem(placement: .topBarTrailing) {
                 HStack(spacing: Spacing.sm) {
                     // AI features menu
@@ -122,7 +136,7 @@ struct NoteEditorView: View {
                 }
             }
         }
-        .alert("AI Error", isPresented: .init(
+        .alert("Note Error", isPresented: .init(
             get: { aiErrorMessage != nil },
             set: { if !$0 { aiErrorMessage = nil } }
         )) {
@@ -131,6 +145,18 @@ struct NoteEditorView: View {
             Text(aiErrorMessage ?? "")
         }
         .task { loadNote() }
+        .onChange(of: noteChatSession?.revision) { previous, _ in
+            // A completed background chat may have edited the note. Never replace
+            // text while the user is editing, or start the editor's autosave loop.
+            if previous != nil && isPreviewMode && !hasChanges && !isSaving { loadNote() }
+        }
+        .sheet(item: $linkedChat, onDismiss: {
+            if !hasChanges && !isSaving { loadNote() }
+        }) { chat in
+            if let noteChatSession {
+                NoteChatsView(session: noteChatSession, initialChat: chat, draft: $noteChatDraft)
+            }
+        }
         .sheet(isPresented: $showAudioRecorder) {
             AudioRecorderSheet(recordingService: recordingService) { result in
                 handleAudioRecording(result)
@@ -349,8 +375,13 @@ struct NoteEditorView: View {
             return
         }
         // Load from server asynchronously, falling back to local cache
+        let titleBeforeLoad = titleText
+        let contentBeforeLoad = contentText
         Task {
-            if let serverNote = await manager.fetchNote(id: noteId) {
+            let serverNote = await manager.fetchNote(id: noteId)
+            guard dependencies.notesManager === manager, !hasChanges, !isSaving,
+                  titleText == titleBeforeLoad, contentText == contentBeforeLoad else { return }
+            if let serverNote {
                 note = serverNote
                 titleText = serverNote.title
                 contentText = serverNote.content
@@ -390,6 +421,24 @@ struct NoteEditorView: View {
     }
 
     // MARK: - AI Features
+
+    private func openChat() async {
+        guard let apiClient, !isOpeningChat, !hasChanges, !isSaving else { return }
+        isOpeningChat = true
+        defer { isOpeningChat = false }
+        let session = noteChatSession ?? NoteChatSession(noteId: noteId, api: apiClient,
+                                                        isCurrent: { dependencies.apiClient === apiClient })
+        do {
+            let chat = try await session.open(title: titleText, content: contentText)
+            isPreviewMode = true
+            isContentFocused = false
+            noteChatSession = session
+            linkedChat = chat
+        } catch is CancellationError {
+        } catch {
+            aiErrorMessage = error.localizedDescription
+        }
+    }
 
     /// Generates a title for the note using AI.
     private func generateTitle() async {

@@ -1,0 +1,22 @@
+name: NoteChats
+options:
+  deploymentTarget:
+    iOS: '18.1'
+settings:
+  base:
+    GENERATE_INFOPLIST_FILE: YES
+    SWIFT_VERSION: '5.0'
+targets:
+  NoteChatsUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources: [NoteChatsUITests.swift]
+    settings:
+      PRODUCT_BUNDLE_IDENTIFIER: org.example.relay.note-chats-tests
+schemes:
+  NoteChats:
+    build:
+      targets:
+        NoteChatsUITests: [test]
+    test:
+      targets: [NoteChatsUITests]

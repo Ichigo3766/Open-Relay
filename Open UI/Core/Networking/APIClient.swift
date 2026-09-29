@@ -4181,7 +4181,7 @@ final class APIClient: @unchecked Sendable {
         )
     }
 
-    nonisolated private func parseFullConversation(_ json: [String: Any]) -> Conversation {
+    nonisolated func parseFullConversation(_ json: [String: Any]) -> Conversation {
         let id = json["id"] as? String ?? UUID().uuidString
         let title = (json["chat"] as? [String: Any])?["title"] as? String
             ?? json["title"] as? String

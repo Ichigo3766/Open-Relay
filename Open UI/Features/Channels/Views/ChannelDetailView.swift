@@ -15,6 +15,7 @@ import ReactionContextMenu
 struct ChannelDetailView: View {
     @Environment(AppDependencyContainer.self) private var dependencies
     @Environment(\.theme) private var theme
+    @Environment(\.isEnabled) private var isEnabled
     
     @State private var viewModel: ChannelViewModel
     @State private var scrollPosition = ScrollPosition()
@@ -416,6 +417,7 @@ struct ChannelDetailView: View {
             Text(operationErrorMessage)
         }
         .onReceive(NotificationCenter.default.publisher(for: .markdownLinkTapped)) { notification in
+            guard isEnabled else { return }
             guard let url = notification.userInfo?["url"] as? URL else { return }
             if url.scheme == "openui-channel", let channelId = url.host {
                 NotificationCenter.default.post(name: .navigateToChannel, object: channelId)

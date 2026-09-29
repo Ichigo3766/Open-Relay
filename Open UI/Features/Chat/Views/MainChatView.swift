@@ -325,6 +325,7 @@ struct MainChatView: View {
             // Chat fills remaining space — keyboard avoidance works naturally here
             NavigationStack {
                 chatContent
+                    .disabled(showNotes)
                     .navigationBarTitleDisplayMode(.inline)
                     .toolbarBackground(.hidden, for: .navigationBar)
             }
@@ -426,6 +427,7 @@ struct MainChatView: View {
             // MARK: Main chat content — slides over the sidebar as a rounded page
             NavigationStack {
                 chatContent
+                    .disabled(showNotes)
                     .navigationBarTitleDisplayMode(.inline)
                     .toolbarBackground(.hidden, for: .navigationBar)
             }
@@ -1247,6 +1249,7 @@ struct MainChatView: View {
                 // Works both on warm launch (app running) and after cold-start restore
                 // (SharedDataService was already updated before this notification fired).
                 if let conversationId = notification.object as? String {
+                    showNotes = false
                     activeConversationId = conversationId
                     activeChannelId = nil
                     SharedDataService.shared.saveLastActiveConversationId(conversationId)
@@ -1282,6 +1285,7 @@ struct MainChatView: View {
             }
             .onReceive(NotificationCenter.default.publisher(for: .openUINewChatWithFocus)) { _ in
                 // Widget "Ask Open Relay" bar — start new chat and auto-focus keyboard
+                showNotes = false
                 startNewChat()
                 // Give the view time to settle before requesting keyboard focus
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {

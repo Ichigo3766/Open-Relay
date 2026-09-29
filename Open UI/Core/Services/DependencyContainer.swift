@@ -217,6 +217,14 @@ final class ActiveChatStore {
         accessOrder.append(conversationId)
     }
 
+    /// Embedded chats must not replace the ordinary new-chat draft.
+    func retain(_ viewModel: ChatViewModel, for conversationId: String) {
+        viewModels[conversationId] = viewModel
+        accessOrder.removeAll { $0 == conversationId }
+        accessOrder.append(conversationId)
+        evictIfNeeded()
+    }
+
     /// Removes all cached view models and model cache (e.g. on server switch or logout).
     func clear() {
         viewModels.removeAll()
