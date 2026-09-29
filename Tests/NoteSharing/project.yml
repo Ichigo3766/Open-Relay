@@ -1,0 +1,22 @@
+name: NoteSharing
+options:
+  deploymentTarget:
+    iOS: '18.1'
+settings:
+  base:
+    GENERATE_INFOPLIST_FILE: YES
+    SWIFT_VERSION: '5.0'
+targets:
+  NoteSharingUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources: [NoteSharingUITests.swift]
+    settings:
+      PRODUCT_BUNDLE_IDENTIFIER: org.example.relay.note-sharing-tests
+schemes:
+  NoteSharing:
+    build:
+      targets:
+        NoteSharingUITests: [test]
+    test:
+      targets: [NoteSharingUITests]

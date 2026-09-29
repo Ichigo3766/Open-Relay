@@ -21,6 +21,8 @@ struct NoteEditorView: View {
     @State private var isEnhancing = false
     @State private var aiErrorMessage: String?
     @State private var autoSaveTask: Task<Void, Never>?
+    @State private var sharingModel: NoteSharingModel?
+    @State private var showSharing = false
 
     @Environment(AppDependencyContainer.self) private var dependencies
     @Environment(\.theme) private var theme
@@ -55,8 +57,18 @@ struct NoteEditorView: View {
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 HStack(spacing: Spacing.sm) {
-                    // AI features menu
+                    // Note actions
                     Menu {
+                        if let api = apiClient, let user = dependencies.authViewModel.currentUser {
+                            Button("Manage Access", systemImage: "person.2") {
+                                let container = dependencies
+                                sharingModel = NoteSharingModel(noteId: noteId, api: api, user: user) { [weak container] in
+                                    container?.apiClient === api && container?.authViewModel.currentUser?.id == user.id
+                                }
+                                showSharing = true
+                            }
+                            Divider()
+                        }
                         Button {
                             Task { await generateTitle() }
                         } label: {
@@ -81,10 +93,10 @@ struct NoteEditorView: View {
                             ProgressView()
                                 .controlSize(.small)
                         } else {
-                            Image(systemName: "sparkles")
+                            Image(systemName: "ellipsis")
                         }
                     }
-                    .accessibilityLabel("AI Features")
+                    .accessibilityLabel("Note Actions")
 
                     // Preview toggle
                     Button {
@@ -131,6 +143,9 @@ struct NoteEditorView: View {
             Text(aiErrorMessage ?? "")
         }
         .task { loadNote() }
+        .sheet(isPresented: $showSharing) {
+            if let sharingModel { NoteSharingView(model: sharingModel) }
+        }
         .sheet(isPresented: $showAudioRecorder) {
             AudioRecorderSheet(recordingService: recordingService) { result in
                 handleAudioRecording(result)
