@@ -14,7 +14,9 @@ struct NoteEditorView: View {
     @State private var hasChanges = false
     @State private var showAudioRecorder = false
     @State private var showFilePicker = false
-    @State private var showAudioPlayer: AudioAttachment?
+    @State private var files: NoteFilesModel?
+    @State private var importTask: Task<Void, Never>?
+    @State private var isImporting = false
     @State private var isPreviewMode = true
     @State private var recordingService = AudioRecordingService()
     @State private var isGeneratingTitle = false
@@ -101,6 +103,7 @@ struct NoteEditorView: View {
                         Image(systemName: "mic.circle")
                     }
                     .accessibilityLabel("Record audio")
+                    .disabled(files?.canEdit != true || files?.isBusy == true || files?.pending != nil || isImporting)
 
                     // File attachment
                     Button {
@@ -109,6 +112,7 @@ struct NoteEditorView: View {
                         Image(systemName: "paperclip")
                     }
                     .accessibilityLabel("Attach file")
+                    .disabled(files?.canEdit != true || files?.isBusy == true || files?.pending != nil || isImporting)
 
                     // Save indicator
                     if isSaving {
@@ -130,14 +134,11 @@ struct NoteEditorView: View {
         } message: {
             Text(aiErrorMessage ?? "")
         }
-        .task { loadNote() }
+        .task { await loadNote() }
         .sheet(isPresented: $showAudioRecorder) {
             AudioRecorderSheet(recordingService: recordingService) { result in
                 handleAudioRecording(result)
             }
-        }
-        .sheet(item: $showAudioPlayer) { attachment in
-            AudioPlayerSheet(attachment: attachment, baseURL: dependencies.conversationManager?.baseURL)
         }
         .fileImporter(
             isPresented: $showFilePicker,
@@ -146,6 +147,7 @@ struct NoteEditorView: View {
         ) { result in
             handleFileImport(result)
         }
+        .onDisappear { importTask?.cancel() }
     }
 
     // MARK: - Editor Content
@@ -186,15 +188,10 @@ struct NoteEditorView: View {
                     Divider()
                         .foregroundStyle(theme.divider)
 
-                    // Audio attachments
-                    if !note.audioAttachments.isEmpty {
-                        audioAttachmentsSection(note.audioAttachments)
+                    if let files {
+                        NoteFilesSection(model: files)
                     }
-
-                    // File attachments
-                    if !note.fileAttachments.isEmpty {
-                        fileAttachmentsSection(note.fileAttachments)
-                    }
+                    if isImporting { ProgressView("Importing attachment…") }
 
                     // Content area — fills remaining screen height
                     if isPreviewMode {
@@ -279,91 +276,30 @@ struct NoteEditorView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
-    // MARK: - Audio Attachments
-
-    private func audioAttachmentsSection(_ attachments: [AudioAttachment]) -> some View {
-        VStack(alignment: .leading, spacing: Spacing.sm) {
-            Text("Voice Notes")
-                .scaledFont(size: 14, weight: .medium)
-                .foregroundStyle(theme.textSecondary)
-
-            ForEach(attachments) { attachment in
-                Button {
-                    showAudioPlayer = attachment
-                } label: {
-                    HStack(spacing: Spacing.sm) {
-                        Image(systemName: "waveform")
-                            .foregroundStyle(theme.brandPrimary)
-                        Text(attachment.fileName)
-                            .scaledFont(size: 14)
-                            .foregroundStyle(theme.textPrimary)
-                            .lineLimit(1)
-                        Spacer()
-                        Text(formatDuration(attachment.duration))
-                            .scaledFont(size: 12, weight: .medium)
-                            .foregroundStyle(theme.textTertiary)
-                        Image(systemName: "play.circle.fill")
-                            .foregroundStyle(theme.brandPrimary)
-                    }
-                    .padding(Spacing.sm)
-                    .background(theme.surfaceContainer)
-                    .clipShape(RoundedRectangle(cornerRadius: CornerRadius.sm, style: .continuous))
-                }
-            }
-        }
-    }
-
-    // MARK: - File Attachments
-
-    private func fileAttachmentsSection(_ attachments: [FileAttachmentRef]) -> some View {
-        VStack(alignment: .leading, spacing: Spacing.sm) {
-            Text("Attachments")
-                .scaledFont(size: 14, weight: .medium)
-                .foregroundStyle(theme.textSecondary)
-
-            ForEach(attachments) { attachment in
-                HStack(spacing: Spacing.sm) {
-                    Image(systemName: iconForMimeType(attachment.mimeType))
-                        .foregroundStyle(theme.brandPrimary)
-                    Text(attachment.fileName)
-                        .scaledFont(size: 14)
-                        .foregroundStyle(theme.textPrimary)
-                        .lineLimit(1)
-                    Spacer()
-                    Text(formatFileSize(attachment.fileSize))
-                        .scaledFont(size: 12, weight: .medium)
-                        .foregroundStyle(theme.textTertiary)
-                }
-                .padding(Spacing.sm)
-                .background(theme.surfaceContainer)
-                .clipShape(RoundedRectangle(cornerRadius: CornerRadius.sm, style: .continuous))
-            }
-        }
-    }
-
     // MARK: - Helpers
 
-    private func loadNote() {
+    private func loadNote() async {
         guard let manager = notesManager else {
             isLoading = false
             return
         }
-        // Load from server asynchronously, falling back to local cache
-        Task {
-            if let serverNote = await manager.fetchNote(id: noteId) {
-                note = serverNote
-                titleText = serverNote.title
-                contentText = serverNote.content
-            } else {
-                // Fallback: try local cache
-                note = manager.fetchLocalNote(id: noteId)
-                if let note {
-                    titleText = note.title
-                    contentText = note.content
-                }
+        if let api = apiClient {
+            let container = dependencies
+            let userId = container.authViewModel.currentUser?.id
+            let model = NoteFilesModel(noteId: noteId, api: api) { [weak container] in
+                container?.apiClient === api && container?.authViewModel.currentUser?.id == userId
             }
-            isLoading = false
+            files = model
+            let json = await model.load()
+            guard !Task.isCancelled, model.sessionIsCurrent else { return }
+            if let json { note = Note.fromServerJSON(json) }
         }
+        if note == nil { note = manager.fetchLocalNote(id: noteId) }
+        if let note {
+            titleText = note.title
+            contentText = note.content
+        }
+        isLoading = false
     }
 
     private func scheduleAutoSave() {
@@ -454,66 +390,37 @@ struct NoteEditorView: View {
     }
 
     private func handleAudioRecording(_ result: RecordingResult) {
-        guard var updatedNote = note else { return }
-
-        let attachment = AudioAttachment(
-            fileName: result.fileName,
-            duration: result.duration
-        )
-        updatedNote.audioAttachments.append(attachment)
-        note = updatedNote
-        Task { await notesManager?.updateNote(updatedNote) }
-
-        // Upload to server if available
-        Task {
-            do {
-                let fileId = try await notesManager?.uploadAudio(data: result.data, fileName: result.fileName)
-                if var currentNote = note,
-                   let index = currentNote.audioAttachments.firstIndex(where: { $0.id == attachment.id }) {
-                    currentNote.audioAttachments[index].fileId = fileId
-                    await notesManager?.updateNote(currentNote)
-                    note = currentNote
-                }
-            } catch {
-                // File saved locally, server upload failed - that's OK
-            }
-        }
+        guard let files else { return }
+        importTask = Task { await files.attach(data: result.data, name: result.fileName) }
     }
 
     private func handleFileImport(_ result: Result<[URL], Error>) {
-        guard case .success(let urls) = result, var updatedNote = note else { return }
-
-        for url in urls {
-            guard url.startAccessingSecurityScopedResource() else { continue }
-            defer { url.stopAccessingSecurityScopedResource() }
-
-            guard let data = try? Data(contentsOf: url) else { continue }
-
-            let attachment = FileAttachmentRef(
-                fileName: url.lastPathComponent,
-                fileSize: Int64(data.count),
-                mimeType: UTType(filenameExtension: url.pathExtension)?.preferredMIMEType ?? "application/octet-stream"
-            )
-            updatedNote.fileAttachments.append(attachment)
-
-            // Upload to server
-            Task {
+        guard let files else { return }
+        guard case .success(let urls) = result else {
+            if case .failure(let error) = result { files.error = error.localizedDescription }
+            return
+        }
+        guard !isImporting else { return }
+        isImporting = true
+        importTask = Task {
+            defer { isImporting = false }
+            for url in urls {
                 do {
-                    let fileId = try await notesManager?.uploadFile(data: data, fileName: url.lastPathComponent)
-                    if var currentNote = note,
-                       let index = currentNote.fileAttachments.firstIndex(where: { $0.id == attachment.id }) {
-                        currentNote.fileAttachments[index].fileId = fileId
-                        await notesManager?.updateNote(currentNote)
-                        note = currentNote
-                    }
+                    try Task.checkCancellation()
+                    let data = try await Task.detached(priority: .userInitiated) {
+                        let accessed = url.startAccessingSecurityScopedResource()
+                        defer { if accessed { url.stopAccessingSecurityScopedResource() } }
+                        return try Data(contentsOf: url, options: .mappedIfSafe)
+                    }.value
+                    try Task.checkCancellation()
+                    await files.attach(data: data, name: url.lastPathComponent)
+                    if files.error != nil { break }
                 } catch {
-                    // Saved locally, upload failed
+                    if !Task.isCancelled { files.error = error.localizedDescription }
+                    break
                 }
             }
         }
-
-        note = updatedNote
-        Task { await notesManager?.updateNote(updatedNote) }
     }
 
     private func insertMarkdown(_ prefix: String) {
@@ -522,24 +429,6 @@ struct NoteEditorView: View {
 
     private func wrapSelection(_ wrapper: String) {
         contentText += "\(wrapper)text\(wrapper)"
-    }
-
-    private func formatDuration(_ seconds: TimeInterval) -> String {
-        let mins = Int(seconds) / 60
-        let secs = Int(seconds) % 60
-        return String(format: "%d:%02d", mins, secs)
-    }
-
-    private func formatFileSize(_ bytes: Int64) -> String {
-        ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
-    }
-
-    private func iconForMimeType(_ mimeType: String) -> String {
-        if mimeType.hasPrefix("image/") { return "photo" }
-        if mimeType.hasPrefix("video/") { return "film" }
-        if mimeType.hasPrefix("audio/") { return "waveform" }
-        if mimeType.contains("pdf") { return "doc.text" }
-        return "doc"
     }
 }
 
@@ -643,63 +532,6 @@ struct AudioRecorderSheet: View {
         let level = CGFloat(recordingService.audioLevel)
         let variation = sin(CGFloat(index) * 0.5) * 0.3
         return max(4, (level + variation) * 60)
-    }
-
-    private func formatDuration(_ seconds: TimeInterval) -> String {
-        let mins = Int(seconds) / 60
-        let secs = Int(seconds) % 60
-        return String(format: "%d:%02d", mins, secs)
-    }
-}
-
-// MARK: - Audio Player Sheet
-
-struct AudioPlayerSheet: View {
-    let attachment: AudioAttachment
-    let baseURL: String?
-    @Environment(\.dismiss) private var dismiss
-    @Environment(\.theme) private var theme
-
-    var body: some View {
-        NavigationStack {
-            VStack(spacing: Spacing.xl) {
-                Spacer()
-
-                Image(systemName: "waveform.circle.fill")
-                    .scaledFont(size: 80)
-                    .foregroundStyle(theme.brandPrimary)
-
-                Text(attachment.fileName)
-                    .scaledFont(size: 16)
-                    .foregroundStyle(theme.textPrimary)
-
-                Text(formatDuration(attachment.duration))
-                    .scaledFont(size: 24, weight: .semibold)
-                    .foregroundStyle(theme.textSecondary)
-                    .monospacedDigit()
-
-                // Playback controls placeholder
-                Text("Audio playback requires AVAudioPlayer integration")
-                    .scaledFont(size: 12, weight: .medium)
-                    .foregroundStyle(theme.textTertiary)
-                    .multilineTextAlignment(.center)
-
-                Spacer()
-            }
-            .padding(Spacing.screenPadding)
-            .navigationTitle("Voice Note")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .navigationBarLeading) {
-                    Button("Close", systemImage: "xmark") {
-                        dismiss()
-                    }
-                    .labelStyle(.iconOnly)
-                    .tint(.secondary)
-                }
-            }
-        }
-        .presentationDetents([.medium])
     }
 
     private func formatDuration(_ seconds: TimeInterval) -> String {

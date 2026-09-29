@@ -1,0 +1,22 @@
+name: NoteFiles
+options:
+  deploymentTarget:
+    iOS: '18.1'
+settings:
+  base:
+    GENERATE_INFOPLIST_FILE: YES
+    SWIFT_VERSION: '5.0'
+targets:
+  NoteFilesUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources: [NoteFilesUITests.swift]
+    settings:
+      PRODUCT_BUNDLE_IDENTIFIER: org.example.relay.note-files-tests
+schemes:
+  NoteFiles:
+    build:
+      targets:
+        NoteFilesUITests: [test]
+    test:
+      targets: [NoteFilesUITests]
