@@ -24,6 +24,7 @@ final class NotesListViewModel {
     // MARK: - Private
 
     private var manager: NotesManager?
+    private var drafts: NoteDraftStore?
     private let logger = Logger(subsystem: "com.openui", category: "NotesListVM")
 
     /// Cached search results (updated asynchronously by `performSearch`).
@@ -88,8 +89,33 @@ final class NotesListViewModel {
 
     // MARK: - Configuration
 
-    func configure(with manager: NotesManager) {
+    func configure(with manager: NotesManager, drafts: NoteDraftStore? = nil) {
+        if self.drafts?.identity != drafts?.identity {
+            searchTask?.cancel()
+            searchResults = nil
+            notes = []
+        }
         self.manager = manager
+        self.drafts = drafts
+    }
+
+    private func withDrafts(_ notes: [Note], matching query: String? = nil) -> [Note] {
+        do {
+            var byID = Dictionary(notes.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+            for draft in try drafts?.pendingNotes() ?? [] {
+                if let query, !draft.title.localizedCaseInsensitiveContains(query),
+                   !draft.content.localizedCaseInsensitiveContains(query) { continue }
+                var merged = byID[draft.id] ?? draft
+                merged.title = draft.title
+                merged.content = draft.content
+                merged.updatedAt = max(merged.updatedAt, draft.updatedAt)
+                byID[draft.id] = merged
+            }
+            return byID.values.sorted { $0.updatedAt > $1.updatedAt }
+        } catch {
+            errorMessage = "Couldn’t read saved note drafts. They have not been deleted."
+            return notes
+        }
     }
 
     // MARK: - Operations
@@ -105,7 +131,10 @@ final class NotesListViewModel {
             isLoading = false
             return
         }
-        notes = await manager.fetchNotes()
+        let identity = drafts?.identity
+        let result = await manager.fetchNotes()
+        guard !Task.isCancelled, identity == drafts?.identity else { return }
+        notes = withDrafts(result)
         isFeatureEnabled = manager.isServerEnabled
         isLoading = false
     }
@@ -113,7 +142,10 @@ final class NotesListViewModel {
     /// Refreshes the notes list from the server.
     func refreshNotes() async {
         guard let manager else { return }
-        notes = await manager.fetchNotes()
+        let identity = drafts?.identity
+        let result = await manager.fetchNotes()
+        guard !Task.isCancelled, identity == drafts?.identity else { return }
+        notes = withDrafts(result)
         isFeatureEnabled = manager.isServerEnabled
     }
 
@@ -137,6 +169,15 @@ final class NotesListViewModel {
     /// Matches the Flutter `NoteDeleter.deleteNote()`.
     func deleteNote(_ note: Note) async {
         guard let manager else { return }
+        do {
+            guard try drafts?.load(note.id) == nil else {
+                errorMessage = "This note has unsynced changes. Open it and retry saving or discard the local changes before deleting."
+                return
+            }
+        } catch {
+            errorMessage = "Couldn’t check saved note drafts. The note has not been deleted."
+            return
+        }
         await manager.deleteNote(id: note.id)
         await refreshNotes()
     }
@@ -151,9 +192,11 @@ final class NotesListViewModel {
         searchTask = Task {
             try? await Task.sleep(for: .milliseconds(300))
             guard !Task.isCancelled, let manager else { return }
-            let results = await manager.searchNotes(query: searchText)
-            guard !Task.isCancelled else { return }
-            searchResults = results
+            let query = searchText
+            let identity = drafts?.identity
+            let results = await manager.searchNotes(query: query)
+            guard !Task.isCancelled, identity == drafts?.identity else { return }
+            searchResults = withDrafts(results, matching: query)
         }
     }
 
@@ -166,6 +209,6 @@ final class NotesListViewModel {
     /// Toggles a note's pinned state (local-only).
     func togglePin(_ note: Note) {
         manager?.togglePin(id: note.id)
-        notes = manager?.fetchLocalNotes() ?? []
+        notes = withDrafts(manager?.fetchLocalNotes() ?? [])
     }
 }

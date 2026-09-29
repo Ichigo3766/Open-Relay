@@ -21,10 +21,15 @@ struct NoteEditorView: View {
     @State private var isEnhancing = false
     @State private var aiErrorMessage: String?
     @State private var autoSaveTask: Task<Void, Never>?
+    @State private var draftSession: NoteDraftSession?
+    @State private var draftLoadError: String?
+    @State private var showDiscardDraft = false
+    @State private var draftActionError: String?
 
     @Environment(AppDependencyContainer.self) private var dependencies
     @Environment(\.theme) private var theme
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     @FocusState private var isContentFocused: Bool
 
@@ -47,7 +52,7 @@ struct NoteEditorView: View {
                 ContentUnavailableView(
                     "Note Not Found",
                     systemImage: "exclamationmark.triangle",
-                    description: Text("This note could not be loaded.")
+                    description: Text(draftLoadError ?? "This note could not be loaded.")
                 )
             }
         }
@@ -130,7 +135,20 @@ struct NoteEditorView: View {
         } message: {
             Text(aiErrorMessage ?? "")
         }
-        .task { loadNote() }
+        .task(id: dependencies.noteDraftStore?.identity) { loadNote() }
+        .onDisappear { autoSaveTask?.cancel() }
+        .confirmationDialog("Discard the local changes and reload the server version?", isPresented: $showDiscardDraft) {
+            Button("Discard Local Changes", role: .destructive) {
+                do {
+                    try draftSession?.store.discard(noteId)
+                    hasChanges = false
+                    loadNote()
+                } catch { draftActionError = "Couldn’t discard the saved draft. A save may still be in progress. Please try again." }
+            }
+        }
+        .alert("Saved Changes", isPresented: .init(get: { draftActionError != nil }, set: { if !$0 { draftActionError = nil } })) {
+            Button("OK") { draftActionError = nil }
+        } message: { Text(draftActionError ?? "") }
         .sheet(isPresented: $showAudioRecorder) {
             AudioRecorderSheet(recordingService: recordingService) { result in
                 handleAudioRecording(result)
@@ -160,15 +178,17 @@ struct NoteEditorView: View {
                             .scaledFont(size: 28, weight: .bold)
                             .foregroundStyle(theme.textPrimary)
                     } else {
-                        TextField("Title", text: $titleText)
+                        TextField("Title", text: Binding(get: { titleText }, set: {
+                            titleText = $0
+                            scheduleAutoSave()
+                        }))
                             .scaledFont(size: 28, weight: .bold)
                             .foregroundStyle(theme.textPrimary)
-                            .onChange(of: titleText) { _, _ in scheduleAutoSave() }
                     }
 
                     // Metadata
                     HStack(spacing: Spacing.md) {
-                        Text("\(note.wordCount) words")
+                        Text("\(contentText.split(whereSeparator: \.isWhitespace).count) words")
                             .scaledFont(size: 12, weight: .medium)
                             .foregroundStyle(theme.textTertiary)
 
@@ -185,6 +205,30 @@ struct NoteEditorView: View {
 
                     Divider()
                         .foregroundStyle(theme.divider)
+
+                    if let draftLoadError {
+                        Text(draftLoadError).foregroundStyle(.red)
+                    }
+                    if hasChanges, let draftSession, draftSession.requiresRetry || draftSession.error != nil {
+                        VStack(alignment: .leading, spacing: Spacing.sm) {
+                            Text(draftSession.error?.rawValue ?? "Changes saved on this device. Not yet synced to the server.")
+                                .font(.callout)
+                            let layout = dynamicTypeSize.isAccessibilitySize
+                                ? AnyLayout(VStackLayout(alignment: .leading, spacing: Spacing.sm))
+                                : AnyLayout(HStackLayout())
+                            layout {
+                                Button("Retry", systemImage: "arrow.clockwise") { Task { await saveNote() } }
+                                    .disabled(isSaving)
+                                ShareLink(item: "# \(titleText)\n\n\(contentText)") {
+                                    Label("Share", systemImage: "square.and.arrow.up")
+                                }
+                                Button("Discard", systemImage: "trash", role: .destructive) { showDiscardDraft = true }
+                                    .disabled(isSaving)
+                            }
+                        }
+                        .padding(Spacing.md)
+                        .background(theme.surfaceContainer, in: RoundedRectangle(cornerRadius: CornerRadius.sm))
+                    }
 
                     // Audio attachments
                     if !note.audioAttachments.isEmpty {
@@ -215,13 +259,15 @@ struct NoteEditorView: View {
             // Formatting toolbar
             markdownToolbar
 
-            TextEditor(text: $contentText)
+            TextEditor(text: Binding(get: { contentText }, set: {
+                contentText = $0
+                scheduleAutoSave()
+            }))
                 .scaledFont(size: 16)
                 .foregroundStyle(theme.textPrimary)
                 .scrollContentBackground(.hidden)
                 .frame(minHeight: max(400, screenHeight * 0.6))
                 .focused($isContentFocused)
-                .onChange(of: contentText) { _, _ in scheduleAutoSave() }
         }
     }
 
@@ -344,13 +390,48 @@ struct NoteEditorView: View {
     // MARK: - Helpers
 
     private func loadNote() {
+        autoSaveTask?.cancel()
+        isLoading = true
+        isSaving = false
+        hasChanges = false
+        note = nil
+        titleText = ""
+        contentText = ""
+        draftSession = nil
+        draftLoadError = nil
         guard let manager = notesManager else {
             isLoading = false
             return
         }
-        // Load from server asynchronously, falling back to local cache
+        let store = dependencies.noteDraftStore
+        guard apiClient == nil || store != nil else {
+            isLoading = false
+            return
+        }
+        do {
+            if let store, let apiClient {
+                draftSession = try NoteDraftSession(noteID: noteId, api: apiClient, store: store,
+                    isCurrent: { dependencies.apiClient === apiClient && dependencies.noteDraftStore?.identity == store.identity })
+                if let recovered = try store.load(noteId) {
+                    note = recovered.original
+                    titleText = recovered.edited.title
+                    contentText = recovered.edited.content
+                    hasChanges = true
+                    isLoading = false
+                    return
+                }
+            }
+        } catch {
+            draftLoadError = "Couldn’t read the saved draft. It has not been deleted."
+            isLoading = false
+            return
+        }
+        // A server refresh must never replace an unsynced recovery copy.
+        let session = draftSession
         Task {
-            if let serverNote = await manager.fetchNote(id: noteId) {
+            let serverNote = await manager.fetchNote(id: noteId)
+            guard draftSession === session, dependencies.noteDraftStore?.identity == store?.identity else { return }
+            if let serverNote {
                 note = serverNote
                 titleText = serverNote.title
                 contentText = serverNote.content
@@ -367,16 +448,44 @@ struct NoteEditorView: View {
     }
 
     private func scheduleAutoSave() {
+        guard !isLoading, let note, draftLoadError == nil else { return }
+        guard hasChanges || titleText != note.title || contentText != note.content else { return }
         hasChanges = true
         autoSaveTask?.cancel()
+        if let draftSession, !draftSession.stage(original: note, title: titleText, content: contentText) { return }
+        guard draftSession?.requiresRetry != true else { return }
         autoSaveTask = Task {
             try? await Task.sleep(for: .seconds(1))
             guard !Task.isCancelled else { return }
-            await saveNote()
+            // Cancelling the debounce must not cancel a write already on the wire.
+            Task {
+                guard draftSession?.requiresRetry != true else { return }
+                await saveNote()
+            }
         }
     }
 
     private func saveNote() async {
+        if let draftSession {
+            guard !isSaving, draftLoadError == nil else { return }
+            guard let baseline = note, draftSession.stage(original: baseline, title: titleText, content: contentText) else { return }
+            isSaving = true
+            let saved = await draftSession.save()
+            guard self.draftSession === draftSession,
+                  dependencies.noteDraftStore?.identity == draftSession.store.identity else { return }
+            isSaving = false
+            if let saved { note = saved }
+            do { hasChanges = try draftSession.store.load(noteId) != nil }
+            catch { draftLoadError = "Couldn’t read the saved draft. It has not been deleted." }
+            if !hasChanges, let saved {
+                titleText = saved.title
+                contentText = saved.content
+            }
+            if saved != nil && hasChanges { scheduleAutoSave() }
+            return
+        }
+        // Signed-in notes require an account-scoped recovery store before saving.
+        guard apiClient == nil else { return }
         guard var updatedNote = note else { return }
         isSaving = true
 
@@ -518,10 +627,12 @@ struct NoteEditorView: View {
 
     private func insertMarkdown(_ prefix: String) {
         contentText += prefix
+        scheduleAutoSave()
     }
 
     private func wrapSelection(_ wrapper: String) {
         contentText += "\(wrapper)text\(wrapper)"
+        scheduleAutoSave()
     }
 
     private func formatDuration(_ seconds: TimeInterval) -> String {

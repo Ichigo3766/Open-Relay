@@ -47,12 +47,15 @@ struct NotesListView: View {
         .refreshable {
             await viewModel.refreshNotes()
         }
-        .task {
+        .task(id: dependencies.noteDraftStore?.identity) {
             if let manager = dependencies.notesManager {
-                viewModel.configure(with: manager)
+                viewModel.configure(with: manager, drafts: dependencies.noteDraftStore)
             }
             await viewModel.loadNotes()
         }
+        .alert("Notes", isPresented: .init(get: { viewModel.errorMessage != nil }, set: { if !$0 { viewModel.errorMessage = nil } })) {
+            Button("OK") { viewModel.errorMessage = nil }
+        } message: { Text(viewModel.errorMessage ?? "") }
         .destructiveConfirmation(
             isPresented: .init(
                 get: { viewModel.deletingNote != nil },

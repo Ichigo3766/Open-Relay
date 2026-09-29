@@ -259,6 +259,13 @@ final class AppDependencyContainer: ServiceContainer {
     /// The notes manager for local note storage and server sync.
     private(set) var notesManager: NotesManager?
 
+    var noteDraftStore: NoteDraftStore? {
+        guard let apiClient, let user = authViewModel.currentUser,
+              authViewModel.phase == .authenticated else { return nil }
+        if let account = serverConfigStore.activeAccount, account.userId != user.id { return nil }
+        return NoteDraftStore(identity: .init(server: apiClient.baseURL, account: user.id))
+    }
+
     /// The folder manager for organising conversations into folders.
     private(set) var folderManager: FolderManager?
 
