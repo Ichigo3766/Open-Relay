@@ -3705,6 +3705,20 @@ final class APIClient: @unchecked Sendable {
         )
     }
 
+    /// The server applies this response to the authenticated attendee only.
+    func respondToCalendarEvent(id: String, response: CalendarRSVP) async throws {
+        let (data, _) = try await network.requestRaw(
+            path: "/api/v1/calendars/events/\(id)/rsvp",
+            method: .post,
+            body: JSONEncoder().encode(["status": response.rawValue])
+        )
+        let result = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+        guard result?["status"] as? Bool == true,
+              result?["rsvp"] as? String == response.rawValue else {
+            throw APIError.unknown(underlying: nil)
+        }
+    }
+
     // MARK: - Memories
 
     func getMemories() async throws -> [[String: Any]] {

@@ -1,0 +1,22 @@
+name: CalendarRSVP
+options:
+  deploymentTarget:
+    iOS: '18.1'
+settings:
+  base:
+    GENERATE_INFOPLIST_FILE: YES
+    SWIFT_VERSION: '5.0'
+targets:
+  CalendarRSVPUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources: [CalendarRSVPUITests.swift]
+    settings:
+      PRODUCT_BUNDLE_IDENTIFIER: org.example.relay.calendar-rsvp-tests
+schemes:
+  CalendarRSVP:
+    build:
+      targets:
+        CalendarRSVPUITests: [test]
+    test:
+      targets: [CalendarRSVPUITests]

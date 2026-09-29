@@ -97,6 +97,8 @@ struct CalendarEventDetailView: View {
                         // Date/Time
                         detailRow(icon: "clock", title: "When", value: timeString)
 
+                        CalendarRSVPView(event: event, vm: vm)
+
                         if event.rrule != nil {
                             Divider().background(theme.divider).padding(.leading, 56)
                             detailRow(icon: "repeat", title: "Recurrence", value: event.rrule ?? "")
@@ -171,8 +173,8 @@ struct CalendarEventDetailView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .navigationBarTrailing) {
-                    Button("Done") { dismiss() }
-                        .foregroundStyle(theme.brandPrimary)
+                    Button("Close", systemImage: "xmark") { dismiss() }
+                        .labelStyle(.iconOnly)
                 }
             }
             .confirmationDialog(

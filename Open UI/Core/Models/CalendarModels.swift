@@ -49,6 +49,7 @@ struct CalendarEvent: Codable, Identifiable, Sendable {
     var meta: CalendarEventMeta?
     /// Instance ID for recurring event instances.
     var instanceId: String?
+    var attendees: [CalendarEventAttendee] = []
 
     enum CodingKeys: String, CodingKey {
         case id
@@ -65,6 +66,7 @@ struct CalendarEvent: Codable, Identifiable, Sendable {
         case isCancelled = "is_cancelled"
         case meta
         case instanceId = "instance_id"
+        case attendees
     }
 
     init(from decoder: Decoder) throws {
@@ -81,6 +83,7 @@ struct CalendarEvent: Codable, Identifiable, Sendable {
         isCancelled = (try? c.decode(Bool.self, forKey: .isCancelled)) ?? false
         meta        = try c.decodeIfPresent(CalendarEventMeta.self, forKey: .meta)
         instanceId  = try c.decodeIfPresent(String.self, forKey: .instanceId)
+        attendees   = try c.decodeIfPresent([CalendarEventAttendee].self, forKey: .attendees) ?? []
         startAt     = Self.decodeNanoDate(c, key: .startAt) ?? Date()
         endAt       = Self.decodeNanoDate(c, key: .endAt)
     }
@@ -142,6 +145,7 @@ struct CalendarEvent: Codable, Identifiable, Sendable {
         try c.encode(isCancelled, forKey: .isCancelled)
         try c.encodeIfPresent(meta, forKey: .meta)
         try c.encodeIfPresent(instanceId, forKey: .instanceId)
+        try c.encode(attendees, forKey: .attendees)
     }
 
     /// SwiftUI color for this event (falls back to calendar color which is resolved externally).
@@ -164,6 +168,29 @@ struct CalendarEvent: Codable, Identifiable, Sendable {
     var duration: TimeInterval? {
         guard let end = endAt, end > startAt else { return nil }
         return end.timeIntervalSince(startAt)
+    }
+}
+
+struct CalendarEventAttendee: Codable, Sendable {
+    let userId: String
+    var status: String
+
+    enum CodingKeys: String, CodingKey {
+        case userId = "user_id"
+        case status
+    }
+}
+
+enum CalendarRSVP: String, CaseIterable {
+    case accepted, tentative, declined, pending
+
+    var label: String {
+        switch self {
+        case .accepted: "Accepted"
+        case .tentative: "Maybe"
+        case .declined: "Declined"
+        case .pending: "Not Responded"
+        }
     }
 }
 
@@ -208,4 +235,3 @@ struct CalendarEventCreateRequest: Encodable {
         case meta
     }
 }
-
