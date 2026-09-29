@@ -24,7 +24,7 @@ enum DictationState: Sendable, Equatable {
 /// Using `AVAudioRecorder` for both modes means the waveform meter is
 /// always live and continuous — no segment restart gaps.
 @MainActor @Observable
-final class DictationService {
+final class DictationService: NSObject, AVAudioRecorderDelegate {
 
     // MARK: - State
 
@@ -90,6 +90,7 @@ final class DictationService {
 
     init(recoveryStore: DictationRecoveryStore? = nil) {
         self.recoveryStore = recoveryStore ?? .shared
+        super.init()
     }
 
     func bind(to context: DictationContext, isCurrent: @escaping () -> Bool,
@@ -158,6 +159,8 @@ final class DictationService {
     private var recorder: AVAudioRecorder?
     private var meteringTimer: Timer?
     private var durationTimer: Timer?
+    private let liveActivity = DictationLiveActivityController()
+    private var recordingObservers: [NSObjectProtocol] = []
 
     // MARK: - Engine Preference
 
@@ -197,7 +200,8 @@ final class DictationService {
 
     private func finishRecording() {
         stopTimers()
-        recordingDuration = recorder?.currentTime ?? recordingDuration
+        // currentTime is only valid while recording; interruptions can reset it.
+        if let recorder, recorder.isRecording { recordingDuration = recorder.currentTime }
         recorder?.stop()
         recorder = nil
         intensity = 0
@@ -381,6 +385,13 @@ final class DictationService {
             let url = recoveryStore.audioURL(pending)
             recorder = try AVAudioRecorder(url: url, settings: settings)
             recorder?.isMeteringEnabled = true
+            recorder?.delegate = self
+            guard recorder?.prepareToRecord() == true else {
+                throw CocoaError(.fileWriteUnknown)
+            }
+            // Keep the active file accessible after locking, just like its recovery metadata.
+            try FileManager.default.setAttributes(
+                [.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication], ofItemAtPath: url.path)
             guard recorder?.record() == true else {
                 state = .error("Failed to start recording")
                 onError?("Failed to start recording")
@@ -394,6 +405,8 @@ final class DictationService {
         }
 
         state = .listening
+        observeRecordingInterruptions()
+        liveActivity.start(at: Date().addingTimeInterval(-(recorder?.currentTime ?? 0)))
         startDurationTimer()
         startMeteringTimer()
         logger.info("Recording started (\(self.activeEngine) mode)")
@@ -404,15 +417,52 @@ final class DictationService {
         onError?(error.localizedDescription)
     }
 
+    private func observeRecordingInterruptions() {
+        let sessionID = recordingSession
+        recordingObservers = [AVAudioSession.interruptionNotification, AVAudioSession.mediaServicesWereResetNotification].map { name in
+            NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak self] notification in
+                if name == AVAudioSession.interruptionNotification,
+                   (notification.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt) != AVAudioSession.InterruptionType.began.rawValue { return }
+                Task { @MainActor [weak self] in
+                    guard self?.recordingSession == sessionID else { return }
+                    self?.recordingInterrupted()
+                }
+            }
+        }
+    }
+
+    private func recordingInterrupted() {
+        guard state == .listening else { return }
+        finishRecording()
+        guard state == .error("Recording saved") else { return }
+        state = .error("Recording interrupted · Audio saved")
+        onError?("Recording interrupted · Audio saved")
+    }
+
+    nonisolated func audioRecorderDidFinishRecording(_ recorder: AVAudioRecorder, successfully flag: Bool) {
+        Task { @MainActor [weak self] in
+            guard let self, self.recorder === recorder else { return }
+            self.recordingInterrupted()
+        }
+    }
+
+    nonisolated func audioRecorderEncodeErrorDidOccur(_ recorder: AVAudioRecorder, error: Error?) {
+        audioRecorderDidFinishRecording(recorder, successfully: false)
+    }
+
     // MARK: - Timers
 
     private func startDurationTimer() {
         durationTimer?.invalidate()
-        let start = Date()
         durationTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in
                 guard let self, self.state == .listening else { return }
-                self.recordingDuration = Date().timeIntervalSince(start)
+                guard let recorder = self.recorder, recorder.isRecording else {
+                    self.recordingInterrupted()
+                    return
+                }
+                self.recordingDuration = recorder.currentTime
+                self.liveActivity.confirmRecording()
             }
         }
     }
@@ -448,6 +498,9 @@ final class DictationService {
     }
 
     private func stopTimers() {
+        liveActivity.end()
+        recordingObservers.forEach(NotificationCenter.default.removeObserver)
+        recordingObservers.removeAll()
         meteringTimer?.invalidate()
         meteringTimer = nil
         durationTimer?.invalidate()
