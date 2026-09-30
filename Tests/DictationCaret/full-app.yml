@@ -1,0 +1,25 @@
+name: DictationCaretFullApp
+options:
+  deploymentTarget: {iOS: '18.1'}
+settings:
+  base:
+    CODE_SIGNING_ALLOWED: NO
+    GENERATE_INFOPLIST_FILE: YES
+    SWIFT_VERSION: '5.0'
+targets:
+  DictationCaretFullAppTests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources: [FullAppUITests.swift]
+    settings:
+      PRODUCT_BUNDLE_IDENTIFIER: org.example.dictation-caret-fullapp-tests
+schemes:
+  DictationCaretFullApp:
+    build:
+      targets:
+        DictationCaretFullAppTests: [test]
+    test:
+      targets: [DictationCaretFullAppTests]
+      captureScreenshotsAutomatically: true
+      deleteScreenshotsWhenEachTestSucceeds: false
+      preferredScreenCaptureFormat: screenRecording

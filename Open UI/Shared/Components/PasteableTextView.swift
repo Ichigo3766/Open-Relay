@@ -268,6 +268,9 @@ final class PasteInterceptingTextView: UITextView {
     var revealSelectionAfterLayout = false
 
     override func layoutSubviews() {
+        if revealSelectionAfterLayout, bounds.width > 0 {
+            PasteableTextView.recalculateHeight(self)
+        }
         super.layoutSubviews()
         if revealSelectionAfterLayout, bounds.width > 0, bounds.height > 0 {
             revealSelectionAfterLayout = false
