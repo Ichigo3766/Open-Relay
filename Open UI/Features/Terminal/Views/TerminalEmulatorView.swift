@@ -6,6 +6,8 @@ import SwiftTerm
 /// SwiftTerm itself on layout and reported through `sizeChanged`.
 final class TerminalHostView: TerminalView {
     var onPinch: ((CGFloat, UIGestureRecognizer.State) -> Void)?
+    /// Reports keyboard focus changes (become/resign first responder).
+    var onFocusChange: ((Bool) -> Void)?
     var isReadOnly = false
 
     override init(frame: CGRect) {
@@ -22,6 +24,18 @@ final class TerminalHostView: TerminalView {
     }
 
     override var canBecomeFirstResponder: Bool { isReadOnly ? false : super.canBecomeFirstResponder }
+
+    override func becomeFirstResponder() -> Bool {
+        let became = super.becomeFirstResponder()
+        if became { onFocusChange?(true) }
+        return became
+    }
+
+    override func resignFirstResponder() -> Bool {
+        let resigned = super.resignFirstResponder()
+        if resigned { onFocusChange?(false) }
+        return resigned
+    }
 }
 
 /// Bridges one SwiftTerm emulator into SwiftUI.
@@ -56,6 +70,12 @@ struct TerminalEmulatorView: UIViewRepresentable {
             }
             view.inputAccessoryView = keyBar
             shell.terminalView = view
+            view.onFocusChange = { [weak shell] focused in
+                guard let shell, shell.isKeyboardFocused != focused else { return }
+                withAnimation(.spring(response: 0.32, dampingFraction: 0.88)) {
+                    shell.isKeyboardFocused = focused
+                }
+            }
         case .process(let id):
             view.isReadOnly = true
             view.inputAccessoryView = nil
@@ -75,6 +95,11 @@ struct TerminalEmulatorView: UIViewRepresentable {
     }
 
     static func dismantleUIView(_ view: TerminalHostView, coordinator: Coordinator) {
+        view.onFocusChange = nil
+        if case .shell = coordinator.parent.source {
+            let shell = coordinator.parent.shell
+            DispatchQueue.main.async { shell.isKeyboardFocused = false }
+        }
         if case .shell = coordinator.parent.source, coordinator.parent.shell.terminalView === view {
             coordinator.parent.shell.terminalView = nil
         }

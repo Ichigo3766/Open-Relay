@@ -78,9 +78,12 @@ nonisolated final class MicTap: @unchecked Sendable {
     private var preRoll = Data()
     private static let preRollBytes = Int(WatchProtocol.audioSampleRate) * 2
 
-    func attach(inputFormat: AVAudioFormat) {
+    /// Resets the counters for a new engine. The converter is built from the
+    /// first buffer that arrives (and rebuilt if the input format changes),
+    /// so a format change after the engine starts can't break conversion.
+    func attach() {
         lock.lock()
-        converter = AVAudioConverter(from: inputFormat, to: outFormat)
+        converter = nil
         frames = 0; maxLevel = 0; minLevel = .greatestFiniteMagnitude; preRoll = Data()
         lock.unlock()
     }
@@ -132,6 +135,9 @@ nonisolated final class MicTap: @unchecked Sendable {
     func receive(_ pcm: AVAudioPCMBuffer) {
         lock.lock()
         frames += Int(pcm.frameLength)
+        if converter?.inputFormat != pcm.format {
+            converter = AVAudioConverter(from: pcm.format, to: outFormat)
+        }
         let converter = converter, sink = sink, muted = muted
         lock.unlock()
         guard !muted else { return }

@@ -194,6 +194,18 @@ struct ChatInputField: View {
     @Environment(\.accessibilityScale) private var accessibilityScale
     @Environment(\.layoutDirection) private var layoutDirection
     @FocusState private var isFocused: Bool
+    /// Real first-responder state of the UIKit text view (SwiftUI focus doesn't
+    /// drive UIViewRepresentable). Drives the expanded composer layout so it
+    /// works on iPad even when no keyboard notifications arrive.
+    @State private var textViewFocused = false
+
+    /// iPad on iOS 26 already gets press feedback from the interactive glass;
+    /// skipping the extra scale animation keeps taps on the large composer snappy.
+    private var usesNativeGlassPressFeedback: Bool {
+        guard UIDevice.current.userInterfaceIdiom == .pad else { return false }
+        if #available(iOS 26.0, *) { return true }
+        return false
+    }
 
     /// UI chrome scale (buttons, icons, touch targets) — mirrors AccessibilityManager.uiScale.
     private var uiScale: CGFloat { accessibilityScale.scale(for: .ui) }
@@ -201,15 +213,40 @@ struct ChatInputField: View {
     @State private var connectingTool: ToolItem?
     @State private var previewingAttachmentId: AttachmentID? = nil
 
-    // MARK: - Expand-to-compose state (Slack-style swipe-up)
+    // MARK: - Expand-to-compose state (interactive swipe-up)
+    //
+    // The text area's height tracks the finger 1:1 while dragging (no animation),
+    // then springs to expanded/collapsed on release using the finger's velocity.
     @State private var composerIsExpanded = false
-    @State private var composerExpandDrag: CGFloat = 0
-    private let composerExpandedHeight: CGFloat = 220
-    private let composerCollapsedHeight: CGFloat = 44  // approx natural height
-    private var composerCurrentHeight: CGFloat? {
-        guard composerIsExpanded else { return nil }
-        return max(120, composerExpandedHeight + composerExpandDrag)
+    /// Live text-area height while a resize drag is in progress (`nil` = not dragging).
+    @State private var composerDragHeight: CGFloat?
+    /// Text-area height measured when the drag began (the collapsed starting point).
+    @State private var composerDragStartHeight: CGFloat = 0
+    /// Last measured natural height of the text area (before any expansion).
+    @State private var composerNaturalTextHeight: CGFloat = 22
+
+    /// Expanded text-area height: 220pt on iPhone; ~40% of the window height (≤360pt) on iPad.
+    /// Uses the window (not the composer's position) so it doesn't change when the keyboard shows.
+    private var composerExpandedHeight: CGFloat {
+        guard UIDevice.current.userInterfaceIdiom == .pad else { return 220 }
+        let windowHeight = UIApplication.shared.connectedScenes
+            .compactMap { $0 as? UIWindowScene }
+            .first { $0.activationState == .foregroundActive }?
+            .windows.first { $0.isKeyWindow }?.bounds.height ?? UIScreen.main.bounds.height
+        return min(360, max(220, windowHeight * 0.4))
     }
+
+    /// Whether the composer is currently being resized by the finger.
+    private var isResizingComposer: Bool { composerDragHeight != nil }
+
+    /// Height applied to the text area: live drag height, expanded height, or natural (`nil`).
+    private var composerCurrentHeight: CGFloat? {
+        if let composerDragHeight { return composerDragHeight }
+        return composerIsExpanded ? composerExpandedHeight : nil
+    }
+
+    /// Composer expand/collapse spring (also used for send/collapse).
+    private static let composerSpring = Animation.spring(response: 0.38, dampingFraction: 0.82)
 
     /// Quick pills preference from UserDefaults
     @AppStorage("quickPills") private var quickPillsData: String = ""
@@ -375,43 +412,92 @@ struct ChatInputField: View {
         }
     }
 
-    // MARK: - Expand gesture for composer
-    private var composerExpandGesture: some Gesture {
-        DragGesture(minimumDistance: 10)
-            .onChanged { value in
-                let dy = value.translation.height  // negative = upward
-                if composerIsExpanded {
-                    // Dragging down → shrink live
-                    composerExpandDrag = max(-composerExpandedHeight + 80, -dy)
-                } else {
-                    // Dragging up → peek
-                    if dy < 0 { composerExpandDrag = dy }
-                }
+    // MARK: - Interactive resize (swipe up to expand, down to collapse)
+
+    /// Rubber-band past the expanded limit so the composer stretches slightly, like iOS
+    /// sheets. Below its natural height it stops hard (shrinking further would clip text).
+    private func rubberBand(_ value: CGFloat, min lower: CGFloat, max upper: CGFloat) -> CGFloat {
+        if value > upper { return upper + (value - upper) * 0.3 }
+        return Swift.max(lower, value)
+    }
+
+    private func composerResizeChanged(_ dy: CGFloat) {
+        var txn = Transaction()
+        txn.disablesAnimations = true
+        withTransaction(txn) {
+            if composerDragHeight == nil {
+                // First frame: start from the current visual height so nothing jumps.
+                let start = composerIsExpanded ? composerExpandedHeight : composerNaturalTextHeight
+                composerDragStartHeight = start
+                composerDragHeight = start
             }
-            .onEnded { value in
-                let dy = value.translation.height
-                withAnimation(.spring(response: 0.35, dampingFraction: 0.78)) {
-                    if composerIsExpanded {
-                        let newH = composerExpandedHeight - dy
-                        if newH < 100 {
-                            composerIsExpanded = false
-                            Haptics.play(.light)
-                        }
-                    } else {
-                        if dy < -50 {
-                            composerIsExpanded = true
-                            isFocused = true
-                            Haptics.play(.light)
-                        }
-                    }
-                    composerExpandDrag = 0
-                }
+            let collapsedFloor = composerNaturalTextHeight
+            let target = composerDragStartHeight - dy   // dy < 0 = upward = taller
+            composerDragHeight = rubberBand(target, min: collapsedFloor, max: composerExpandedHeight)
+        }
+    }
+
+    private func composerResizeEnded(_ dy: CGFloat, velocity: CGFloat, cancelled: Bool) {
+        guard let current = composerDragHeight else { return }
+        let lower = composerNaturalTextHeight
+        let upper = composerExpandedHeight
+        let wasExpanded = composerIsExpanded
+        let shouldExpand: Bool
+        if cancelled {
+            shouldExpand = wasExpanded
+        } else if velocity < -450 {
+            shouldExpand = true             // flick up
+        } else if velocity > 450 {
+            shouldExpand = false            // flick down
+        } else {
+            // Slow drag: settle to whichever end is closer.
+            shouldExpand = current > lower + (upper - lower) * 0.4
+        }
+
+        // Spring carries the finger's speed into the settle.
+        let distance = max(1, abs((shouldExpand ? upper : lower) - current))
+        let initialVelocity = min(30, abs(velocity) / distance)
+        withAnimation(.interpolatingSpring(mass: 1, stiffness: 260, damping: 28, initialVelocity: initialVelocity)) {
+            composerIsExpanded = shouldExpand
+            composerDragHeight = nil
+        }
+        if shouldExpand != wasExpanded {
+            Haptics.play(.light)
+            if shouldExpand {
+                // Bring up the keyboard (SwiftUI focus doesn't reach the UIKit text view).
+                NotificationCenter.default.post(name: .chatInputFieldRequestFocus, object: nil)
             }
+        }
+    }
+
+    /// Collapses the expanded composer with the standard spring (send, dismiss).
+    private func collapseComposer() {
+        guard composerIsExpanded || composerDragHeight != nil else { return }
+        withAnimation(Self.composerSpring) {
+            composerIsExpanded = false
+            composerDragHeight = nil
+        }
+    }
+
+    /// Small grabber shown while resizing / expanded so the affordance is obvious.
+    private var composerGrabber: some View {
+        Capsule()
+            .fill(theme.textTertiary.opacity(0.45))
+            .frame(width: 36, height: 4)
+            .padding(.top, 6)
+            .opacity(isResizingComposer || composerIsExpanded ? 1 : 0)
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
     }
 
     // MARK: - Composer Shell
 
-    private var isCompact: Bool { text.isEmpty && !isKeyboardVisible }
+    /// Compact single-row layout. Never compact while expanded or mid-drag, so the
+    /// composer can't snap back to one row before the keyboard arrives.
+    private var isCompact: Bool {
+        text.isEmpty && !isKeyboardVisible && !textViewFocused
+            && !composerIsExpanded && !isResizingComposer
+    }
 
     private var composerShell: some View {
         VStack(spacing: 0) {
@@ -461,8 +547,14 @@ struct ChatInputField: View {
 
             ComposerLayout(compact: isCompact, direction: layoutDirection) {
                 textField
-                    .frame(height: composerIsExpanded && !isCompact ? composerCurrentHeight : nil, alignment: .top)
-                    .fixedSize(horizontal: false, vertical: !composerIsExpanded || isCompact)
+                    .frame(height: isCompact ? nil : composerCurrentHeight, alignment: .top)
+                    .fixedSize(horizontal: false, vertical: composerCurrentHeight == nil || isCompact)
+                    // Track the natural (unexpanded) height so drags start exactly where the box is.
+                    .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { height in
+                        guard composerCurrentHeight == nil, height > 0,
+                              abs(composerNaturalTextHeight - height) > 0.5 else { return }
+                        composerNaturalTextHeight = height
+                    }
                 inlinePlusButton
                     // Balance the bare plus glyph against the filled trailing circle.
                     .padding(.leading, -8 * uiScale)
@@ -503,13 +595,24 @@ struct ChatInputField: View {
                 : Color.black.opacity(isFocused ? 0.14 : 0.08),
             isDark: theme.isDark
         ))
-        .gesture(composerExpandGesture)
-        // Outermost + simultaneous: press feedback runs alongside the expand drag
-        // (and the text view/buttons) instead of pre-empting it. Attached inside the
-        // expand gesture, its zero-distance drag won the touch and blocked expanding.
-        .modifier(ComposerPressFeedback(isEnabled: isEnabled && !composerIsExpanded))
-        .animation(.spring(response: 0.35, dampingFraction: 0.78), value: composerIsExpanded)
-        .animation(.interactiveSpring(), value: composerExpandDrag)
+        .gesture(ComposerResizeGesture(
+            isEnabled: isEnabled,
+            onChanged: { composerResizeChanged($0) },
+            onEnded: { dy, velocity, cancelled in
+                composerResizeEnded(dy, velocity: velocity, cancelled: cancelled)
+            }
+        ))
+        .overlay(alignment: .top) { composerGrabber }
+        // Outermost + simultaneous: press feedback runs alongside the resize drag
+        // (and the text view/buttons) instead of pre-empting it.
+        .modifier(ComposerPressFeedback(isEnabled: isEnabled && !composerIsExpanded
+                                        && !isResizingComposer && !usesNativeGlassPressFeedback))
+        // Expanded/collapsed changes are animated explicitly (drag release / send);
+        // the live drag height is applied without animation so it tracks the finger.
+        // Keyboard dismissed with an empty draft → fold the expanded composer away.
+        .onChange(of: textViewFocused) { _, focused in
+            if !focused && text.isEmpty && !isResizingComposer { collapseComposer() }
+        }
     }
 
     private var composerCornerRadius: CGFloat {
@@ -589,10 +692,7 @@ struct ChatInputField: View {
             },
             onSubmit: {
                 if sendOnEnter && canSend {
-                    withAnimation(.spring(response: 0.35, dampingFraction: 0.78)) {
-                        composerIsExpanded = false
-                        composerExpandDrag = 0
-                    }
+                    collapseComposer()
                     onSend()
                 }
             },
@@ -604,7 +704,15 @@ struct ChatInputField: View {
             onSlashDismiss: onSlashDismiss,
             onDollarTrigger: onDollarTrigger,
             onDollarDismiss: onDollarDismiss,
-            sendOnReturn: sendOnEnter
+            sendOnReturn: sendOnEnter,
+            onFocusChange: { focused in
+                guard textViewFocused != focused else { return }
+                withAnimation(.spring(response: 0.3, dampingFraction: 0.86)) {
+                    textViewFocused = focused
+                }
+            },
+            // Expanded: let the text fill the taller box before it starts scrolling.
+            maxContentHeight: (composerIsExpanded || isResizingComposer) ? composerExpandedHeight : nil
         )
         .fixedSize(horizontal: false, vertical: true)
         .accessibilityLabel(placeholder)
@@ -773,10 +881,7 @@ struct ChatInputField: View {
                 // When voice mode is unavailable, a muted disabled send button holds the slot.
                 Button {
                     Haptics.play(.light)
-                    withAnimation(.spring(response: 0.35, dampingFraction: 0.78)) {
-                        composerIsExpanded = false
-                        composerExpandDrag = 0
-                    }
+                    collapseComposer()
                     onSend()
                 } label: {
                     Circle()

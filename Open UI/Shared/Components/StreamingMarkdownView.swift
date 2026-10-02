@@ -1334,7 +1334,7 @@ private struct StableStreamingMarkdown: View {
                 ?? cached.map({ StreamingTextReveal.wholePieces($0, spacings: theme.spacings) }) {
                 VStack(alignment: .leading, spacing: 0) {
                     ForEach(pieces) { piece in
-                        pieceView(piece.content, live: live)
+                        pieceView(piece.content, live: live, reveals: piece.reveals)
                             .padding(.top, piece.topSpacing)
                     }
                 }
@@ -1414,7 +1414,7 @@ private struct StableStreamingMarkdown: View {
     }
 
     @ViewBuilder
-    private func pieceView(_ content: MarkdownView.PreprocessedContent, live: Bool) -> some View {
+    private func pieceView(_ content: MarkdownView.PreprocessedContent, live: Bool, reveals: Bool) -> some View {
         if content.blocks.count == 1, case let .codeBlock(language, code) = content.blocks[0] {
             // cmark adds a terminal newline even to partial lines.
             // Omit it so the native code view can append new tokens.
@@ -1423,6 +1423,7 @@ private struct StableStreamingMarkdown: View {
         } else {
             MarkdownView(content, theme: theme)
                 .codeAutoScroll(live)
+                .revealing(reveals ? reveal.controller : nil)
         }
     }
 }
@@ -1443,19 +1444,46 @@ final class StreamingTextReveal {
         let id: String
         let content: MarkdownView.PreprocessedContent
         let topSpacing: CGFloat
+        /// The active block, whose text view the reveal controller drives.
+        var reveals = false
     }
 
     private var target: [MarkdownView.PreprocessedContent]?
     @ObservationIgnored private var lengths: [Int] = []
+    /// Reveal-unit length of every block, per chunk.
+    @ObservationIgnored private var blockLengths: [[Int]] = []
     /// Fully revealed leading blocks of the live chunk, kept stable between frames.
     /// Holds the chunk itself (compared by identity) so a freed chunk's address
     /// can never be mistaken for a new one.
     @ObservationIgnored private var frozenCache: (chunk: MarkdownView.PreprocessedContent, count: Int,
                                                   content: MarkdownView.PreprocessedContent)?
-    private let progress = StreamingTypewriter()
+
+    /// The block being typed. Changes only when typing moves to the next block,
+    /// so SwiftUI re-renders once per block instead of once per character.
+    struct Cursor: Equatable {
+        let chunk: Int
+        let block: Int
+    }
+    private(set) var cursor: Cursor?
+    /// Characters shown of the active block, published only for code blocks,
+    /// which are drawn by their own view and cannot use the draw-time reveal.
+    private(set) var codePrefix = 0
+    /// The active block's node, to tell a grown block from an unchanged one.
+    @ObservationIgnored private var cursorNode: MarkdownBlockNode?
+
+    /// Drives the per-frame reveal of the active block's text view directly,
+    /// without re-evaluating any SwiftUI body.
+    let controller = MarkdownRevealController()
+    private static let fadeCharacters: CGFloat = 6
+
+    private let progress = StreamingTypewriter(publishesCount: false)
     var isAnimating: Bool { progress.isAnimating }
     /// Whether any parsed content has been received yet.
     var hasContent: Bool { target != nil }
+
+    init() {
+        progress.onShown = { [weak self] shown in self?.reveal(at: shown) }
+    }
 
     /// Gap to place above chunk `index` so separately rendered chunks line up
     /// exactly as one continuous text view would. Each chunk is its own text view,
@@ -1485,53 +1513,110 @@ final class StreamingTextReveal {
 
     func pieces(live: Bool, spacings: MarkdownTheme.Spacings) -> [Piece]? {
         guard let target else { return nil }
-        var remaining = progress.visibleCount
-        var visible: [(chunk: MarkdownView.PreprocessedContent, blocks: [MarkdownBlockNode]?)] = []
-        for (index, chunk) in target.enumerated() {
-            if remaining >= lengths[index] {
-                visible.append((chunk, nil))
-                remaining -= lengths[index]
-            } else {
-                if remaining > 0 {
-                    visible.append((chunk, RevealPrefix.blocks(chunk.blocks, budget: &remaining)))
-                }
-                break
-            }
-        }
+        guard live, let cursor, cursor.chunk < target.count,
+              cursor.block < target[cursor.chunk].blocks.count
+        else { return Self.wholePieces(target, spacings: spacings) }
         var result: [Piece] = []
-        for (index, entry) in visible.enumerated() {
-            let blocks = entry.blocks ?? entry.chunk.blocks
-            let isLast = index == visible.count - 1
-            let chunkTop = index == 0 ? 0 : Self.chunkGap(before: blocks, after: visible[index - 1].chunk.blocks,
-                                                          spacings: spacings)
-            guard live, isLast, blocks.count >= 2 else {
-                let content = entry.blocks.map {
-                    MarkdownView.PreprocessedContent(blocks: $0, rendered: entry.chunk.rendered,
-                                                    highlightMaps: entry.chunk.highlightMaps)
-                } ?? entry.chunk
-                result.append(Piece(id: "\(index)", content: content, topSpacing: chunkTop))
-                continue
-            }
-            // Every block before the last visible one is complete and unchanged.
-            let frozenCount = blocks.count - 1
-            let frozen: MarkdownView.PreprocessedContent
-            if let cache = frozenCache, cache.chunk === entry.chunk, cache.count == frozenCount {
-                frozen = cache.content
-            } else {
-                frozen = .init(blocks: Array(entry.chunk.blocks.prefix(frozenCount)),
-                               rendered: entry.chunk.rendered, highlightMaps: entry.chunk.highlightMaps)
-                frozenCache = (entry.chunk, frozenCount, frozen)
-            }
-            result.append(Piece(id: "\(index)", content: frozen, topSpacing: chunkTop))
+        // Chunks before the active one are complete and unchanged.
+        for index in 0 ..< cursor.chunk {
             result.append(Piece(
-                id: "\(index)-live",
-                content: .init(blocks: [blocks[frozenCount]], rendered: entry.chunk.rendered,
-                               highlightMaps: entry.chunk.highlightMaps),
-                topSpacing: Self.blockGap(after: blocks[frozenCount - 1], before: blocks[frozenCount],
-                                          spacings: spacings)
+                id: "\(index)", content: target[index],
+                topSpacing: index == 0 ? 0 : Self.chunkGap(before: target[index].blocks,
+                                                           after: target[index - 1].blocks, spacings: spacings)
             ))
         }
+        let chunk = target[cursor.chunk]
+        let node = chunk.blocks[cursor.block]
+        let chunkTop = cursor.chunk == 0 ? 0 : Self.chunkGap(before: chunk.blocks,
+                                                             after: target[cursor.chunk - 1].blocks,
+                                                             spacings: spacings)
+        // Blocks of the active chunk before the active block are complete.
+        if cursor.block > 0 {
+            let frozen: MarkdownView.PreprocessedContent
+            if let cache = frozenCache, cache.chunk === chunk, cache.count == cursor.block {
+                frozen = cache.content
+            } else {
+                frozen = .init(blocks: Array(chunk.blocks.prefix(cursor.block)),
+                               rendered: chunk.rendered, highlightMaps: chunk.highlightMaps)
+                frozenCache = (chunk, cursor.block, frozen)
+            }
+            result.append(Piece(id: "\(cursor.chunk)", content: frozen, topSpacing: chunkTop))
+        }
+        // The active block is laid out in full once; its text view reveals it at
+        // draw time. Code blocks have their own view and are prefixed instead.
+        let liveContent: MarkdownView.PreprocessedContent
+        let reveals: Bool
+        if case let .codeBlock(info, code) = node {
+            liveContent = .init(blocks: [.codeBlock(fenceInfo: info, content: String(code.prefix(codePrefix)))],
+                                rendered: chunk.rendered, highlightMaps: chunk.highlightMaps)
+            reveals = false
+        } else if let cache = liveCache, cache.cursor == cursor, cache.chunk === chunk, cache.node == node {
+            liveContent = cache.content
+            reveals = true
+        } else {
+            liveContent = .init(blocks: [node], rendered: chunk.rendered, highlightMaps: chunk.highlightMaps)
+            liveCache = (cursor, chunk, node, liveContent)
+            reveals = true
+        }
+        result.append(Piece(
+            id: "\(cursor.chunk)-live", content: liveContent,
+            topSpacing: cursor.block == 0 ? chunkTop
+                : Self.blockGap(after: chunk.blocks[cursor.block - 1], before: node, spacings: spacings),
+            reveals: reveals
+        ))
         return result
+    }
+
+    @ObservationIgnored private var liveCache: (cursor: Cursor, chunk: MarkdownView.PreprocessedContent,
+                                                node: MarkdownBlockNode, content: MarkdownView.PreprocessedContent)?
+
+    /// Maps the typewriter position to the active block and its revealed share.
+    /// Runs every display frame; it only touches SwiftUI state when typing moves
+    /// to another block (or into a code block, which is revealed by prefix).
+    private func reveal(at shown: Double) {
+        guard let target, !blockLengths.isEmpty else {
+            if cursor != nil { cursor = nil }
+            return
+        }
+        var start = 0.0
+        var found: (cursor: Cursor, node: MarkdownBlockNode, length: Int, local: Double)?
+        search: for (chunkIndex, blocks) in blockLengths.enumerated() where chunkIndex < target.count {
+            let isLastChunk = chunkIndex == blockLengths.count - 1
+            let chunkLength = Double(lengths[chunkIndex])
+            if !isLastChunk, start + chunkLength <= shown {
+                start += chunkLength
+                continue
+            }
+            for (blockIndex, length) in blocks.enumerated() where blockIndex < target[chunkIndex].blocks.count {
+                let isLastBlock = isLastChunk && blockIndex == blocks.count - 1
+                if start + Double(length) > shown || isLastBlock {
+                    found = (Cursor(chunk: chunkIndex, block: blockIndex),
+                             target[chunkIndex].blocks[blockIndex], length, shown - start)
+                    break search
+                }
+                start += Double(length)
+            }
+        }
+        guard let found else {
+            if cursor != nil { cursor = nil }
+            return
+        }
+        let fraction = found.length > 0 ? min(1, max(0, found.local / Double(found.length))) : 1
+        let moved = found.cursor != cursor || found.node != cursorNode
+        if case .codeBlock = found.node {
+            let prefix = max(0, Int(found.local))
+            if prefix != codePrefix { codePrefix = prefix }
+        }
+        if moved {
+            // Finish the block that was being typed, then hold the new value
+            // until SwiftUI hands the new block to the text view.
+            if found.cursor != cursor { controller.update(progress: 1, fadeCharacters: 0) }
+            controller.stage(progress: fraction, fadeCharacters: Self.fadeCharacters)
+            if found.cursor != cursor { cursor = found.cursor }
+            cursorNode = found.node
+        } else {
+            controller.update(progress: fraction, fadeCharacters: Self.fadeCharacters)
+        }
     }
 
     /// The vertical gap one text view leaves between two consecutive blocks. It
@@ -1561,10 +1646,12 @@ final class StreamingTextReveal {
     func receive(_ next: [MarkdownView.PreprocessedContent], source: String,
                  streaming: Bool, reduceMotion: Bool = false) {
         let previous = target ?? []
-        lengths = next.enumerated().map { index, chunk in
-            index < previous.count && previous[index] === chunk
-                ? lengths[index] : chunk.blocks.reduce(0) { $0 + RevealPrefix.length($1) }
+        let previousBlocks = blockLengths
+        blockLengths = next.enumerated().map { index, chunk in
+            index < previous.count && previous[index] === chunk && index < previousBlocks.count
+                ? previousBlocks[index] : chunk.blocks.map { RevealPrefix.length($0) }
         }
+        lengths = blockLengths.map { $0.reduce(0, +) }
         target = next
         progress.receive(source, count: lengths.reduce(0, +), streaming: streaming, reduceMotion: reduceMotion)
     }
@@ -1587,8 +1674,15 @@ final class StreamingTextReveal {
 /// `maxLag`, so a slower-than-server reveal cannot fall further and further behind.
 @MainActor @Observable
 final class StreamingTypewriter {
+    /// Whole visible characters. Published only when `publishesCount` is set, so
+    /// views that drive a draw-time reveal are not re-evaluated per character.
     private(set) var visibleCount = 0
     private(set) var hasStreamed = false
+    /// Whether the reveal is still behind the newest text; changes rarely.
+    private(set) var isAnimating = false
+    /// Called with the fractional reveal position whenever it moves.
+    @ObservationIgnored var onShown: ((Double) -> Void)?
+    @ObservationIgnored private let publishesCount: Bool
     @ObservationIgnored private var source = ""
     @ObservationIgnored private var shown = 0.0
     @ObservationIgnored private var total = 0
@@ -1599,7 +1693,6 @@ final class StreamingTypewriter {
     @ObservationIgnored private var link: CADisplayLink?
     /// Shared delivery rate for this reply; set by the owning view.
     @ObservationIgnored weak var rateMeter: StreamRateMeter?
-    var isAnimating: Bool { visibleCount < total }
 
     /// Typical model output before any arrival has been measured.
     private static let initialRate = 240.0
@@ -1634,8 +1727,9 @@ final class StreamingTypewriter {
     /// whole block per step, so it stays at 60 Hz.
     private let maxFrameRate: Float
 
-    init(maxFrameRate: Float = 120) {
+    init(maxFrameRate: Float = 120, publishesCount: Bool = true) {
         self.maxFrameRate = maxFrameRate
+        self.publishesCount = publishesCount
     }
 
     deinit { link?.invalidate() }
@@ -1729,10 +1823,14 @@ final class StreamingTypewriter {
     }
 
     /// Publish only whole-character changes, so observers re-render at most once
-    /// per newly visible character rather than on every display frame.
+    /// per newly visible character rather than on every display frame. The
+    /// fractional position goes to `onShown` every frame for draw-time reveals.
     private func setVisible() {
         let next = Int(shown)
-        if next != visibleCount { visibleCount = next }
+        if publishesCount, next != visibleCount { visibleCount = next }
+        let animating = shown < Double(total)
+        if animating != isAnimating { isAnimating = animating }
+        onShown?(shown)
     }
 
     private func startLinkIfNeeded(now: Double = ProcessInfo.processInfo.systemUptime) {

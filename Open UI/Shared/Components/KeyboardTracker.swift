@@ -71,11 +71,27 @@ final class KeyboardTracker {
 
         guard let endFrame = (userInfo[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect) else { return }
 
-        let screenHeight = UIApplication.shared.connectedScenes
+        // Measure against the app's own window, not the whole screen: on iPad the
+        // window can be smaller than the screen (Stage Manager, Split View, Slide
+        // Over), and the keyboard frame is reported in screen coordinates.
+        let scene = UIApplication.shared.connectedScenes
             .compactMap { $0 as? UIWindowScene }
-            .first?.screen.bounds.height ?? UIScreen.main.bounds.height
-        let keyboardTop = endFrame.minY
-        let newHeight = max(0, screenHeight - keyboardTop)
+            .first { $0.activationState == .foregroundActive }
+            ?? UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first
+        let window = scene?.windows.first { $0.isKeyWindow } ?? scene?.windows.first
+        let screenHeight = scene?.screen.bounds.height ?? UIScreen.main.bounds.height
+
+        let windowBottom: CGFloat
+        let keyboardTop: CGFloat
+        if let window, let screen = scene?.screen {
+            let kbInWindow = window.convert(endFrame, from: screen.coordinateSpace)
+            windowBottom = window.bounds.maxY
+            keyboardTop = kbInWindow.minY
+        } else {
+            windowBottom = screenHeight
+            keyboardTop = endFrame.minY
+        }
+        let newHeight = max(0, windowBottom - keyboardTop)
 
         let newVisible: Bool
         if let visible {
@@ -84,13 +100,11 @@ final class KeyboardTracker {
             newVisible = newHeight > 0
         }
 
-        let safeBottom = UIApplication.shared.connectedScenes
-            .compactMap { $0 as? UIWindowScene }
-            .first?.windows.first?.safeAreaInsets.bottom ?? 0
+        let safeBottom = window?.safeAreaInsets.bottom ?? 0
 
-        // Floating/undocked keyboard: endFrame.maxY < screenHeight means
-        // the keyboard isn't docked at the bottom — don't push content up.
-        let isDocked = endFrame.maxY >= screenHeight
+        // Floating/undocked keyboard: a docked keyboard always reaches the bottom
+        // of the screen; a floating one doesn't — don't push content up for it.
+        let isDocked = endFrame.maxY >= screenHeight - 1
         let adjustedHeight = (newVisible && isDocked) ? max(0, newHeight - safeBottom) : 0
 
         animationDuration = duration

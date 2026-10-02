@@ -86,6 +86,10 @@ final class TerminalShellViewModel {
     /// Set when the server rejected us (bad token / no access) — never auto-retry.
     @ObservationIgnored private var authFailed = false
 
+    /// True while the shell emulator has keyboard focus. The iPad panel uses this
+    /// to give the shell the full height above the keyboard while typing.
+    var isKeyboardFocused = false
+
     /// True while the panel is on screen — reconnects only happen when visible.
     @ObservationIgnored private(set) var isVisible = false
     /// True once the user has opened the shell at least once in this chat.

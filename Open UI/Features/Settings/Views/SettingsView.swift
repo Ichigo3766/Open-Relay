@@ -1960,6 +1960,8 @@ struct NotificationSettingsView: View {
     @Environment(\.theme) private var theme
     @AppStorage("notificationsEnabled") private var notificationsEnabled = true
     @AppStorage("notificationShowResponsePreview") private var showResponsePreview = false
+    @AppStorage(ExternalActivityNotifier.channelNotificationsKey) private var channelNotificationsEnabled = true
+    @AppStorage(ExternalActivityNotifier.externalChatNotificationsKey) private var externalChatNotificationsEnabled = true
     @State private var systemPermissionGranted = NotificationService.shared.isAuthorized
 
     var body: some View {
@@ -1974,6 +1976,17 @@ struct NotificationSettingsView: View {
                 Text("Notification Types")
             } footer: {
                 Text("Receive a notification when an AI response finishes generating. When \"Show Response Preview\" is on, the first lines of the response appear in the notification.")
+            }
+
+            Section {
+                Toggle("Channel Messages", isOn: $channelNotificationsEnabled)
+                    .tint(theme.brandPrimary)
+                Toggle("New Chats from Other Sources", isOn: $externalChatNotificationsEnabled)
+                    .tint(theme.brandPrimary)
+            } header: {
+                Text("Activity")
+            } footer: {
+                Text("Get notified about channel posts (including webhooks and automations) and chats started by automations, the web app or other devices. Instant while Open Relay is open; in the background, iOS decides when to check, so alerts can be delayed and stop if you force-quit the app. For instant alerts, set up Notification Targets on your server.")
             }
 
             Section {

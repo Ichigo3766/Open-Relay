@@ -42,8 +42,7 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/Ichigo3766/Litext.git",
       "state" : {
-        "branch" : "main",
-        "revision" : "395a39c50c2cca7ff78bcf118359bd0c3a5d0f82"
+        "revision" : "d673236255ffc82a704e8ec3b5fe577ebcb9712e"
       }
     },
     {
@@ -61,7 +60,7 @@
       "location" : "https://github.com/Ichigo3766/MarkdownView.git",
       "state" : {
         "branch" : "main",
-        "revision" : "2654e0d8254816bb9c1bdcbb73fa43bcc0f9f429"
+        "revision" : "e966f0536dc72a97266928f2084698f555fbcd8c"
       }
     },
     {

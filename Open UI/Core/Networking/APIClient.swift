@@ -769,6 +769,18 @@ final class APIClient: @unchecked Sendable {
         }
     }
 
+    /// Fetches the first page of the user's most recent chats, **including** chats
+    /// inside folders (automations can file their chats into a folder).
+    /// Used by the background check for chats created outside this device.
+    func getRecentConversationSummaries() async throws -> [Conversation] {
+        let queryItems: [URLQueryItem] = [
+            URLQueryItem(name: "page", value: "1"),
+            URLQueryItem(name: "include_folders", value: "true"),
+            URLQueryItem(name: "include_pinned", value: "true")
+        ]
+        return try await conversationSummaries(path: "/api/v1/chats/", queryItems: queryItems)
+    }
+
     /// Fetches all pinned conversations from `/api/v1/chats/pinned` as full `Conversation` objects.
     /// This is the canonical source of truth for the Pinned section — it includes folder chats
     /// that are excluded from the regular paginated list.
@@ -890,6 +902,10 @@ final class APIClient: @unchecked Sendable {
         body["variables"] = variables
         if let folderId { body["folder_id"] = folderId }
 
+        // Remember this chat was created here so it never triggers a
+        // "new chat from another source" notification on this device.
+        LocalChatOrigin.mark(id)
+
         let (data, _) = try await network.requestRaw(
             path: "/api/v1/chats/new",
             method: .post,
@@ -944,7 +960,14 @@ final class APIClient: @unchecked Sendable {
             )
         }
 
-        return parseFullConversation(json)
+        return markedLocal(parseFullConversation(json))
+    }
+
+    /// Records a chat returned from a create/clone/fork call as created on this
+    /// device, so it never triggers a "new chat from another source" notification.
+    private func markedLocal(_ conversation: Conversation) -> Conversation {
+        LocalChatOrigin.mark(conversation.id)
+        return conversation
     }
 
     func updateConversation(id: String, title: String? = nil, systemPrompt: String? = nil) async throws {
@@ -1017,7 +1040,7 @@ final class APIClient: @unchecked Sendable {
             )
         }
 
-        return parseFullConversation(json)
+        return markedLocal(parseFullConversation(json))
     }
 
     /// Forks a conversation at a specific message using POST /api/v1/chats/{id}/fork.
@@ -1041,7 +1064,7 @@ final class APIClient: @unchecked Sendable {
             )
         }
 
-        return parseFullConversation(json)
+        return markedLocal(parseFullConversation(json))
     }
 
     func searchConversations(query: String) async throws -> [Conversation] {
@@ -5000,7 +5023,7 @@ final class APIClient: @unchecked Sendable {
             throw APIError.httpError(statusCode: 500, message: "Failed to parse cloned chat.", data: data)
         }
 
-        return parseFullConversation(json)
+        return markedLocal(parseFullConversation(json))
     }
 
     func getAdminUserChats(

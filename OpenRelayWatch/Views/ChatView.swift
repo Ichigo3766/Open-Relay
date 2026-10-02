@@ -19,7 +19,9 @@ struct ChatView: View {
     var body: some View {
         ScrollViewReader { proxy in
             ScrollView {
-                LazyVStack(alignment: .leading, spacing: 10) {
+                // Not lazy: the input button must never be recycled while a
+                // dictation sheet is open.
+                VStack(alignment: .leading, spacing: 10) {
                     if let detail {
                         if detail.truncated {
                             Text("Earlier messages are on your iPhone.")

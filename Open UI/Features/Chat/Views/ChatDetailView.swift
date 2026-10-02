@@ -215,6 +215,14 @@ struct ChatDetailView: View {
     @Environment(AppRouter.self) private var router
     @Environment(\.theme) private var theme
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+
+    /// Extra bottom padding that keeps the composer above the keyboard in the
+    /// iPhone landscape terminal layout, where iOS doesn't lift it.
+    private var manualKeyboardLift: CGFloat {
+        let terminalLandscape = verticalSizeClass == .compact
+            && viewModel.terminalEnabled && viewModel.selectedTerminalServer != nil
+        return terminalLandscape ? keyboard.height : 0
+    }
     @Environment(\.verticalSizeClass) private var verticalSizeClass
     @Environment(\.isEnabled) private var isEnabled
 
@@ -527,6 +535,24 @@ struct ChatDetailView: View {
         return copy
     }
 
+    /// Visibility/selection state of the optional terminal Files button in the top bar.
+    struct FilesButtonState: Equatable {
+        var isVisible = false
+        var isOpen = false
+    }
+
+    private var filesButtonState = FilesButtonState()
+    private var filesButtonAction: (() -> Void)?
+
+    /// Adds a Files button to the top bar that toggles the terminal file browser.
+    /// Used on iPad, where the panel is a trailing column; iPhone doesn't set this.
+    func filesButton(_ state: FilesButtonState, action: @escaping () -> Void) -> ChatDetailView {
+        var copy = self
+        copy.filesButtonState = state
+        copy.filesButtonAction = action
+        return copy
+    }
+
     /// Called when the photo attachment button is tapped — lets the parent render
     /// AnimatedPhotoPicker at the window level, above all safeAreaInset constraints.
     /// When nil the photo button sets showAnimatedPhotoPicker directly (legacy path).
@@ -632,13 +658,15 @@ struct ChatDetailView: View {
                     // is actually active (landscape + terminal enabled). Without terminal,
                     // the portrait ZStack layout is used even in landscape, and iOS propagates
                     // keyboard safe-area normally — adding keyboard.height there causes double-lift.
-                    .padding(.bottom, (verticalSizeClass == .compact && viewModel.terminalEnabled && viewModel.selectedTerminalServer != nil) ? keyboard.height : 0)
+                    // iPad: the split view column already ends at the keyboard.
+                    .padding(.bottom, manualKeyboardLift)
             } else {
                 inputFieldArea(vm: vm)
                     .padding(.bottom, keyboard.height > 0 ? Spacing.sm : 0)
-                    // Same scoping as above — only the terminal HStack landscape layout needs
-                    // manual keyboard avoidance. All other cases rely on normal iOS propagation.
-                    .padding(.bottom, (verticalSizeClass == .compact && viewModel.terminalEnabled && viewModel.selectedTerminalServer != nil) ? keyboard.height : 0)
+                    // Same scoping as above — only the terminal HStack landscape layout
+                    // needs manual keyboard avoidance. All other cases rely on normal
+                    // iOS propagation.
+                    .padding(.bottom, manualKeyboardLift)
             }
         }
         // Keep the explicit backdrop unless this build supports native status-area blur.
@@ -1128,6 +1156,18 @@ struct ChatDetailView: View {
     @ViewBuilder
     private var trailingActionsPill: some View {
         HStack(spacing: 0) {
+            // Terminal files panel toggle (iPad: shown only while the terminal is on)
+            if let filesAction = filesButtonAction, filesButtonState.isVisible {
+                pillIconButton(
+                    icon: filesButtonState.isOpen ? "sidebar.trailing" : "folder",
+                    tint: filesButtonState.isOpen ? theme.brandPrimary : nil,
+                    accessibilityLabel: filesButtonState.isOpen ? "Hide Files" : "Show Files"
+                ) {
+                    filesAction()
+                }
+                .transition(.scale.combined(with: .opacity))
+            }
+
             // New chat
             if let newChat = newChatAction {
                 pillIconButton(icon: "square.and.pencil", accessibilityLabel: "New Chat") {

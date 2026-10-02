@@ -324,7 +324,7 @@ final class NotificationService: NSObject, @unchecked Sendable {
     ///   `<thought>`, `<|begin_of_thought|>`, `◁think▷` (and closing variants)
     /// - Server-normalised: `<details type="reasoning">…</details>`
     /// - Tool-call blocks: `<details>…</details>` (any remaining)
-    private static func stripThinkingAndToolBlocks(from content: String) -> String {
+    static func stripThinkingAndToolBlocks(from content: String) -> String {
         var result = content
 
         // 1. <details …>…</details> blocks (reasoning + tool calls)

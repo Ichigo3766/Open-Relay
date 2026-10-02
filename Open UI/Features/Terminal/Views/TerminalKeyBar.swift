@@ -37,8 +37,7 @@ final class TerminalKeyBar: UIInputView, UIInputViewAudioFeedback, UIGestureReco
 
     init(terminalView: TerminalView) {
         self.terminalView = terminalView
-        let isPhone = UIDevice.current.userInterfaceIdiom == .phone
-        super.init(frame: CGRect(x: 0, y: 0, width: 320, height: isPhone ? 44 : 50), inputViewStyle: .keyboard)
+        super.init(frame: CGRect(x: 0, y: 0, width: 320, height: Metrics.current.barHeight), inputViewStyle: .keyboard)
         allowsSelfSizing = true
         translatesAutoresizingMaskIntoConstraints = false
         build()
@@ -57,7 +56,71 @@ final class TerminalKeyBar: UIInputView, UIInputViewAudioFeedback, UIGestureReco
     }
 
     override var intrinsicContentSize: CGSize {
-        CGSize(width: UIView.noIntrinsicMetric, height: UIDevice.current.userInterfaceIdiom == .phone ? 44 : 50)
+        CGSize(width: UIView.noIntrinsicMetric, height: Metrics.current.barHeight)
+    }
+
+    /// Sizes for the bar and its keys. iPad gets larger keys and labels.
+    struct Metrics {
+        let barHeight: CGFloat
+        let keyHeight: CGFloat
+        let minKeyWidth: CGFloat
+        let keyCornerRadius: CGFloat
+        let labelSize: CGFloat
+        let symbolSize: CGFloat
+        let keyPadding: CGFloat
+        let wordKeyPadding: CGFloat
+        let keySpacing: CGFloat
+
+        @MainActor static var current: Metrics {
+            UIDevice.current.userInterfaceIdiom == .pad
+                ? Metrics(barHeight: 56, keyHeight: 40, minKeyWidth: 46, keyCornerRadius: 9,
+                          labelSize: 16, symbolSize: 16, keyPadding: 14, wordKeyPadding: 12, keySpacing: 8)
+                : Metrics(barHeight: 46, keyHeight: 34, minKeyWidth: 38, keyCornerRadius: 8,
+                          labelSize: 15, symbolSize: 14, keyPadding: 12, wordKeyPadding: 10, keySpacing: 6)
+        }
+    }
+
+    /// Solid backdrop so the keys stay legible even when the bar floats over the
+    /// terminal/chat (iPad, iOS 26 floating accessory bar, hardware keyboard).
+    private func makeBackdrop() -> UIVisualEffectView {
+        // Subviews of a UIVisualEffectView must go into its `contentView`;
+        // adding them to the effect view itself throws an assertion (crash).
+        let backdrop: UIVisualEffectView
+        if #available(iOS 26.0, *) {
+            backdrop = UIVisualEffectView(effect: UIGlassEffect())
+        } else {
+            backdrop = UIVisualEffectView(effect: UIBlurEffect(style: .systemChromeMaterial))
+        }
+        backdrop.translatesAutoresizingMaskIntoConstraints = false
+        let content = backdrop.contentView
+
+        // A tint layer keeps the bar opaque enough for contrast on any content.
+        let tint = UIView()
+        tint.backgroundColor = UIColor { traits in
+            traits.userInterfaceStyle == .dark
+                ? UIColor(white: 0.12, alpha: 0.72)
+                : UIColor(red: 0.82, green: 0.84, blue: 0.87, alpha: 0.78)
+        }
+        tint.translatesAutoresizingMaskIntoConstraints = false
+        content.addSubview(tint)
+
+        // Hairline separating the bar from the terminal above.
+        let hairline = UIView()
+        hairline.backgroundColor = .separator
+        hairline.translatesAutoresizingMaskIntoConstraints = false
+        content.addSubview(hairline)
+
+        NSLayoutConstraint.activate([
+            tint.leadingAnchor.constraint(equalTo: content.leadingAnchor),
+            tint.trailingAnchor.constraint(equalTo: content.trailingAnchor),
+            tint.topAnchor.constraint(equalTo: content.topAnchor),
+            tint.bottomAnchor.constraint(equalTo: content.bottomAnchor),
+            hairline.leadingAnchor.constraint(equalTo: content.leadingAnchor),
+            hairline.trailingAnchor.constraint(equalTo: content.trailingAnchor),
+            hairline.topAnchor.constraint(equalTo: content.topAnchor),
+            hairline.heightAnchor.constraint(equalToConstant: 1 / UIScreen.main.scale)
+        ])
+        return backdrop
     }
 
     private var keys: [Key] {
@@ -84,14 +147,29 @@ final class TerminalKeyBar: UIInputView, UIInputViewAudioFeedback, UIGestureReco
 
     private func build() {
         backgroundColor = .clear
+        let backdrop = makeBackdrop()
+        addSubview(backdrop)
+        NSLayoutConstraint.activate([
+            backdrop.leadingAnchor.constraint(equalTo: leadingAnchor),
+            backdrop.trailingAnchor.constraint(equalTo: trailingAnchor),
+            backdrop.topAnchor.constraint(equalTo: topAnchor),
+            backdrop.bottomAnchor.constraint(equalTo: bottomAnchor)
+        ])
         scrollView.showsHorizontalScrollIndicator = false
         scrollView.alwaysBounceHorizontal = true
         scrollView.translatesAutoresizingMaskIntoConstraints = false
         scrollView.onBeginScroll = { [weak self] in self?.cancelPress() }
-        addSubview(scrollView)
+        // The edge fade lives on a stationary container, so it never lags the scroll.
+        let fadeContainer = KeyBarFadeContainer()
+        fadeContainer.translatesAutoresizingMaskIntoConstraints = false
+        scrollView.onEdgesChanged = { [weak fadeContainer] canLeft, canRight in
+            fadeContainer?.setEdges(canLeft: canLeft, canRight: canRight)
+        }
+        addSubview(fadeContainer)
+        fadeContainer.addSubview(scrollView)
 
         stack.axis = .horizontal
-        stack.spacing = 6
+        stack.spacing = Metrics.current.keySpacing
         stack.alignment = .center
         stack.translatesAutoresizingMaskIntoConstraints = false
         stack.isUserInteractionEnabled = false // touches are resolved by the recognizers below
@@ -109,17 +187,21 @@ final class TerminalKeyBar: UIInputView, UIInputViewAudioFeedback, UIGestureReco
         addSubview(divider)
 
         NSLayoutConstraint.activate([
-            scrollView.leadingAnchor.constraint(equalTo: leadingAnchor),
-            scrollView.topAnchor.constraint(equalTo: topAnchor),
-            scrollView.bottomAnchor.constraint(equalTo: bottomAnchor),
-            scrollView.trailingAnchor.constraint(equalTo: divider.leadingAnchor, constant: -4),
+            fadeContainer.leadingAnchor.constraint(equalTo: leadingAnchor),
+            fadeContainer.topAnchor.constraint(equalTo: topAnchor),
+            fadeContainer.bottomAnchor.constraint(equalTo: bottomAnchor),
+            fadeContainer.trailingAnchor.constraint(equalTo: divider.leadingAnchor, constant: -4),
+            scrollView.leadingAnchor.constraint(equalTo: fadeContainer.leadingAnchor),
+            scrollView.trailingAnchor.constraint(equalTo: fadeContainer.trailingAnchor),
+            scrollView.topAnchor.constraint(equalTo: fadeContainer.topAnchor),
+            scrollView.bottomAnchor.constraint(equalTo: fadeContainer.bottomAnchor),
             divider.widthAnchor.constraint(equalToConstant: 1 / UIScreen.main.scale),
             divider.heightAnchor.constraint(equalToConstant: 22),
             divider.centerYAnchor.constraint(equalTo: centerYAnchor),
             divider.trailingAnchor.constraint(equalTo: dismiss.leadingAnchor, constant: -4),
             dismiss.trailingAnchor.constraint(equalTo: safeAreaLayoutGuide.trailingAnchor, constant: -8),
             dismiss.centerYAnchor.constraint(equalTo: centerYAnchor),
-            dismiss.heightAnchor.constraint(equalToConstant: 32),
+            dismiss.heightAnchor.constraint(equalToConstant: Metrics.current.keyHeight),
 
             stack.leadingAnchor.constraint(equalTo: scrollView.contentLayoutGuide.leadingAnchor, constant: 8),
             stack.trailingAnchor.constraint(equalTo: scrollView.contentLayoutGuide.trailingAnchor, constant: -8),
@@ -168,9 +250,9 @@ final class TerminalKeyBar: UIInputView, UIInputViewAudioFeedback, UIGestureReco
     // MARK: Touch handling
 
     private var pressedKey: KeyCapView?
-    private var pressStart: Date?
     private var didRepeat = false
     private var holdTimer: Timer?
+    private var highlightTimer: Timer?
 
     func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
                            shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool { true }
@@ -186,8 +268,18 @@ final class TerminalKeyBar: UIInputView, UIInputViewAudioFeedback, UIGestureReco
         case .began:
             guard let key = key(at: recognizer) else { return }
             pressedKey = key
-            key.isPressed = true
             didRepeat = false
+            // Delay the visual highlight slightly: a swipe cancels before it shows,
+            // so scrolling never makes keys twitch. Taps still flash on release.
+            highlightTimer?.invalidate()
+            let highlight = Timer(timeInterval: 0.06, repeats: false) { [weak self] _ in
+                MainActor.assumeIsolated {
+                    guard let self, self.pressedKey === key else { return }
+                    key.setPressed(true, animated: true)
+                }
+            }
+            RunLoop.main.add(highlight, forMode: .common)
+            highlightTimer = highlight
             if key.repeats {
                 holdTimer?.invalidate()
                 let timer = Timer(timeInterval: 0.35, repeats: false) { [weak self] _ in
@@ -199,8 +291,13 @@ final class TerminalKeyBar: UIInputView, UIInputViewAudioFeedback, UIGestureReco
         case .ended:
             guard let key = pressedKey else { return }
             let repeated = didRepeat
+            let wasHighlighted = key.isPressed
             cancelPress()
-            if !repeated { fire(key.action) }
+            if !repeated {
+                fire(key.action)
+                // Quick tap that ended before the highlight appeared: flash it briefly.
+                if !wasHighlighted { key.flash() }
+            }
         case .cancelled, .failed:
             cancelPress()
         default:
@@ -215,6 +312,7 @@ final class TerminalKeyBar: UIInputView, UIInputViewAudioFeedback, UIGestureReco
     private func startRepeating() {
         guard let key = pressedKey else { return }
         didRepeat = true
+        key.setPressed(true, animated: true)
         fire(key.action)
         endRepeat()
         let timer = Timer(timeInterval: 0.07, repeats: true) { [weak self] _ in
@@ -229,8 +327,9 @@ final class TerminalKeyBar: UIInputView, UIInputViewAudioFeedback, UIGestureReco
 
     private func cancelPress() {
         holdTimer?.invalidate(); holdTimer = nil
+        highlightTimer?.invalidate(); highlightTimer = nil
         endRepeat()
-        pressedKey?.isPressed = false
+        pressedKey?.setPressed(false, animated: true)
         pressedKey = nil
     }
 
@@ -244,12 +343,14 @@ final class TerminalKeyBar: UIInputView, UIInputViewAudioFeedback, UIGestureReco
 
     private static func dismissConfiguration() -> UIButton.Configuration {
         var config = UIButton.Configuration.filled()
-        config.baseBackgroundColor = UIColor.secondarySystemFill
+        config.baseBackgroundColor = UIColor { traits in
+            traits.userInterfaceStyle == .dark ? UIColor(white: 0.42, alpha: 1) : .white
+        }
         config.baseForegroundColor = UIColor.label
         config.cornerStyle = .medium
-        config.contentInsets = NSDirectionalEdgeInsets(top: 6, leading: 11, bottom: 6, trailing: 11)
+        config.contentInsets = NSDirectionalEdgeInsets(top: 6, leading: 12, bottom: 6, trailing: 12)
         config.image = UIImage(systemName: "keyboard.chevron.compact.down",
-                               withConfiguration: UIImage.SymbolConfiguration(pointSize: 13, weight: .semibold))
+                               withConfiguration: UIImage.SymbolConfiguration(pointSize: Metrics.current.symbolSize, weight: .semibold))
         return config
     }
 
@@ -327,6 +428,8 @@ final class TerminalKeyBar: UIInputView, UIInputViewAudioFeedback, UIGestureReco
 }
 
 /// A single key on the bar. Purely visual — touches are handled by the bar.
+/// Styled like a system keyboard key: solid cap, hairline bottom shadow,
+/// high-contrast label, brand tint when a modifier is latched.
 final class KeyCapView: UIView {
     let action: TerminalKeyBar.KeyAction
     var repeats = false
@@ -334,14 +437,39 @@ final class KeyCapView: UIView {
     private let label = UILabel()
     private let imageView = UIImageView()
 
-    var isPressed = false { didSet { updateAppearance() } }
-    var isLatched = false { didSet { updateAppearance() } }
+    private(set) var isPressed = false
+    var isLatched = false { didSet { if isLatched != oldValue { updateAppearance() } } }
+
+    /// Animates the press state on/off (no snapping while scrolling or tapping).
+    func setPressed(_ pressed: Bool, animated: Bool) {
+        guard pressed != isPressed else { return }
+        isPressed = pressed
+        guard animated else { updateAppearance(); return }
+        UIView.animate(withDuration: pressed ? 0.08 : 0.16, delay: 0,
+                       options: [.beginFromCurrentState, .allowUserInteraction, .curveEaseOut]) {
+            self.updateAppearance()
+        }
+    }
+
+    /// Brief highlight for a quick tap that released before the delayed highlight.
+    func flash() {
+        setPressed(true, animated: false)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.06) { [weak self] in
+            self?.setPressed(false, animated: true)
+        }
+    }
 
     init(title: String?, symbol: String?, action: TerminalKeyBar.KeyAction) {
         self.action = action
         super.init(frame: .zero)
-        layer.cornerRadius = 8
+        let metrics = TerminalKeyBar.Metrics.current
+        layer.cornerRadius = metrics.keyCornerRadius
         layer.cornerCurve = .continuous
+        // Key-cap depth: a crisp 1pt shadow below each key (like the system keyboard).
+        layer.shadowColor = UIColor.black.cgColor
+        layer.shadowOffset = CGSize(width: 0, height: 1)
+        layer.shadowRadius = 0
+        layer.shadowOpacity = 0.3
         isAccessibilityElement = true
         accessibilityTraits = .keyboardKey
         translatesAutoresizingMaskIntoConstraints = false
@@ -349,23 +477,27 @@ final class KeyCapView: UIView {
         let content: UIView
         if let title {
             label.text = title
-            label.font = UIFont.monospacedSystemFont(ofSize: 14, weight: .medium)
+            label.font = UIFont.monospacedSystemFont(ofSize: metrics.labelSize, weight: .semibold)
             label.textAlignment = .center
+            label.adjustsFontForContentSizeCategory = false
             content = label
         } else {
             imageView.image = UIImage(systemName: symbol ?? "questionmark",
-                                      withConfiguration: UIImage.SymbolConfiguration(pointSize: 13, weight: .semibold))
+                                      withConfiguration: UIImage.SymbolConfiguration(pointSize: metrics.symbolSize, weight: .semibold))
             imageView.contentMode = .center
             content = imageView
         }
         content.translatesAutoresizingMaskIntoConstraints = false
         addSubview(content)
-        let padding: CGFloat = (title?.count ?? 0) > 2 ? 10 : 12
+        registerForTraitChanges([UITraitUserInterfaceStyle.self]) { (self: KeyCapView, _) in
+            self.updateAppearance()
+        }
+        let padding: CGFloat = (title?.count ?? 0) > 2 ? metrics.wordKeyPadding : metrics.keyPadding
         NSLayoutConstraint.activate([
-            heightAnchor.constraint(equalToConstant: 32),
-            widthAnchor.constraint(greaterThanOrEqualToConstant: 36),
-            content.leadingAnchor.constraint(equalTo: leadingAnchor, constant: title == nil ? 11 : padding),
-            content.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -(title == nil ? 11 : padding)),
+            heightAnchor.constraint(equalToConstant: metrics.keyHeight),
+            widthAnchor.constraint(greaterThanOrEqualToConstant: metrics.minKeyWidth),
+            content.leadingAnchor.constraint(equalTo: leadingAnchor, constant: title == nil ? metrics.keyPadding : padding),
+            content.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -(title == nil ? metrics.keyPadding : padding)),
             content.centerYAnchor.constraint(equalTo: centerYAnchor)
         ])
         updateAppearance()
@@ -378,17 +510,44 @@ final class KeyCapView: UIView {
         updateAppearance()
     }
 
+    private var shadowPathSize: CGSize = .zero
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        // Explicit shadow path (no offscreen shadow pass); rebuilt only on real size changes.
+        guard bounds.size != shadowPathSize else { return }
+        shadowPathSize = bounds.size
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        layer.shadowPath = UIBezierPath(roundedRect: bounds, cornerRadius: layer.cornerRadius).cgPath
+        CATransaction.commit()
+    }
+
     override func accessibilityActivate() -> Bool {
         onAccessibilityActivate?(action)
         return true
     }
 
+    /// Solid key cap colours matching the system keyboard (white / graphite).
+    private static let capColor = UIColor { traits in
+        traits.userInterfaceStyle == .dark
+            ? UIColor(white: 0.42, alpha: 1)
+            : UIColor.white
+    }
+    private static let pressedCapColor = UIColor { traits in
+        traits.userInterfaceStyle == .dark
+            ? UIColor(white: 0.30, alpha: 1)
+            : UIColor(white: 0.80, alpha: 1)
+    }
+
     private func updateAppearance() {
-        let background: UIColor = isLatched ? tintColor : (isPressed ? .tertiarySystemFill : .secondarySystemFill)
+        let background: UIColor = isLatched ? tintColor : (isPressed ? Self.pressedCapColor : Self.capColor)
         let foreground: UIColor = isLatched ? .white : .label
         backgroundColor = background
         label.textColor = foreground
         imageView.tintColor = foreground
+        let isDark = traitCollection.userInterfaceStyle == .dark
+        layer.shadowOpacity = isPressed ? 0 : (isDark ? 0.45 : 0.28)
         transform = isPressed ? CGAffineTransform(scaleX: 0.94, y: 0.94) : .identity
         accessibilityTraits = isLatched ? [.keyboardKey, .selected] : .keyboardKey
     }
@@ -400,6 +559,9 @@ final class KeyCapView: UIView {
 /// controls makes every drag scroll while taps stay instant.
 final class KeyBarScrollView: UIScrollView, UIScrollViewDelegate {
     var onBeginScroll: (() -> Void)?
+    /// Reports whether there are more keys off-screen to the left / right.
+    var onEdgesChanged: ((_ canLeft: Bool, _ canRight: Bool) -> Void)?
+    private var lastEdges: (Bool, Bool)?
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -408,21 +570,25 @@ final class KeyBarScrollView: UIScrollView, UIScrollViewDelegate {
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
-    private let fade = CAGradientLayer()
-
     override func layoutSubviews() {
         super.layoutSubviews()
-        // Soft fade at whichever edge has more keys to scroll to.
+        // Only bounce when there's actually something to scroll to.
+        let scrollable = contentSize.width > bounds.width + 1
+        if alwaysBounceHorizontal != scrollable { alwaysBounceHorizontal = scrollable }
+        reportEdges()
+    }
+
+    func scrollViewDidScroll(_ scrollView: UIScrollView) {
+        reportEdges()
+    }
+
+    /// Notifies only when an edge's state flips — never per scroll frame.
+    private func reportEdges() {
         let canLeft = contentOffset.x > 1
         let canRight = contentOffset.x + bounds.width < contentSize.width - 1
-        let edge = min(0.08, 16 / max(bounds.width, 1))
-        fade.frame = bounds
-        fade.startPoint = CGPoint(x: 0, y: 0.5)
-        fade.endPoint = CGPoint(x: 1, y: 0.5)
-        fade.colors = [UIColor.black.withAlphaComponent(canLeft ? 0 : 1).cgColor, UIColor.black.cgColor,
-                       UIColor.black.cgColor, UIColor.black.withAlphaComponent(canRight ? 0 : 1).cgColor]
-        fade.locations = [0, NSNumber(value: Double(edge)), NSNumber(value: Double(1 - edge)), 1]
-        if layer.mask !== fade { layer.mask = fade }
+        if let lastEdges, lastEdges == (canLeft, canRight) { return }
+        lastEdges = (canLeft, canRight)
+        onEdgesChanged?(canLeft, canRight)
     }
 
     override func touchesShouldCancel(in view: UIView) -> Bool {
@@ -432,5 +598,59 @@ final class KeyBarScrollView: UIScrollView, UIScrollViewDelegate {
 
     func scrollViewWillBeginDragging(_ scrollView: UIScrollView) {
         onBeginScroll?()
+    }
+}
+
+/// Stationary container that owns the edge-fade mask for the key scroller.
+///
+/// The mask used to live on the scroll view itself and was re-framed on every
+/// scroll frame. CALayer properties animate implicitly (~0.25s), so the mask
+/// trailed behind the content and hid keys mid-swipe. Here the mask is attached
+/// to a view that never moves, is only re-framed on real size changes, and all
+/// updates run with implicit animations disabled.
+final class KeyBarFadeContainer: UIView {
+    private let fade = CAGradientLayer()
+    private var canLeft = false
+    private var canRight = false
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        fade.startPoint = CGPoint(x: 0, y: 0.5)
+        fade.endPoint = CGPoint(x: 1, y: 0.5)
+        layer.mask = fade
+        applyFade()
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        guard fade.frame != bounds else { return }
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        fade.frame = bounds
+        fade.locations = Self.locations(for: bounds.width)
+        CATransaction.commit()
+    }
+
+    func setEdges(canLeft: Bool, canRight: Bool) {
+        guard canLeft != self.canLeft || canRight != self.canRight else { return }
+        self.canLeft = canLeft
+        self.canRight = canRight
+        applyFade()
+    }
+
+    private func applyFade() {
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        fade.colors = [UIColor.black.withAlphaComponent(canLeft ? 0 : 1).cgColor, UIColor.black.cgColor,
+                       UIColor.black.cgColor, UIColor.black.withAlphaComponent(canRight ? 0 : 1).cgColor]
+        fade.locations = Self.locations(for: bounds.width)
+        CATransaction.commit()
+    }
+
+    private static func locations(for width: CGFloat) -> [NSNumber] {
+        let edge = min(0.08, 16 / max(width, 1))
+        return [0, NSNumber(value: Double(edge)), NSNumber(value: Double(1 - edge)), 1]
     }
 }

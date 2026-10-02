@@ -51,10 +51,21 @@ struct TerminalBrowserView: View {
         applySheets(mainContent)
     }
 
+    /// iPad: while the shell has the keyboard, the file browser folds away so the
+    /// shell gets every point above the keyboard (the panel itself now follows the
+    /// keyboard safe area instead of being drawn under it).
+    private var shellTakesOver: Bool {
+        UIDevice.current.userInterfaceIdiom == .pad
+            && viewModel.shell.isKeyboardFocused
+            && viewModel.isTerminalExpanded
+            && !viewModel.requiresSavedChat
+    }
+
     private var mainContent: some View {
         GeometryReader { geo in
+            let compactShell = isTerminalFullscreen || shellTakesOver
             VStack(spacing: 0) {
-                if !isTerminalFullscreen {
+                if !compactShell {
                     header
                     if viewModel.requiresSavedChat {
                         savedChatPlaceholder
@@ -63,20 +74,20 @@ struct TerminalBrowserView: View {
                     }
                 }
                 if (viewModel.isTerminalExpanded || isTerminalFullscreen) && !viewModel.requiresSavedChat {
-                    if !isTerminalFullscreen { resizeHandle(totalHeight: geo.size.height) }
+                    if !compactShell { resizeHandle(totalHeight: geo.size.height) }
                     TerminalDockView(viewModel: viewModel, isFullscreen: isTerminalFullscreen) {
                         withAnimation(.spring(response: 0.35, dampingFraction: 0.86)) { isTerminalFullscreen.toggle() }
                         Haptics.play(.light)
                     }
-                    .frame(height: isTerminalFullscreen ? nil : dockHeight(total: geo.size.height))
-                    .frame(maxHeight: isTerminalFullscreen ? .infinity : nil)
+                    .frame(height: compactShell ? nil : dockHeight(total: geo.size.height))
+                    .frame(maxHeight: compactShell ? .infinity : nil)
                     .transition(.move(edge: .bottom).combined(with: .opacity))
                 }
-                if !isTerminalFullscreen && !viewModel.requiresSavedChat {
+                if !compactShell && !viewModel.requiresSavedChat {
                     dockToggleBar
                 }
             }
-            .overlay(alignment: .top) { bannerView.padding(.top, isTerminalFullscreen ? 44 : 52) }
+            .overlay(alignment: .top) { bannerView.padding(.top, compactShell ? 44 : 52) }
         }
         .background(background ?? theme.background)
         .onChange(of: viewModel.isTerminalExpanded) { _, expanded in

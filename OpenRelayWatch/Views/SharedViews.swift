@@ -1,25 +1,21 @@
 import SwiftUI
 
-/// A text field that opens the system input sheet (dictation, Scribble,
-/// keyboard) straight away. Dictation runs on the watch, so only text is
-/// sent to the iPhone.
+/// A button that opens the system input sheet (dictation, Scribble,
+/// keyboard). Dictation runs on the watch, so only text is sent to the
+/// iPhone. Uses `TextFieldLink` (owned by the system, so list updates and
+/// scrolling can't dismiss the sheet mid-dictation).
 struct DictationButton: View {
     let title: String
     let systemImage: String
     var prominent = true
     let onSubmit: (String) -> Void
 
-    @State private var text = ""
-
     var body: some View {
-        TextField(text: $text) {
+        TextFieldLink(prompt: Text(title)) {
             Label(title, systemImage: systemImage)
-        }
-        .textFieldStyle(.plain)
-        .submitLabel(.send)
-        .onSubmit {
+                .frame(maxWidth: .infinity, alignment: .leading)
+        } onSubmit: { text in
             let value = text.trimmingCharacters(in: .whitespacesAndNewlines)
-            text = ""
             if !value.isEmpty { onSubmit(value) }
         }
         .padding(.vertical, prominent ? 6 : 2)

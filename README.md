@@ -161,6 +161,7 @@ Open Relay supports a custom URL scheme (`openui://`) so you can launch the app 
 | `openui://new-chat?mode=voice-recording` | Start a new AI voice call |
 | `openui://continue` | Resume the last conversation |
 | `openui://chat/{conversationId}` | Open a specific conversation by ID |
+| `openui://channel/{channelId}` | Open a specific channel by ID (also accepts `openui://channels/{channelId}`) |
 | `openui://voice-call` | Start a voice call |
 | `openui://new-note` | Open the Notes section |
 | `openui://new-channel` | Create a new Channel |
@@ -193,6 +194,17 @@ data:
   data:
     url: "openui://new-chat?prompt=What%27s+the+weather+forecast%3F&send=true"
 ```
+
+**Home Assistant — open a channel when the notification is tapped:**
+```yaml
+service: notify.mobile_app_your_phone
+data:
+  message: "New post in #alerts"
+  data:
+    url: "openui://channel/YOUR_CHANNEL_ID"
+```
+
+To get a channel's ID, long-press the channel in the Open Relay sidebar and choose **Copy Channel Link**, or copy the last part of the channel's address in the web app (`https://your-server/channels/<id>`).
 
 ---
 

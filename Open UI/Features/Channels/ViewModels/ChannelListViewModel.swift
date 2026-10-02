@@ -381,47 +381,8 @@ final class ChannelListViewModel {
                     let isOwn = senderId != nil && senderId == currentUserId
                     if activeChannelId != channelId && !isOwn && !isThreadReply {
                         channels[idx].unreadCount += 1
-
-                        // Fire a local push notification for the new message.
-                        let channel = channels[idx]
-                        let msgData: [String: Any] = {
-                            if let d = data["data"] as? [String: Any] { return d }
-                            return data
-                        }()
-                        let senderName: String = {
-                            if let user = msgData["user"] as? [String: Any],
-                               let name = user["name"] as? String, !name.isEmpty { return name }
-                            if let name = msgData["user_name"] as? String, !name.isEmpty { return name }
-                            return "New message"
-                        }()
-                        let preview: String = {
-                            if let content = msgData["content"] as? String {
-                                return String(content.prefix(80))
-                            }
-                            return ""
-                        }()
-                        let userId = msgData["user_id"] as? String ?? (msgData["user"] as? [String: Any])?["id"] as? String
-                        // Don't notify for own messages
-                        if userId != currentUserId {
-                            let channelDisplayName: String = {
-                                if channel.type == .dm {
-                                    let participants = channel.dmParticipants
-                                    if !participants.isEmpty {
-                                        return participants.map { $0.displayName }.joined(separator: ", ")
-                                    }
-                                    return channel.name.isEmpty ? "Direct Message" : channel.name
-                                }
-                                return "#\(channel.name)"
-                            }()
-                            Task {
-                                await NotificationService.shared.notifyChannelMessage(
-                                    channelId: channelId,
-                                    channelName: channelDisplayName,
-                                    senderName: senderName,
-                                    preview: preview
-                                )
-                            }
-                        }
+                        // Banners are posted by ExternalActivityNotifier, which also
+                        // covers webhooks, automations and model replies.
                     }
                     
                     // MF-001: Un-hide DM if new message arrives

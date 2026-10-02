@@ -62,12 +62,20 @@ final class VoiceCapture {
             if audio.echoAllowed { try? audio.fallBackToPlainMic() }
             guard audio.mode == .conversation else { throw CaptureError.failed("Couldn't start the microphone.") }
         }
-        if await micDelivers() { return }
+        if await micDelivers() { return try releaseIfCancelled() }
         if audio.echoCancelling {
             try? audio.fallBackToPlainMic()
-            if await micDelivers() { return }
+            if await micDelivers() { return try releaseIfCancelled() }
         }
+        try releaseIfCancelled()
         throw CaptureError.failed("Microphone not responding. Close and reopen Talk.")
+    }
+
+    /// If the screen was closed while the mic was starting, don't leave it running.
+    private func releaseIfCancelled() throws {
+        guard Task.isCancelled else { return }
+        audio.stop()
+        throw CancellationError()
     }
 
     /// True once mic frames arrive (waits up to ~1.2 s).

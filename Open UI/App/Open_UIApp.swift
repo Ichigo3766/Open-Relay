@@ -175,6 +175,10 @@ struct Open_UIApp: App {
                         // number stuck on the icon until the user tapped a notification.
                         NotificationService.shared.clearBadge()
 
+                        // Mark server activity the user can now see as seen, so a later
+                        // background check doesn't notify about it.
+                        ExternalActivityNotifier.shared.catchUpOnForeground()
+
                         // Notify connection monitor that the app is in the foreground.
                         // This triggers an immediate health check + socket reconnect,
                         // cancelling any pending backoff timer so recovery is instant.
@@ -500,6 +504,19 @@ struct Open_UIApp: App {
                 }
             }
 
+        case "channel", "channels":
+            // openui://channel/{channelId}  (also openui://channels/{id}, matching the
+            // web app's /channels/{id} path). Used by Home Assistant notifications etc.
+            let channelId = url.pathComponents.last ?? ""
+            if Self.isValidDeepLinkId(channelId) {
+                dismissAllOverlays()
+                // Delay matches the chat link so .onReceive handlers are registered.
+                // If the main view isn't mounted yet, it picks the request up on appear.
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                    dependencies.requestOpenChannel(channelId)
+                }
+            }
+
         case "note":
             // openui://note/{noteId}
             // FIX: Validate note ID format before navigating.
@@ -594,6 +611,12 @@ struct Open_UIApp: App {
     }
 
     // MARK: - Overlay Dismissal
+
+    /// Validates an ID taken from a deep link path (8–128 chars of letters, digits, `-`, `_`).
+    static func isValidDeepLinkId(_ id: String) -> Bool {
+        !id.isEmpty && id != "/" && id.count >= 8 && id.count <= 128
+            && id.allSatisfy({ $0.isLetter || $0.isNumber || $0 == "-" || $0 == "_" })
+    }
 
     /// Dismisses all presented overlays (camera, file picker, voice call, sheets, etc.)
     /// before starting a new quick action so they don't stack on top of each other.

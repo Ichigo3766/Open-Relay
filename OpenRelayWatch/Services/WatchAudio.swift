@@ -28,6 +28,8 @@ final class WatchAudio {
 
     var engine: AVAudioEngine?
     var player: AVAudioPlayerNode?
+    /// A mic tap is installed on the engine's input node.
+    private var tapInstalled = false
     var generation = 0
     var converters: [String: AVAudioConverter] = [:]
     var idleStop: Task<Void, Never>?
@@ -61,32 +63,73 @@ final class WatchAudio {
     private init() {
         // Older builds saved "echo cancellation broken" permanently — clear it.
         UserDefaults.standard.removeObject(forKey: "watch.echoCancellationBroken")
+        // The engine stops itself when the audio route or hardware format changes.
+        // Restart it so the mic keeps delivering and playback never runs on a
+        // stopped engine (playing a node on a stopped engine crashes).
+        configObserver = NotificationCenter.default.addObserver(
+            forName: .AVAudioEngineConfigurationChange, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.engineConfigurationChanged() }
+        }
+    }
+
+    private var configObserver: NSObjectProtocol?
+
+    private func engineConfigurationChanged() {
+        guard let engine, !engine.isRunning else { return }
+        do {
+            engine.prepare()
+            try engine.start()
+            if pendingBuffers > 0, let player, !player.isPlaying { player.play() }
+        } catch {
+            stop()
+        }
     }
 
     func startConversation(useEcho: Bool? = nil) throws {
         idleStop?.cancel()
         guard mode != .conversation else { return }
         stop()
-        let wantEcho = useEcho ?? echoAllowed
+        do {
+            try configureConversation(wantEcho: useEcho ?? echoAllowed)
+        } catch {
+            // Never leave a half-built engine (or an open mic) behind.
+            stop()
+            throw error
+        }
+    }
+
+    private func configureConversation(wantEcho: Bool) throws {
         let session = AVAudioSession.sharedInstance()
         try session.setCategory(.playAndRecord, mode: wantEcho ? .voiceChat : .default, options: [])
         try session.setActive(true)
         let engine = AVAudioEngine()
         let input = engine.inputNode
         echoCancelling = wantEcho && (try? input.setVoiceProcessingEnabled(true)) != nil
+        // A mic that isn't available has no format; tapping it would raise an
+        // Objective-C exception (an instant crash), so refuse early.
         let format = input.outputFormat(forBus: 0)
         guard format.sampleRate > 0, format.channelCount > 0 else {
             throw NSError(domain: "WatchAudio", code: 1, userInfo: [NSLocalizedDescriptionKey: "Microphone unavailable"])
         }
-        // Build the output graph first, then tap the input. Changing the
-        // graph after the tap is installed can leave the tap without audio.
-        try attachPlayer(to: engine)
-        let tap = mic
-        tap.attach(inputFormat: format)
-        input.installTap(onBus: 0, bufferSize: 1024, format: format) { buffer, _ in tap.receive(buffer) }
-        if !engine.isRunning { try engine.start() }
+        // Build the output graph first, then tap the input, then start.
+        // The tap uses the input's own format (nil): starting the engine or
+        // switching echo cancellation can change the hardware format, and a
+        // tap installed with a stale format crashes.
+        try attachPlayer(to: engine, start: false)
+        mic.attach()
+        Self.installMicTap(on: input, tap: mic)
+        tapInstalled = true
+        engine.prepare()
+        try engine.start()
         mode = .conversation
         if echoCancelling { input.isVoiceProcessingInputMuted = isMuted }
+    }
+
+    /// Installed from a non-isolated context: the tap block runs on the
+    /// audio thread, never on the main actor.
+    private nonisolated static func installMicTap(on input: AVAudioInputNode, tap: MicTap) {
+        input.installTap(onBus: 0, bufferSize: 1024, format: nil) { buffer, _ in tap.receive(buffer) }
     }
 
     /// Restarts the mic without echo cancellation (and remembers that).
@@ -116,27 +159,32 @@ final class WatchAudio {
     func stop() {
         idleStop?.cancel()
         stopPlayback()
+        let hadEngine = engine != nil
         if let engine {
-            if mode == .conversation { engine.inputNode.removeTap(onBus: 0) }
+            if tapInstalled { engine.inputNode.removeTap(onBus: 0) }
             engine.stop()
         }
+        tapInstalled = false
         engine = nil
         player = nil
         echoCancelling = false
         mic.detach()
-        if mode != .off {
+        if mode != .off || hadEngine {
             try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
         }
         mode = .off
     }
 
-    private func attachPlayer(to engine: AVAudioEngine) throws {
+    private func attachPlayer(to engine: AVAudioEngine, start: Bool = true) throws {
         let player = AVAudioPlayerNode()
         engine.attach(player)
         engine.connect(player, to: engine.mainMixerNode, format: playFormat)
-        engine.prepare()
-        try engine.start()
+        // Keep a reference first so `stop()` can clean up if starting fails.
         self.engine = engine
         self.player = player
+        if start {
+            engine.prepare()
+            try engine.start()
+        }
     }
 }

@@ -406,6 +406,24 @@ final class AppDependencyContainer: ServiceContainer {
     /// the flag is toggled back to `false` between two rapid deep-link invocations.
     var pendingAutoSendVersion: Int = 0
 
+    /// A channel requested via `openui://channel/{id}` (or a channel notification tap)
+    /// that hasn't been opened yet. Lets a link that cold-launches the app still land
+    /// in the channel once MainChatView / iPadMainChatView mount. Consumed once.
+    var pendingChannelId: String?
+
+    /// Requests that the main view open `channelId`. Works whether the main view
+    /// is already on screen (instant) or still mounting (picked up on appear).
+    func requestOpenChannel(_ channelId: String) {
+        pendingChannelId = channelId
+        NotificationCenter.default.post(name: .navigateToChannel, object: channelId)
+    }
+
+    /// Returns and clears the pending channel request, if any.
+    func consumePendingChannel() -> String? {
+        defer { pendingChannelId = nil }
+        return pendingChannelId
+    }
+
     init() {
         Self.migrateLegacySTTEngineKeyIfNeeded()
         VoiceCallSettings.migrateLegacyKeysIfNeeded()
@@ -426,6 +444,8 @@ final class AppDependencyContainer: ServiceContainer {
         authViewModel.dependencies = self
         // The Apple Watch relay reads auth state from here (read-only).
         WatchRelayService.shared.dependencies = self
+        // Channel / external-chat notifications read the API client from here.
+        ExternalActivityNotifier.shared.dependencies = self
         // Models load on-demand when first needed — no startup preloading
         startConnectionMonitor()
     }
@@ -475,6 +495,7 @@ final class AppDependencyContainer: ServiceContainer {
 
         guard let config = serverConfigStore.activeServer else {
             apiClient = nil
+            ExternalActivityNotifier.shared.attach(to: nil)
             socketService?.dispose()
             socketService = nil
             conversationManager = nil
@@ -577,6 +598,9 @@ final class AppDependencyContainer: ServiceContainer {
 
         let token = KeychainService.shared.getToken(forServer: config.url)
         socketService = SocketIOService(serverConfig: config, authToken: token)
+
+        // Notifications for channel posts / chats that didn't start on this device.
+        ExternalActivityNotifier.shared.attach(to: socketService)
 
         // Wire socket state to the dependency container's observable property
         wireSocketStateTracking()

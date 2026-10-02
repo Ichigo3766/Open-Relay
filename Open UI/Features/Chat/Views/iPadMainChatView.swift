@@ -2,24 +2,39 @@ import SwiftUI
 
 // MARK: - iPad Main Chat View
 //
-// Supports two layout modes controlled by the "ipad_sidebar_always_shown" AppStorage key:
+// Built on a native `NavigationSplitView` (sidebar + chat) with the terminal file
+// browser as a native trailing `.inspector`. Two sidebar modes, controlled by the
+// "ipad_sidebar_always_shown" AppStorage key:
 //
-// • Auto-hide (default): iPhone-style slide-out drawer — identical push/scale/blur
-//   behaviour to MainChatView. The sidebar slides in from the left and pushes the
-//   content card right, with scale/blur/corner-radius animation.
+// • Auto-hide (default): `.prominentDetail` — the sidebar slides over the chat
+//   (hamburger, swipe right, or ⌘⌃S) and dismisses on selection or a tap outside.
 //
-// • Always shown: Split-view layout — sidebar is a fixed left column (drawerWidth)
-//   and the chat content fills the remaining space. No overlay, no push animation.
-//   The hamburger button in ChatDetailView is hidden since there's no drawer to open.
+// • Always shown: `.balanced` — the sidebar is a persistent column beside the chat.
+//   The hamburger collapses/expands it.
+//
+// Column animations are performed by UIKit, so the chat is laid out at its final
+// width once rather than re-flowing every frame (no stutter on large iPads).
 //
 // The preference is toggled from Settings → Appearance (iPad only) and persists
 // across app restarts via AppStorage.
+
+/// Applies the split-view style for the current sidebar mode.
+private struct iPadSplitStyleModifier: ViewModifier {
+    let alwaysShown: Bool
+
+    func body(content: Content) -> some View {
+        if alwaysShown {
+            content.navigationSplitViewStyle(.balanced)
+        } else {
+            content.navigationSplitViewStyle(.prominentDetail)
+        }
+    }
+}
 
 struct iPadMainChatView: View {
     @Environment(AppDependencyContainer.self) private var dependencies
     @Environment(AppRouter.self) private var router
     @Environment(\.theme) private var theme
-    @Environment(\.displayScale) private var displayScale
     @Environment(\.colorScheme) private var systemColorScheme
     @Environment(\.scenePhase) private var scenePhase
 
@@ -59,18 +74,17 @@ struct iPadMainChatView: View {
     /// Controls the My Defaults sheet presentation.
     @State private var showUserSettings = false
 
-    /// Controls the drawer visibility (mirrors MainChatView).
-    @State private var showDrawer = false
+    /// Sidebar column visibility for the native `NavigationSplitView`.
+    /// Always-shown mode starts with the sidebar open; auto-hide starts closed.
+    @State private var columnVisibility: NavigationSplitViewVisibility =
+        UserDefaults.standard.bool(forKey: "ipad_sidebar_always_shown") ? .all : .detailOnly
 
-    /// Live drag offset for interactive drawer sliding.
-    @State private var dragOffset: CGFloat = 0
+    /// Latches once a swipe-to-open-sidebar gesture has fired, so a single drag
+    /// opens the sidebar exactly once.
+    @State private var sidebarSwipeTriggered = false
 
-    /// Whether a drawer drag is in progress (prevents animation fighting).
-    @State private var isDraggingDrawer = false
-
-    /// Cached container width from GeometryReader (avoids deprecated UIScreen.main).
-    @State private var containerWidth: CGFloat = 768
-    @State private var containerSafeAreaInsets = EdgeInsets()
+    /// Same latch for the trailing-edge swipe that opens the terminal panel.
+    @State private var terminalSwipeTriggered = false
 
     /// Whether socket reconnect handler has been registered.
     @State private var hasRegisteredSocketHandlers = false
@@ -139,7 +153,8 @@ struct iPadMainChatView: View {
     @State private var terminalBrowserVM = TerminalBrowserViewModel()
 
     /// Whether the terminal file browser panel is visible (independent of terminal being enabled).
-    @State private var showTerminalBrowser: Bool = true
+    /// Opens automatically when the terminal is turned on (see `terminalConfigKey`).
+    @State private var showTerminalBrowser: Bool = false
 
     // MARK: - Sidebar Layout Preference (iPad-only)
 
@@ -147,41 +162,17 @@ struct iPadMainChatView: View {
     /// Persisted via AppStorage so the preference survives app restarts.
     @AppStorage("ipad_sidebar_always_shown") private var sidebarAlwaysShown: Bool = false
 
-    /// In always-shown mode, tracks whether the user has the sidebar column visible.
-    /// Starts open but can be collapsed/expanded independently of the setting.
-    @State private var splitSidebarVisible: Bool = true
+    /// Distance (pt) a swipe must travel before it opens the sidebar / terminal panel.
+    private let panelSwipeThreshold: CGFloat = 48
 
-    /// Live drag offset for the terminal browser trailing-edge swipe in always-shown mode.
-    @State private var terminalDragOffset: CGFloat = 0
-    /// Whether a terminal drag is in progress in always-shown mode.
-    @State private var isDraggingTerminal: Bool = false
+    /// Whether the sidebar column is currently on screen.
+    private var isSidebarVisible: Bool { columnVisibility != .detailOnly }
 
-    // MARK: - Drawer Geometry (mirrors MainChatView)
-
-    /// Drawer width — wider on iPad for comfortable reading (capped at 360pt).
-    private var drawerWidth: CGFloat {
-        min(containerWidth * 0.40, 360)
-    }
-
-    /// Effective drawer X offset (0 = fully open, -drawerWidth = fully closed).
-    private var effectiveDrawerX: CGFloat {
-        let base: CGFloat = showDrawer ? 0 : -drawerWidth
-        let combined = base + dragOffset
-        return min(0, max(-drawerWidth, combined))
-    }
-
-    /// Open fraction 0→1 — drives push animation on main content.
-    private var drawerFraction: CGFloat {
-        let fraction = (effectiveDrawerX + drawerWidth) / drawerWidth
-        return min(1, max(0, fraction))
-    }
-
-    /// How far the main content card is pushed right.
-    private var mainContentOffset: CGFloat { drawerFraction * drawerWidth }
-
-    private var usesPageCardSidebar: Bool {
-        if #available(iOS 26.0, *) { return true }
-        return false
+    /// Identifies the terminal context of the visible chat so the panel can react
+    /// to chat switches and terminal on/off toggles in a single, ordered handler.
+    private struct TerminalContextKey: Equatable {
+        let chatId: String?
+        let isActive: Bool
     }
 
     // MARK: - Body
@@ -189,16 +180,6 @@ struct iPadMainChatView: View {
     var body: some View {
         @Bindable var bindableRouter = router
         rootLayout(voiceCallBinding: $bindableRouter.isVoiceCallPresented)
-            .onGeometryChange(for: EdgeInsets.self) { proxy in
-                proxy.safeAreaInsets
-            } action: { containerSafeAreaInsets = $0 }
-            .onGeometryChange(for: CGFloat.self) { proxy in
-                proxy.size.width
-            } action: { newWidth in
-                if abs(containerWidth - newWidth) > 1 {
-                    containerWidth = newWidth
-                }
-            }
             .applySheets(
             showSettings: $showSettings,
             showNotes: $showNotes,
@@ -252,11 +233,37 @@ struct iPadMainChatView: View {
             showExportShareSheet: $showExportShareSheet,
             onSocketSetup: { registerSocketReconnectHandler() }
         )
-        // Reset drag state on background (prevents stale offset blocking hits on foreground)
+        // Reset swipe latches on foreground (prevents a stale latch blocking the next swipe)
         .onChange(of: scenePhase) { _, newPhase in
             if newPhase == .active {
-                dragOffset = 0
-                isDraggingDrawer = false
+                sidebarSwipeTriggered = false
+                terminalSwipeTriggered = false
+            }
+        }
+        // Switching layout mode in Settings: show the column for always-shown, hide for auto-hide.
+        .onChange(of: sidebarAlwaysShown) { _, alwaysShown in
+            columnVisibility = alwaysShown ? .all : .detailOnly
+        }
+        // Refresh sidebar lists whenever it is revealed (button, swipe, or keyboard shortcut).
+        .onChange(of: isSidebarVisible) { _, visible in
+            guard visible else { return }
+            refreshSidebarLists()
+        }
+        // Terminal panel follows the chat: closes + resets on chat switch, opens when the
+        // terminal is turned on and closes when it is turned off (mirrors MainChatView).
+        .onChange(of: TerminalContextKey(chatId: activeConversationId,
+                                         isActive: isTerminalActiveInCurrentChat)) { old, new in
+            if old.chatId != new.chatId {
+                var txn = Transaction()
+                txn.disablesAnimations = true
+                withTransaction(txn) { showTerminalBrowser = false }
+                terminalBrowserVM.reset()
+                return
+            }
+            if new.isActive && !old.isActive {
+                openTerminalBrowser()
+            } else if !new.isActive && old.isActive {
+                closeTerminalBrowser()
             }
         }
         // Terminal WebSocket lifecycle — disconnect on background, reconnect on foreground
@@ -284,14 +291,17 @@ struct iPadMainChatView: View {
             await channelListVM.loadChannels()
             // Wire up channel notification tap → navigate to that channel
             NotificationService.shared.onOpenChannel = { channelId in
-                NotificationCenter.default.post(name: .navigateToChannel, object: channelId)
+                dependencies.requestOpenChannel(channelId)
+            }
+            // openui://channel/{id} that launched the app before this view mounted.
+            if let channelId = dependencies.consumePendingChannel() {
+                openChannelFromLink(channelId)
             }
         }
         .onReceive(NotificationCenter.default.publisher(for: .navigateToChannel)) { notification in
             if let channelId = notification.object as? String {
-                activeChannelId = channelId
-                activeConversationId = nil
-                Haptics.play(.light)
+                _ = dependencies.consumePendingChannel()
+                openChannelFromLink(channelId)
             }
         }
         .onReceive(NotificationCenter.default.publisher(for: .openUINewChatWithFocus)) { _ in
@@ -440,283 +450,31 @@ struct iPadMainChatView: View {
         }
     }
 
-    // MARK: - Root Layout — branches between always-shown split and auto-hide drawer
+    // MARK: - Root Layout — native split view (both sidebar modes)
+    //
+    // Both layout modes use one `NavigationSplitView`; only the style and the
+    // initial column visibility differ:
+    //  • Always shown → `.balanced`: the sidebar sits beside the chat.
+    //  • Auto-hide    → `.prominentDetail`: the sidebar slides over the chat and
+    //    dismisses on selection or a tap outside.
+    // Column animations are driven by UIKit (UISplitViewController), so the chat
+    // is laid out once at its final width instead of re-flowing every frame.
+    // The terminal file browser is a native trailing inspector column.
 
     @ViewBuilder
     private func rootLayout(voiceCallBinding: Binding<Bool>) -> some View {
-        if sidebarAlwaysShown {
-            alwaysShownSplitLayout(voiceCallBinding: voiceCallBinding)
-        } else {
-            mainZStack(voiceCallBinding: voiceCallBinding)
-        }
-    }
-
-    // MARK: - Always-Shown Split Layout
-
-    /// Persistent split layout: collapsible sidebar column on the left, chat detail fills the rest.
-    /// The terminal browser overlays from the trailing edge (same as auto-hide mode).
-    /// The sidebar can be hidden/shown by the user independently of the always-shown setting.
-    @ViewBuilder
-    private func alwaysShownSplitLayout(voiceCallBinding: Binding<Bool>) -> some View {
-        ZStack(alignment: .leading) {
-            HStack(spacing: 0) {
-                // Sidebar column — animated in/out
-                if splitSidebarVisible {
-                    NavigationStack {
-                        drawerPanel
-                    }
-                    .frame(width: drawerWidth)
-                    .overlay(alignment: .trailing) {
-                        Rectangle()
-                            .fill(theme.textTertiary.opacity(0.15))
-                            .frame(width: 0.5)
-                            .ignoresSafeArea()
-                    }
-                    .transition(.move(edge: .leading))
-                }
-
-                // Chat/channel detail with terminal overlay
-                ZStack(alignment: .trailing) {
-                    NavigationStack {
-                        chatDetailContent
-                            .navigationBarTitleDisplayMode(.inline)
-                            .toolbarBackground(.hidden, for: .navigationBar)
-                    }
-                    .ignoresSafeArea(.keyboard, edges: .bottom)
-                    .frame(maxWidth: .infinity)
-
-                    // Terminal browser — slide-in overlay from trailing edge
-                    if isTerminalActiveInCurrentChat && showTerminalBrowser {
-                        HStack(spacing: 0) {
-                            Spacer()
-                            TerminalBrowserView(
-                                viewModel: terminalBrowserVM,
-                                onDismiss: {
-                                    withAnimation(MicroAnimation.panelClose) {
-                                        showTerminalBrowser = false
-                                        terminalDragOffset = 0
-                                    }
-                                    terminalBrowserVM.handlePanelClosed()
-                                }
-                            )
-                            .frame(width: terminalPanelWidth)
-                            .background(theme.background)
-                            .shadow(color: .black.opacity(0.12), radius: 16, x: -4)
-                            .offset(x: max(0, terminalDragOffset))
-                            .gesture(
-                                DragGesture(minimumDistance: 12, coordinateSpace: .local)
-                                    .onChanged { value in
-                                        let h = value.translation.width
-                                        guard h > 0 else { return }
-                                        isDraggingTerminal = true
-                                        terminalDragOffset = h
-                                    }
-                                    .onEnded { value in
-                                        guard isDraggingTerminal else { return }
-                                        isDraggingTerminal = false
-                                        let h = value.translation.width
-                                        let v = value.velocity.width
-                                        if h > 100 || v > 400 {
-                                            withAnimation(MicroAnimation.panelClose) {
-                                                showTerminalBrowser = false
-                                                terminalDragOffset = 0
-                                            }
-                                            terminalBrowserVM.handlePanelClosed()
-                                        } else {
-                                            withAnimation(MicroAnimation.panelClose) {
-                                                terminalDragOffset = 0
-                                            }
-                                        }
-                                    }
-                            )
-                            .onAppear {
-                                configureTerminalBrowserIfNeeded()
-                                terminalBrowserVM.handlePanelOpened()
-                                terminalBrowserVM.refresh()
-                            }
-                        }
-                        .transition(.move(edge: .trailing))
-                        .ignoresSafeArea(.keyboard)
-                    }
-
-                    // Right-edge strip — swipe left-to-right to open terminal (when terminal active and panel hidden)
-                    if isTerminalActiveInCurrentChat && !showTerminalBrowser {
-                        Color.clear
-                            .frame(width: 44)
-                            .frame(maxHeight: .infinity)
-                            .contentShape(Rectangle())
-                            .gesture(
-                                DragGesture(minimumDistance: 8, coordinateSpace: .local)
-                                    .onChanged { value in
-                                        let h = value.translation.width
-                                        let v = abs(value.translation.height)
-                                        guard abs(h) > v, h < 0 else { return }
-                                        isDraggingTerminal = true
-                                        terminalDragOffset = terminalPanelWidth + h // start off-screen, slide in
-                                    }
-                                    .onEnded { value in
-                                        guard isDraggingTerminal else { return }
-                                        isDraggingTerminal = false
-                                        let h = value.translation.width
-                                        let vel = value.velocity.width
-                                        if h < -60 || vel < -300 {
-                                            withAnimation(MicroAnimation.panelOpen) {
-                                                showTerminalBrowser = true
-                                                terminalDragOffset = 0
-                                            }
-                                            configureTerminalBrowserIfNeeded()
-                                            terminalBrowserVM.handlePanelOpened()
-                                            terminalBrowserVM.refresh()
-                                            Haptics.play(.light)
-                                        } else {
-                                            withAnimation(MicroAnimation.panelClose) {
-                                                terminalDragOffset = 0
-                                            }
-                                        }
-                                    }
-                            )
-                            .frame(maxWidth: .infinity, alignment: .trailing)
-                    }
-                }
+        ZStack {
+            NavigationSplitView(columnVisibility: $columnVisibility) {
+                drawerPanel
+                    .navigationSplitViewColumnWidth(min: 300, ideal: 340, max: 400)
+                    .toolbar(removing: .sidebarToggle)
+                    .background(theme.sidebarBackground.ignoresSafeArea())
+            } detail: {
+                detailColumn
             }
-            .animation(MicroAnimation.panelOpen, value: splitSidebarVisible)
+            .modifier(iPadSplitStyleModifier(alwaysShown: sidebarAlwaysShown))
 
-        }
-        // When switching TO always-shown, make sure the drawer state is clean
-        .onAppear {
-            showDrawer = false
-            dragOffset = 0
-            isDraggingDrawer = false
-            terminalDragOffset = 0
-            isDraggingTerminal = false
-        }
-    }
-
-    // MARK: - Main ZStack (auto-hide drawer layout — mirrors MainChatView)
-
-    @ViewBuilder
-    private func mainZStack(voiceCallBinding: Binding<Bool>) -> some View {
-        ZStack(alignment: .leading) {
-            // MARK: Main content — pushed right as drawer opens
-            NavigationStack {
-                detailContent(voiceCallBinding: voiceCallBinding)
-                    .navigationBarTitleDisplayMode(.inline)
-                    .toolbarBackground(.hidden, for: .navigationBar)
-            }
-            .gesture(SidebarOpeningGesture(
-                isEnabled: !showDrawer,
-                onChanged: { horizontal in
-                    if !isDraggingDrawer {
-                        UIApplication.shared.sendAction(
-                            #selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
-                    }
-                    isDraggingDrawer = true
-                    dragOffset = horizontal
-                },
-                onEnded: { horizontal, velocity, cancelled in
-                    isDraggingDrawer = false
-                    if !cancelled && (horizontal > drawerWidth * 0.05 || velocity > 200) {
-                        openDrawerAnimated()
-                    } else {
-                        closeDrawerAnimated()
-                    }
-                }
-            ))
-            .ignoresSafeArea(.keyboard, edges: .bottom)
-            // Include the window edges in the mask without moving safe-area content.
-            .padding(.leading, usesPageCardSidebar ? containerSafeAreaInsets.leading : 0)
-            .padding(.trailing, usesPageCardSidebar ? containerSafeAreaInsets.trailing : 0)
-            .background((usesPageCardSidebar ? theme.background : .clear).ignoresSafeArea())
-            .offset(x: usesPageCardSidebar ? 0 : mainContentOffset)
-            .scaleEffect(usesPageCardSidebar ? 1 : 1 - drawerFraction * 0.08)
-            .mask {
-                if #available(iOS 26.0, *) {
-                    ConcentricRectangle(corners: .concentric, isUniform: true)
-                        .ignoresSafeArea()
-                } else {
-                    RoundedRectangle(cornerRadius: drawerFraction * 16, style: .continuous)
-                }
-            }
-            .blur(radius: usesPageCardSidebar ? 0 : drawerFraction * 8)
-            .shadow(color: .black.opacity(0.18 * drawerFraction), radius: 20, x: -4)
-            .overlay {
-                if #available(iOS 26.0, *) {
-                    ConcentricRectangle(corners: .concentric, isUniform: true)
-                        .stroke(theme.isDark ? Color.white.opacity(0.1) : Color.black.opacity(0.08), lineWidth: 1 / displayScale)
-                        .opacity(drawerFraction)
-                        .ignoresSafeArea()
-                        .allowsHitTesting(false)
-                }
-            }
-            .overlay {
-                Color.black
-                    .opacity(usesPageCardSidebar ? 0 : 0.12 * drawerFraction)
-                    .ignoresSafeArea()
-                    .allowsHitTesting(false)
-            }
-            // Tap or swipe-left to close when drawer is open.
-            // Always in the view tree — hit-testing toggled via .allowsHitTesting()
-            // so removal never causes a visual pop/flicker on close.
-            .overlay {
-                let panelActive = drawerFraction > 0.01 || isDraggingDrawer
-                Color.clear
-                    .contentShape(Rectangle())
-                    .allowsHitTesting(panelActive)
-                    .onTapGesture { closeDrawerAnimated() }
-                    .gesture(
-                        DragGesture(minimumDistance: 12, coordinateSpace: .global)
-                            .onChanged { value in
-                                let h = value.translation.width
-                                guard h < 0 else { return }
-                                isDraggingDrawer = true
-                                dragOffset = h
-                            }
-                            .onEnded { value in
-                                guard isDraggingDrawer else { return }
-                                isDraggingDrawer = false
-                                let h = value.translation.width
-                                let v = value.velocity.width
-                                if h < -(drawerWidth * 0.15) || v < -300 {
-                                    closeDrawerAnimated()
-                                } else {
-                                    openDrawerAnimated()
-                                }
-                            }
-                    )
-            }
-
-            .offset(x: usesPageCardSidebar ? mainContentOffset : 0)
-            .ignoresSafeArea(.container, edges: usesPageCardSidebar ? .horizontal : [])
-
-            // MARK: Drawer panel
-            drawerPanel
-                .frame(width: drawerWidth)
-                .offset(x: usesPageCardSidebar ? 0 : effectiveDrawerX)
-                .zIndex(usesPageCardSidebar ? -1 : 0)
-                .allowsHitTesting(drawerFraction > 0.01)
-                .accessibilityHidden(drawerFraction < 0.01)
-                .gesture(
-                    DragGesture(minimumDistance: 12, coordinateSpace: .global)
-                        .onChanged { value in
-                            let h = value.translation.width
-                            guard h < 0 else { return }
-                            isDraggingDrawer = true
-                            dragOffset = h
-                        }
-                        .onEnded { value in
-                            guard isDraggingDrawer else { return }
-                            isDraggingDrawer = false
-                            let h = value.translation.width
-                            let v = value.velocity.width
-                            if h < -(drawerWidth * 0.15) || v < -300 {
-                                closeDrawerAnimated()
-                            } else {
-                                openDrawerAnimated()
-                            }
-                        }
-                )
-
-            // ── Layer 4: AnimatedPhotoPicker at window level ──────────────────
+            // ── AnimatedPhotoPicker at window level ──────────────────────────
             AnimatedPhotoPicker(
                 isPresented: showAnimatedPhotoPicker,
                 onConfirm: { assets in
@@ -732,14 +490,92 @@ struct iPadMainChatView: View {
                 }
             )
         }
-        .background((usesPageCardSidebar ? theme.sidebarBackground : .clear).ignoresSafeArea())
+    }
+
+    // MARK: - Detail Column
+
+    /// Chat/channel detail plus the terminal inspector. The view structure is the
+    /// same whether or not the terminal is active, so toggling the terminal never
+    /// rebuilds the chat (which previously caused composer taps to hitch).
+    private var detailColumn: some View {
+        NavigationStack {
+            chatDetailContent
+                .disabled(showNotes)
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbarBackground(.hidden, for: .navigationBar)
+        }
+        // The split view already sizes this column to the space above the keyboard,
+        // so the chat respects the keyboard safe area normally (as on iPhone): the
+        // composer sits on the keyboard and the top bar stays put. Ignoring the
+        // keyboard here made the chat taller than its column, which centred it and
+        // pushed the top bar down.
+        // Swipe right anywhere (that isn't a control, message, or scrollable code) → sidebar.
+        .gesture(sidebarSwipeGesture)
+        // Swipe left from the trailing edge → terminal file browser.
+        .gesture(terminalSwipeGesture)
+        .inspector(isPresented: terminalInspectorBinding) {
+            TerminalBrowserView(
+                viewModel: terminalBrowserVM,
+                onDismiss: { closeTerminalBrowser() }
+            )
+            .background(theme.background.ignoresSafeArea())
+            .inspectorColumnWidth(min: 320, ideal: terminalPanelWidth, max: 480)
+        }
+    }
+
+    /// Presented only while the current chat has an active terminal.
+    private var terminalInspectorBinding: Binding<Bool> {
+        Binding(
+            get: { showTerminalBrowser && isTerminalActiveInCurrentChat },
+            set: { isPresented in
+                if !isPresented && showTerminalBrowser { closeTerminalBrowser() }
+            }
+        )
+    }
+
+    /// Direction-locked pan that opens the sidebar. Yields to controls, text
+    /// selection, message swipe-to-reply, and horizontally scrollable content.
+    private var sidebarSwipeGesture: SidebarOpeningGesture {
+        SidebarOpeningGesture(
+            isEnabled: !isSidebarVisible,
+            onChanged: { horizontal in
+                guard !sidebarSwipeTriggered, horizontal > panelSwipeThreshold else { return }
+                sidebarSwipeTriggered = true
+                showSidebar()
+            },
+            onEnded: { horizontal, velocity, cancelled in
+                defer { sidebarSwipeTriggered = false }
+                guard !cancelled, !sidebarSwipeTriggered, horizontal > 12, velocity > 300 else { return }
+                showSidebar()
+            }
+        )
+    }
+
+    /// Trailing-edge pan that opens the terminal panel (only when the terminal is on).
+    private var terminalSwipeGesture: SidebarOpeningGesture {
+        SidebarOpeningGesture(
+            isEnabled: isTerminalActiveInCurrentChat && !showTerminalBrowser,
+            direction: .leftward,
+            edgeWidth: 32,
+            onChanged: { horizontal in
+                guard !terminalSwipeTriggered, horizontal < -panelSwipeThreshold else { return }
+                terminalSwipeTriggered = true
+                openTerminalBrowser()
+            },
+            onEnded: { horizontal, velocity, cancelled in
+                defer { terminalSwipeTriggered = false }
+                guard !cancelled, !terminalSwipeTriggered, horizontal < -12, velocity < -300 else { return }
+                openTerminalBrowser()
+            }
+        )
     }
 
     // MARK: - Drawer Panel
 
     private var drawerPanel: some View {
         iPadSidebarContent(
-            showsTrailingDivider: sidebarAlwaysShown || !usesPageCardSidebar,
+            // NavigationSplitView draws its own column separator.
+            showsTrailingDivider: false,
             listViewModel: listViewModel,
             channelListVM: channelListVM,
             activeConversationId: $activeConversationId,
@@ -766,13 +602,13 @@ struct iPadMainChatView: View {
             onSearch: { showLibrarySearch = true },
             onNewChat: {
                 startNewChat()
-                if !sidebarAlwaysShown { closeDrawerAnimated() }
+                dismissSidebarIfOverlay()
             },
             onSelectFolder: openFolder,
             onExport: { conv, format in Task { await exportChat(conv, format: format) } },
             onShowArchivedChats: { showArchivedChats = true },
             onShowSharedChats: { showSharedChats = true },
-            onCloseDrawer: sidebarAlwaysShown ? nil : { closeDrawerAnimated() }
+            onCloseDrawer: sidebarAlwaysShown ? nil : { dismissSidebarIfOverlay() }
         )
     }
 
@@ -782,7 +618,7 @@ struct iPadMainChatView: View {
         activeFolderWorkspaceId = nil
         activeFolderForWorkspace = nil
         SharedDataService.shared.saveLastActiveConversationId(id)
-        if !sidebarAlwaysShown { closeDrawerAnimated() }
+        dismissSidebarIfOverlay()
     }
 
     private func openFolder(_ folderId: String) {
@@ -835,108 +671,88 @@ struct iPadMainChatView: View {
                 activeFolderForWorkspace = merged
             }
         }
-        if !sidebarAlwaysShown { closeDrawerAnimated() }
+        dismissSidebarIfOverlay()
     }
 
-    // MARK: - Drawer Animations
+    // MARK: - Sidebar Visibility
 
-    private func openDrawerAnimated() {
-        withAnimation(MicroAnimation.panelOpen) {
-            showDrawer = true
-            dragOffset = 0
-        }
+    /// Shows the sidebar column (both modes) and refreshes its lists via `onChange(of: isSidebarVisible)`.
+    private func showSidebar() {
+        guard !isSidebarVisible else { return }
+        // Dismiss the keyboard first so its slide-out doesn't re-layout the chat mid-animation.
+        UIApplication.shared.sendAction(
+            #selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
+        withAnimation(MicroAnimation.panelOpen) { columnVisibility = .all }
         Haptics.play(.light)
     }
 
-    private func closeDrawerAnimated() {
-        UIApplication.shared.sendAction(
-            #selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
-        withAnimation(MicroAnimation.panelClose) {
-            showDrawer = false
-            dragOffset = 0
-        }
+    /// Hides the sidebar column (both modes).
+    private func hideSidebar() {
+        guard isSidebarVisible else { return }
+        withAnimation(MicroAnimation.panelClose) { columnVisibility = .detailOnly }
         Haptics.play(.soft)
+    }
+
+    /// Hamburger action: toggles the sidebar column.
+    private func toggleSidebar() {
+        if isSidebarVisible { hideSidebar() } else { showSidebar() }
+    }
+
+    /// Auto-hide mode: the overlay sidebar dismisses after a selection.
+    /// Always-shown mode keeps the column in place.
+    private func dismissSidebarIfOverlay() {
+        guard !sidebarAlwaysShown else { return }
+        hideSidebar()
+    }
+
+    /// Refreshes everything the sidebar shows (mirrors MainChatView.openDrawerAnimated).
+    private func refreshSidebarLists() {
+        let chatVM = dependencies.activeChatStore.viewModel(for: activeConversationId)
+        let lvm = listViewModel
+        let cvm = channelListVM
+        Task {
+            await withTaskGroup(of: Void.self) { group in
+                group.addTask { await lvm.refreshConversations() }
+                group.addTask { await lvm.folderViewModel.refreshFolders() }
+                group.addTask { await cvm.refreshChannels() }
+                group.addTask { await chatVM.fetchPinnedModels() }
+            }
+        }
+    }
+
+    // MARK: - Terminal Panel
+
+    /// Opens the terminal file browser inspector (configures + loads the listing).
+    private func openTerminalBrowser() {
+        guard isTerminalActiveInCurrentChat, !showTerminalBrowser else { return }
+        configureTerminalBrowserIfNeeded()
+        withAnimation(MicroAnimation.panelOpen) { showTerminalBrowser = true }
+        terminalBrowserVM.handlePanelOpened()
+        terminalBrowserVM.refresh()
+        Haptics.play(.light)
+    }
+
+    /// Closes the terminal file browser inspector and disconnects its socket.
+    private func closeTerminalBrowser() {
+        guard showTerminalBrowser else { return }
+        withAnimation(MicroAnimation.panelClose) { showTerminalBrowser = false }
+        terminalBrowserVM.handlePanelClosed()
+    }
+
+    private func toggleTerminalBrowser() {
+        if showTerminalBrowser { closeTerminalBrowser() } else { openTerminalBrowser() }
     }
 
     // MARK: - Detail
 
     @ViewBuilder
-    private func detailContent(voiceCallBinding: Binding<Bool>) -> some View {
-        if isTerminalActiveInCurrentChat {
-            // Three-column layout: chat + terminal browser side by side
-            HStack(spacing: 0) {
-                chatDetailContent
-                    .disabled(showNotes)
-                    .frame(maxWidth: .infinity)
-
-                if showTerminalBrowser {
-                    Divider()
-
-                    TerminalBrowserView(
-                        viewModel: terminalBrowserVM,
-                        onDismiss: {
-                        withAnimation(MicroAnimation.panelClose) {
-                            showTerminalBrowser = false
-                        }
-                        terminalBrowserVM.handlePanelClosed()
-                        }
-                    )
-                    .frame(width: terminalPanelWidth)
-                    .background(theme.background)
-                    .transition(.move(edge: .trailing))
-                    .onAppear {
-                        configureTerminalBrowserIfNeeded()
-                        terminalBrowserVM.handlePanelOpened()
-                        terminalBrowserVM.refresh()
-                    }
-                }
-            }
-            // ChatDetailView handles its own keyboard via KeyboardTracker.
-            // TerminalBrowserView is a fixed side column — no keyboard adjustment needed.
-            .ignoresSafeArea(.keyboard)
-            .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button {
-                        withAnimation(showTerminalBrowser ? MicroAnimation.panelClose : MicroAnimation.panelOpen) {
-                            if showTerminalBrowser {
-                                showTerminalBrowser = false
-                                terminalBrowserVM.handlePanelClosed()
-                            } else {
-                                configureTerminalBrowserIfNeeded()
-                                showTerminalBrowser = true
-                                terminalBrowserVM.handlePanelOpened()
-                                terminalBrowserVM.refresh()
-                            }
-                        }
-                        Haptics.play(.light)
-                    } label: {
-                        Image(systemName: "sidebar.right")
-                            .scaledFont(size: 14, weight: .medium)
-                            .foregroundStyle(showTerminalBrowser ? theme.brandPrimary : theme.textSecondary)
-                            .symbolVariant(showTerminalBrowser ? .fill : .none)
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel(showTerminalBrowser ? "Hide Files" : "Show Files")
-                }
-            }
-        } else {
-            chatDetailContent
-                .disabled(showNotes)
-        }
-    }
-
-    @ViewBuilder
     private var chatDetailContent: some View {
-        // In auto-hide mode: hamburger opens the drawer.
-        // In always-shown mode: hamburger toggles the sidebar column (hide/show).
-        let toggleDrawerAction: () -> Void = sidebarAlwaysShown
-            ? {
-                withAnimation(splitSidebarVisible ? MicroAnimation.panelClose : MicroAnimation.panelOpen) {
-                    splitSidebarVisible.toggle()
-                }
-                Haptics.play(.light)
-            }
-            : { openDrawerAnimated() }
+        // Hamburger toggles the sidebar column in both modes (auto-hide: overlay,
+        // always shown: side-by-side column).
+        let toggleDrawerAction: () -> Void = { toggleSidebar() }
+        // Files button in the chat top bar + "Browse Files" in the composer terminal menu.
+        let terminalActive = isTerminalActiveInCurrentChat
+        let filesState = ChatDetailView.FilesButtonState(isVisible: terminalActive, isOpen: showTerminalBrowser)
 
         if let channelId = activeChannelId {
             ChannelDetailView(channelId: channelId, channelListVM: channelListVM)
@@ -958,6 +774,8 @@ struct iPadMainChatView: View {
             .onDeleteChat { startNewChat() }
             .onNewChat { startNewChat() }
             .onToggleDrawer(toggleDrawerAction)
+            .onOpenFileBrowser { openTerminalBrowser() }
+            .filesButton(filesState) { toggleTerminalBrowser() }
             .onPhotoPickerRequest { showAnimatedPhotoPicker = true }
             .id(conversationId)
         } else if let folderWorkspaceId = activeFolderWorkspaceId {
@@ -967,6 +785,8 @@ struct iPadMainChatView: View {
             ChatDetailView(viewModel: vm, folderWorkspace: folder)
                 .onNewChat { startNewChat() }
                 .onToggleDrawer(toggleDrawerAction)
+                .onOpenFileBrowser { openTerminalBrowser() }
+                .filesButton(filesState) { toggleTerminalBrowser() }
                 .onPhotoPickerRequest { showAnimatedPhotoPicker = true }
                 .id("folder-workspace-\(folderWorkspaceId)-\(newChatGeneration)")
                 .onAppear {
@@ -981,22 +801,11 @@ struct iPadMainChatView: View {
             ChatDetailView(viewModel: dependencies.activeChatStore.viewModel(for: nil))
                 .onNewChat { startNewChat() }
                 .onToggleDrawer(toggleDrawerAction)
+                .onOpenFileBrowser { openTerminalBrowser() }
+                .filesButton(filesState) { toggleTerminalBrowser() }
                 .onPhotoPickerRequest { showAnimatedPhotoPicker = true }
                 .id("new-chat-\(newChatGeneration)")
         }
-    }
-
-    /// Hamburger button that opens the sidebar drawer — placed in each detail view's toolbar.
-    private var sidebarButton: some View {
-        Button {
-            openDrawerAnimated()
-        } label: {
-            Image(systemName: "sidebar.left")
-                .scaledFont(size: 14, weight: .medium)
-                .foregroundStyle(theme.textSecondary)
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel("Open Sidebar")
     }
 
     // MARK: - Overlays
@@ -1074,8 +883,7 @@ struct iPadMainChatView: View {
         guard (vm.conversationId ?? vm.conversation?.id) == chatId, isTerminalActiveInCurrentChat else { return }
         configureTerminalBrowserIfNeeded()
         if type == "terminal:display_file" && !showTerminalBrowser {
-            withAnimation(MicroAnimation.panelOpen) { showTerminalBrowser = true }
-            terminalBrowserVM.handlePanelOpened()
+            openTerminalBrowser()
         }
         terminalBrowserVM.handleChatEvent(type: type, path: note.userInfo?["path"] as? String)
     }
@@ -1089,6 +897,18 @@ struct iPadMainChatView: View {
     }
 
     // MARK: - Actions
+
+    /// Opens a channel requested by a deep link (`openui://channel/{id}`) or a
+    /// channel notification tap. Mirrors `MainChatView.openChannelFromLink`.
+    private func openChannelFromLink(_ channelId: String) {
+        showNotes = false
+        activeFolderWorkspaceId = nil
+        activeFolderForWorkspace = nil
+        activeConversationId = nil
+        activeChannelId = channelId
+        dismissSidebarIfOverlay()
+        Haptics.play(.light)
+    }
 
     private func startNewChat() {
         let currentNewVM = dependencies.activeChatStore.viewModel(for: nil)
@@ -1119,8 +939,9 @@ struct iPadMainChatView: View {
         // Clear the persisted last-active conversation so a cold launch after
         // this explicit new-chat navigation does not restore the old chat.
         SharedDataService.shared.saveLastActiveConversationId(nil)
+        // Reset the terminal panel so the fresh chat starts clean (mirrors MainChatView).
+        withTransaction(txn) { showTerminalBrowser = false }
         terminalBrowserVM.reset()
-        showTerminalBrowser = true
         Haptics.play(.light)
     }
 
@@ -1350,8 +1171,8 @@ struct iPadSidebarContent: View {
         // keyboard safe area so the sidebar layout doesn't shift when a
         // floating keyboard appears/disappears or changes size on iPad.
         .ignoresSafeArea(.keyboard)
-        .navigationTitle("Chats")
-        .navigationBarTitleDisplayMode(.inline)
+        // No system title bar: the header row below matches the iPhone drawer.
+        .toolbar(.hidden, for: .navigationBar)
         // Bridge folderVM.showCreateSheet → showCreateFolderSheet (mirrors MainChatView)
         .onChange(of: listViewModel.folderViewModel.showCreateSheet) { _, show in
             if show {
@@ -1359,185 +1180,114 @@ struct iPadSidebarContent: View {
                 showCreateFolderSheet = true
             }
         }
-        .toolbar {
-            ToolbarItem(placement: .topBarLeading) {
-                if listViewModel.isSelectionMode {
-                    Button {
-                        withAnimation(.easeInOut(duration: 0.2)) {
-                            listViewModel.exitSelectionMode()
-                        }
-                    } label: {
-                        Label("Cancel", systemImage: "xmark")
-                    }
-                    .labelStyle(.iconOnly)
-                    .tint(.secondary)
-                } else {
-                    Menu {
-                        if !listViewModel.conversations.isEmpty {
-                            Button {
-                                withAnimation(.easeInOut(duration: 0.2)) {
-                                    listViewModel.toggleSelectionMode()
-                                }
-                            } label: {
-                                Label("Select Chats", systemImage: "checkmark.circle")
-                            }
-                            Button {
-                                listViewModel.showArchiveAllConfirmation = true
-                            } label: {
-                                Label("Archive All", systemImage: "archivebox")
-                            }
-                            Button(role: .destructive) {
-                                showDeleteAllConfirmation = true
-                            } label: {
-                                Label("Delete All", systemImage: "trash")
-                            }
-                        }
-
-                        Divider()
-
-                        Button {
-                            onShowArchivedChats?()
-                        } label: {
-                            Label("Archived Chats", systemImage: "archivebox")
-                        }
-
-                        Button {
-                            onShowSharedChats?()
-                        } label: {
-                            Label("Shared Chats", systemImage: "link.circle")
-                        }
-                    } label: {
-                        Image(systemName: "ellipsis.circle")
-                            .scaledFont(size: 15, weight: .medium, context: .list)
-                            .foregroundStyle(theme.textSecondary)
-                    }
-                }
-            }
-        }
-        .toolbarBackground(.hidden, for: .navigationBar)
     }
 
-    // MARK: - Sidebar Header (New Elegant Design)
+    // MARK: - Sidebar Header (matches the iPhone drawer header)
 
     private var sidebarHeader: some View {
         VStack(spacing: 0) {
-            // Top row: avatar/name + action buttons
+            // Action row: server icon (left), chat-management menu + search (right)
             HStack(spacing: 8) {
-                // User avatar — tap → Settings, long-press → Account Picker
-                ZStack(alignment: .bottomTrailing) {
-                    UserAvatar(
-                        size: 34,
-                        imageURL: {
-                            guard let userId = dependencies.authViewModel.currentUser?.id,
-                                  let baseURL = dependencies.apiClient?.baseURL,
-                                  !userId.isEmpty, !baseURL.isEmpty else { return nil }
-                            let v = dependencies.authViewModel.profileImageVersion
-                            return URL(string: "\(baseURL)/api/v1/users/\(userId)/profile/image?v=\(v)")
-                        }(),
-                        name: dependencies.authViewModel.currentUser?.displayName ?? "User",
-                        authToken: dependencies.apiClient?.network.authToken,
-                        dataURIString: dependencies.authViewModel.currentUser?.profileImageURL
-                    )
-                    Circle()
-                        .fill(Color.green)
-                        .frame(width: 9, height: 9)
-                        .overlay(Circle().stroke(theme.sidebarBackground, lineWidth: 1.5))
-                        .offset(x: 2, y: 2)
-                }
-                .contentShape(Rectangle())
-                .onLongPressGesture(minimumDuration: 0.5) {
-                    Haptics.play(.medium)
-                    dependencies.authViewModel.showAccountPicker = true
-                }
-                .simultaneousGesture(TapGesture().onEnded {
+                // Server favicon — tapping opens Settings
+                Button {
                     showSettings = true
-                })
-
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(dependencies.authViewModel.currentUser?.displayName ?? "User")
-                        .scaledFont(size: 14, weight: .semibold)
-                        .foregroundStyle(theme.textPrimary)
-                        .lineLimit(1)
-                    if let serverName = dependencies.apiClient?.baseURL
-                        .replacingOccurrences(of: "https://", with: "")
-                        .replacingOccurrences(of: "http://", with: "")
-                        .components(separatedBy: "/").first {
-                        Text(serverName)
-                            .scaledFont(size: 10)
-                            .foregroundStyle(theme.textTertiary)
-                            .lineLimit(1)
-                    }
+                } label: {
+                    serverFaviconView
                 }
-                .contentShape(Rectangle())
-                .onTapGesture { showSettings = true }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Server Settings")
 
                 Spacer()
 
+                // Chat management menu (select, archive, delete, archived/shared chats)
+                Menu {
+                    if !listViewModel.conversations.isEmpty {
+                        Button {
+                            withAnimation(.easeInOut(duration: 0.2)) { listViewModel.toggleSelectionMode() }
+                        } label: {
+                            Label("Select Chats", systemImage: "checkmark.circle")
+                        }
+                        Button {
+                            listViewModel.showArchiveAllConfirmation = true
+                        } label: {
+                            Label("Archive All", systemImage: "archivebox")
+                        }
+                        Button(role: .destructive) {
+                            showDeleteAllConfirmation = true
+                        } label: {
+                            Label("Delete All", systemImage: "trash")
+                        }
+                        Divider()
+                    }
+                    Button {
+                        onShowArchivedChats?()
+                    } label: {
+                        Label("Archived Chats", systemImage: "archivebox")
+                    }
+                    Button {
+                        onShowSharedChats?()
+                    } label: {
+                        Label("Shared Chats", systemImage: "link.circle")
+                    }
+                } label: {
+                    Image(systemName: "line.3.horizontal.decrease")
+                        .scaledFont(size: 16, weight: .medium)
+                        .foregroundStyle(theme.textSecondary)
+                        .frame(width: 36, height: 36)
+                        .contentShape(Rectangle())
+                }
+                .accessibilityLabel("Chat actions")
+
                 Button(action: onSearch) {
                     Image(systemName: "magnifyingglass")
-                        .scaledFont(size: 14, weight: .semibold)
-                        .foregroundStyle(theme.brandPrimary)
-                        .frame(width: 32, height: 32)
-                        .background(theme.brandPrimary.opacity(0.1))
-                        .clipShape(Circle())
+                        .scaledFont(size: 16, weight: .medium)
+                        .foregroundStyle(theme.textSecondary)
+                        .frame(width: 36, height: 36)
+                        .contentShape(Rectangle())
                 }
                 .accessibilityLabel("Search library")
                 .disabled(dependencies.apiClient == nil)
-
-                // More menu
-                Menu {
-                    if dependencies.authViewModel.featurePermissions.memories {
-                        Button { showMemories = true } label: {
-                            Label("Memories", systemImage: "brain.head.profile")
-                        }
-                    }
-                    if dependencies.authViewModel.hasAnyWorkspaceAccess {
-                        Button { showWorkspace = true } label: {
-                            Label("Workspace", systemImage: "square.grid.2x2")
-                        }
-                    }
-                    if dependencies.authViewModel.featurePermissions.notes
-                        && (dependencies.authViewModel.backendConfig?.features?.enableNotes ?? true) {
-                        Button { showNotes = true } label: {
-                            Label("Notes", systemImage: "note.text")
-                        }
-                    }
-                    if dependencies.authViewModel.featurePermissions.calendar {
-                        Button { showCalendar = true } label: {
-                            Label("Calendar", systemImage: "calendar")
-                        }
-                    }
-                    if dependencies.authViewModel.featurePermissions.automations
-                        && (dependencies.authViewModel.backendConfig?.features?.enableAutomations ?? true) {
-                        Button { showAutomations = true } label: {
-                            Label("Automations", systemImage: "clock.arrow.circlepath")
-                        }
-                    }
-                    Button { showUserSettings = true } label: {
-                        Label("My Defaults", systemImage: "slider.horizontal.3")
-                    }
-                    Divider()
-                    Button { showSettings = true } label: {
-                        Label("Settings", systemImage: "gearshape")
-                    }
-                    if dependencies.authViewModel.currentUser?.role == .admin {
-                        Button { showAdminConsole = true } label: {
-                            Label("Admin Console", systemImage: "shield.lefthalf.filled")
-                        }
-                    }
-                } label: {
-                    Image(systemName: "ellipsis")
-                        .scaledFont(size: 12, weight: .semibold)
-                        .foregroundStyle(theme.textSecondary)
-                        .frame(width: 32, height: 32)
-                        .background(theme.surfaceContainer)
-                        .clipShape(Circle())
-                }
             }
             .padding(.horizontal, Spacing.md)
-            .padding(.top, Spacing.md)
-            .padding(.bottom, 10)
+            .frame(height: 40)
+            .padding(.top, Spacing.sm)
+            .padding(.bottom, 8)
         }
+    }
+
+    // MARK: - Server Favicon View
+
+    @ViewBuilder
+    private var serverFaviconView: some View {
+        let baseURL = dependencies.apiClient?.baseURL ?? ""
+
+        Group {
+            if !baseURL.isEmpty,
+               let faviconURL = URL(string: "\(baseURL)/favicon.ico") {
+                AsyncImage(url: faviconURL) { phase in
+                    switch phase {
+                    case .success(let image):
+                        image
+                            .resizable()
+                            .scaledToFill()
+                    default:
+                        Image("AppIconImage")
+                            .resizable()
+                            .scaledToFill()
+                    }
+                }
+            } else {
+                Image("AppIconImage")
+                    .resizable()
+                    .scaledToFill()
+            }
+        }
+        .frame(width: 28, height: 28)
+        .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                .strokeBorder(theme.isDark ? Color.white.opacity(0.1) : Color.black.opacity(0.08), lineWidth: 0.5)
+        )
     }
 
     // MARK: - Sidebar Divider
@@ -1550,16 +1300,68 @@ struct iPadSidebarContent: View {
             .padding(.vertical, 6)
     }
 
+    // MARK: - Section Label (same as the iPhone drawer's `drawerSectionLabel`)
+
+    @ViewBuilder
+    private func drawerSectionLabel(
+        title: String,
+        icon: String,
+        isExpanded: Bool,
+        tintOverride: Color? = nil,
+        trailingButton: (() -> AnyView)? = nil
+    ) -> some View {
+        let labelColor = tintOverride ?? theme.textTertiary
+        HStack(spacing: 6) {
+            Image(systemName: "chevron.down")
+                .scaledFont(size: 9, weight: .bold, context: .list)
+                .foregroundStyle(labelColor)
+                .rotationEffect(.degrees(isExpanded ? 0 : -90))
+                .animation(MicroAnimation.snappy, value: isExpanded)
+
+            Image(systemName: icon)
+                .scaledFont(size: 10, weight: .semibold, context: .list)
+                .foregroundStyle(labelColor)
+
+            Text(title)
+                .scaledFont(size: 11, weight: .bold, context: .list)
+                .foregroundStyle(labelColor)
+                .textCase(.uppercase)
+                .tracking(0.6)
+
+            Spacer()
+
+            if let trailingButton {
+                trailingButton()
+            }
+        }
+        .padding(.horizontal, Spacing.md)
+        .padding(.vertical, Spacing.sm)
+        .contentShape(Rectangle())
+    }
+
     // MARK: - Selection Mode Header
 
     private var selectionModeHeader: some View {
         HStack(spacing: Spacing.sm) {
+            Button {
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    listViewModel.exitSelectionMode()
+                }
+            } label: {
+                Text("Cancel")
+                    .scaledFont(size: 16, context: .list)
+                    .foregroundStyle(theme.brandPrimary)
+            }
+
             Spacer()
+
             Text("\(listViewModel.selectedCount) selected")
                 .scaledFont(size: 14, weight: .medium, context: .list)
                 .fontWeight(.semibold)
                 .foregroundStyle(theme.textPrimary)
+
             Spacer()
+
             Button {
                 if listViewModel.selectedCount == listViewModel.filteredConversations.count {
                     listViewModel.selectedConversationIds.removeAll()
@@ -1575,9 +1377,11 @@ struct iPadSidebarContent: View {
         }
         .padding(.horizontal, Spacing.md)
         .padding(.vertical, Spacing.sm)
-        .background(theme.surfaceContainer.opacity(0.4))
-        .padding(.top, Spacing.sm)
-        .padding(.bottom, Spacing.xs)
+        .background(theme.surfaceContainer.opacity(0.5))
+        .clipShape(RoundedRectangle(cornerRadius: CornerRadius.md, style: .continuous))
+        .padding(.horizontal, Spacing.md)
+        .padding(.top, Spacing.md)
+        .padding(.bottom, Spacing.sm)
     }
 
     // MARK: - Pinned Models Section
@@ -1604,26 +1408,7 @@ struct iPadSidebarContent: View {
                     }
                     Haptics.play(.light)
                 } label: {
-                    HStack(spacing: 6) {
-                        Image(systemName: "chevron.down")
-                            .scaledFont(size: 8, weight: .bold, context: .list)
-                            .foregroundStyle(theme.textTertiary)
-                            .rotationEffect(.degrees(modelsExpanded ? 0 : -90))
-                            .animation(MicroAnimation.snappy, value: modelsExpanded)
-                        Image(systemName: "cpu")
-                            .scaledFont(size: 9, weight: .semibold, context: .list)
-                            .foregroundStyle(theme.textTertiary)
-                        Text("Models")
-                            .scaledFont(size: 12, weight: .medium, context: .list)
-                            .fontWeight(.bold)
-                            .foregroundStyle(theme.textTertiary)
-                            .textCase(.uppercase)
-                            .tracking(0.5)
-                        Spacer()
-                    }
-                    .padding(.horizontal, Spacing.md)
-                    .padding(.vertical, Spacing.sm)
-                    .contentShape(Rectangle())
+                    drawerSectionLabel(title: "Models", icon: "cpu", isExpanded: modelsExpanded)
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("Models")
@@ -1708,7 +1493,7 @@ struct iPadSidebarContent: View {
                         .animation(MicroAnimation.snappy, value: foldersExpanded)
 
                     Image(systemName: "folder")
-                        .scaledFont(size: 9, weight: .semibold, context: .list)
+                        .scaledFont(size: 10, weight: .semibold, context: .list)
                         .foregroundStyle(theme.textTertiary)
                     Text("Folders")
                         .scaledFont(size: 12, weight: .medium, context: .list)
@@ -1725,8 +1510,7 @@ struct iPadSidebarContent: View {
                     .buttonStyle(.plain)
                 }
                 .padding(.horizontal, Spacing.md)
-                .padding(.top, Spacing.sm)
-                .padding(.bottom, Spacing.xs)
+                .padding(.vertical, Spacing.sm)
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
@@ -1843,7 +1627,7 @@ struct iPadSidebarContent: View {
                         .animation(MicroAnimation.snappy, value: sharedFoldersExpanded)
 
                     Image(systemName: "person.2.fill")
-                        .scaledFont(size: 9, weight: .semibold, context: .list)
+                        .scaledFont(size: 10, weight: .semibold, context: .list)
                         .foregroundStyle(theme.textTertiary)
 
                     Text("Shared with Me")
@@ -1967,33 +1751,26 @@ struct iPadSidebarContent: View {
                 }
                 Haptics.play(.light)
             } label: {
-                HStack(spacing: 6) {
-                    Image(systemName: "chevron.down")
-                        .scaledFont(size: 8, weight: .bold, context: .list)
-                        .foregroundStyle(theme.textTertiary)
-                        .rotationEffect(.degrees(channelsExpanded ? 0 : -90))
-                        .animation(MicroAnimation.snappy, value: channelsExpanded)
-
-                    Image(systemName: "bubble.left.and.bubble.right")
-                        .scaledFont(size: 9, weight: .semibold, context: .list)
-                        .foregroundStyle(theme.textTertiary)
-                    Text("Channels")
-                        .scaledFont(size: 12, weight: .medium, context: .list)
-                        .fontWeight(.bold)
-                        .foregroundStyle(theme.textTertiary)
-                        .textCase(.uppercase)
-                        .tracking(0.5)
-                    Spacer()
-                    Button { showCreateChannel = true } label: {
-                        Image(systemName: "plus.bubble")
-                            .scaledFont(size: 13, context: .list)
-                            .foregroundStyle(theme.textTertiary)
+                drawerSectionLabel(
+                    title: "Channels",
+                    icon: "bubble.left.and.bubble.right",
+                    isExpanded: channelsExpanded,
+                    trailingButton: {
+                        AnyView(
+                            Button {
+                                showCreateChannel = true
+                            } label: {
+                                Image(systemName: "plus")
+                                    .scaledFont(size: 11, weight: .semibold, context: .list)
+                                    .foregroundStyle(theme.textTertiary)
+                                    .frame(width: 22, height: 22)
+                                    .background(theme.surfaceContainer)
+                                    .clipShape(Circle())
+                            }
+                            .buttonStyle(.plain)
+                        )
                     }
-                    .buttonStyle(.plain)
-                }
-                .padding(.horizontal, Spacing.md)
-                .padding(.vertical, Spacing.sm)
-                .contentShape(Rectangle())
+                )
             }
             .buttonStyle(.plain)
 
@@ -2066,6 +1843,12 @@ struct iPadSidebarContent: View {
         }
         .buttonStyle(.plain)
         .contextMenu {
+            Button {
+                UIPasteboard.general.string = "openui://channel/\(channel.id)"
+                Haptics.play(.light)
+            } label: {
+                Label("Copy Channel Link", systemImage: "link")
+            }
             if channel.type == .dm {
                 Button {
                     channelListVM.hideDM(channelId: channel.id)
@@ -2097,34 +1880,12 @@ struct iPadSidebarContent: View {
                 }
                 Haptics.play(.light)
             } label: {
-                HStack(spacing: 6) {
-                    Image(systemName: "chevron.down")
-                        .scaledFont(size: 8, weight: .bold, context: .list)
-                        .foregroundStyle(drawerChatsDropActive ? theme.brandPrimary : theme.textTertiary)
-                        .rotationEffect(.degrees(chatsExpanded ? 0 : -90))
-                        .animation(MicroAnimation.snappy, value: chatsExpanded)
-
-                    Image(systemName: "bubble.left.and.text.bubble.right")
-                        .scaledFont(size: 9, weight: .semibold, context: .list)
-                        .foregroundStyle(drawerChatsDropActive ? theme.brandPrimary : theme.textTertiary)
-                    Text("Chats")
-                        .scaledFont(size: 12, weight: .medium, context: .list)
-                        .fontWeight(.bold)
-                        .foregroundStyle(drawerChatsDropActive ? theme.brandPrimary : theme.textTertiary)
-                        .textCase(.uppercase)
-                        .tracking(0.5)
-                    if drawerChatsDropActive {
-                        Text("Drop here")
-                            .scaledFont(size: 12, weight: .medium, context: .list)
-                            .foregroundStyle(theme.brandPrimary)
-                            .transition(.opacity)
-                    }
-                    Spacer()
-                }
-                .padding(.horizontal, Spacing.md)
-                .padding(.top, Spacing.sm)
-                .padding(.bottom, Spacing.xs)
-                .contentShape(Rectangle())
+                drawerSectionLabel(
+                    title: drawerChatsDropActive ? "Drop here" : "Chats",
+                    icon: "bubble.left.and.text.bubble.right",
+                    isExpanded: chatsExpanded,
+                    tintOverride: drawerChatsDropActive ? theme.brandPrimary : nil
+                )
             }
             .buttonStyle(.plain)
 
@@ -2261,7 +2022,7 @@ struct iPadSidebarContent: View {
                         Spacer()
                     }
                     .padding(.horizontal, Spacing.md)
-                    .padding(.vertical, 8)
+                    .padding(.vertical, 7)
                     .background(listViewModel.isSelected(conversation.id)
                         ? theme.brandPrimary.opacity(0.1) : Color.clear)
                     .clipShape(RoundedRectangle(cornerRadius: CornerRadius.sm, style: .continuous))
@@ -2301,10 +2062,10 @@ struct iPadSidebarContent: View {
                         )
                     }
                     .padding(.horizontal, Spacing.md)
-                    .padding(.vertical, 8)
+                    .padding(.vertical, 7)
                     .background(
                         isActive
-                            ? theme.brandPrimary.opacity(0.1)
+                            ? theme.brandPrimary.opacity(0.08)
                             : Color.clear
                     )
                     .clipShape(RoundedRectangle(cornerRadius: CornerRadius.sm, style: .continuous))
@@ -2421,10 +2182,10 @@ struct iPadSidebarContent: View {
 
             HStack(spacing: Spacing.sm) {
                 // Real user avatar + full name — tap → Settings, long-press → Account Picker
-                HStack(spacing: 8) {
+                HStack(spacing: 10) {
                     ZStack(alignment: .bottomTrailing) {
                         UserAvatar(
-                            size: 30,
+                            size: 32,
                             imageURL: {
                                 guard let userId = dependencies.authViewModel.currentUser?.id,
                                       let baseURL = dependencies.apiClient?.baseURL,
@@ -2439,7 +2200,7 @@ struct iPadSidebarContent: View {
 
                     }
                     Text(dependencies.authViewModel.currentUser?.displayName ?? "User")
-                        .scaledFont(size: 13, weight: .medium)
+                        .scaledFont(size: 14, weight: .medium)
                         .foregroundStyle(theme.textPrimary)
                         .lineLimit(1)
                 }
@@ -2461,17 +2222,17 @@ struct iPadSidebarContent: View {
                     } label: {
                         ZStack(alignment: .topTrailing) {
                             Image(systemName: "arrow.down.circle.fill")
-                                .scaledFont(size: 15, weight: .medium)
+                                .scaledFont(size: 16, weight: .medium)
                                 .foregroundStyle(.tint)
                             // Extra dot badge when both updates are pending
                             if dependencies.updateChecker.pendingUpdate != nil && dependencies.serverUpdateChecker.pendingUpdate != nil {
                                 Circle()
                                     .fill(Color.blue)
-                                    .frame(width: 6, height: 6)
+                                    .frame(width: 7, height: 7)
                                     .offset(x: 2, y: -2)
                             }
                         }
-                        .frame(width: 36, height: 36)
+                        .frame(width: 40, height: 40)
                         .contentShape(Rectangle())
                     }
                     .accessibilityLabel("Update Available")
@@ -2492,9 +2253,9 @@ struct iPadSidebarContent: View {
                 // New Chat — primary action, always visible
                 Button(action: onNewChat) {
                     Image(systemName: "square.and.pencil")
-                        .scaledFont(size: 15, weight: .medium)
+                        .scaledFont(size: 16, weight: .medium)
                         .foregroundStyle(theme.textSecondary)
-                        .frame(width: 36, height: 36)
+                        .frame(width: 40, height: 40)
                         .contentShape(Rectangle())
                 }
                 .accessibilityLabel("New Chat")
@@ -2549,9 +2310,9 @@ struct iPadSidebarContent: View {
                     }
                 } label: {
                     Image(systemName: "ellipsis.circle")
-                        .scaledFont(size: 17, weight: .medium)
+                        .scaledFont(size: 18, weight: .medium)
                         .foregroundStyle(theme.textSecondary)
-                        .frame(width: 36, height: 36)
+                        .frame(width: 40, height: 40)
                         .contentShape(Rectangle())
                 }
             }
@@ -2575,18 +2336,14 @@ private struct iPadConversationTrailingIndicator: View {
     }
 
     var body: some View {
+        // Same as the iPhone drawer: a spinner while streaming, nothing otherwise
+        // (the row's highlight already marks the open chat).
         if isStreaming {
             ProgressView()
                 .controlSize(.mini)
                 .tint(tint)
                 .transition(.opacity.combined(with: .scale))
                 .animation(.easeInOut(duration: 0.2), value: isStreaming)
-        } else {
-            // Always render Circle to avoid layout shifts on insertion/removal
-            Circle()
-                .fill(tint)
-                .frame(width: 6, height: 6)
-                .opacity(isActive ? 1 : 0)
         }
     }
 }

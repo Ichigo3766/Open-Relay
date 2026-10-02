@@ -125,6 +125,9 @@ struct TalkView: View {
                 send(typed: text)
             }
             .accessibilityLabel("Type")
+            // Free the mic before the system keyboard / dictation sheet opens,
+            // so the two never fight over the microphone.
+            .simultaneousGesture(TapGesture().onEnded { pauseForInput() })
 
             Button(role: .destructive) { dismiss() } label: {
                 Image(systemName: "xmark")
@@ -188,8 +191,11 @@ struct TalkView: View {
         paused = false
         idleTimer?.cancel()
         loop = Task {
-            // Start the echo-cancelled engine first so the reply can be interrupted.
-            try? await capture.prepare()
+            // Only open the mic now if the reply can be interrupted by speaking;
+            // otherwise the reply just needs audio output (the mic starts when
+            // listening resumes).
+            if store.interruptBySpeaking { try? await capture.prepare() }
+            guard !Task.isCancelled else { return }
             turn.ask(trimmed, modelId: store.effectiveModelId, speak: true, voice: true)
             let interrupted = await waitForReply()
             await runLoop(startInterrupted: interrupted)
@@ -201,6 +207,14 @@ struct TalkView: View {
         paused = false
         idleTimer?.cancel()
         loop = Task { await runLoop() }
+    }
+
+    /// The keyboard / dictation sheet is about to open: stop listening and
+    /// release the microphone and audio session.
+    func pauseForInput() {
+        stopAll()
+        WatchAudio.shared.stop()
+        goIdle("Tap the orb to talk")
     }
 
     /// Nothing happening: show a hint, release the mic after 30 s.

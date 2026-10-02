@@ -1182,7 +1182,11 @@ struct MainChatView: View {
                 registerSocketReconnectHandler()
                 // Wire up channel notification tap → navigate to that channel
                 NotificationService.shared.onOpenChannel = { channelId in
-                    NotificationCenter.default.post(name: .navigateToChannel, object: channelId)
+                    dependencies.requestOpenChannel(channelId)
+                }
+                // openui://channel/{id} that launched the app before this view mounted.
+                if let channelId = dependencies.consumePendingChannel() {
+                    openChannelFromLink(channelId)
                 }
             }
             .onChange(of: scenePhase) { oldPhase, newPhase in
@@ -1264,9 +1268,8 @@ struct MainChatView: View {
             }
             .onReceive(NotificationCenter.default.publisher(for: .navigateToChannel)) { notification in
                 if let channelId = notification.object as? String {
-                    activeChannelId = channelId
-                    activeConversationId = nil
-                    Haptics.play(.light)
+                    _ = dependencies.consumePendingChannel()
+                    openChannelFromLink(channelId)
                 }
             }
             .onReceive(NotificationCenter.default.publisher(for: .openUIDismissOverlays)) { _ in
@@ -1541,6 +1544,19 @@ struct MainChatView: View {
     }
 
     // MARK: - New Chat
+
+    /// Opens a channel requested by a deep link (`openui://channel/{id}`) or a
+    /// channel notification tap. Mirrors `iPadMainChatView.openChannelFromLink`.
+    private func openChannelFromLink(_ channelId: String) {
+        showNotes = false
+        showChannels = false
+        activeFolderWorkspaceId = nil
+        activeFolderForWorkspace = nil
+        activeConversationId = nil
+        activeChannelId = channelId
+        if showDrawer { closeDrawerAnimated() }
+        Haptics.play(.light)
+    }
 
     private func startNewChat() {
         let currentNewVM = dependencies.activeChatStore.viewModel(for: nil)
@@ -2668,6 +2684,12 @@ struct MainChatView: View {
         }
         .buttonStyle(.plain)
         .contextMenu {
+            Button {
+                UIPasteboard.general.string = "openui://channel/\(channel.id)"
+                Haptics.play(.light)
+            } label: {
+                Label("Copy Channel Link", systemImage: "link")
+            }
             if channel.type == .dm {
                 Button {
                     channelListVM.hideDM(channelId: channel.id)

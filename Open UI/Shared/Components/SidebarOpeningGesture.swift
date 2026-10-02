@@ -3,7 +3,14 @@ import SwiftUI
 
 /// A direction-locked pan that yields to scrolling, selection, and controls.
 struct SidebarOpeningGesture: UIGestureRecognizerRepresentable {
+    /// Which way the finger must travel to begin.
+    enum Direction { case rightward, leftward }
+
     var isEnabled: Bool
+    var direction: Direction = .rightward
+    /// When set, the pan only begins if the touch starts within this many points
+    /// of the edge it moves away from (trailing edge for `.leftward`).
+    var edgeWidth: CGFloat? = nil
     var onChanged: (CGFloat) -> Void
     var onEnded: (CGFloat, CGFloat, Bool) -> Void
 
@@ -17,11 +24,15 @@ struct SidebarOpeningGesture: UIGestureRecognizerRepresentable {
         pan.cancelsTouchesInView = true
         pan.delegate = context.coordinator
         pan.isEnabled = isEnabled
+        context.coordinator.direction = direction
+        context.coordinator.edgeWidth = edgeWidth
         return pan
     }
 
     func updateUIGestureRecognizer(_ pan: UIPanGestureRecognizer, context: Context) {
         pan.isEnabled = isEnabled
+        context.coordinator.direction = direction
+        context.coordinator.edgeWidth = edgeWidth
     }
 
     func handleUIGestureRecognizerAction(_ pan: UIPanGestureRecognizer, context: Context) {
@@ -42,9 +53,16 @@ struct SidebarOpeningGesture: UIGestureRecognizerRepresentable {
 
     final class Coordinator: NSObject, UIGestureRecognizerDelegate {
         private weak var touchedView: UIView?
+        var direction: Direction = .rightward
+        var edgeWidth: CGFloat?
 
         func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
             touchedView = touch.view
+            if let edgeWidth, let host = gestureRecognizer.view {
+                let x = touch.location(in: host).x
+                let fromEdge = direction == .leftward ? host.bounds.width - x : x
+                guard fromEdge <= edgeWidth else { return false }
+            }
             return allowsOpening(from: touch.view)
         }
 
@@ -55,7 +73,8 @@ struct SidebarOpeningGesture: UIGestureRecognizerRepresentable {
                   allowsOpening(from: touchedView) else { return false }
             // Translation is still zero at UIKit's begin decision; velocity is available.
             let velocity = pan.velocity(in: pan.view?.window)
-            return velocity.x > abs(velocity.y) * 1.5
+            let along = direction == .rightward ? velocity.x : -velocity.x
+            return along > abs(velocity.y) * 1.5
         }
 
         // The chat's simultaneous drag observer must not cancel an accepted pan —

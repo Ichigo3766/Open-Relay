@@ -56,6 +56,15 @@ struct PasteableTextView: UIViewRepresentable {
     /// Whether pressing Return sends the message (vs inserting a newline).
     var sendOnReturn: Bool
 
+    /// Called when the text view gains (`true`) or loses (`false`) first responder.
+    /// Lets the composer switch layout from real focus rather than keyboard
+    /// notifications, which iPad doesn't always deliver (floating/split/undocked keyboards).
+    var onFocusChange: ((Bool) -> Void)? = nil
+
+    /// Overrides the default ~8-line height cap (used while the composer is expanded,
+    /// so long drafts fill the taller box instead of scrolling at 8 lines).
+    var maxContentHeight: CGFloat? = nil
+
     func makeCoordinator() -> Coordinator {
         Coordinator(parent: self)
     }
@@ -100,6 +109,7 @@ struct PasteableTextView: UIViewRepresentable {
         textView.placeholderLabel.font = placeholderFont ?? font
         textView.placeholderLabel.textColor = placeholderColor
         textView.placeholderLabel.isHidden = !text.isEmpty
+        textView.maxHeightOverride = maxContentHeight
 
         return textView
     }
@@ -161,7 +171,12 @@ struct PasteableTextView: UIViewRepresentable {
 
         // Recalculate sizing: toggle scroll when content exceeds max height.
         // Skipped while the user is scrolling an unchanged draft so the view stays put.
-        if textChanged || !userIsScrolling {
+        let capChanged = textView.maxHeightOverride != maxContentHeight
+        if capChanged {
+            textView.maxHeightOverride = maxContentHeight
+            textView.lastReportedHeight = -1
+        }
+        if textChanged || capChanged || !userIsScrolling {
             PasteableTextView.recalculateHeight(textView)
         }
 
@@ -248,12 +263,14 @@ struct PasteableTextView: UIViewRepresentable {
             if let ptv = textView as? PasteInterceptingTextView {
                 ptv.placeholderLabel.isHidden = !textView.text.isEmpty
             }
+            parent.onFocusChange?(true)
         }
 
         func textViewDidEndEditing(_ textView: UITextView) {
             if let ptv = textView as? PasteInterceptingTextView {
                 ptv.placeholderLabel.isHidden = !textView.text.isEmpty
             }
+            parent.onFocusChange?(false)
         }
     }
 }
@@ -341,9 +358,12 @@ final class PasteInterceptingTextView: UITextView {
     /// Last height reported via `intrinsicContentSize`, used to skip redundant invalidations.
     var lastReportedHeight: CGFloat = -1
 
-    /// Maximum content height (~8 lines).
+    /// Optional cap supplied by SwiftUI (expanded composer). `nil` = default 8 lines.
+    var maxHeightOverride: CGFloat?
+
+    /// Maximum content height (~8 lines, or the expanded composer height).
     var maxContentHeight: CGFloat {
-        (font?.lineHeight ?? 20) * 8 + textContainerInset.top + textContainerInset.bottom
+        maxHeightOverride ?? (font?.lineHeight ?? 20) * 8 + textContainerInset.top + textContainerInset.bottom
     }
 
     /// Returns intrinsic size capped at maxContentHeight.

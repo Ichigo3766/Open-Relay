@@ -1,5 +1,24 @@
 # Changelog
 
+## v6.2 — October 2, 2026
+
+### What's New
+- Added `openui://channel/{id}` links to open a channel directly from Home Assistant, Shortcuts, or other apps. Long-press a channel in the sidebar and choose Copy Channel Link to get it.
+- Added notifications for new channel posts (including webhooks and automations) and for chats started by automations, the web app, or other devices. They arrive right away while the app is open and are checked in the background otherwise. Turn them on or off in Settings → Notifications.
+
+### Improvements
+- The iPad sidebar now uses the native split view, so opening and closing it is smooth whether it's set to auto-hide or always shown.
+- The terminal key bar above the keyboard is now solid, easy to read, and scrolls smoothly, with larger keys on iPad.
+
+### Bug Fixes
+- Fixed the terminal file browser on iPad not reopening after being closed — use the new Files button in the top bar, swipe in from the right edge, or Browse Files in the terminal menu.
+- Fixed the keyboard covering the terminal on iPad; the shell now stays above the keyboard and expands while you type.
+- Fixed laggy, hard-to-tap buttons in the message box on iPad.
+- Fixed being unable to swipe up to expand the message box on iPad, and text not moving onto its own line while typing. The message box now grows and shrinks with your finger as you swipe.
+- Fixed the Apple Watch app crashing right after tapping Talk or dictating a question.
+- Fixed the Apple Watch microphone staying on after leaving Talk, and typed questions turning it on unnecessarily.
+- Fixed dictation sheets on Apple Watch closing on their own in chats and channels.
+
 ## v6.1.1 — October 1, 2026
 
 ### Improvements

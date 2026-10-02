@@ -53,6 +53,8 @@ struct Channel: Identifiable, Hashable, Sendable {
     var userCount: Int?
     /// When the current user last read this channel.
     var lastReadAt: Date?
+    /// When the most recent top-level message was posted (`last_message_at`).
+    var lastMessageAt: Date?
     /// Member user IDs (group/DM channels).
     var userIds: [String] = []
 
@@ -187,6 +189,7 @@ struct Channel: Identifiable, Hashable, Sendable {
         channel.isManager = json["is_manager"] as? Bool ?? false
         channel.userCount = json["user_count"] as? Int
         channel.lastReadAt = TimestampParser.parseOptional(json["last_read_at"])
+        channel.lastMessageAt = TimestampParser.parseOptional(json["last_message_at"])
         channel.userIds = json["user_ids"] as? [String] ?? []
 
         // Parse inline `users` array from ChannelListItemResponse / ChannelFullResponse.

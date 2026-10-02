@@ -148,12 +148,19 @@ struct ComposerGlassModifier: ViewModifier {
 struct ComposerHitTarget: ViewModifier {
     var slop: CGFloat = 6
 
+    /// iPad: larger touch slop (≈44pt targets for the 26pt composer icons) plus a
+    /// pointer hover effect. iPhone keeps the original slop.
+    private var isPad: Bool { UIDevice.current.userInterfaceIdiom == .pad }
+
     func body(content: Content) -> some View {
+        let effectiveSlop = isPad ? max(slop, 9) : slop
         content
             .contentShape(Circle())
-            .padding(slop)
+            .padding(effectiveSlop)
             .contentShape(Rectangle())
-            .padding(-slop)
+            .contentShape(.hoverEffect, Circle())
+            .hoverEffect(.highlight, isEnabled: isPad)
+            .padding(-effectiveSlop)
     }
 }
 

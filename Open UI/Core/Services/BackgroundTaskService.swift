@@ -53,9 +53,10 @@ final class BackgroundTaskService {
 
     // MARK: - Scheduling Configuration
 
-    /// How often the refresh task should ideally run (30 minutes).
+    /// How often the refresh task should ideally run (15 minutes — the shortest
+    /// interval iOS honours; the system still decides the actual timing).
     /// `earliestBeginDate` is anchored to `lastRun + refreshInterval`, never `now + interval`.
-    private let refreshInterval: TimeInterval = 30 * 60
+    private let refreshInterval: TimeInterval = 15 * 60
 
     /// How often the processing task should ideally run (1 hour).
     private let processingInterval: TimeInterval = 60 * 60
@@ -192,14 +193,12 @@ final class BackgroundTaskService {
 
     // MARK: - Actual Background Work
 
-    /// Lightweight refresh: fetch the first page of conversations to keep badge/list current.
-    /// Must complete in well under 3 seconds to stay within the BGAppRefreshTask budget.
+    /// Background refresh: checks for new channel messages and chats created outside
+    /// this device (automations, web UI, other devices) and posts notifications.
+    /// See `ExternalActivityNotifier.performBackgroundCheck()`.
     private func performRefreshWork() async -> Bool {
-        // For now this is a lightweight no-op — the badge is managed by NotificationService
-        // and the conversation list self-refreshes on foreground return. A future version
-        // could perform a HEAD /api/v1/chats/?page=1 to check for new messages and update
-        // the badge accordingly.
-        logger.info("BGAppRefreshTask: refresh work completed (no-op)")
+        await ExternalActivityNotifier.shared.performBackgroundCheck()
+        logger.info("BGAppRefreshTask: external activity check completed")
         return true
     }
 
