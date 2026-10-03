@@ -80,8 +80,10 @@ protocol AVAudioRecorderDelegate: NSObjectProtocol {}
     final class Network { var authToken: String? = "synthetic-token" }
     let network = Network()
     var calls = 0
+    var response: (() async throws -> [String: Any])?
     func transcribeSpeech(audioData: Data, fileName: String, authorization: String?, timeout: TimeInterval) async throws -> [String: Any] {
         calls += 1
+        if let response { return try await response() }
         throw CocoaError(.fileReadUnknown)
     }
 }
@@ -93,5 +95,41 @@ protocol AVAudioRecorderDelegate: NSObjectProtocol {}
     enum State { case loading, transcribing, ready }
     var state = State.ready
     var isAvailable = true
-    func transcribe(audioData: Data, fileName: String) async throws -> String { throw CocoaError(.fileReadUnknown) }
+    var response: (() async throws -> String)?
+    func transcribe(audioData: Data, fileName: String) async throws -> String {
+        if let response { return try await response() }
+        throw CocoaError(.fileReadUnknown)
+    }
+}
+
+enum ASRError: Error { case backgroundInterrupted }
+struct UIBackgroundTaskIdentifier: Hashable {
+    let rawValue: Int
+    static let invalid = Self(rawValue: -1)
+}
+@MainActor final class UIApplication {
+    enum State { case active, inactive, background }
+    static let shared = UIApplication()
+    nonisolated static let didEnterBackgroundNotification = Notification.Name("SyntheticBackground")
+    nonisolated static let didBecomeActiveNotification = Notification.Name("SyntheticActive")
+    var applicationState = State.active
+    var grantsTime = true
+    var started = 0
+    var ended: [UIBackgroundTaskIdentifier] = []
+    var tasks: [UIBackgroundTaskIdentifier: () -> Void] = [:]
+    func beginBackgroundTask(withName: String, expirationHandler: @escaping () -> Void) -> UIBackgroundTaskIdentifier {
+        guard grantsTime else { return .invalid }
+        started += 1
+        let id = UIBackgroundTaskIdentifier(rawValue: started)
+        tasks[id] = expirationHandler
+        return id
+    }
+    func endBackgroundTask(_ id: UIBackgroundTaskIdentifier) {
+        ended.append(id)
+        tasks.removeValue(forKey: id)
+    }
+    func transition(to state: State) {
+        applicationState = state
+        NotificationCenter.default.post(name: state == .active ? Self.didBecomeActiveNotification : Self.didEnterBackgroundNotification, object: nil)
+    }
 }

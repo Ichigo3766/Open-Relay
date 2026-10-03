@@ -1,5 +1,6 @@
 import Foundation
 import AVFoundation
+import UIKit
 import os.log
 
 // MARK: - DictationState
@@ -80,6 +81,10 @@ final class DictationService: NSObject, AVAudioRecorderDelegate {
     private var recordingSession = UUID()
     private var isCurrentContext: (() -> Bool)?
     private var currentDraft: (() -> String?)?
+    @ObservationIgnored private var lifecycleObservers: [NSObjectProtocol] = []
+    @ObservationIgnored private var transcriptionBackgroundTask: UIBackgroundTaskIdentifier = .invalid
+    private var attemptEnteredBackground = false
+    private var resumeOnForeground: Bool? // Preserve an explicit on-device fallback.
 
     var savedAudioURL: URL? { pendingRecording.map(recoveryStore.audioURL) }
     var showsRecovery: Bool { pendingRecording != nil && state != .listening && state != .requesting }
@@ -91,7 +96,20 @@ final class DictationService: NSObject, AVAudioRecorderDelegate {
     init(recoveryStore: DictationRecoveryStore? = nil) {
         self.recoveryStore = recoveryStore ?? .shared
         super.init()
+        lifecycleObservers = [UIApplication.didEnterBackgroundNotification, UIApplication.didBecomeActiveNotification].map { name in
+            NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                Task { @MainActor [weak self] in
+                    guard let self else { return }
+                    if name == UIApplication.didEnterBackgroundNotification, self.attemptID != nil {
+                        self.attemptEnteredBackground = true
+                    }
+                    self.resumeTranscriptionIfActive()
+                }
+            }
+        }
     }
+
+    deinit { lifecycleObservers.forEach(NotificationCenter.default.removeObserver) }
 
     func bind(to context: DictationContext, isCurrent: @escaping () -> Bool,
               draft: @escaping () -> String?, deliver: @escaping (String) -> Void) {
@@ -216,6 +234,8 @@ final class DictationService: NSObject, AVAudioRecorderDelegate {
     }
 
     func cancelAttempt() {
+        resumeOnForeground = nil
+        endTranscriptionBackgroundTask()
         attemptID = nil
         attemptTask?.cancel()
         // Keep the task until it exits, even if a backend ignores cancellation.
@@ -251,13 +271,36 @@ final class DictationService: NSObject, AVAudioRecorderDelegate {
         let authorization = client?.network.authToken.map { "Bearer " + $0 }
         let localService = onDeviceASRService
         let useDevice = onDevice || pending.engine != "server"
+        // Auto-stop can finish recording while locked; don't start GPU work there.
+        if useDevice, UIApplication.shared.applicationState != .active {
+            resumeOnForeground = true
+            state = .processing
+            return
+        }
         let id = UUID()
         attemptID = id
+        resumeOnForeground = nil
+        attemptEnteredBackground = UIApplication.shared.applicationState != .active
         activeEngine = useDevice ? "device" : "server"
         state = .processing
+        if !useDevice {
+            transcriptionBackgroundTask = UIApplication.shared.beginBackgroundTask(withName: "DictationTranscription") { [weak self] in
+                Task { @MainActor [weak self] in
+                    guard let self, self.attemptID == id else { return }
+                    self.resumeOnForeground = false
+                    self.attemptTask?.cancel()
+                    self.endTranscriptionBackgroundTask()
+                }
+            }
+        }
         attemptTask = Task { [weak self] in
             guard let self else { return }
-            defer { self.attemptTask = nil }
+            defer {
+                self.attemptTask = nil
+                if self.attemptID == id { self.attemptID = nil }
+                self.endTranscriptionBackgroundTask()
+                self.resumeTranscriptionIfActive()
+            }
             do {
                 try Task.checkCancellation()
                 guard self.context == context, isCurrentContext?() == true else {
@@ -295,9 +338,31 @@ final class DictationService: NSObject, AVAudioRecorderDelegate {
                 state = .idle
             } catch {
                 guard attemptID == id, self.context == context, pendingRecording?.id == pending.id else { return }
-                fail(error)
+                let networkError = error as NSError
+                let interruptedConnection = !useDevice && attemptEnteredBackground && networkError.domain == NSURLErrorDomain
+                    && [NSURLErrorNetworkConnectionLost, NSURLErrorTimedOut].contains(networkError.code)
+                if case ASRError.backgroundInterrupted = error {
+                    resumeOnForeground = useDevice
+                } else if interruptedConnection {
+                    resumeOnForeground = false
+                } else if resumeOnForeground == nil {
+                    fail(error)
+                }
             }
         }
+    }
+
+    private func resumeTranscriptionIfActive() {
+        guard let onDevice = resumeOnForeground, attemptTask == nil,
+              UIApplication.shared.applicationState == .active else { return }
+        resumeOnForeground = nil
+        retry(onDevice: onDevice)
+    }
+
+    private func endTranscriptionBackgroundTask() {
+        guard transcriptionBackgroundTask != .invalid else { return }
+        UIApplication.shared.endBackgroundTask(transcriptionBackgroundTask)
+        transcriptionBackgroundTask = .invalid
     }
 
     /// Cancels dictation without producing any transcript.

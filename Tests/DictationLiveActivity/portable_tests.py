@@ -13,6 +13,7 @@ parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("--output", type=Path, required=True)
 parser.add_argument("--without-duration-guard", action="store_true",
                     help="Reproduce the stopped-recorder duration regression")
+parser.add_argument("--revision", help="Use production sources from a Git revision for a negative control")
 args = parser.parse_args()
 output = args.output.resolve()
 root = Path(__file__).resolve().parents[2]
@@ -25,10 +26,12 @@ paths = [
     "Open UI/Core/Services/DictationRecoveryStore.swift",
     "Tests/DictationLiveActivity/PlatformDoubles.swift",
     "Tests/DictationLiveActivity/RecordingTests.swift",
+    "Tests/DictationLiveActivity/TranscriptionTests.swift",
 ]
 for path in paths:
-    source = (root / path).read_text()
-    source = source.replace("import ActivityKit\n", "").replace("import AVFoundation\n", "")
+    source = (subprocess.check_output(["git", "show", f"{args.revision}:{path}"], cwd=root, text=True)
+              if args.revision and path.startswith("Open UI/") else (root / path).read_text())
+    source = source.replace("import ActivityKit\n", "").replace("import AVFoundation\n", "").replace("import UIKit\n", "")
     source = source.replace("[.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication]", "[:]")
     source = source.replace("[.atomic, .completeFileProtectionUntilFirstUserAuthentication]", "[.atomic]")
     source = source.replace("#if targetEnvironment(simulator)", "#if os(macOS) || targetEnvironment(simulator)")

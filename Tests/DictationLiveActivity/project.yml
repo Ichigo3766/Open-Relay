@@ -42,6 +42,7 @@ targets:
     platform: iOS
     sources:
       - RecordingTests.swift
+      - TranscriptionTests.swift
       - PlatformDoubles.swift
       - ../../Open UI/Core/Models/DictationActivityAttributes.swift
       - ../../Open UI/Core/Services/DictationLiveActivityController.swift
@@ -55,6 +56,12 @@ targets:
     dependencies: [{target: DictationActivityQA}]
     settings: {TEST_TARGET_NAME: DictationActivityQA}
 schemes:
+  DictationActivityCompileChecks:
+    build:
+      targets:
+        DictationActivityQA: all
+        DictationActivityTests: all
+        DictationActivityUITests: all
   DictationActivityQA:
     build:
       targets:
