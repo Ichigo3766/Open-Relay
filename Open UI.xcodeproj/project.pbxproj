@@ -154,6 +154,7 @@
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
 				Features/VoiceCall/LiveActivity/VoiceCallActivityAttributes.swift,
+				Core/Models/DictationActivityAttributes.swift,
 			);
 			target = 3852C70B2F71110800283682 /* OpenUIWidgetsExtension */;
 		};

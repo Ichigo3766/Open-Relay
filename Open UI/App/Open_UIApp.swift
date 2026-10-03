@@ -242,26 +242,15 @@ struct Open_UIApp: App {
                         let session = AVAudioSession.sharedInstance()
                         print("🌙[APP] scenePhase=\(newPhase) — tts.activeEngine=\(tts.activeEngine) tts.state=\(tts.state)")
                         print("🌙[APP] AudioSession before BG — category=\(session.category.rawValue) mode=\(session.mode.rawValue) isActive=\(session.isOtherAudioPlaying)")
-                        if CallAudioSession.isCallActive {
-                            // A voice call owns the audio session and handles its own
-                            // GPU → CPU/system-engine switch. stopAndUnload() would
-                            // deactivate the session and kill the call's mic.
-                            print("🌙[APP] Voice call active — skipping read-aloud TTS teardown")
-                        } else if tts.activeEngine == .kokoro || tts.activeEngine == .qwen3 {
+                        let keepMicrophoneActive = CallAudioSession.isCallActive || dependencies.dictationService.state == .listening
+                        // Read-aloud cleanup must not deactivate a call or dictation's audio session.
+                        if !keepMicrophoneActive, tts.activeEngine == .kokoro || tts.activeEngine == .qwen3 {
                             print("🌙[APP] Stopping on-device TTS (Kokoro/Qwen3) before background")
                             tts.stop()
                         }
-                        // Guard stopAndUnload() — it calls audioPlayer.stop() which calls
-                        // AVAudioSession.setActive(false) on the shared session, killing
-                        // AVQueuePlayer (server TTS) mid-playback. Skip it when server TTS
-                        // is actively playing so background audio continues uninterrupted.
-                        if CallAudioSession.isCallActive {
-                            // (see above) — leave the shared session alone during a call.
-                        } else if tts.activeEngine != .server {
+                        if !keepMicrophoneActive, tts.activeEngine != .server {
                             print("🌙[APP] Calling kokoroService.stopAndUnload() — engine is \(tts.activeEngine), not server")
                             tts.kokoroService.stopAndUnload()
-                        } else {
-                            print("🌙[APP] ✅ Skipping stopAndUnload() — server TTS is active, keeping audio session alive")
                         }
                         print("🌙[APP] AudioSession after BG handling — category=\(session.category.rawValue) mode=\(session.mode.rawValue)")
 

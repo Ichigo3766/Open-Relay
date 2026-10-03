@@ -20,5 +20,6 @@ struct OpenUIWidgetsBundle: WidgetBundle {
 
         // Voice call — Dynamic Island + Lock Screen Live Activity
         VoiceCallLiveActivity()
+        DictationLiveActivity()
     }
 }

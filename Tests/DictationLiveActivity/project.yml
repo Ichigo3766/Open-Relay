@@ -1,0 +1,72 @@
+name: DictationActivityQA
+options:
+  deploymentTarget: {iOS: '18.1'}
+settings:
+  base:
+    GENERATE_INFOPLIST_FILE: YES
+    CODE_SIGN_IDENTITY: '-'
+    SWIFT_VERSION: '5.0'
+    CURRENT_PROJECT_VERSION: '1'
+    MARKETING_VERSION: '1.0'
+targets:
+  DictationActivityQA:
+    type: application
+    platform: iOS
+    sources:
+      - Harness.swift
+      - ../../Open UI/Core/Models/DictationActivityAttributes.swift
+      - ../../Open UI/Core/Services/DictationLiveActivityController.swift
+    dependencies:
+      - target: DictationActivityWidget
+    settings:
+      PRODUCT_BUNDLE_IDENTIFIER: org.example.dictation-activity
+      INFOPLIST_KEY_NSSupportsLiveActivities: YES
+      INFOPLIST_KEY_UILaunchScreen_Generation: YES
+  DictationActivityWidget:
+    type: app-extension
+    platform: iOS
+    sources:
+      - WidgetBundle.swift
+      - ../../Open UI/Core/Models/DictationActivityAttributes.swift
+      - ../../OpenUIWidgets/DictationLiveActivity.swift
+    info:
+      path: WidgetInfo.plist
+      properties:
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.widgetkit-extension
+    settings:
+      PRODUCT_BUNDLE_IDENTIFIER: org.example.dictation-activity.widget
+      SKIP_INSTALL: YES
+  DictationActivityTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - RecordingTests.swift
+      - TranscriptionTests.swift
+      - PlatformDoubles.swift
+      - ../../Open UI/Core/Models/DictationActivityAttributes.swift
+      - ../../Open UI/Core/Services/DictationLiveActivityController.swift
+      - ../../Open UI/Core/Services/DictationService.swift
+      - ../../Open UI/Core/Services/DictationRecoveryStore.swift
+    dependencies: [{target: DictationActivityQA}]
+  DictationActivityUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources: [ActivityUITests.swift]
+    dependencies: [{target: DictationActivityQA}]
+    settings: {TEST_TARGET_NAME: DictationActivityQA}
+schemes:
+  DictationActivityCompileChecks:
+    build:
+      targets:
+        DictationActivityQA: all
+        DictationActivityTests: all
+        DictationActivityUITests: all
+  DictationActivityQA:
+    build:
+      targets:
+        DictationActivityQA: all
+        DictationActivityTests: [test]
+        DictationActivityUITests: [test]
+    test:
+      targets: [DictationActivityTests, DictationActivityUITests]
