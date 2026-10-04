@@ -613,7 +613,8 @@ final class ChatViewModel {
         }
     }
 
-    private func syncToServerViaTree() async {
+    @discardableResult
+    private func syncToServerViaTree() async -> Bool {
         await contextSaveTask?.value
         chatFiles = AttachmentContext.active(chatFiles, in: conversation?.messages ?? [])
         // Ensure tree nodes have up-to-date content from the flat messages list before
@@ -622,18 +623,17 @@ final class ChatViewModel {
         // syncToServerViaTree() would overwrite the server's good data with empty strings.
         syncFlatMessagesToTreeNodes()
 
-        guard let chatId = conversationId ?? conversation?.id, let manager else { return }
+        guard let chatId = conversationId ?? conversation?.id, let manager else { return false }
         let modelId = selectedModelId ?? conversation?.model ?? ""
 
         guard let conv = conversation, conv.history.isPopulated else {
             // Tree not populated — fall back to flat-list sync
-            try? await manager.syncConversationMessages(
+            return (try? await manager.syncConversationMessages(
                 id: chatId, messages: conversation?.messages ?? [], model: modelId,
-                title: conversation?.title, chatParams: conversation?.chatParams, chatFiles: chatFiles)
-            return
+                title: conversation?.title, chatParams: conversation?.chatParams, chatFiles: chatFiles)) != nil
         }
 
-        try? await manager.apiClient.syncConversationHistory(
+        return (try? await manager.apiClient.syncConversationHistory(
             id: chatId,
             history: conv.history,
             model: modelId,
@@ -641,7 +641,7 @@ final class ChatViewModel {
             chatParams: conv.chatParams,
             title: conv.title,
             chatFiles: chatFiles
-        )
+        )) != nil
     }
 
     var selectedModel: AIModel? {
@@ -3402,6 +3402,11 @@ final class ChatViewModel {
             }
         }
 
+        let sendScope = manager.apiClient.network.conversationCacheScope
+        let conversationBeforeSend = conversation
+        let chatFilesBeforeSend = chatFiles
+        let originalAttachments = attachments
+
         // Process audio attachments depending on transcription mode.
         // Server mode: audio was already uploaded via /api/v1/files/?process=true —
         //   treat it like any other uploaded file (pass through with its uploadedFileId).
@@ -3648,6 +3653,7 @@ final class ChatViewModel {
         hasFinishedStreaming = false
         selfInitiatedStream = true
         streamingSessionId += 1
+        let sendSessionId = streamingSessionId
         // Clear the replay-block for the previous completed message — a new
         // stream is starting, so the old ID is no longer relevant and we don't
         // want to accidentally block events for future messages that might
@@ -3715,7 +3721,28 @@ final class ChatViewModel {
         // (with proper parentId/childrenIds) so the server has the full branching
         // structure before the generation starts. Uses tree-based sync now that the
         // history tree is always populated in sendMessage().
-        await syncToServerViaTree()
+        let historySaved = await syncToServerViaTree()
+        if !isTemporaryChat && !historySaved {
+            guard sendScope == self.manager?.apiClient.network.conversationCacheScope,
+                  conversation?.id == conversationBeforeSend?.id,
+                  streamingSessionId == sendSessionId else {
+                return sendBlocked(.busy, "chat changed while saving the message")
+            }
+            let restoredText = ([currentText] + messageQueue.map(\.text) + [inputText])
+                .filter { !$0.isEmpty }.joined(separator: "\n\n")
+            messageQueue.removeAll()
+            cleanupStreaming()
+            conversation = conversationBeforeSend
+            chatFiles = chatFilesBeforeSend
+            inputText = restoredText
+            attachments = originalAttachments + attachments
+            selectedKnowledgeItems = currentKnowledgeItems + selectedKnowledgeItems
+            selectedReferenceChats = currentReferenceChats + selectedReferenceChats
+            selectedNotes = currentNotes + selectedNotes
+            selectedSkillIds = currentSkillIds + selectedSkillIds
+            errorMessage = "Couldn’t save your message. Your draft has been restored. Please try again."
+            return sendBlocked(.failed, "saving the message history failed")
+        }
 
         // Send message to server. When socket is connected, use HTTP POST + socket events.
         // When socket is unavailable (e.g., Cloudflare blocking WebSocket), fall back to
