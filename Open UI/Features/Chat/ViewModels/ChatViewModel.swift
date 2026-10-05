@@ -5643,11 +5643,9 @@ final class ChatViewModel {
                     // file IDs directly from tool call results in the message content.
                     // This handles the case where the server metadata doesn't include
                     // files but the tool response clearly references generated images.
-                    self.populateFilesFromToolResults(messageId: assistantMessageId)
-                    // Re-sync to server so the extracted files array is persisted.
-                    // Without this, the tree node has files but the server still shows
-                    // files:[] and WebUI can't render images when switching versions.
-                    await self.syncToServerViaTree()
+                    if self.populateFilesFromToolResults(messageId: assistantMessageId) {
+                        await self.syncToServerViaTree()
+                    }
                 } else {
                     // Files already present — just wait for follow-ups/title
                     try? await Task.sleep(nanoseconds: 5_000_000_000)
@@ -5725,11 +5723,9 @@ final class ChatViewModel {
         }
 
         // Last resort: extract file IDs from tool call results in content
-        populateFilesFromToolResults(messageId: assistantMessageId)
-        // Re-sync to server so the extracted files array is persisted.
-        // Without this, the tree node has files but the server still shows
-        // files:[] and WebUI can't render images when switching versions.
-        await syncToServerViaTree()
+        if populateFilesFromToolResults(messageId: assistantMessageId) {
+            await syncToServerViaTree()
+        }
 
         // NOTE: Do NOT call saveConversationToServer() here — same reason
         // as finishStreamingSuccessfully. The server's chatCompleted has the
@@ -7569,16 +7565,18 @@ final class ChatViewModel {
     ///
     /// Uses `ToolCallParser.extractFileReferences` to scan the `<details>` blocks
     /// in the message content for file IDs, then adds them to `message.files`.
-    private func populateFilesFromToolResults(messageId: String) {
-        guard let index = conversation?.messages.firstIndex(where: { $0.id == messageId }) else { return }
+    /// Returns whether new files were added and need to be persisted.
+    @discardableResult
+    private func populateFilesFromToolResults(messageId: String) -> Bool {
+        guard let index = conversation?.messages.firstIndex(where: { $0.id == messageId }) else { return false }
         let message = conversation!.messages[index]
 
         // Only run if files array is empty — don't override server-provided files
-        guard message.files.isEmpty else { return }
+        guard message.files.isEmpty else { return false }
 
         // Only check assistant messages with content (tool results are embedded in content)
         guard message.role == .assistant,
-              !message.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+              !message.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }
 
         let extractedFiles = ToolCallParser.extractFileReferences(from: message.content)
         if !extractedFiles.isEmpty {
@@ -7592,8 +7590,9 @@ final class ChatViewModel {
                     node.files = extractedFiles
                 }
             }
+            return true
         }
-
+        return false
     }
 
     private func appendSources(id: String, sources: [ChatSourceReference]) {
