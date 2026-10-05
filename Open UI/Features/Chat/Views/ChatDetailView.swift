@@ -264,12 +264,6 @@ struct ChatDetailView: View {
     /// from the very first frame (avoids the top→centre jump when a new
     /// ChatDetailView is instantiated and the async measurement hasn't fired yet).
     @State private var viewState_containerHeight: CGFloat = UIScreen.main.bounds.height
-    /// True once a response has streamed while this chat is on screen. Keeps the
-    /// last turn's viewport-height reservation after the stream ends, so a reply the
-    /// user just watched doesn't jump when the reserved writing space would vanish.
-    /// Starts false on every new ChatDetailView instance (each chat has a unique .id),
-    /// so reopened chats render completed turns at their natural height.
-    @State private var hasStreamedThisSession = false
     // currentScrollOffsetY and topmostVisibleMessageId are stored in _pumpRef (PumpRef class)
     // to avoid @State observation overhead — writing them on every 120Hz scroll frame was
     // causing the entire view body to re-evaluate, causing low-FPS scrolling. They are read
@@ -1925,9 +1919,6 @@ struct ChatDetailView: View {
                 let isSend = lastMessage?.role == .user
                     || (new - old >= 2 && viewModel.messages.dropLast().last?.role == .user)
                 if isSend {
-                    // A send: reserve the reply's writing space now, so the page
-                    // height does not jump when streaming starts mid-glide.
-                    hasStreamedThisSession = true
                     _pumpRef.sendGlideUntil = Date().addingTimeInterval(0.95)
                 }
                 UIApplication.shared.sendAction(
@@ -1955,10 +1946,6 @@ struct ChatDetailView: View {
                 // first so the in-flight offset changes don't misfire the nav-bar /
                 // breakout observer while the spring is running.
                 _pumpRef.programmaticScrollUntil = Date().addingTimeInterval(0.7)
-                // Reserve the reply's writing space immediately. Streaming starts a
-                // moment later (after the request is built), and turning the
-                // reservation on then grew the page by up to a screen mid-glide.
-                hasStreamedThisSession = true
                 // The glide is the only scroll until it lands: 80ms settle + spring.
                 _pumpRef.sendGlideUntil = Date().addingTimeInterval(0.6)
                 Task { @MainActor in
@@ -1978,7 +1965,6 @@ struct ChatDetailView: View {
         // performs any structural view swap, and the follower tracks the typewriter's
         // last characters via lastContentGrowthAt — nothing to do here.
         .onChange(of: viewModel.isStreaming) { oldStreaming, newStreaming in
-            if newStreaming { hasStreamedThisSession = true }
             if newStreaming && streamingAutoScroll {
                 // Stream started — re-engage auto-scroll.
                 isScrolledUp = false
@@ -2614,7 +2600,7 @@ struct ChatDetailView: View {
 
         let reservedHeight: CGFloat? = {
             guard lastTurnIsUserTurn,
-                  viewModel.isStreaming || hasStreamedThisSession else { return nil }
+                  viewModel.isStreaming || viewModel.streamingStore.isActive else { return nil }
             return max(viewState_containerHeight, 0)
         }()
 
@@ -2629,10 +2615,8 @@ struct ChatDetailView: View {
                     messageSlot(message: message, index: index, isDrawn: isDrawn)
                 }
             }
-            // Reserve writing space only on the last turn, and only while streaming
-            // or after a stream in this on-screen session (so the finished reply
-            // doesn't jump). Completed turns in a freshly opened chat use their
-            // natural height, leaving no blank area below finished replies.
+            // Keep writing space through final processing, then let completed
+            // turns use their natural height after blocks collapse.
             .frame(minHeight: turn.id == lastTurnId ? reservedHeight : nil, alignment: .top)
         }
     }
@@ -4750,9 +4734,6 @@ struct ChatDetailView: View {
         NotificationService.shared.activeConversationId =
             viewModel.conversationId ?? viewModel.conversation?.id
         await viewModel.load()
-        // Joining a chat that is already streaming: onChange(of: isStreaming) won't
-        // fire for the initial value, so opt into the reserved writing space here.
-        if viewModel.isStreaming { hasStreamedThisSession = true }
         // After messages load, draw only the rows at the bottom of the chat.
         let loadedCount = viewModel.messages.count
         if loadedCount > 0 {
