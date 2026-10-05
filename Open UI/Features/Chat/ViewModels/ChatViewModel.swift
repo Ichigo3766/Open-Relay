@@ -531,6 +531,7 @@ final class ChatViewModel {
     /// Tracks whether the socket has received at least one content token.
     /// Used by the recovery timer to avoid overwriting an active stream.
     private var socketHasReceivedContent = false
+    @ObservationIgnored private var lastSocketContentAt: Date = .distantPast
     private(set) var serverBaseURL: String = ""
     @ObservationIgnored var visibleViewIDs: Set<UUID> = []
     @ObservationIgnored nonisolated(unsafe) private var foregroundObserver: NSObjectProtocol?
@@ -4950,6 +4951,7 @@ final class ChatViewModel {
             guard let self, !self.hasFinishedStreaming,
                   self.streamingSessionId == updateSessionId else { return }
             self.socketHasReceivedContent = true
+            self.lastSocketContentAt = Date()
             self.updateAssistantMessage(id: msgId, content: content, isStreaming: true)
         }
 
@@ -5808,6 +5810,11 @@ final class ChatViewModel {
                 return
             }
             guard let chatId, let manager = self.manager else { return }
+
+            // Keep recovery for silent or disconnected streams, without re-fetching
+            // the conversation while the socket is already delivering content.
+            if self.socketService?.isConnected == true,
+               Date().timeIntervalSince(self.lastSocketContentAt) < 8 { return }
 
             // polledContentLength captures the server content length from the fetch below.
             // It is set inside the do-block and reused for the content-growth check after,
