@@ -22,11 +22,28 @@ final class ModelManager {
 
     // MARK: - Fetch All
 
+    // MARK: - Server-side list filters (mirror Models.svelte)
+
+    /// "" (all) | "created" | "shared" — the server's `view_option`.
+    var viewOption = ""
+    /// Selected tag filter ("" = none).
+    var selectedTag = ""
+    /// name | created_at | updated_at — empty uses the server default.
+    var sortKey = ""
+    /// asc | desc.
+    var sortDirection = ""
+    /// Search text (sent to the server, which also matches owner name/email).
+    var query = ""
+    var tags: [String] = []
+
     func fetchAll() async {
         isLoading = true
         error = nil
         do {
-            models = try await apiClient.listWorkspaceModels()
+            models = try await apiClient.listAllWorkspaceModels(
+                query: query, viewOption: viewOption, tag: selectedTag,
+                orderBy: sortKey, direction: sortDirection)
+            tags = (try? await apiClient.getWorkspaceModelTags()) ?? tags
             // Evict all model avatar URLs from the cache so that any avatar
             // changed on the server is re-fetched on the next render instead
             // of serving the stale cached image indefinitely.
@@ -158,6 +175,64 @@ final class ModelManager {
             return merged.filter { $0.userId != "*" }
         }
         return grants
+    }
+
+    // MARK: - Hide / Show (meta.hidden)
+
+    /// Flips `meta.hidden` by re-sending the stored record (web `hideModelHandler`).
+    @discardableResult
+    func setHidden(_ hidden: Bool, id: String) async throws -> ModelItem? {
+        guard var record = try await apiClient.getWorkspaceModelRecord(id: id) else { return nil }
+        var meta = decodeOriginalMeta(record.originalMetaJSON)
+        meta["hidden"] = hidden
+        record.originalMetaJSON = try? JSONSerialization.data(withJSONObject: meta)
+        var payload = record.toRawUpdatePayload()
+        payload["meta"] = meta
+        let json = try await apiClient.updateWorkspaceModel(payload: payload)
+        guard let updated = ModelDetail(json: json) else { throw ModelManagerError.invalidResponse }
+        let item = updated.toModelItem()
+        var merged = item
+        merged.isHidden = hidden
+        if let idx = models.firstIndex(where: { $0.id == id }) { models[idx] = merged }
+        return merged
+    }
+
+    // MARK: - Pinned ("Keep in Sidebar") — ui.pinnedModels
+
+    func loadPinnedModelIds() async -> [String] {
+        let settings = (try? await apiClient.getUserSettings()) ?? [:]
+        let ui = settings["ui"] as? [String: Any] ?? [:]
+        return ui["pinnedModels"] as? [String] ?? []
+    }
+
+    /// Toggles a model in `ui.pinnedModels`, keeping every other `ui` key.
+    func togglePinned(id: String, current: [String]) async throws -> [String] {
+        var next = current
+        if let i = next.firstIndex(of: id) { next.remove(at: i) } else { next.append(id) }
+        try await apiClient.mergeUserUISettings(["pinnedModels": next])
+        return next
+    }
+
+    // MARK: - Bulk actions (apply to the current filtered set, across all pages)
+
+    /// Enables/disables every model whose state differs. Uses `/toggle`, which flips is_active.
+    func setActiveForAll(_ active: Bool) async throws {
+        let all = try await apiClient.listAllWorkspaceModels(
+            query: query, viewOption: viewOption, tag: selectedTag)
+        for m in all where m.writeAccess && m.isActive != active {
+            _ = try await apiClient.toggleWorkspaceModel(id: m.id)
+        }
+        await fetchAll()
+    }
+
+    /// Hides/shows every model whose state differs.
+    func setHiddenForAll(_ hidden: Bool) async throws {
+        let all = try await apiClient.listAllWorkspaceModels(
+            query: query, viewOption: viewOption, tag: selectedTag)
+        for m in all where m.writeAccess && m.isHidden != hidden {
+            _ = try await setHidden(hidden, id: m.id)
+        }
+        await fetchAll()
     }
 
     // MARK: - Users

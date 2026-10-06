@@ -295,11 +295,38 @@ final class ChatViewModel {
     var selectedToolIds: Set<String> = [] {
         didSet {
             // Track tools the user explicitly disabled (were in old set but not new)
+            // Internal cleanup (dropping stale/unconnected IDs) is not a user choice.
+            guard !suppressToolTracking else { return }
             let removed = oldValue.subtracting(selectedToolIds)
             let added = selectedToolIds.subtracting(oldValue)
             userDisabledToolIds.formUnion(removed)
             userDisabledToolIds.subtract(added)
         }
+    }
+    /// When `true`, changes to `selectedToolIds` are not recorded in `userDisabledToolIds`.
+    private var suppressToolTracking: Bool = false
+
+    /// Removes IDs from the selection without marking them as user-disabled.
+    private func dropToolsFromSelection(_ ids: Set<String>) {
+        guard !ids.isEmpty, !ids.isDisjoint(with: selectedToolIds) else { return }
+        suppressToolTracking = true
+        selectedToolIds.subtract(ids)
+        suppressToolTracking = false
+    }
+
+    /// Whether a server/model default tool may be auto-selected. Once tools have
+    /// loaded, the tool must exist and be connected (mirrors the web client's
+    /// `setDefaults()`); before that we stay optimistic and sanitise after loading.
+    private func isDefaultToolEligible(_ id: String) -> Bool {
+        guard toolsHaveLoaded else { return true }
+        guard let tool = availableTools.first(where: { $0.id == id }) else { return false }
+        return tool.isAuthenticated
+    }
+
+    /// Loads tools once if they haven't been fetched yet.
+    func ensureToolsLoaded() async {
+        guard !toolsHaveLoaded else { return }
+        await loadTools()
     }
     /// Tools the user has explicitly toggled OFF during this chat session.
     /// Prevents `syncToolSelectionWithDefaults()` from re-enabling them.
@@ -531,6 +558,8 @@ final class ChatViewModel {
     /// Tracks whether the socket has received at least one content token.
     /// Used by the recovery timer to avoid overwriting an active stream.
     private var socketHasReceivedContent = false
+    /// Last socket content time; recovery polls skip fetches while content is arriving.
+    @ObservationIgnored private var lastSocketContentAt: Date = .distantPast
     private(set) var serverBaseURL: String = ""
     @ObservationIgnored var visibleViewIDs: Set<UUID> = []
     @ObservationIgnored nonisolated(unsafe) private var foregroundObserver: NSObjectProtocol?
@@ -613,7 +642,8 @@ final class ChatViewModel {
         }
     }
 
-    private func syncToServerViaTree() async {
+    @discardableResult
+    private func syncToServerViaTree() async -> Bool {
         await contextSaveTask?.value
         chatFiles = AttachmentContext.active(chatFiles, in: conversation?.messages ?? [])
         // Ensure tree nodes have up-to-date content from the flat messages list before
@@ -622,18 +652,17 @@ final class ChatViewModel {
         // syncToServerViaTree() would overwrite the server's good data with empty strings.
         syncFlatMessagesToTreeNodes()
 
-        guard let chatId = conversationId ?? conversation?.id, let manager else { return }
+        guard let chatId = conversationId ?? conversation?.id, let manager else { return false }
         let modelId = selectedModelId ?? conversation?.model ?? ""
 
         guard let conv = conversation, conv.history.isPopulated else {
             // Tree not populated — fall back to flat-list sync
-            try? await manager.syncConversationMessages(
+            return (try? await manager.syncConversationMessages(
                 id: chatId, messages: conversation?.messages ?? [], model: modelId,
-                title: conversation?.title, chatParams: conversation?.chatParams, chatFiles: chatFiles)
-            return
+                title: conversation?.title, chatParams: conversation?.chatParams, chatFiles: chatFiles)) != nil
         }
 
-        try? await manager.apiClient.syncConversationHistory(
+        return (try? await manager.apiClient.syncConversationHistory(
             id: chatId,
             history: conv.history,
             model: modelId,
@@ -641,7 +670,7 @@ final class ChatViewModel {
             chatParams: conv.chatParams,
             title: conv.title,
             chatFiles: chatFiles
-        )
+        )) != nil
     }
 
     var selectedModel: AIModel? {
@@ -2148,13 +2177,15 @@ final class ChatViewModel {
 
             if scope == manager.apiClient.network.conversationCacheScope {
                 availableTools = allItems
-                syncToolSelectionWithDefaults()
-                // Prune selectedToolIds of orphaned IDs (tools that no longer exist on server).
-                // Mirrors IntegrationsMenu.svelte line 108:
-                //   selectedToolIds = selectedToolIds.filter(id => Object.keys(tools).includes(id))
-                let knownIds = Set(allItems.map { $0.id })
-                selectedToolIds = selectedToolIds.filter { knownIds.contains($0) }
                 toolsHaveLoaded = true
+                // Prune selectedToolIds of orphaned IDs (tools that no longer exist on server)
+                // and tools that still need an OAuth connection. Mirrors IntegrationsMenu.svelte
+                // (`selectedToolIds.filter(id => id in tools)`) and Chat.svelte `setDefaults()`.
+                // Done silently so it is never treated as the user turning a tool off.
+                let knownIds = Set(allItems.map { $0.id })
+                let unconnected = Set(allItems.filter { !$0.isAuthenticated }.map(\.id))
+                dropToolsFromSelection(selectedToolIds.filter { !knownIds.contains($0) || unconnected.contains($0) })
+                syncToolSelectionWithDefaults()
                 return
             }
         } catch {
@@ -2190,28 +2221,40 @@ final class ChatViewModel {
         }
         // Model defaults were already refreshed by authorizeWebSearch(), which
         // every send path calls first, so newly assigned tools are included here.
+        // Make sure the tool list is known so stale IDs are pruned before we look.
+        await ensureToolsLoaded()
         let selection = selectedToolIds
         let ids = selection.subtracting(availableTools.filter(\.isFunctionTool).map(\.id))
         guard !ids.isEmpty else { return true }
         do {
             let tools = try await manager.fetchTools()
-            guard isCurrent(), selection == selectedToolIds else { return false }
-            for id in ids.sorted() {
+            guard isCurrent() else { return false }
+            // The selection may have changed while fetching; only act on IDs still selected.
+            let stillSelected = ids.intersection(selectedToolIds)
+            var stale = Set<String>()
+            for id in stillSelected.sorted() {
                 guard let tool = tools.first(where: { $0.id == id }) else {
-                    errorMessage = "A selected tool is unavailable. Open Attachments & tools to update your selection."
-                    return false
+                    // Deleted / inaccessible / offline tool server. The server ignores unknown
+                    // IDs anyway, so drop it quietly instead of blocking the message.
+                    logger.warning("Dropping unavailable tool from selection: \(id)")
+                    stale.insert(id)
+                    continue
                 }
                 if let index = availableTools.firstIndex(where: { $0.id == id }) { availableTools[index] = tool }
                 else { availableTools.append(tool) }
                 if !tool.isAuthenticated {
+                    dropToolsFromSelection(stale)
                     toolConnectionRequested = tool
                     return false
                 }
             }
+            dropToolsFromSelection(stale)
             return true
         } catch {
-            if isCurrent() { errorMessage = "Couldn’t check tool connections. Your draft is unchanged. Try again." }
-            return false
+            // Can't verify right now (offline blip, slow server). Let the server decide —
+            // it ignores unknown tool IDs — rather than blocking the user's message.
+            logger.warning("Tool connection check failed, sending anyway: \(error.localizedDescription)")
+            return !Task.isCancelled
         }
     }
 
@@ -2221,14 +2264,14 @@ final class ChatViewModel {
     /// OFF during this session are NOT re-enabled by server defaults.
     private func syncToolSelectionWithDefaults() {
         // 1. Globally-enabled tools (server admin marked as active)
-        for tool in availableTools where tool.isEnabled {
+        for tool in availableTools where tool.isEnabled && tool.isAuthenticated {
             if !userDisabledToolIds.contains(tool.id) {
                 selectedToolIds.insert(tool.id)
             }
         }
         // 2. Model-assigned tools (admin attached to the selected model)
         if let model = selectedModel {
-            for toolId in model.toolIds {
+            for toolId in model.toolIds where isDefaultToolEligible(toolId) {
                 if !userDisabledToolIds.contains(toolId) {
                     selectedToolIds.insert(toolId)
                 }
@@ -3233,7 +3276,9 @@ final class ChatViewModel {
         isTemporaryChat = UserDefaults.standard.bool(forKey: "temporaryChatDefault")
         userDisabledToolIds = []
         userDisabledBuiltinFeatures = []
+        suppressToolTracking = true
         selectedToolIds = []
+        suppressToolTracking = false
         selectedKnowledgeItems = []
         selectedSkillIds = []
         // Sync UI toggles with the selected model's server-configured defaults.
@@ -3401,6 +3446,12 @@ final class ChatViewModel {
                 return sendBlocked(.failed, "creating the chat failed: \(error.localizedDescription)")
             }
         }
+
+        // Snapshot pre-send state so a failed history save can restore the draft.
+        let sendScope = manager.apiClient.network.conversationCacheScope
+        let conversationBeforeSend = conversation
+        let chatFilesBeforeSend = chatFiles
+        let originalAttachments = attachments
 
         // Process audio attachments depending on transcription mode.
         // Server mode: audio was already uploaded via /api/v1/files/?process=true —
@@ -3648,6 +3699,7 @@ final class ChatViewModel {
         hasFinishedStreaming = false
         selfInitiatedStream = true
         streamingSessionId += 1
+        let sendSessionId = streamingSessionId
         // Clear the replay-block for the previous completed message — a new
         // stream is starting, so the old ID is no longer relevant and we don't
         // want to accidentally block events for future messages that might
@@ -3715,7 +3767,32 @@ final class ChatViewModel {
         // (with proper parentId/childrenIds) so the server has the full branching
         // structure before the generation starts. Uses tree-based sync now that the
         // history tree is always populated in sendMessage().
-        await syncToServerViaTree()
+        let historySaved = await syncToServerViaTree()
+        if !isTemporaryChat && !historySaved {
+            // The server never received this turn — don't start generation.
+            // Roll back the optimistic turn and give the user their draft back,
+            // unless the chat/session/stream changed while we were saving.
+            guard sendScope == self.manager?.apiClient.network.conversationCacheScope,
+                  conversation?.id == conversationBeforeSend?.id,
+                  streamingSessionId == sendSessionId else {
+                return sendBlocked(.busy, "chat changed while saving the message")
+            }
+            // Keep queued messages and anything typed since, without auto-resending.
+            let restoredText = ([currentText] + messageQueue.map(\.text) + [inputText])
+                .filter { !$0.isEmpty }.joined(separator: "\n\n")
+            messageQueue.removeAll()
+            cleanupStreaming()
+            conversation = conversationBeforeSend
+            chatFiles = chatFilesBeforeSend
+            inputText = restoredText
+            attachments = originalAttachments + attachments
+            selectedKnowledgeItems = currentKnowledgeItems + selectedKnowledgeItems
+            selectedReferenceChats = currentReferenceChats + selectedReferenceChats
+            selectedNotes = currentNotes + selectedNotes
+            selectedSkillIds = currentSkillIds + selectedSkillIds
+            errorMessage = "Couldn’t save your message. Your draft has been restored. Please try again."
+            return sendBlocked(.failed, "saving the message history failed")
+        }
 
         // Send message to server. When socket is connected, use HTTP POST + socket events.
         // When socket is unavailable (e.g., Cloudflare blocking WebSocket), fall back to
@@ -4950,6 +5027,7 @@ final class ChatViewModel {
             guard let self, !self.hasFinishedStreaming,
                   self.streamingSessionId == updateSessionId else { return }
             self.socketHasReceivedContent = true
+            self.lastSocketContentAt = Date()
             self.updateAssistantMessage(id: msgId, content: content, isStreaming: true)
         }
 
@@ -5643,11 +5721,10 @@ final class ChatViewModel {
                     // file IDs directly from tool call results in the message content.
                     // This handles the case where the server metadata doesn't include
                     // files but the tool response clearly references generated images.
-                    self.populateFilesFromToolResults(messageId: assistantMessageId)
-                    // Re-sync to server so the extracted files array is persisted.
-                    // Without this, the tree node has files but the server still shows
-                    // files:[] and WebUI can't render images when switching versions.
-                    await self.syncToServerViaTree()
+                    // Re-sync only when files were added, so text-only replies skip the save.
+                    if self.populateFilesFromToolResults(messageId: assistantMessageId) {
+                        await self.syncToServerViaTree()
+                    }
                 } else {
                     // Files already present — just wait for follow-ups/title
                     try? await Task.sleep(nanoseconds: 5_000_000_000)
@@ -5725,11 +5802,9 @@ final class ChatViewModel {
         }
 
         // Last resort: extract file IDs from tool call results in content
-        populateFilesFromToolResults(messageId: assistantMessageId)
-        // Re-sync to server so the extracted files array is persisted.
-        // Without this, the tree node has files but the server still shows
-        // files:[] and WebUI can't render images when switching versions.
-        await syncToServerViaTree()
+        if populateFilesFromToolResults(messageId: assistantMessageId) {
+            await syncToServerViaTree()
+        }
 
         // NOTE: Do NOT call saveConversationToServer() here — same reason
         // as finishStreamingSuccessfully. The server's chatCompleted has the
@@ -5808,6 +5883,10 @@ final class ChatViewModel {
                 return
             }
             guard let chatId, let manager = self.manager else { return }
+
+            // Skip the full fetch while the socket is actively delivering content.
+            if self.socketService?.isConnected == true,
+               Date().timeIntervalSince(self.lastSocketContentAt) < 8 { return }
 
             // polledContentLength captures the server content length from the fetch below.
             // It is set inside the do-block and reused for the content-growth check after,
@@ -6023,19 +6102,9 @@ final class ChatViewModel {
         // Fast path: no tool calls in the content → nothing to check, response is complete.
         guard content.contains("tool_calls") else { return true }
 
-        // We need at least one opening AND one closing details tag to have a complete block.
-        guard content.contains("<details"), content.contains("</details>") else { return false }
-
-        // Find the last opening <details type="tool_calls"> tag and the last </details> tag.
-        // If </details> comes AFTER the last opening tag, all blocks are closed.
-        // This is an O(n) scan but only runs every 5s in the recovery path.
-        guard let lastOpenRange = content.range(of: "<details", options: [.caseInsensitive, .backwards]),
-              let lastCloseRange = content.range(of: "</details>", options: [.caseInsensitive, .backwards]) else {
-            return false
-        }
-
-        // The last close tag must come after the last open tag for the block to be closed.
-        return lastCloseRange.lowerBound > lastOpenRange.lowerBound
+        // Depth-aware: nested <details> inside a tool result can't fool the check
+        // (the old "last open vs last close" comparison could).
+        return !DetailsBlockScanner.hasUnclosedBlock(content)
     }
 
     // MARK: - Cleanup
@@ -6524,14 +6593,14 @@ final class ChatViewModel {
 
         // Add model-assigned tools (admin attached to this model) that aren't
         // user-disabled and aren't already selected.
-        for toolId in model.toolIds {
+        for toolId in model.toolIds where isDefaultToolEligible(toolId) {
             if !userDisabledToolIds.contains(toolId) {
                 selectedToolIds.insert(toolId)
             }
         }
 
         // Add any globally-enabled tools (is_active) that aren't user-disabled.
-        for tool in availableTools where tool.isEnabled {
+        for tool in availableTools where tool.isEnabled && tool.isAuthenticated {
             if !userDisabledToolIds.contains(tool.id) {
                 selectedToolIds.insert(tool.id)
             }
@@ -6603,16 +6672,19 @@ final class ChatViewModel {
 
         // Reset and re-populate tool selections for this model.
         // Clear first so tools from a previous model don't persist.
+        suppressToolTracking = true
         selectedToolIds = []
-        if !model.toolIds.isEmpty {
-            for toolId in model.toolIds {
-                selectedToolIds.insert(toolId)
-            }
+        // Only tools that exist and are connected (once the list is known).
+        for toolId in model.toolIds where isDefaultToolEligible(toolId) {
+            selectedToolIds.insert(toolId)
         }
         // Also re-add globally-enabled tools (server admin marked as active)
-        for tool in availableTools where tool.isEnabled {
+        for tool in availableTools where tool.isEnabled && tool.isAuthenticated {
             selectedToolIds.insert(tool.id)
         }
+        suppressToolTracking = false
+        // Make sure the tool list is known so stale IDs get pruned.
+        Task { await ensureToolsLoaded() }
     }
 
     /// Fetches the user's memory preference from the server.
@@ -6896,6 +6968,9 @@ final class ChatViewModel {
         // Keys use {{VARIABLE_NAME}} format — the server does literal find-and-replace
         // on the model's system prompt. Also nested in metadata.variables (where the
         // server's apply_system_prompt_to_body() actually reads them).
+        // Web Chat.svelte `getAndUpdateUserLocation` before each send — throttled here.
+        ServerLocationSync.shared.syncIfNeeded(location: LocationManager.shared.cachedLocation,
+                                               place: LocationManager.shared.cachedPlaceName)
         let sysVars = PromptService.buildSystemVariablesDict(
             userName: activeChatStore?.cachedUserName,
             userEmail: activeChatStore?.cachedUserEmail
@@ -6924,7 +6999,12 @@ final class ChatViewModel {
         }
 
         // Tool IDs (user selection respects manual toggles via userDisabledToolIds)
-        let allToolIds = Array(selectedToolIds)
+        // Toggle-filter functions travel in `filter_ids`, and `direct_server:` entries are
+        // client-side tool servers — neither belongs in `tool_ids` (matches Chat.svelte).
+        let functionToolIds = Set(availableTools.filter(\.isFunctionTool).map(\.id))
+        let allToolIds = selectedToolIds
+            .filter { !functionToolIds.contains($0) && !$0.hasPrefix("direct_server:") }
+            .sorted()
         if !allToolIds.isEmpty { request.toolIds = allToolIds }
 
         // folder_id: include when chatting inside a folder so the server tags the
@@ -7569,16 +7649,18 @@ final class ChatViewModel {
     ///
     /// Uses `ToolCallParser.extractFileReferences` to scan the `<details>` blocks
     /// in the message content for file IDs, then adds them to `message.files`.
-    private func populateFilesFromToolResults(messageId: String) {
-        guard let index = conversation?.messages.firstIndex(where: { $0.id == messageId }) else { return }
+    /// Returns whether new files were added and need to be persisted.
+    @discardableResult
+    private func populateFilesFromToolResults(messageId: String) -> Bool {
+        guard let index = conversation?.messages.firstIndex(where: { $0.id == messageId }) else { return false }
         let message = conversation!.messages[index]
 
         // Only run if files array is empty — don't override server-provided files
-        guard message.files.isEmpty else { return }
+        guard message.files.isEmpty else { return false }
 
         // Only check assistant messages with content (tool results are embedded in content)
         guard message.role == .assistant,
-              !message.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+              !message.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }
 
         let extractedFiles = ToolCallParser.extractFileReferences(from: message.content)
         if !extractedFiles.isEmpty {
@@ -7592,8 +7674,9 @@ final class ChatViewModel {
                     node.files = extractedFiles
                 }
             }
+            return true
         }
-
+        return false
     }
 
     private func appendSources(id: String, sources: [ChatSourceReference]) {

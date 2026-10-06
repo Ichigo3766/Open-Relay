@@ -20,6 +20,7 @@ struct AdminGeneralSettingsView: View {
     @State private var viewModel = AdminGeneralSettingsViewModel()
     @State private var eventsViewModel = AdminEventsViewModel()
     @State private var visibleSection: AdminSection = .features
+    @State private var showTranslations = false
 
     var body: some View {
         ZStack(alignment: .bottomTrailing) {
@@ -68,6 +69,11 @@ struct AdminGeneralSettingsView: View {
             await viewModel.loadAll()
             eventsViewModel.configure(apiClient: dependencies.apiClient)
             await eventsViewModel.load()
+        }
+        .sheet(isPresented: $showTranslations) {
+            AdminTranslationsSheet(viewModel: viewModel)
+                .presentationDetents([.large])
+                .presentationDragIndicator(.visible)
         }
         .sheet(isPresented: $viewModel.showBannerEditor) {
             BannerEditorSheet(viewModel: viewModel)
@@ -210,6 +216,21 @@ struct AdminGeneralSettingsView: View {
                     inlineTextFieldRow(title: "WebUI URL", placeholder: "e.g. http://localhost:3000",
                         text: Binding(get: { viewModel.authConfig.webuiURL }, set: { viewModel.authConfig.webuiURL = $0 }),
                         keyboardType: .URL, showDivider: false)
+                    Divider().padding(.leading, Spacing.md)
+                    Button { showTranslations = true } label: {
+                        HStack {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("Translations").scaledFont(size: 15).foregroundStyle(theme.textPrimary)
+                                Text("\((viewModel.authConfig.raw["I18N"] as? [String: Any])?.count ?? 0) languages customized")
+                                    .scaledFont(size: 12).foregroundStyle(theme.textTertiary)
+                            }
+                            Spacer()
+                            Image(systemName: "chevron.right").scaledFont(size: 12).foregroundStyle(theme.textTertiary)
+                        }
+                        .padding(.horizontal, Spacing.md).padding(.vertical, 12)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
                 }
             }
         }

@@ -103,6 +103,22 @@ final class AdminGroupsViewModel {
         isLoadingDefaults = false
     }
 
+    // MARK: - Reset to Defaults (web EditGroupModal.resetToDefaultsHandler)
+
+    /// Group editor: match the current global default permissions. Not saved until Save.
+    func resetGroupPermissionsToDefaults() async {
+        guard let api = apiClient else { return }
+        do { editPermissions = try await api.getDefaultPermissions() }
+        catch { defaultsSaveError = error.localizedDescription }
+    }
+
+    /// Default-permissions editor: reset to the server's stock configuration. Not saved until Save.
+    func resetDefaultPermissionsToStock() async {
+        guard let api = apiClient else { return }
+        do { defaultPermissions = try await api.getStockDefaultPermissions() }
+        catch { defaultsSaveError = error.localizedDescription }
+    }
+
     // MARK: - Save Default Permissions
 
     func saveDefaultPermissions() async {
@@ -181,7 +197,12 @@ final class AdminGroupsViewModel {
         isSaving = true
         saveError = nil
         do {
-            let data = GroupData(config: GroupDataConfig(share: editSharePermission.rawValue))
+            // Start from the group's existing `data` so keys this app doesn't edit
+            // survive — the server replaces `data` wholesale on update.
+            var data = group.data ?? GroupData()
+            var config = data.config ?? GroupDataConfig(share: nil)
+            config.share = editSharePermission.rawValue
+            data.config = config
             let form = GroupForm(
                 name: editName.trimmingCharacters(in: .whitespaces),
                 description: editDescription,

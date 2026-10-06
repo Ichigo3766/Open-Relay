@@ -185,6 +185,10 @@ struct Open_UIApp: App {
                         dependencies.connectionMonitor.markAppForeground()
                         dependencies.socketService?.resetBackoffAndReconnect()
 
+                        // Session upkeep: renew an expired native-SSO session up front
+                        // and run any validation deferred while in the background.
+                        Task { await dependencies.authViewModel.handleAppDidBecomeActive() }
+
                         // Re-check for app + server updates whenever the app returns
                         // to the foreground (handles the case where an update ships
                         // while the app is backgrounded). Fails silently on any error.
@@ -208,8 +212,7 @@ struct Open_UIApp: App {
 
                             // 2. Control Center widget action (cross-process via UserDefaults)
                             let defaults = UserDefaults(suiteName: SharedDataService.appGroupId)
-                            if let ccAction = defaults?.string(forKey: "pendingControlCenterAction") {
-                                defaults?.removeObject(forKey: "pendingControlCenterAction")
+                            if let ccAction = ControlCenterAction.consume() {
                                 handleControlCenterAction(ccAction)
                             }
 
@@ -242,11 +245,13 @@ struct Open_UIApp: App {
                         let session = AVAudioSession.sharedInstance()
                         print("🌙[APP] scenePhase=\(newPhase) — tts.activeEngine=\(tts.activeEngine) tts.state=\(tts.state)")
                         print("🌙[APP] AudioSession before BG — category=\(session.category.rawValue) mode=\(session.mode.rawValue) isActive=\(session.isOtherAudioPlaying)")
-                        if CallAudioSession.isCallActive {
-                            // A voice call owns the audio session and handles its own
-                            // GPU → CPU/system-engine switch. stopAndUnload() would
-                            // deactivate the session and kill the call's mic.
-                            print("🌙[APP] Voice call active — skipping read-aloud TTS teardown")
+                        // A voice call or active dictation owns the audio session.
+                        // Read-aloud cleanup (stopAndUnload) would deactivate the
+                        // shared session and kill the microphone.
+                        let keepMicrophoneActive = CallAudioSession.isCallActive
+                            || dependencies.dictationService.state == .listening
+                        if keepMicrophoneActive {
+                            print("🌙[APP] Voice call or dictation active — skipping read-aloud TTS teardown")
                         } else if tts.activeEngine == .kokoro || tts.activeEngine == .qwen3 {
                             print("🌙[APP] Stopping on-device TTS (Kokoro/Qwen3) before background")
                             tts.stop()
@@ -255,8 +260,8 @@ struct Open_UIApp: App {
                         // AVAudioSession.setActive(false) on the shared session, killing
                         // AVQueuePlayer (server TTS) mid-playback. Skip it when server TTS
                         // is actively playing so background audio continues uninterrupted.
-                        if CallAudioSession.isCallActive {
-                            // (see above) — leave the shared session alone during a call.
+                        if keepMicrophoneActive {
+                            // (see above) — leave the shared session alone during a call or dictation.
                         } else if tts.activeEngine != .server {
                             print("🌙[APP] Calling kokoroService.stopAndUnload() — engine is \(tts.activeEngine), not server")
                             tts.kokoroService.stopAndUnload()
@@ -334,6 +339,17 @@ struct Open_UIApp: App {
                         handleDeepLink(url)
                     }
                 }
+                // Control Center button tapped while the app is already running.
+                // (Cold launches are handled by the scenePhase == .active check.)
+                // Short delay lets the app finish foregrounding first; consume()
+                // guarantees the action is only handled once.
+                .onReceive(NotificationCenter.default.publisher(for: ControlCenterAction.didRequest)) { _ in
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                        if let ccAction = ControlCenterAction.consume() {
+                            handleControlCenterAction(ccAction)
+                        }
+                    }
+                }
                 // Handoff from the Apple Watch: "Open on iPhone" → that chat.
                 .onContinueUserActivity(WatchProtocol.chatActivityType) { activity in
                     guard let id = activity.userInfo?[WatchProtocol.chatActivityIdKey] as? String,
@@ -353,17 +369,13 @@ struct Open_UIApp: App {
         guard let data = try? Data(contentsOf: url) else { return }
 
         let fileName = url.lastPathComponent
-        let ext = url.pathExtension.lowercased()
-        let imageExts = ["jpg", "jpeg", "png", "gif", "heic", "heif", "webp", "tiff", "bmp"]
-        let isImage = imageExts.contains(ext)
-
-        let thumbnail: Image? = isImage ? UIImage(data: data).map { Image(uiImage: $0) } : nil
-        let attachment = ChatAttachment(
-            type: isImage ? .image : .file,
-            name: fileName,
-            thumbnail: thumbnail,
-            data: data
-        )
+        let attachment: ChatAttachment
+        if FileAttachmentService.isImageFile(name: fileName),
+           let image = FileAttachmentService.makeImageAttachment(data: data, name: fileName) {
+            attachment = image
+        } else {
+            attachment = ChatAttachment(type: .file, name: fileName, thumbnail: nil, data: data)
+        }
 
         dependencies.pendingIncomingFile = attachment
         dependencies.pendingIncomingFileVersion += 1
@@ -548,32 +560,22 @@ struct Open_UIApp: App {
         var attachments: [ChatAttachment] = []
         var inputText: String = ""
 
-        // --- Files / images ---
+        // --- Files / images (images go through the same pipeline as the in-app pickers) ---
         for sharedFile in content.fileAttachments {
-            let ext = URL(fileURLWithPath: sharedFile.name).pathExtension.lowercased()
-            let imageExts = ["jpg", "jpeg", "png", "gif", "heic", "heif", "webp", "tiff", "bmp"]
-            let isImage = imageExts.contains(ext)
-                || sharedFile.mimeType?.hasPrefix("image/") == true
-            let thumbnail: Image? = isImage
-                ? UIImage(data: sharedFile.data).map { Image(uiImage: $0) }
-                : nil
-            attachments.append(ChatAttachment(
-                type: isImage ? .image : .file,
-                name: sharedFile.name,
-                thumbnail: thumbnail,
-                data: sharedFile.data
-            ))
+            if FileAttachmentService.isImageFile(name: sharedFile.name, mimeType: sharedFile.mimeType),
+               let image = FileAttachmentService.makeImageAttachment(data: sharedFile.data, name: sharedFile.name) {
+                attachments.append(image)
+            } else {
+                attachments.append(ChatAttachment(type: .file, name: sharedFile.name,
+                                                  thumbnail: nil, data: sharedFile.data))
+            }
         }
 
         // --- Legacy image data (older extension builds) ---
         for imageData in content.imageData {
-            let thumbnail = UIImage(data: imageData).map { Image(uiImage: $0) }
-            attachments.append(ChatAttachment(
-                type: .image,
-                name: "image.jpg",
-                thumbnail: thumbnail,
-                data: imageData
-            ))
+            if let image = FileAttachmentService.makeImageAttachment(data: imageData, name: "image") {
+                attachments.append(image)
+            }
         }
 
         // --- URLs → web-scraping pipeline (scrape + upload, not plain text) ---
@@ -671,7 +673,7 @@ struct Open_UIApp: App {
 
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
             switch action {
-            case "new-chat":
+            case ControlCenterAction.newChat:
                 NotificationCenter.default.post(name: .openUINewChatWithFocus, object: nil)
                 ShortcutDonationService.donateNewChat()
             default:
@@ -1113,7 +1115,7 @@ struct RootView: View {
                 // timeout so the launch screen is never permanently stuck.
                 // Whether the restore succeeds or times out, we always dismiss the
                 // overlay; if it failed the ConnectionMonitor will surface its overlay.
-                await viewModel.withAuthTimeout(seconds: 6) {
+                await viewModel.withAuthTimeout(seconds: viewModel.sessionRestoreTimeout) {
                     await viewModel.restoreSession()
                     return ()
                 }

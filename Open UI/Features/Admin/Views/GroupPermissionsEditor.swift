@@ -34,7 +34,9 @@ struct GroupPermissionsEditor: View {
             permToggle("Import Prompts",  isOn: $permissions.workspace.promptsImport)
             permToggle("Export Prompts",  isOn: $permissions.workspace.promptsExport)
             permToggle("Import Tools",    isOn: $permissions.workspace.toolsImport)
-            permToggle("Export Tools",    isOn: $permissions.workspace.toolsExport, isLast: true)
+            permToggle("Export Tools",    isOn: $permissions.workspace.toolsExport)
+            permToggle("Import Skills",   isOn: $permissions.workspace.skillsImport)
+            permToggle("Export Skills",   isOn: $permissions.workspace.skillsExport, isLast: true)
         }
     }
 
@@ -53,7 +55,11 @@ struct GroupPermissionsEditor: View {
             permToggle("Skills",           isOn: $permissions.sharing.skills)
             permToggle("Public Skills",    isOn: $permissions.sharing.publicSkills)
             permToggle("Notes",            isOn: $permissions.sharing.notes)
-            permToggle("Public Notes",     isOn: $permissions.sharing.publicNotes, isLast: true)
+            permToggle("Public Notes",     isOn: $permissions.sharing.publicNotes)
+            permToggle("Folders",          isOn: $permissions.sharing.folders)
+            permToggle("Public Chats",     isOn: $permissions.sharing.publicChats)
+            permToggle("Open Chats",       isOn: $permissions.sharing.openChats)
+            permToggle("Public Calendars", isOn: $permissions.sharing.publicCalendars, isLast: true)
         }
     }
 
@@ -84,6 +90,7 @@ struct GroupPermissionsEditor: View {
             permToggle("Edit Message",         isOn: $permissions.chat.edit)
             permToggle("Share Chat",           isOn: $permissions.chat.share)
             permToggle("Export Chat",          isOn: $permissions.chat.export)
+            permToggle("Import Chat",          isOn: $permissions.chat.importChats)
             permToggle("Speech-to-Text",       isOn: $permissions.chat.stt)
             permToggle("Text-to-Speech",       isOn: $permissions.chat.tts)
             permToggle("Voice Call",           isOn: $permissions.chat.call)
@@ -106,7 +113,9 @@ struct GroupPermissionsEditor: View {
             permToggle("Image Generation",      isOn: $permissions.features.imageGeneration)
             permToggle("Code Interpreter",      isOn: $permissions.features.codeInterpreter)
             permToggle("Memories",              isOn: $permissions.features.memories)
-            permToggle("Automations",           isOn: $permissions.features.automations, isLast: true)
+            permToggle("Automations",           isOn: $permissions.features.automations)
+            permToggle("Calendar",              isOn: $permissions.features.calendar)
+            permToggle("User Webhooks",         isOn: $permissions.features.webhooks, isLast: true)
         }
     }
 

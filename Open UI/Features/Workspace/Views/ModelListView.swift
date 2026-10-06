@@ -63,6 +63,11 @@ struct ModelListView: View {
     @State private var batchImportModels: [[String: Any]] = []
     @State private var isBatchImporting = false
 
+    // Pinned ("Keep in Sidebar") ids, loaded from ui.pinnedModels
+    @State private var pinnedIds: [String] = []
+    @State private var searchTask: Task<Void, Never>?
+    @State private var bulkAction: ModelBulkAction?
+
     private var manager: ModelManager? { dependencies.modelManager }
     private var serverBaseURL: String { dependencies.apiClient?.baseURL ?? "" }
     private var authToken: String? { dependencies.apiClient?.network.authToken }
@@ -70,14 +75,9 @@ struct ModelListView: View {
     // MARK: - Filtered List
 
     private var filtered: [ModelItem] {
-        guard let manager else { return [] }
-        if searchText.isEmpty { return manager.models }
-        let q = searchText.lowercased()
-        return manager.models.filter {
-            $0.name.lowercased().contains(q) ||
-            $0.id.lowercased().contains(q) ||
-            ($0.description ?? "").lowercased().contains(q)
-        }
+        // Search, view, tag and sort are applied by the server
+        // (`/api/v1/models/list`), exactly like the web Models page.
+        manager?.models ?? []
     }
 
     // MARK: - Body
@@ -96,11 +96,14 @@ struct ModelListView: View {
     private func content(manager: ModelManager) -> some View {
         VStack(spacing: 0) {
             searchBar
+            ModelFilterBar(manager: manager,
+                           isAdmin: dependencies.authViewModel.currentUser?.role == .admin,
+                           bulkAction: $bulkAction)
 
             if manager.isLoading && manager.models.isEmpty {
                 loadingView
             } else if filtered.isEmpty {
-                emptyView(hasFilter: !searchText.isEmpty, manager: manager)
+                emptyView(hasFilter: !searchText.isEmpty || !manager.viewOption.isEmpty || !manager.selectedTag.isEmpty, manager: manager)
             } else {
                 modelList(manager: manager)
             }
@@ -109,6 +112,31 @@ struct ModelListView: View {
         .task {
             await manager.fetchAll()
             await manager.fetchAllUsers()
+            pinnedIds = await manager.loadPinnedModelIds()
+        }
+        .onChange(of: searchText) { _, newValue in
+            searchTask?.cancel()
+            searchTask = Task {
+                try? await Task.sleep(nanoseconds: 300_000_000)
+                guard !Task.isCancelled else { return }
+                manager.query = newValue
+                await manager.fetchAll()
+            }
+        }
+        .confirmationDialog(
+            "\(bulkAction?.rawValue ?? "")?",
+            isPresented: .init(get: { bulkAction != nil }, set: { if !$0 { bulkAction = nil } }),
+            titleVisibility: .visible
+        ) {
+            Button(bulkAction?.rawValue ?? "", role: .destructive) {
+                if let action = bulkAction {
+                    bulkAction = nil
+                    Task { await runBulk(action, manager: manager) }
+                }
+            }
+            Button("Cancel", role: .cancel) { bulkAction = nil }
+        } message: {
+            Text("Applies to every model matching the current search and filters.")
         }
         // Create sheet
         .sheet(isPresented: $showCreateSheet) {
@@ -273,7 +301,7 @@ struct ModelListView: View {
             }
         }
         .listStyle(.plain)
-        .refreshable { await manager.fetchAll() }
+        .refreshable { await manager.fetchAll(); pinnedIds = await manager.loadPinnedModelIds() }
     }
 
     // MARK: - Model Row
@@ -292,6 +320,11 @@ struct ModelListView: View {
                         .scaledFont(size: 15, weight: .medium)
                         .foregroundStyle(theme.textPrimary)
                         .lineLimit(1)
+                    if model.isHidden {
+                        Image(systemName: "eye.slash")
+                            .scaledFont(size: 11)
+                            .foregroundStyle(theme.textTertiary)
+                    }
                     if !model.isActive {
                         Text("Inactive")
                             .scaledFont(size: 10, weight: .semibold)
@@ -367,6 +400,34 @@ struct ModelListView: View {
                         systemImage: model.isActive ? "pause.circle" : "play.circle"
                     )
                 }
+            }
+            if model.writeAccess {
+                Button {
+                    Haptics.play(.light)
+                    Task { await toggleHidden(model, manager: manager) }
+                } label: {
+                    Label(model.isHidden ? "Show Model" : "Hide Model",
+                          systemImage: model.isHidden ? "eye" : "eye.slash")
+                }
+            }
+            Button {
+                Haptics.play(.light)
+                Task {
+                    do { pinnedIds = try await manager.togglePinned(id: model.id, current: pinnedIds) }
+                    catch { errorMessage = error.localizedDescription }
+                }
+            } label: {
+                Label(pinnedIds.contains(model.id) ? "Hide from Sidebar" : "Keep in Sidebar",
+                      systemImage: pinnedIds.contains(model.id) ? "pin.slash" : "pin")
+            }
+            Button {
+                Haptics.play(.light)
+                // Same link the web copies: <server>/?model=<id>
+                let base = serverBaseURL.hasSuffix("/") ? String(serverBaseURL.dropLast()) : serverBaseURL
+                let encoded = model.id.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? model.id
+                UIPasteboard.general.string = "\(base)/?model=\(encoded)"
+            } label: {
+                Label("Copy Link", systemImage: "link")
             }
             Divider()
             if model.writeAccess {
@@ -543,6 +604,25 @@ struct ModelListView: View {
         }
     }
 
+    private func runBulk(_ action: ModelBulkAction, manager: ModelManager) async {
+        do {
+            switch action {
+            case .enableAll: try await manager.setActiveForAll(true)
+            case .disableAll: try await manager.setActiveForAll(false)
+            case .showAll: try await manager.setHiddenForAll(false)
+            case .hideAll: try await manager.setHiddenForAll(true)
+            }
+            Haptics.notify(.success)
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    private func toggleHidden(_ model: ModelItem, manager: ModelManager) async {
+        do { _ = try await manager.setHidden(!model.isHidden, id: model.id) }
+        catch { errorMessage = error.localizedDescription }
+    }
+
     private func deleteModel(_ model: ModelItem, manager: ModelManager) async {
         do {
             try await manager.delete(id: model.id)
@@ -568,9 +648,9 @@ struct ModelListView: View {
 
     private func exportSingleModel(_ model: ModelItem, manager: ModelManager) async {
         do {
-            let detail = try await manager.getDetail(id: model.id)
-            let payload = detail.toCreatePayload()
-            let data = try JSONSerialization.data(withJSONObject: payload, options: .prettyPrinted)
+            // Same as the web UI: server export, always an array (import requires one).
+            let exported = try await dependencies.apiClient?.exportWorkspaceModels(ids: [model.id]) ?? []
+            let data = try JSONSerialization.data(withJSONObject: exported, options: .prettyPrinted)
             let tempURL = FileManager.default.temporaryDirectory
                 .appendingPathComponent("\(model.id).json")
             try data.write(to: tempURL)
@@ -629,7 +709,9 @@ struct ModelListView: View {
     private func batchImport(models: [[String: Any]], manager: ModelManager) async {
         isBatchImporting = true
         do {
-            try await dependencies.apiClient?.importWorkspaceModels(models: models)
+            // Web UI: `savedModels.map((model) => model.info ?? model)`.
+            let unwrapped = models.map { ($0["info"] as? [String: Any]) ?? $0 }
+            try await dependencies.apiClient?.importWorkspaceModels(models: unwrapped)
             await manager.fetchAll()
             Haptics.notify(.success)
         } catch {

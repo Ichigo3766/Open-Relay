@@ -13,6 +13,9 @@ struct AdminDatabaseView: View {
     @State private var exportConfigData: Data? = nil
     @State private var exportChatsData: Data? = nil
     @State private var importError: String? = nil
+    @State private var dbData: Data? = nil
+    @State private var dbError: String? = nil
+    @State private var isDownloadingDB = false
 
     var body: some View {
         ScrollView {
@@ -68,6 +71,12 @@ struct AdminDatabaseView: View {
                 AdminShareSheetWrapper(items: [data], fileName: "all-chats-\(Int(Date().timeIntervalSince1970)).json")
             }
         }
+        .sheet(isPresented: Binding(get: { dbData != nil }, set: { if !$0 { dbData = nil } })) {
+            if let data = dbData { AdminShareSheetWrapper(items: [data], fileName: "webui.db") }
+        }
+        .alert("Download Failed", isPresented: .init(get: { dbError != nil }, set: { if !$0 { dbError = nil } })) {
+            Button("OK", role: .cancel) {}
+        } message: { Text(dbError ?? "") }
     }
 
     // MARK: - Config Section
@@ -132,6 +141,29 @@ struct AdminDatabaseView: View {
                         }
                     }
                 }
+
+                Divider().padding(.leading, Spacing.md)
+
+                // Web Admin → Database → "Download Database" (SQLite deployments only).
+                actionRow(
+                    title: "Download Database",
+                    subtitle: "The raw webui.db file. Only available when the server uses SQLite.",
+                    icon: "cylinder.split.1x2",
+                    isLoading: isDownloadingDB
+                ) {
+                    Task {
+                        isDownloadingDB = true
+                        defer { isDownloadingDB = false }
+                        do {
+                            let (data, _) = try await dependencies.apiClient!.network.requestRaw(
+                                path: "/api/v1/utils/db/download", timeout: 900)
+                            dbData = data
+                        } catch {
+                            dbError = error.localizedDescription
+                        }
+                    }
+                }
+                .disabled(dependencies.apiClient == nil)
             }
         }
     }

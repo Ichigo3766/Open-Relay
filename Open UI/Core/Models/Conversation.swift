@@ -64,6 +64,10 @@ nonisolated struct Conversation: Identifiable, Hashable, Sendable {
     /// `chatFiles = structuredClone(chatContent?.files ?? [])` in Chat.svelte.
     var files: [ChatMessageFile]
 
+    /// Server `last_read_at` (epoch seconds). `nil` = never read, `0` = marked unread.
+    /// A chat is unread when `updatedAt` is later than this (web ChatItem).
+    var lastReadAt: TimeInterval?
+
     init(
         id: String = UUID().uuidString,
         title: String,
@@ -121,6 +125,8 @@ nonisolated struct Conversation: Identifiable, Hashable, Sendable {
             && lhs.title == rhs.title
             && lhs.messages == rhs.messages
             && lhs.tasks == rhs.tasks
+            && lhs.lastReadAt == rhs.lastReadAt
+            && lhs.updatedAt == rhs.updatedAt
     }
 
     func hash(into hasher: inout Hasher) {

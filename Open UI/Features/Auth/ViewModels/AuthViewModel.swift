@@ -1,5 +1,6 @@
 import Foundation
 import LocalAuthentication
+import UIKit
 import WebKit
 import os.log
 
@@ -761,7 +762,7 @@ final class AuthViewModel {
     /// isn't deallocated mid-flow.
     private var nativeAuthenticator: NativeOIDCAuthenticator?
     /// Single-flight guard for silent renewal (401s, restore, refresh timer).
-    private var nativeRenewTask: Task<Bool, Never>?
+    private var nativeRenewTask: Task<NativeSSORenewalOutcome, Never>?
     /// Error from the system-browser flow, shown on the sign-in method screen.
     /// Kept separate from `errorMessage` so that screen is unchanged for others.
     var nativeSSOError: String?
@@ -839,19 +840,19 @@ final class AuthViewModel {
     /// Only reachable on servers with native SSO enabled. Covers mid-session
     /// requests, the refresh timer, background validation and launch-time
     /// session restore — all of which go through the same request path.
-    func recoverSessionFrom401() async -> Bool {
-        guard phase == .authenticated || phase == .restoringSession else { return false }
+    func recoverSessionFrom401() async -> NativeSSORenewalOutcome {
+        guard phase == .authenticated || phase == .restoringSession else { return .rejected }
         return await renewNativeSSOSession()
     }
 
     /// Silently renews the ACTIVE account's session using its own stored IdP
-    /// refresh token. Returns false immediately for any account without one
+    /// refresh token. Returns `.rejected` immediately for any account without one
     /// (password, LDAP, embedded SSO, API key) — their behaviour is unchanged.
     /// Concurrent callers share one renewal round-trip.
-    func renewNativeSSOSession() async -> Bool {
+    func renewNativeSSOSession() async -> NativeSSORenewalOutcome {
         if let inFlight = nativeRenewTask { return await inFlight.value }
-        let task = Task<Bool, Never> { [weak self] in
-            await self?.performNativeSSORenewal() ?? false
+        let task = Task<NativeSSORenewalOutcome, Never> { [weak self] in
+            await self?.performNativeSSORenewalKeepingAlive() ?? .rejected
         }
         nativeRenewTask = task
         let result = await task.value
@@ -859,43 +860,169 @@ final class AuthViewModel {
         return result
     }
 
-    private func performNativeSSORenewal() async -> Bool {
+    /// Runs the renewal inside a UIKit background task so it can finish — and,
+    /// crucially, persist a rotated refresh token — even if the user leaves the
+    /// app mid-flight or iOS wakes us only briefly for a background refresh.
+    private func performNativeSSORenewalKeepingAlive() async -> NativeSSORenewalOutcome {
+        let app = UIApplication.shared
+        let box = BackgroundTaskBox()
+        box.id = app.beginBackgroundTask(withName: "NativeSSORenewal") { box.end(app) }
+        defer { box.end(app) }
+        return await performNativeSSORenewal()
+    }
+
+    private func performNativeSSORenewal() async -> NativeSSORenewalOutcome {
         guard let server = serverConfigStore.activeServer,
               let settings = server.nativeSSO,
               !settings.trimmedIssuer.isEmpty,
               let account = serverConfigStore.activeAccount,
-              let client = dependencies?.apiClient else { return false }
+              let client = dependencies?.apiClient else { return .rejected }
 
         let key = NativeSSOSettings.refreshTokenKey(serverURL: server.url, userId: account.userId)
-        guard let refreshToken = KeychainService.shared.getToken(forServer: key) else { return false }
-
         let authenticator = NativeOIDCAuthenticator(server: server, client: client)
-        do {
-            let session = try await authenticator.renew(
-                issuerURL: settings.trimmedIssuer,
-                clientID: settings.trimmedClientID,
-                refreshToken: refreshToken
-            )
-            // Never install a session that belongs to a different account.
-            if let renewedUser = session.userId, renewedUser != account.userId {
-                logger.error("Native SSO: renewed session belongs to a different account — discarding")
-                return false
+
+        // Retry transient failures (network not ready after wake, IdP / server
+        // hiccups) with backoff, within an overall time budget. Only an explicit
+        // rejection ends the session.
+        let maxAttempts = 3
+        let deadline = Date().addingTimeInterval(60)
+        var attempt = 0
+        while true {
+            attempt += 1
+            // Re-read every attempt: an earlier attempt may have rotated it.
+            guard let refreshToken = KeychainService.shared.getToken(forServer: key) else {
+                logger.info("Native SSO: no refresh token for active account — cannot renew")
+                return .rejected
             }
-            if let rotated = session.refreshToken {
-                KeychainService.shared.saveToken(rotated, forServer: key)
+            do {
+                let session = try await authenticator.renew(
+                    issuerURL: settings.trimmedIssuer,
+                    clientID: settings.trimmedClientID,
+                    refreshToken: refreshToken,
+                    onRefreshTokenRotated: { rotated in
+                        // Persist immediately — before the exchange — so it's never lost.
+                        KeychainService.shared.saveToken(rotated, forServer: key)
+                    }
+                )
+                return installRenewedSession(session, server: server, account: account, key: key, client: client, attempt: attempt)
+            } catch {
+                if let terminal = terminalOutcome(for: error, refreshTokenKey: key) {
+                    return terminal
+                }
+                let detail = (error as? URLError).map { "URLError \($0.code.rawValue)" } ?? error.localizedDescription
+                let delay = pow(2.0, Double(attempt - 1)) // 1s, 2s
+                guard attempt < maxAttempts,
+                      Date().addingTimeInterval(delay) < deadline,
+                      !Task.isCancelled else {
+                    logger.warning("Native SSO: renewal unavailable after \(attempt, privacy: .public) attempt(s) (\(detail, privacy: .public)) — keeping session")
+                    return .unavailable
+                }
+                logger.warning("Native SSO: renewal attempt \(attempt, privacy: .public) failed (\(detail, privacy: .public)) — retrying in \(delay, privacy: .public)s")
+                try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
             }
-            client.updateAuthToken(session.jwt)
-            KeychainService.shared.saveToken(session.jwt, forServer: server.url, userId: account.userId)
-            connectSocketWithToken()
-            logger.info("Native SSO: session renewed silently")
-            return true
-        } catch {
-            if let authError = error as? NativeOIDCAuthError, authError.isRefreshTokenRejected {
-                // Expired / revoked at the IdP — drop it so we go straight to sign-in next time.
-                KeychainService.shared.deleteToken(forServer: key)
+        }
+    }
+
+    /// Installs a freshly renewed session — unless the user signed out or
+    /// switched account/server while the renewal was in flight.
+    private func installRenewedSession(
+        _ session: NativeSSOSession,
+        server: ServerConfig,
+        account: SavedAccount,
+        key: String,
+        client: APIClient,
+        attempt: Int
+    ) -> NativeSSORenewalOutcome {
+        // Never install a session that belongs to a different account.
+        if let renewedUser = session.userId, renewedUser != account.userId {
+            logger.error("Native SSO: renewed session belongs to a different account — discarding")
+            return .rejected
+        }
+        guard serverConfigStore.activeServer?.id == server.id,
+              serverConfigStore.activeAccount?.userId == account.userId,
+              KeychainService.shared.getToken(forServer: key) != nil else {
+            logger.info("Native SSO: account changed during renewal — discarding result")
+            return .rejected
+        }
+        if let rotated = session.refreshToken {
+            KeychainService.shared.saveToken(rotated, forServer: key)
+        }
+        client.updateAuthToken(session.jwt)
+        KeychainService.shared.saveToken(session.jwt, forServer: server.url, userId: account.userId)
+        connectSocketWithToken()
+        logger.info("Native SSO: session renewed silently (attempt \(attempt, privacy: .public))")
+        return .renewed
+    }
+
+    /// Maps a renewal error to a final outcome, or `nil` when it's transient and
+    /// worth retrying. Only `invalid_grant` discards the stored refresh token.
+    private func terminalOutcome(for error: Error, refreshTokenKey key: String) -> NativeSSORenewalOutcome? {
+        guard let authError = error as? NativeOIDCAuthError else {
+            // URLError / APIError from the network layer — transient by nature.
+            return nil
+        }
+        if authError.isRefreshTokenRejected {
+            KeychainService.shared.deleteToken(forServer: key)
+            logger.warning("Native SSO: refresh token rejected by identity provider (invalid_grant) — sign-in required")
+            return .rejected
+        }
+        if authError.isTokenEndpointConfigurationError || authError.isExchangeRejected {
+            logger.error("Native SSO: renewal refused: \(authError.localizedDescription, privacy: .public)")
+            return .rejected
+        }
+        if !authError.isTransient {
+            logger.error("Native SSO: renewal failed permanently: \(authError.localizedDescription, privacy: .public)")
+            return .rejected
+        }
+        return nil
+    }
+
+    // MARK: - Foreground session upkeep
+
+    /// Set when a 401 arrives while the app is in the background. Validation is
+    /// deferred until the app is active again so a suspended, half-finished
+    /// request can never sign the user out.
+    private var pendingSessionValidation = false
+
+    /// Hard timeout for launch / server-switch session restore. Native SSO may
+    /// need a full IdP renewal on a just-woken network, so it gets more time.
+    var sessionRestoreTimeout: Double {
+        serverConfigStore.activeServer?.nativeSSO != nil ? 25 : 6
+    }
+
+    /// Handles the 401 callback. Validates now when the app is in the foreground,
+    /// otherwise defers to the next time it becomes active.
+    func handleAuthTokenInvalid() async {
+        guard phase == .authenticated else { return }
+        if UIApplication.shared.applicationState == .background {
+            logger.info("401 while in background — deferring session validation to foreground")
+            pendingSessionValidation = true
+            return
+        }
+        await validateSessionInBackground()
+    }
+
+    /// Called whenever the app becomes active. Proactively renews a native-SSO
+    /// session that has expired (or is about to) BEFORE requests start failing,
+    /// and runs any validation that was deferred while in the background.
+    func handleAppDidBecomeActive() async {
+        guard phase == .authenticated, let client = dependencies?.apiClient else { return }
+
+        if serverConfigStore.activeServer?.nativeSSO != nil,
+           let token = client.network.authToken,
+           JWTExpiry.isExpiring(token, within: 60) {
+            logger.info("Native SSO: session token expired/expiring on foreground — renewing proactively")
+            if await renewNativeSSOSession() == .rejected {
+                // Let the normal path confirm with the server and route to sign-in.
+                pendingSessionValidation = false
+                await validateSessionInBackground()
+                return
             }
-            logger.warning("Native SSO: silent renewal failed: \(error.localizedDescription)")
-            return false
+        }
+
+        if pendingSessionValidation {
+            pendingSessionValidation = false
+            await validateSessionInBackground()
         }
     }
 
@@ -1156,6 +1283,12 @@ final class AuthViewModel {
     }
 
     // MARK: - Pending Approval
+
+    /// `GET /auths/admin/details` for the pending screen's "Contact Admin" row.
+    func adminDetailsForPendingScreen() async throws -> (name: String?, email: String?)? {
+        guard let client = dependencies?.apiClient else { return nil }
+        return try await client.getAdminDetails()
+    }
 
     /// Checks if the pending user has been approved by an admin.
     /// Uses /api/v1/users/user/status (authenticated) which returns the current user with role.
@@ -1699,7 +1832,7 @@ final class AuthViewModel {
                 // Token exists but no cached user — restore session with a hard
                 // 6 s timeout so the loading screen never hangs permanently.
                 phase = .restoringSession
-                let restored = await withAuthTimeout(seconds: 6) { [weak self] in
+                let restored = await withAuthTimeout(seconds: sessionRestoreTimeout) { [weak self] in
                     await self?.restoreSession()
                     return await MainActor.run { [weak self] in self?.phase == .authenticated }
                 }
@@ -2270,5 +2403,18 @@ final class AuthViewModel {
                 }
             }
         }
+    }
+}
+
+/// Holds a UIKit background-task identifier so the expiration handler and the
+/// normal completion path can both end it — exactly once.
+@MainActor
+private final class BackgroundTaskBox {
+    var id: UIBackgroundTaskIdentifier = .invalid
+
+    func end(_ app: UIApplication) {
+        guard id != .invalid else { return }
+        app.endBackgroundTask(id)
+        id = .invalid
     }
 }

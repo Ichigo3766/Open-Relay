@@ -97,7 +97,7 @@ struct ProfileView: View {
     }
 
     enum ProfileImageAction {
-        case keep, remove, initials, newImage(Data)
+        case keep, remove, initials, newImage(Data), gravatar(String)
     }
 
     var body: some View {
@@ -164,6 +164,15 @@ struct ProfileView: View {
                 Button("Use Initials") {
                     profileImageAction = .initials
                     profileImageData = nil
+                }
+                if let email = user?.email, !email.isEmpty {
+                    Button("Use Gravatar") {
+                        Task {
+                            guard let url = try? await dependencies.apiClient?.getGravatarURL(email: email), !url.isEmpty else { return }
+                            profileImageData = nil
+                            profileImageAction = .gravatar(url)
+                        }
+                    }
                 }
                 Button("Remove Photo") {
                     profileImageAction = .remove
@@ -682,6 +691,8 @@ struct ProfileView: View {
             initialsAvatar
         } else if case .remove = profileImageAction {
             initialsAvatar
+        } else if case .gravatar(let url) = profileImageAction {
+            UserAvatar(size: 80, imageURL: URL(string: url), name: user?.displayName, authToken: nil)
         } else {
             UserAvatar(
                 size: 80,
@@ -863,6 +874,9 @@ struct ProfileView: View {
                 profileImageUrlString = originalAvatarBase64
             case .remove, .initials:
                 profileImageUrlString = ""
+            case .gravatar(let url):
+                // Web UserProfileImage "Gravatar": stores the Gravatar URL as the profile image.
+                profileImageUrlString = url
             case .newImage(let data):
                 let base64 = data.base64EncodedString()
                 let prefix: String
@@ -926,7 +940,7 @@ struct ProfileView: View {
                     }
                     profileImageData = nil
                     profileImageAction = .keep
-                case .remove, .initials:
+                case .remove, .initials, .gravatar:
                     await ImageCacheService.shared.evict(for: url)
                 case .keep:
                     break

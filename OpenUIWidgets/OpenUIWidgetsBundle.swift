@@ -13,12 +13,17 @@ struct OpenUIWidgetsBundle: WidgetBundle {
         QuickActionsWidget()
 
         // Lock screen accessories
-        LockScreenWidget()          // accessoryCircular / accessoryRectangular / accessoryInline
+        LockScreenWidget()          // New Chat — accessoryCircular / accessoryRectangular / accessoryInline
+        VoiceLockScreenWidget()     // Voice call — accessoryCircular
+        CameraLockScreenWidget()    // Camera chat — accessoryCircular
 
         // Control Center (iOS 18+)
         OpenUIWidgetsControl()
 
         // Voice call — Dynamic Island + Lock Screen Live Activity
         VoiceCallLiveActivity()
+
+        // Dictation — Dynamic Island + Lock Screen recording indicator
+        DictationLiveActivity()
     }
 }

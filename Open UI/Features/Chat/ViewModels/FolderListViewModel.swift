@@ -217,6 +217,7 @@ final class FolderListViewModel {
             let (result, fetchedShared) = try await (ownedRequest, sharedRequest)
             let (fetched, enabled) = result
             featureDisabled = !enabled
+            ChatReadState.shared.adoptServerFolderCounts(fetched)
             if enabled {
                 // Preserve local expand states so UI doesn't flicker
                 let existingExpandState = Dictionary(
@@ -277,6 +278,7 @@ final class FolderListViewModel {
 
         do {
             let chats = try await manager.fetchChatsInFolder(folderId: folder.id)
+            ChatReadState.shared.reconcile(with: chats)
             if let idx = folders.firstIndex(where: { $0.id == folder.id }) {
                 folders[idx].chats = chats
             }
@@ -292,6 +294,7 @@ final class FolderListViewModel {
         guard let idx = folders.firstIndex(where: { $0.id == folderId }) else { return }
         do {
             let chats = try await manager.fetchChatsInFolder(folderId: folderId)
+            ChatReadState.shared.reconcile(with: chats)
             folders[idx].chats = chats
         } catch {
             logger.error("Failed to refresh chats for folder \(folderId): \(error.localizedDescription)")
@@ -752,6 +755,7 @@ final class FolderListViewModel {
             let (fetched, enabled) = try await manager.fetchFolders()
             featureDisabled = !enabled
             guard enabled else { return }
+            ChatReadState.shared.adoptServerFolderCounts(fetched)
 
             // Preserve local expand states and chats
             let existingExpandState = Dictionary(

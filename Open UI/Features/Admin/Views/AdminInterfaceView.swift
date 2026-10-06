@@ -240,7 +240,7 @@ struct AdminInterfaceView: View {
 
             SettingsSection {
                 VStack(alignment: .leading, spacing: Spacing.xs) {
-                    Text("Default settings applied to all new chats for all users (JSON).")
+                    Text("Default interface settings for users who haven't changed them (JSON).")
                         .scaledFont(size: 12)
                         .foregroundStyle(theme.textTertiary)
                         .fixedSize(horizontal: false, vertical: true)

@@ -11,6 +11,9 @@ struct AdminAnalyticsView: View {
 
     // Chart interaction
     @State private var selectedDate: Date? = nil
+    @State private var drillModelId: DrillModel?
+
+    private struct DrillModel: Identifiable { let id: String }
 
     // Chart palette — consistent across the dashboard
     private let chartColors: [Color] = [
@@ -54,6 +57,9 @@ struct AdminAnalyticsView: View {
         }
         .refreshable {
             await viewModel.loadAll()
+        }
+        .sheet(item: $drillModelId) { m in
+            ModelAnalyticsSheet(modelId: m.id).presentationDetents([.medium, .large])
         }
         .task {
             viewModel.configure(apiClient: dependencies.apiClient)
@@ -457,6 +463,8 @@ struct AdminAnalyticsView: View {
 
                         ForEach(Array(viewModel.modelStats.prefix(10).enumerated()), id: \.element.id) { idx, model in
                             modelRow(rank: idx + 1, model: model)
+                                .contentShape(Rectangle())
+                                .onTapGesture { drillModelId = DrillModel(id: model.modelId) }
                             if idx < min(viewModel.modelStats.count, 10) - 1 {
                                 Divider()
                                     .padding(.leading, Spacing.md)

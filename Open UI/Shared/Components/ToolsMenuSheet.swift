@@ -109,8 +109,7 @@ struct ToolsMenuSheet: View {
     @Environment(\.theme) private var theme
     @Environment(\.dismiss) private var dismiss
     @State private var toolsExpanded = true
-    @State private var navPath = NavigationPath()
-    @State private var selectedDetent: PresentationDetent = .medium
+    @State private var page: AttachDestination? = nil
     @State private var connectingTool: ToolItem?
 
     // MARK: - Quick Pills (shared AppStorage key with ChatInputField)
@@ -131,71 +130,112 @@ struct ToolsMenuSheet: View {
         Haptics.play(.light)
     }
 
-    var body: some View {
-        NavigationStack(path: $navPath) {
-            mainContent
-                .navigationDestination(for: AttachDestination.self) { destination in
-                    destinationView(for: destination)
-                }
+    // MARK: - Morph Card Hooks
+    //
+    // The menu lives inside the composer card (see ChatInputField). The card owns
+    // presentation; these hooks let the menu close it, open the camera page, and
+    // report when a sub-page is showing so the card can grow taller.
+
+    /// Shrinks the card back into the composer, then runs the given action (if any).
+    var onCloseCard: (((() -> Void)?) -> Void)? = nil
+    /// Opens the in-card camera. When nil, the Camera tile falls back to `onCameraCapture`.
+    var onOpenCamera: (() -> Void)? = nil
+    /// Called when a sub-page (Files, Notes, Knowledge…) is pushed or popped.
+    var onExpandedChange: ((Bool) -> Void)? = nil
+
+    private static let cardSpring: Animation = MorphCardMetrics.spring
+
+    private func closeCard(then action: (() -> Void)? = nil) {
+        if let onCloseCard {
+            onCloseCard(action)
+        } else {
+            dismiss()
+            action?()
         }
+    }
+
+    var body: some View {
+        // In-card page switch (no NavigationStack): the main page slides out to the
+        // left while the sub-page slides in from the right, and the card's height
+        // follows on the same spring. Pages are transparent over the card's glass.
+        ZStack {
+            if let page {
+                destinationView(for: page)
+                    .environment(\.morphCardBack, MorphCardBackAction { showPage(nil) })
+                    .transition(.asymmetric(
+                        insertion: .move(edge: .trailing).combined(with: .opacity),
+                        removal: .move(edge: .trailing).combined(with: .opacity)
+                    ))
+                    .zIndex(1)
+            } else {
+                mainContent
+                    .transition(.asymmetric(
+                        insertion: .move(edge: .leading).combined(with: .opacity),
+                        removal: .move(edge: .leading).combined(with: .opacity)
+                    ))
+            }
+        }
+        .clipped()
         .geometryGroup()
-        .background(theme.background)
-        .presentationDetents([.medium, .large], selection: $selectedDetent)
-        .presentationDragIndicator(.hidden)
-        .presentationCornerRadius(CornerRadius.modal)
+        .background(Color.clear)
         .sheet(item: $connectingTool) { tool in
             if let apiClient {
                 ToolConnectionView(tool: tool, apiClient: apiClient, onRefresh: onRefreshTools,
+                    onConnected: { selectedToolIds.insert(tool.id) },
                     onDisable: { selectedToolIds.remove(tool.id) }).themed()
-            }
-        }
-        .onChange(of: navPath.isEmpty) { _, isEmpty in
-            if isEmpty {
-                withAnimation(.easeInOut(duration: 0.25)) {
-                    selectedDetent = .medium
-                }
             }
         }
     }
 
+    /// Switches the card's page (nil = main menu) and grows/shrinks the card with it.
+    private func showPage(_ destination: AttachDestination?) {
+        onExpandedChange?(destination != nil)
+        withAnimation(Self.cardSpring) { page = destination }
+    }
+
     // MARK: - Main Content
+
+    /// When false, rows wait just under their final spot (faded out); flipping it to
+    /// true deals them in one after another. The morph card sets it once it has grown.
+    var contentRevealed: Bool = true
+
+    private func revealRow(_ index: Int) -> some ViewModifier {
+        MorphRowReveal(isRevealed: contentRevealed, index: index)
+    }
 
     private var mainContent: some View {
         VStack(spacing: 0) {
-            // Drag handle
-            sheetHandle
-                .padding(.top, Spacing.sm)
-                .padding(.bottom, Spacing.xs)
-
             ScrollView {
                 VStack(spacing: Spacing.md) {
                     // Attachment actions row
                     attachmentActionsRow
                         .padding(.horizontal, Spacing.md)
+                        .modifier(revealRow(0))
 
                     // Attach rows (Files, Notes, Knowledge, Reference Chats, Skills)
                     attachChevronRows
                         .padding(.horizontal, Spacing.md)
+                        .modifier(revealRow(1))
 
                     // Built-in Tools section (web search, image gen, code interpreter)
                     let hasBuiltins = isWebSearchAvailable || isImageGenerationAvailable || isCodeInterpreterAvailable
                     if hasBuiltins {
                         builtinToolsSection
                             .padding(.horizontal, Spacing.md)
+                            .modifier(revealRow(2))
                     }
 
                     // Tools section
                     toolsSection
                         .padding(.horizontal, Spacing.md)
+                        .modifier(revealRow(3))
                 }
+                .padding(.top, Spacing.xs)
                 .padding(.bottom, Spacing.lg)
             }
+            .scrollContentBackground(.hidden)
         }
-        .background(theme.background)
-        .navigationTitle("")
-        .navigationBarTitleDisplayMode(.inline)
-        .navigationBarBackButtonHidden(true)
-        .toolbarBackground(.hidden, for: .navigationBar)
+        .background(Color.clear)
     }
 
     // MARK: - Destination Views
@@ -204,11 +244,11 @@ struct ToolsMenuSheet: View {
     private func destinationView(for destination: AttachDestination) -> some View {
         switch destination {
         case .files:
-            InlineFilesPickerView(
+            CardFilesPickerView(
                 apiClient: apiClient,
                 onFilesSelected: { attachments in
                     onFilesSelected?(attachments)
-                    dismiss()
+                    closeCard()
                 }
             )
         case .notes:
@@ -218,17 +258,17 @@ struct ToolsMenuSheet: View {
                     if !selectedNotes.contains(where: { $0.id == note.id }) {
                         selectedNotes.append(note)
                     }
-                    dismiss()
+                    closeCard()
                 }
             )
         case .knowledge:
-            InlineKnowledgePickerView(
+            CardKnowledgePickerView(
                 apiClient: apiClient,
                 onItemSelected: { item in
                     if !selectedKnowledgeItems.contains(where: { $0.id == item.id && $0.type == item.type }) {
                         selectedKnowledgeItems.append(item)
                     }
-                    dismiss()
+                    closeCard()
                 }
             )
         case .referenceChats:
@@ -236,7 +276,7 @@ struct ToolsMenuSheet: View {
                 conversationManager: conversationManager,
                 onSelect: { chat in
                     selectedReferenceChats.append(chat)
-                    dismiss()
+                    closeCard()
                 }
             )
         case .skills:
@@ -244,19 +284,11 @@ struct ToolsMenuSheet: View {
                 skills: skills,
                 selectedSkillIds: $selectedSkillIds,
                 isLoadingSkills: isLoadingSkills,
-                onDone: { dismiss() }
+                onDone: { closeCard() }
             )
         case .toolPermissions:
             toolPermissionsPage
         }
-    }
-
-    // MARK: - Sheet Handle
-
-    private var sheetHandle: some View {
-        Capsule()
-            .fill(theme.textTertiary.opacity(0.4))
-            .frame(width: 36, height: 5)
     }
 
     // MARK: - Attachment Actions Row
@@ -280,11 +312,23 @@ struct ToolsMenuSheet: View {
                 )
             }
 
-            attachmentActionButton(
-                icon: "camera",
-                label: String(localized: "Camera"),
-                action: onCameraCapture
-            )
+            if let onOpenCamera {
+                // Grows the card into the live viewfinder instead of closing it.
+                Button {
+                    Haptics.play(.light)
+                    onOpenCamera()
+                } label: {
+                    attachmentActionLabel(icon: "camera", label: String(localized: "Camera"), isEnabled: true)
+                }
+                .buttonStyle(MorphPressStyle())
+                .accessibilityLabel(String(localized: "Camera"))
+            } else {
+                attachmentActionButton(
+                    icon: "camera",
+                    label: String(localized: "Camera"),
+                    action: onCameraCapture
+                )
+            }
             attachmentActionButton(
                 icon: "globe",
                 label: String(localized: "Webpage"),
@@ -301,15 +345,19 @@ struct ToolsMenuSheet: View {
         let isEnabled = action != nil
 
         return Button {
-            // Dismiss the tools sheet first, then trigger the action
-            // after a small delay to avoid sheet presentation conflicts.
-            dismiss()
-            if let action {
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
-                    action()
-                }
-            }
+            // Shrink the card back into the composer, then run the action.
+            Haptics.play(.light)
+            closeCard(then: action)
         } label: {
+            attachmentActionLabel(icon: icon, label: label, isEnabled: isEnabled)
+        }
+        .buttonStyle(MorphPressStyle())
+        .disabled(!isEnabled)
+        .opacity(isEnabled ? 1.0 : OpacityLevel.disabled)
+        .accessibilityLabel(label)
+    }
+
+    private func attachmentActionLabel(icon: String, label: String, isEnabled: Bool) -> some View {
             VStack(spacing: Spacing.xs) {
                 ZStack {
                     Circle()
@@ -356,11 +404,7 @@ struct ToolsMenuSheet: View {
                         lineWidth: 0.5
                     )
             )
-        }
-        .buttonStyle(.plain)
-        .disabled(!isEnabled)
-        .opacity(isEnabled ? 1.0 : OpacityLevel.disabled)
-        .accessibilityLabel(label)
+            .contentShape(RoundedRectangle(cornerRadius: CornerRadius.card, style: .continuous))
     }
 
     // MARK: - Attach Chevron Rows
@@ -437,8 +481,7 @@ struct ToolsMenuSheet: View {
     ) -> some View {
         Button {
             Haptics.play(.light)
-            selectedDetent = .large
-            navPath.append(destination)
+            showPage(destination)
         } label: {
             HStack(spacing: Spacing.sm) {
                 toolGlyph(systemImage: icon, isSelected: false)
@@ -464,7 +507,7 @@ struct ToolsMenuSheet: View {
                     .strokeBorder(theme.cardBorder.opacity(0.55), lineWidth: 0.5)
             )
         }
-        .buttonStyle(.plain)
+        .buttonStyle(MorphPressStyle(scale: 0.97))
         .disabled(!isAvailable)
         .opacity(isAvailable ? 1.0 : OpacityLevel.disabled)
     }
@@ -508,10 +551,10 @@ struct ToolsMenuSheet: View {
         pillId: String? = nil
     ) -> some View {
         Button {
-            withAnimation(MicroAnimation.snappy) {
-                isOn.wrappedValue.toggle()
-            }
+            // No global animation: only this tile's pill animates (via its own
+            // `.animation(value:)`), so the chat behind doesn't re-animate.
             Haptics.play(.light)
+            isOn.wrappedValue.toggle()
         } label: {
             HStack(spacing: Spacing.sm) {
                 // Icon glyph
@@ -559,6 +602,7 @@ struct ToolsMenuSheet: View {
             }
             .padding(Spacing.sm)
             .background(tileBackground(isOn: isOn.wrappedValue))
+            .animation(MicroAnimation.snappy, value: isOn.wrappedValue)
             .clipShape(
                 RoundedRectangle(cornerRadius: CornerRadius.input, style: .continuous)
             )
@@ -570,7 +614,7 @@ struct ToolsMenuSheet: View {
                     )
             )
         }
-        .buttonStyle(.plain)
+        .buttonStyle(MorphPressStyle(scale: 0.97))
         .accessibilityLabel(title)
         .accessibilityValue(isOn.wrappedValue ? "On" : "Off")
         .accessibilityAddTraits(.isToggle)
@@ -582,23 +626,14 @@ struct ToolsMenuSheet: View {
     /// Matches the web `InputMenu.svelte` `tab === 'tool_permissions'` panel.
     private var toolPermissionsPage: some View {
         VStack(spacing: 0) {
-            // Drag handle
-            sheetHandle
-                .padding(.top, Spacing.sm)
-                .padding(.bottom, Spacing.xs)
+            PickerNavBar(title: "Tool Permissions")
 
             VStack(alignment: .leading, spacing: Spacing.xs) {
-                Text("Tool Permissions")
-                    .scaledFont(size: 18, weight: .semibold)
-                    .foregroundStyle(theme.textPrimary)
-                    .padding(.horizontal, Spacing.md)
-                    .padding(.top, Spacing.sm)
-                    .padding(.bottom, Spacing.xs)
-
                 Text("Control whether tools run automatically or wait for your approval before each call.")
                     .scaledFont(size: 13)
                     .foregroundStyle(theme.textSecondary)
                     .padding(.horizontal, Spacing.md)
+                    .padding(.top, Spacing.md)
                     .padding(.bottom, Spacing.sm)
 
                 // Option rows
@@ -621,11 +656,7 @@ struct ToolsMenuSheet: View {
 
             Spacer()
         }
-        .background(theme.background)
-        .navigationTitle("")
-        .navigationBarTitleDisplayMode(.inline)
-        .navigationBarBackButtonHidden(false)
-        .toolbarBackground(.hidden, for: .navigationBar)
+        .background(Color.clear)
     }
 
     @ViewBuilder
@@ -639,7 +670,7 @@ struct ToolsMenuSheet: View {
         Button {
             Haptics.play(.light)
             onToolApprovalModeChange?(value)
-            navPath.removeLast()
+            showPage(nil)
         } label: {
             HStack(spacing: Spacing.sm) {
                 // Icon glyph
@@ -735,7 +766,9 @@ struct ToolsMenuSheet: View {
             .buttonStyle(.plain)
 
             if toolsExpanded {
-                if isLoadingTools {
+                // Only show the spinner when there's nothing to show yet; on refresh
+                // keep the current list so the card doesn't re-layout mid-animation.
+                if isLoadingTools && tools.isEmpty {
                     HStack(spacing: Spacing.sm) {
                         ProgressView()
                             .controlSize(.small)
@@ -771,14 +804,12 @@ struct ToolsMenuSheet: View {
             // Main toggle area
             Button {
                 guard tool.isAuthenticated else { connectingTool = tool; return }
-                withAnimation(MicroAnimation.snappy) {
-                    if isSelected {
-                        selectedToolIds.remove(tool.id)
-                    } else {
-                        selectedToolIds.insert(tool.id)
-                    }
-                }
                 Haptics.play(.light)
+                if isSelected {
+                    selectedToolIds.remove(tool.id)
+                } else {
+                    selectedToolIds.insert(tool.id)
+                }
             } label: {
                 HStack(spacing: Spacing.sm) {
                     toolGlyph(
@@ -822,8 +853,7 @@ struct ToolsMenuSheet: View {
                     if tool.hasUserValves, let onOpenToolUserValves {
                         Button {
                             Haptics.play(.light)
-                            dismiss()
-                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+                            closeCard {
                                 onOpenToolUserValves(tool.id, tool.isFunctionTool)
                             }
                         } label: {
@@ -847,12 +877,13 @@ struct ToolsMenuSheet: View {
                 }
                 .padding(Spacing.sm)
             }
-            .buttonStyle(.plain)
+            .buttonStyle(MorphPressStyle(scale: 0.97))
             .accessibilityLabel(tool.name)
             .accessibilityValue(tool.isAuthenticated ? (isSelected ? "Enabled" : "Disabled") : "Connection required")
             .accessibilityAddTraits(.isToggle)
         }
         .background(tileBackground(isOn: isSelected))
+        .animation(MicroAnimation.snappy, value: isSelected)
         .clipShape(
             RoundedRectangle(cornerRadius: CornerRadius.input, style: .continuous)
         )
@@ -863,6 +894,28 @@ struct ToolsMenuSheet: View {
                     lineWidth: 0.5
                 )
         )
+        // Web parity (IntegrationsMenu): an MCP tool signed in through OAuth can be disconnected.
+        .contextMenu {
+            if tool.isAuthenticated, tool.id.hasPrefix("server:mcp:"), apiClient != nil {
+                Button("Disconnect OAuth", systemImage: "link.badge.plus", role: .destructive) {
+                    Task { await disconnectOAuth(tool) }
+                }
+            }
+        }
+    }
+
+    /// DELETE /auths/oauth/sessions/mcp:{serverId}, then refresh tools so it shows "Connect" again.
+    private func disconnectOAuth(_ tool: ToolItem) async {
+        guard let apiClient else { return }
+        let serverId = tool.id.split(separator: ":").last.map(String.init) ?? tool.id
+        do {
+            try await apiClient.deleteOAuthSession(provider: "mcp:\(serverId)")
+            selectedToolIds.remove(tool.id)
+            await onRefreshTools?()
+            Haptics.notify(.success)
+        } catch {
+            Haptics.notify(.error)
+        }
     }
 
     // MARK: - Shared Sub-Views
@@ -975,9 +1028,9 @@ struct ToolsMenuSheet: View {
 
 // MARK: - Shared Picker Nav Bar
 
-/// Custom nav bar used by all inline pickers — completely avoids
-/// the UIKit nav bar safe-area settling that causes the 1-frame flicker.
-private struct PickerNavBar: View {
+/// Card-style header used by every Attach page inside the + card: a round ‹ back
+/// button, centred title, and an optional capsule action (e.g. "Attach (2)").
+struct PickerNavBar: View {
     let title: String
     var trailingLabel: String? = nil
     var trailingDisabled: Bool = false
@@ -985,54 +1038,96 @@ private struct PickerNavBar: View {
 
     @Environment(\.theme) private var theme
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.morphCardBack) private var morphCardBack
 
     var body: some View {
-        HStack(spacing: 0) {
-            // Back button
-            Button {
-                dismiss()
-            } label: {
-                HStack(spacing: 4) {
-                    Image(systemName: "chevron.left")
-                        .scaledFont(size: 16, weight: .semibold)
-                    Text("Back")
-                        .scaledFont(size: 17, weight: .regular)
-                }
-                .foregroundStyle(theme.brandPrimary)
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .frame(minWidth: 80, alignment: .leading)
-
-            Spacer()
-
+        ZStack {
             Text(title)
-                .scaledFont(size: 17, weight: .semibold)
+                .scaledFont(size: 16, weight: .semibold)
                 .foregroundStyle(theme.textPrimary)
                 .lineLimit(1)
+                .padding(.horizontal, 96)
 
-            Spacer()
+            HStack(spacing: 0) {
+                // Back — slides back to the card's main page when inside the
+                // composer card, otherwise pops the presentation.
+                Button {
+                    Haptics.play(.light)
+                    if let morphCardBack { morphCardBack() } else { dismiss() }
+                } label: {
+                    Image(systemName: "chevron.left")
+                        .scaledFont(size: 15, weight: .semibold)
+                        .foregroundStyle(theme.textSecondary)
+                        .frame(width: 32, height: 32)
+                        .background(Circle().fill(theme.surfaceContainer.opacity(theme.isDark ? 0.6 : 0.9)))
+                        .contentShape(Circle())
+                }
+                .buttonStyle(MorphPressStyle())
+                .accessibilityLabel("Back")
 
-            // Trailing action (e.g. "Attach (2)") — invisible placeholder when absent
-            Group {
+                Spacer()
+
                 if let label = trailingLabel, let action = onTrailingTap {
-                    Button(label) { action() }
-                        .scaledFont(size: 17, weight: .semibold)
-                        .foregroundStyle(theme.brandPrimary)
-                        .disabled(trailingDisabled)
-                        .opacity(trailingDisabled ? 0.4 : 1)
-                } else {
-                    Text("").scaledFont(size: 17, weight: .semibold)
+                    Button {
+                        Haptics.play(.light)
+                        action()
+                    } label: {
+                        Text(label)
+                            .scaledFont(size: 14, weight: .semibold)
+                            .foregroundStyle(theme.brandOnPrimary)
+                            .padding(.horizontal, 12)
+                            .frame(height: 32)
+                            .background(Capsule().fill(theme.brandPrimary))
+                            .contentTransition(.numericText())
+                    }
+                    .buttonStyle(MorphPressStyle())
+                    .disabled(trailingDisabled)
+                    .opacity(trailingDisabled ? 0.4 : 1)
+                    .animation(MicroAnimation.snappy, value: label)
                 }
             }
-            .frame(minWidth: 80, alignment: .trailing)
         }
         .padding(.horizontal, Spacing.md)
-        .padding(.vertical, 12)
-        .background(theme.background)
-        .overlay(alignment: .bottom) {
-            Divider().opacity(0.5)
+        .padding(.top, Spacing.sm)
+        .padding(.bottom, Spacing.xs)
+    }
+}
+
+/// Glass search field shared by the Attach pages inside the card.
+struct CardSearchField: View {
+    let prompt: String
+    @Binding var text: String
+    @Environment(\.theme) private var theme
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "magnifyingglass")
+                .scaledFont(size: 14, weight: .medium)
+                .foregroundStyle(theme.textTertiary)
+            TextField(prompt, text: $text)
+                .scaledFont(size: 15)
+                .foregroundStyle(theme.textPrimary)
+                .autocorrectionDisabled()
+                .textInputAutocapitalization(.never)
+                .submitLabel(.search)
+            if !text.isEmpty {
+                Button { text = "" } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .scaledFont(size: 14)
+                        .foregroundStyle(theme.textTertiary)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Clear search")
+            }
         }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 9)
+        .background(RoundedRectangle(cornerRadius: 12, style: .continuous)
+            .fill(theme.surfaceContainer.opacity(theme.isDark ? 0.45 : 0.6)))
+        .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous)
+            .strokeBorder(theme.cardBorder.opacity(0.4), lineWidth: 0.5))
+        .padding(.horizontal, Spacing.md)
+        .padding(.vertical, Spacing.xs)
     }
 }
 
@@ -1066,28 +1161,7 @@ struct InlineNotesPickerView: View {
         VStack(spacing: 0) {
             PickerNavBar(title: "Attach Note")
 
-            HStack(spacing: 8) {
-                Image(systemName: "magnifyingglass")
-                    .scaledFont(size: 14, weight: .medium)
-                    .foregroundStyle(theme.textTertiary)
-                TextField("Search notes…", text: $searchText)
-                    .scaledFont(size: 15)
-                    .autocorrectionDisabled()
-                if !searchText.isEmpty {
-                    Button { searchText = "" } label: {
-                        Image(systemName: "xmark.circle.fill")
-                            .scaledFont(size: 14)
-                            .foregroundStyle(theme.textTertiary)
-                    }
-                    .buttonStyle(.plain)
-                }
-            }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 9)
-            .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(theme.surfaceContainer.opacity(theme.isDark ? 0.5 : 0.8)))
-            .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(theme.cardBorder.opacity(0.4), lineWidth: 0.5))
-            .padding(.horizontal, Spacing.md)
-            .padding(.vertical, Spacing.xs)
+            CardSearchField(prompt: "Search notes…", text: $searchText)
 
             Group {
                 if isLoading {
@@ -1113,7 +1187,7 @@ struct InlineNotesPickerView: View {
                 } else {
                     List(filteredNotes) { note in
                         noteRow(note)
-                            .listRowBackground(theme.cardBackground)
+                            .listRowBackground(theme.surfaceContainer.opacity(theme.isDark ? 0.32 : 0.12))
                             .listRowSeparatorTint(theme.cardBorder.opacity(0.4))
                     }
                     .listStyle(.plain)
@@ -1121,8 +1195,7 @@ struct InlineNotesPickerView: View {
                 }
             }
         }
-        .background(theme.background.ignoresSafeArea())
-        .toolbar(.hidden, for: .navigationBar)
+        .background(Color.clear)
         .onAppear { Task { await loadNotes() } }
     }
 
@@ -1174,7 +1247,7 @@ struct InlineNotesPickerView: View {
             }
             .padding(.vertical, Spacing.xs)
         }
-        .buttonStyle(.plain)
+        .buttonStyle(MorphPressStyle(scale: 0.97))
     }
 
     private func loadNotes() async {
@@ -1220,13 +1293,10 @@ struct InlineReferenceChatPickerView: View {
 
     var body: some View {
         ZStack {
-            theme.background.ignoresSafeArea()
+            Color.clear
             VStack(spacing: 0) {
                 PickerNavBar(title: "Reference Chats")
-                searchBar
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 10)
-                Divider().foregroundStyle(theme.cardBorder.opacity(0.4))
+                CardSearchField(prompt: "Search chats…", text: $searchQuery)
                 if isLoading && chats.isEmpty {
                     VStack(spacing: Spacing.sm) {
                         ProgressView().controlSize(.regular)
@@ -1301,25 +1371,7 @@ struct InlineReferenceChatPickerView: View {
                 }
             }
         }
-        .toolbar(.hidden, for: .navigationBar)
         .onAppear { Task { await loadChats(page: 1, reset: true) } }
-    }
-
-    private var searchBar: some View {
-        HStack(spacing: 8) {
-            Image(systemName: "magnifyingglass")
-                .scaledFont(size: 14, weight: .medium)
-                .foregroundStyle(theme.textTertiary)
-            TextField("Search chats…", text: $searchQuery)
-                .scaledFont(size: 15)
-                .foregroundStyle(theme.textPrimary)
-                .autocorrectionDisabled()
-                .textInputAutocapitalization(.never)
-        }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 9)
-        .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(theme.surfaceContainer.opacity(theme.isDark ? 0.5 : 0.8)))
-        .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(theme.cardBorder.opacity(0.4), lineWidth: 0.5))
     }
 
     private func chatRow(_ chat: ReferenceChatItem) -> some View {
@@ -1357,7 +1409,7 @@ struct InlineReferenceChatPickerView: View {
             .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(theme.cardBorder.opacity(0.3), lineWidth: 0.5))
             .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(MorphPressStyle(scale: 0.97))
     }
 
     private func loadChats(page: Int, reset: Bool) async {
@@ -1431,11 +1483,11 @@ struct InlineSkillsPickerView: View {
                             .listRowSeparator(.hidden)
                     }
                     .listStyle(.plain)
+                    .scrollContentBackground(.hidden)
                 }
             }
         }
-        .background(theme.background.ignoresSafeArea())
-        .toolbar(.hidden, for: .navigationBar)
+        .background(Color.clear)
     }
 
     private func skillRow(_ skill: SkillItem) -> some View {
@@ -1481,7 +1533,7 @@ struct InlineSkillsPickerView: View {
             }
             .padding(.vertical, Spacing.xs)
         }
-        .buttonStyle(.plain)
+        .buttonStyle(MorphPressStyle(scale: 0.97))
     }
 }
 

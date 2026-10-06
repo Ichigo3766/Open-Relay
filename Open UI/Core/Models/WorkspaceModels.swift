@@ -101,34 +101,35 @@ struct PromptDetail: Identifiable, Sendable {
         return PromptItem(json: json)
     }
 
-    func toCreatePayload(commitMessage: String = "") -> [String: Any] {
+    /// Body for `POST /api/v1/prompts/create`.
+    /// `commit_message` / `is_production` are top-level `PromptForm` fields — the
+    /// server stores the message on the history entry (not inside `meta`).
+    func toCreatePayload(commitMessage: String = "", isProduction: Bool = true) -> [String: Any] {
         var body: [String: Any] = [
             "command": command,
             "name": name,
             "content": content,
             "tags": tags,
-            "is_active": isActive,
-            "access_grants": buildGrantsPayload()
+            "access_grants": buildGrantsPayload(),
+            "is_production": isProduction
         ]
-        if !commitMessage.isEmpty {
-            body["meta"] = ["commit_message": commitMessage]
-        }
+        let cleanMeta = metaWithoutLegacyCommit
+        if !cleanMeta.isEmpty { body["meta"] = cleanMeta }
+        if !commitMessage.isEmpty { body["commit_message"] = commitMessage }
         return body
     }
 
-    func toUpdatePayload(commitMessage: String = "") -> [String: Any] {
-        var body: [String: Any] = [
-            "command": command,
-            "name": name,
-            "content": content,
-            "tags": tags,
-            "is_active": isActive,
-            "access_grants": buildGrantsPayload()
-        ]
-        var metaPayload = meta
-        if !commitMessage.isEmpty { metaPayload["commit_message"] = commitMessage }
-        if !metaPayload.isEmpty { body["meta"] = metaPayload }
-        return body
+    /// Body for `POST /api/v1/prompts/id/{id}/update`.
+    func toUpdatePayload(commitMessage: String = "", isProduction: Bool = true) -> [String: Any] {
+        toCreatePayload(commitMessage: commitMessage, isProduction: isProduction)
+    }
+
+    /// Older builds of this app wrote `commit_message` into `meta`; drop it so it
+    /// isn't copied into every new version snapshot.
+    private var metaWithoutLegacyCommit: [String: Any] {
+        var m = meta
+        m.removeValue(forKey: "commit_message")
+        return m
     }
 
     /// Builds the access_grants array for the dedicated /access/update endpoint.
@@ -181,8 +182,10 @@ struct PromptVersion: Identifiable, Sendable {
         self.content = snapshot["content"] as? String ?? ""
         self.name = snapshot["name"] as? String ?? ""
         self.command = snapshot["command"] as? String ?? ""
+        // PromptHistoryModel.commit_message is top-level; fall back to the legacy
+        // location this app used to write (snapshot.meta.commit_message).
         let meta = snapshot["meta"] as? [String: Any] ?? [:]
-        self.commitMessage = meta["commit_message"] as? String
+        self.commitMessage = (json["commit_message"] as? String) ?? (meta["commit_message"] as? String)
 
         if let ts = json["created_at"] as? Double {
             self.createdAt = Date(timeIntervalSince1970: ts)
@@ -211,6 +214,13 @@ struct KnowledgeDetail: Identifiable, Sendable {
     let userId: String
     let createdAt: Date?
     var updatedAt: Date?
+    /// Server `write_access` for the current user. Owners, writers and (bypass) admins only.
+    var writeAccess: Bool = true
+    /// `meta.source == "external"` — a connected knowledge base. The server rejects every change.
+    var isExternal: Bool = false
+    var externalProvider: String?
+    /// Everything that can be edited (files, folders, text) — false for read-only / connected.
+    var canEdit: Bool { writeAccess && !isExternal }
 
     init(id: String = UUID().uuidString,
          name: String = "",
@@ -238,6 +248,11 @@ struct KnowledgeDetail: Identifiable, Sendable {
         self.name = name
         self.description = json["description"] as? String ?? ""
         self.userId = json["user_id"] as? String ?? ""
+        let meta = json["meta"] as? [String: Any] ?? [:]
+        self.isExternal = meta["source"] as? String == "external"
+        self.externalProvider = (meta["external"] as? [String: Any])?["provider"] as? String
+        // Absent on list payloads: assume writable; the detail endpoint always includes it.
+        self.writeAccess = json["write_access"] as? Bool ?? true
 
         // Parse access_grants array — merge read+write entries into one grant per user
         if let grantsArray = json["access_grants"] as? [[String: Any]] {
@@ -315,6 +330,20 @@ struct KnowledgeDetail: Identifiable, Sendable {
     }
 }
 
+// MARK: - Meta passthrough helper
+
+/// Decodes a JSON-encoded `meta` object kept for round-tripping. Server `meta`
+/// fields (e.g. `i18n`, `tags`, `has_user_valves`, future keys) that the editors
+/// don't render are preserved by merging edits over this base.
+func decodeOriginalMeta(_ data: Data?) -> [String: Any] {
+    data.flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] } ?? [:]
+}
+
+func encodeOriginalMeta(_ json: [String: Any]) -> Data? {
+    let meta = json["meta"] as? [String: Any] ?? [:]
+    return JSONSerialization.isValidJSONObject(meta) ? try? JSONSerialization.data(withJSONObject: meta) : nil
+}
+
 // MARK: - Skill Detail (full CRUD model)
 
 struct SkillDetail: Identifiable, Sendable {
@@ -328,6 +357,10 @@ struct SkillDetail: Identifiable, Sendable {
     let userId: String
     let createdAt: Date?
     var updatedAt: Date?
+    /// `meta.tags` (SkillMeta.tags).
+    var tags: [String] = []
+    /// Original server `meta` (JSON) — keeps `i18n` and future keys on save.
+    var originalMetaJSON: Data?
 
     init(id: String = UUID().uuidString,
          name: String = "",
@@ -363,6 +396,9 @@ struct SkillDetail: Identifiable, Sendable {
         self.content = json["content"] as? String ?? ""
         self.isActive = json["is_active"] as? Bool ?? true
         self.userId = json["user_id"] as? String ?? ""
+        let meta = json["meta"] as? [String: Any] ?? [:]
+        self.tags = (meta["tags"] as? [String]) ?? []
+        self.originalMetaJSON = encodeOriginalMeta(json)
 
         if let grantsArray = json["access_grants"] as? [[String: Any]] {
             let raw = grantsArray.compactMap { AccessGrant.fromJSON($0) }
@@ -388,27 +424,28 @@ struct SkillDetail: Identifiable, Sendable {
         }
     }
 
+    /// `meta` for create/update: original server meta with `tags` applied.
+    /// The server replaces `meta` wholesale (SkillForm default `SkillMeta()`),
+    /// so omitting it would wipe `tags` and `i18n`.
+    func buildMetaPayload() -> [String: Any] {
+        var meta = decodeOriginalMeta(originalMetaJSON)
+        meta["tags"] = tags
+        return meta
+    }
+
     func toCreatePayload() -> [String: Any] {
         return [
             "id": slug,
             "name": name,
             "description": description,
             "content": content,
+            "meta": buildMetaPayload(),
             "is_active": isActive,
             "access_grants": buildGrantsPayload()
         ]
     }
 
-    func toUpdatePayload() -> [String: Any] {
-        return [
-            "id": slug,
-            "name": name,
-            "description": description,
-            "content": content,
-            "is_active": isActive,
-            "access_grants": buildGrantsPayload()
-        ]
-    }
+    func toUpdatePayload() -> [String: Any] { toCreatePayload() }
 
     /// Builds the access_grants array for API payloads (same pattern as Knowledge/Prompts).
     func buildGrantsPayload() -> [[String: Any]] {
@@ -455,6 +492,8 @@ struct ToolDetail: Identifiable, Sendable {
     var userEmail: String?
     let createdAt: Date?
     var updatedAt: Date?
+    /// Original server `meta` (JSON) — keeps `i18n` and future keys on save.
+    var originalMetaJSON: Data?
 
     init(id: String = "",
          name: String = "",
@@ -505,6 +544,7 @@ struct ToolDetail: Identifiable, Sendable {
 
         // Parse meta (description + manifest)
         let meta = json["meta"] as? [String: Any] ?? [:]
+        self.originalMetaJSON = encodeOriginalMeta(json)
         self.description = meta["description"] as? String ?? ""
 
         if let manifestDict = meta["manifest"] as? [String: Any] {
@@ -545,31 +585,26 @@ struct ToolDetail: Identifiable, Sendable {
         }
     }
 
+    /// `meta` merged over the original so `i18n` and other keys survive.
+    /// (`manifest` and `has_user_valves` are recomputed by the server from the code.)
+    func buildMetaPayload() -> [String: Any] {
+        var meta = decodeOriginalMeta(originalMetaJSON)
+        meta["description"] = description
+        meta["manifest"] = manifest.toJSON()
+        return meta
+    }
+
     func toCreatePayload() -> [String: Any] {
         return [
             "id": id,
             "name": name,
             "content": content,
-            "meta": [
-                "description": description,
-                "manifest": manifest.toJSON()
-            ],
+            "meta": buildMetaPayload(),
             "access_grants": buildGrantsPayload()
         ]
     }
 
-    func toUpdatePayload() -> [String: Any] {
-        return [
-            "id": id,
-            "name": name,
-            "content": content,
-            "meta": [
-                "description": description,
-                "manifest": manifest.toJSON()
-            ],
-            "access_grants": buildGrantsPayload()
-        ]
-    }
+    func toUpdatePayload() -> [String: Any] { toCreatePayload() }
 
     func buildGrantsPayload() -> [[String: Any]] {
         var result: [[String: Any]] = []
@@ -695,6 +730,8 @@ struct WorkspaceToolItem: Identifiable, Sendable {
     var description: String?
     var version: String?
     var authorName: String?
+    /// Owner (`user_id`) — used for the Created by you / Shared with you filter.
+    var userId: String = ""
 
     init(id: String, name: String, description: String? = nil,
          version: String? = nil, authorName: String? = nil) {
@@ -715,6 +752,7 @@ struct WorkspaceToolItem: Identifiable, Sendable {
         let manifest = meta["manifest"] as? [String: Any] ?? [:]
         self.version = manifest["version"] as? String
         self.authorName = manifest["author"] as? String
+        self.userId = json["user_id"] as? String ?? ""
         // Fallback for description at root
         if self.description == nil {
             self.description = json["description"] as? String
@@ -737,6 +775,8 @@ struct SkillItem: Identifiable, Sendable {
     var name: String
     var description: String?
     var isActive: Bool
+    /// Owner (`user_id`) — used for the Created by you / Shared with you filter.
+    var userId: String = ""
 
     init(id: String, name: String, description: String? = nil, isActive: Bool = true) {
         self.id = id
@@ -752,6 +792,7 @@ struct SkillItem: Identifiable, Sendable {
         self.name = name
         self.description = json["description"] as? String
         self.isActive = json["is_active"] as? Bool ?? true
+        self.userId = json["user_id"] as? String ?? ""
     }
 }
 
@@ -857,25 +898,83 @@ struct SuggestionPrompt: Identifiable, Sendable, Equatable {
 // MARK: - Model Knowledge Entry
 
 /// An entry in meta.knowledge — can be a collection or a file.
-struct ModelKnowledgeEntry: Identifiable, Sendable {
+struct ModelKnowledgeEntry: Identifiable, @unchecked Sendable {
+    /// Stable list identity (server `id`, or the legacy collection name(s)).
     let id: String
     var name: String
     var description: String?
-    var type: EntryType
+    /// Server `type` string: "collection", "file", "note", "chat", "folder",
+    /// "text", "url", ... Unknown values are preserved verbatim.
+    var typeRaw: String
+    /// The full server object — kept so fields this app doesn't edit
+    /// (`context: "full"`, `legacy`, `collection_name(s)`) survive a save.
+    private(set) var raw: [String: Any]
 
-    enum EntryType: String, Sendable { case collection, file }
+    enum EntryType: String, Sendable { case collection, file, note, chat, folder, other }
+
+    var type: EntryType {
+        EntryType(rawValue: typeRaw) ?? (typeRaw.isEmpty ? .collection : .other)
+    }
 
     init(id: String, name: String, description: String? = nil, type: EntryType) {
-        self.id = id; self.name = name; self.description = description; self.type = type
+        self.id = id; self.name = name; self.description = description
+        self.typeRaw = type.rawValue
+        var r: [String: Any] = ["id": id, "name": name, "type": type.rawValue]
+        if let description, !description.isEmpty { r["description"] = description }
+        self.raw = r
     }
 
     init?(json: [String: Any]) {
-        guard let id = json["id"] as? String, let name = json["name"] as? String else { return nil }
-        self.id = id; self.name = name; self.description = json["description"] as? String
-        self.type = (json["type"] as? String) == "file" ? .file : .collection
+        let name = json["name"] as? String ?? ""
+        let collectionNames = json["collection_names"] as? [String]
+        // Mirrors ModelEditor.svelte: legacy entries carry collection_name(s) instead of an id.
+        guard let id = (json["id"] as? String)
+                ?? (json["collection_name"] as? String)
+                ?? collectionNames?.joined(separator: ",") else { return nil }
+        self.id = id
+        self.name = name.isEmpty ? id : name
+        self.description = json["description"] as? String
+        let t = json["type"] as? String ?? ""
+        // Legacy collection_names entries have no type — the web treats them as collections.
+        self.typeRaw = t.isEmpty && collectionNames != nil ? "collection" : t
+        self.raw = json
     }
 
-    var icon: String { type == .file ? "doc.text" : "cylinder.split.1x2" }
+    /// Reference stored in `meta.knowledge` — same keys the web keeps
+    /// (`toModelKnowledgeReference` in ModelEditor.svelte), empty values dropped.
+    func toJSON() -> [String: Any] {
+        let keys = ["id", "name", "type", "description", "context", "legacy", "collection_name", "collection_names"]
+        var out: [String: Any] = [:]
+        for k in keys {
+            guard let v = raw[k], !(v is NSNull) else { continue }
+            if let s = v as? String, s.isEmpty { continue }
+            out[k] = v
+        }
+        if out["type"] == nil, !typeRaw.isEmpty { out["type"] = typeRaw }
+        return out
+    }
+
+    var typeLabel: String {
+        switch type {
+        case .collection: return "Collection"
+        case .file: return "File"
+        case .note: return "Note"
+        case .chat: return "Chat"
+        case .folder: return "Folder"
+        case .other: return typeRaw.capitalized
+        }
+    }
+
+    var icon: String {
+        switch type {
+        case .file: return "doc.text"
+        case .collection: return "cylinder.split.1x2"
+        case .note: return "note.text"
+        case .chat: return "bubble.left"
+        case .folder: return "folder"
+        case .other: return "doc"
+        }
+    }
 }
 
 // MARK: - Function Item (lightweight model for /api/v1/functions/)
@@ -937,6 +1036,8 @@ struct FunctionDetail: Identifiable, Sendable {
     let userId: String
     let createdAt: Date?
     var updatedAt: Date?
+    /// Original server `meta` (JSON) — keeps `i18n`, `toggle` and other keys on save.
+    var originalMetaJSON: Data?
 
     init(id: String = "",
          name: String = "",
@@ -975,6 +1076,7 @@ struct FunctionDetail: Identifiable, Sendable {
         self.isGlobal = json["is_global"] as? Bool ?? false
 
         let meta = json["meta"] as? [String: Any] ?? [:]
+        self.originalMetaJSON = encodeOriginalMeta(json)
         self.description = meta["description"] as? String ?? ""
 
         if let manifestDict = meta["manifest"] as? [String: Any] {
@@ -1000,31 +1102,26 @@ struct FunctionDetail: Identifiable, Sendable {
         }
     }
 
+    /// `meta` merged over the original (FunctionMeta allows extra keys such as
+    /// `i18n` and `toggle`); the server replaces `meta` wholesale on update.
+    func buildMetaPayload() -> [String: Any] {
+        var meta = decodeOriginalMeta(originalMetaJSON)
+        meta["description"] = description
+        meta["manifest"] = manifest.toJSON()
+        return meta
+    }
+
     func toCreatePayload() -> [String: Any] {
         return [
             "id": id,
             "name": name,
             "type": type,
             "content": content,
-            "meta": [
-                "description": description,
-                "manifest": manifest.toJSON()
-            ]
+            "meta": buildMetaPayload()
         ]
     }
 
-    func toUpdatePayload() -> [String: Any] {
-        return [
-            "id": id,
-            "name": name,
-            "type": type,
-            "content": content,
-            "meta": [
-                "description": description,
-                "manifest": manifest.toJSON()
-            ]
-        ]
-    }
+    func toUpdatePayload() -> [String: Any] { toCreatePayload() }
 
     func toFunctionItem() -> FunctionItem? {
         var json: [String: Any] = [
@@ -1199,6 +1296,8 @@ struct ModelDetail: Identifiable, Sendable {
     /// manage (e.g. `i18n`, `background_image_url`) are preserved — mirrors the web
     /// editor, which mutates `info.meta` in place rather than rebuilding it.
     var originalMetaJSON: Data?
+    /// Original server `params` (JSON) — used by `toRawUpdatePayload`.
+    var originalParamsJSON: Data?
 
     // Default Features (meta.defaultFeatureIds)
     var defaultFeatureWebSearch: Bool
@@ -1246,6 +1345,8 @@ struct ModelDetail: Identifiable, Sendable {
     var advStreamResponse: Bool?
     var advStreamDeltaChunkSize: Int?
     var advFunctionCalling: String?
+    /// `params.compact_token_threshold` — context compaction trigger (nil = server default).
+    var advCompactTokenThreshold: Int?
     var advReasoningEffort: String?
     /// nil = Default (omit), true = Enabled, false = Disabled.
     /// When set to nil and advReasoningTagStart/End are also nil → Default (omit).
@@ -1316,7 +1417,7 @@ struct ModelDetail: Identifiable, Sendable {
         self.capCodeInterpreter = capCodeInterpreter; self.capTerminal = capTerminal; self.capUsage = capUsage
         self.capCitations = capCitations; self.capStatusUpdates = capStatusUpdates
         self.capMemory = capMemory; self.capBuiltinTools = capBuiltinTools
-        self.terminalId = terminalId; self.originalMetaJSON = nil
+        self.terminalId = terminalId; self.originalMetaJSON = nil; self.originalParamsJSON = nil
         self.defaultFeatureWebSearch = defaultFeatureWebSearch
         self.defaultFeatureImageGen = defaultFeatureImageGen
         self.defaultFeatureCodeInterpreter = defaultFeatureCodeInterpreter
@@ -1341,7 +1442,7 @@ struct ModelDetail: Identifiable, Sendable {
         self.advFrequencyPenalty = nil; self.advPresencePenalty = nil; self.advMirostat = nil
         self.advMirostatEta = nil; self.advMirostatTau = nil; self.advRepeatLastN = nil
         self.advTfsZ = nil; self.advRepeatPenalty = nil; self.advUseMmap = nil; self.advUseMlock = nil
-        self.advThink = nil; self.advFormat = nil; self.advNumKeep = nil; self.advNumCtx = nil
+        self.advThink = nil; self.advThinkCustom = nil; self.advFormat = nil; self.advNumKeep = nil; self.advNumCtx = nil
         self.advNumBatch = nil; self.advNumThread = nil; self.advNumGpu = nil; self.advKeepAlive = nil
     }
 
@@ -1370,6 +1471,9 @@ struct ModelDetail: Identifiable, Sendable {
         let meta = json["meta"] as? [String: Any] ?? [:]
         self.originalMetaJSON = JSONSerialization.isValidJSONObject(meta)
             ? try? JSONSerialization.data(withJSONObject: meta) : nil
+        let rawParams = json["params"] as? [String: Any] ?? [:]
+        self.originalParamsJSON = JSONSerialization.isValidJSONObject(rawParams)
+            ? try? JSONSerialization.data(withJSONObject: rawParams) : nil
         self.description = meta["description"] as? String
         self.profileImageURL = meta["profile_image_url"] as? String
         self.ttsVoice = (meta["tts"] as? [String: Any])?["voice"] as? String
@@ -1444,6 +1548,7 @@ struct ModelDetail: Identifiable, Sendable {
         self.advStreamResponse = params["stream_response"] as? Bool
         self.advStreamDeltaChunkSize = params["stream_delta_chunk_size"] as? Int
         self.advFunctionCalling = params["function_calling"] as? String
+        self.advCompactTokenThreshold = params["compact_token_threshold"] as? Int
         self.advReasoningEffort = params["reasoning_effort"] as? String
         // reasoning_tags can be: absent (Default), true (Enabled), false (Disabled),
         // or ["start","end"] (Custom)
@@ -1478,7 +1583,9 @@ struct ModelDetail: Identifiable, Sendable {
         self.advRepeatPenalty = params["repeat_penalty"] as? Double
         self.advUseMmap = params["use_mmap"] as? Bool
         self.advUseMlock = params["use_mlock"] as? Bool
+        // `think` may be a Bool or an effort level string ("low"/"medium"/"high").
         self.advThink = params["think"] as? Bool
+        self.advThinkCustom = params["think"] as? String
         self.advFormat = params["format"] as? String
         self.advNumKeep = params["num_keep"] as? Int
         self.advNumCtx = params["num_ctx"] as? Int
@@ -1490,6 +1597,7 @@ struct ModelDetail: Identifiable, Sendable {
         let knownParamKeys: Set<String> = [
             "system", "stream_response", "stream_delta_chunk_size", "function_calling",
             "reasoning_effort", "reasoning_tags", "reasoning_tag_start", "reasoning_tag_end",
+            "compact_token_threshold",
             "seed", "stop", "temperature", "logit_bias", "max_tokens", "top_k", "top_p",
             "min_p", "frequency_penalty", "presence_penalty", "mirostat", "mirostat_eta",
             "mirostat_tau", "repeat_last_n", "tfs_z", "repeat_penalty", "use_mmap", "use_mlock",
@@ -1512,6 +1620,7 @@ struct ModelDetail: Identifiable, Sendable {
         if let v = advStreamResponse { p["stream_response"] = v }
         if let v = advStreamDeltaChunkSize { p["stream_delta_chunk_size"] = v }
         if let v = advFunctionCalling, !v.isEmpty { p["function_calling"] = v }
+        if let v = advCompactTokenThreshold, v > 0 { p["compact_token_threshold"] = v }
         if let v = advReasoningEffort, !v.isEmpty { p["reasoning_effort"] = v }
         // reasoning_tags: Custom=[start,end], Enabled=true, Disabled=false, Default=omit
         if let s = advReasoningTagStart, let e = advReasoningTagEnd {
@@ -1537,7 +1646,11 @@ struct ModelDetail: Identifiable, Sendable {
         if let v = advRepeatPenalty { p["repeat_penalty"] = v }
         if let v = advUseMmap { p["use_mmap"] = v }
         if let v = advUseMlock { p["use_mlock"] = v }
-        if let v = advThink { p["think"] = v }
+        if let level = advThinkCustom?.trimmingCharacters(in: .whitespaces), !level.isEmpty {
+            p["think"] = level
+        } else if let v = advThink {
+            p["think"] = v
+        }
         if let v = advFormat, !v.isEmpty { p["format"] = v }
         if let v = advNumKeep { p["num_keep"] = v }
         if let v = advNumCtx { p["num_ctx"] = v }
@@ -1605,15 +1718,21 @@ struct ModelDetail: Identifiable, Sendable {
         if let tid = terminalId, !tid.isEmpty { meta["terminalId"] = tid }
         else { meta.removeValue(forKey: "terminalId") }
 
-        meta["knowledge"] = knowledgeItems.map { ["type": $0.type.rawValue, "id": $0.id, "name": $0.name] }
-        meta["toolIds"] = toolIds
-        meta["filterIds"] = filterIds
-        meta["defaultFilterIds"] = defaultFilterIds
-        meta["actionIds"] = actionIds
-        meta["skillIds"] = skillIds
-        meta["suggestion_prompts"] = suggestionPrompts.isEmpty
+        // Web removes the key entirely when empty.
+        if knowledgeItems.isEmpty { meta.removeValue(forKey: "knowledge") }
+        else { meta["knowledge"] = knowledgeItems.map { $0.toJSON() } }
+        // Web ModelEditor deletes these keys when empty instead of storing [].
+        for (key, ids) in [("toolIds", toolIds), ("filterIds", filterIds),
+                           ("defaultFilterIds", defaultFilterIds), ("actionIds", actionIds),
+                           ("skillIds", skillIds)] {
+            if ids.isEmpty { meta.removeValue(forKey: key) } else { meta[key] = ids }
+        }
+        let nonEmptyPrompts = suggestionPrompts.filter {
+            !$0.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
+        meta["suggestion_prompts"] = nonEmptyPrompts.isEmpty
             ? NSNull()
-            : suggestionPrompts.map { $0.toJSON() }
+            : nonEmptyPrompts.map { $0.toJSON() }
 
         // TTS voice — web UI reads meta.tts.voice. Drop the legacy key this app used to write.
         meta.removeValue(forKey: "tts_voice")
@@ -1637,6 +1756,20 @@ struct ModelDetail: Identifiable, Sendable {
     }
 
     func toUpdatePayload() -> [String: Any] { toCreatePayload() }
+
+    /// Re-sends the record exactly as the server returned it (no editor rebuild).
+    /// Omits `access_grants` so the server leaves existing grants untouched, and
+    /// omits `base_model_id` when nil so the server keeps the stored value.
+    func toRawUpdatePayload() -> [String: Any] {
+        var body: [String: Any] = [
+            "id": id, "name": name,
+            "meta": decodeOriginalMeta(originalMetaJSON),
+            "params": originalParamsJSON.flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] } ?? [:],
+            "is_active": isActive
+        ]
+        if let base = baseModelId { body["base_model_id"] = base }
+        return body
+    }
 
     func buildGrantsPayload() -> [[String: Any]] {
         var result: [[String: Any]] = []

@@ -72,66 +72,32 @@ actor StreamingPipeline {
         ))
     }
 
-    /// Recognizes structural details tags, including nested blocks and quoted
-    /// attributes. An unfinished structural tag is not sent to the prose view.
+    /// Finds the end of the last closed `<details>` block and the start of an
+    /// unfinished one (or a partially-arrived tag) using the shared
+    /// `DetailsBlockScanner` — the same rules the message parser uses, so
+    /// tool calls, thinking, code interpreter and plain sections (filter output,
+    /// model-written blocks) are all held back until closed and never leak raw.
     private static func detailsBoundaries(in text: String) -> (
         closedEnd: String.Index?, openStart: String.Index?
     ) {
-        var cursor = text.startIndex
-        var blockStart: String.Index?
-        var closedEnd: String.Index?
-        var depth = 0
-        while let start = text[cursor...].firstIndex(of: "<") {
-            cursor = text.index(after: start)
-            let remainder = text[start...]
-            let closing = remainder.prefix(9).lowercased() == "</details"
-            let name = closing ? "</details" : "<details"
-            guard remainder.prefix(name.count).lowercased() == name else { continue }
-            let nameEnd = text.index(start, offsetBy: name.count)
-            guard nameEnd == text.endIndex || text[nameEnd].isWhitespace || text[nameEnd] == ">" else {
+        guard text.utf8.contains(UInt8(ascii: "<")) else { return (nil, nil) }
+        var closedEnd: Int?
+        var openStart: Int?
+        for piece in DetailsBlockScanner.scan(text) {
+            switch piece {
+            case .text:
                 continue
-            }
-            var end = nameEnd
-            var quote: Character?
-            while end < text.endIndex {
-                let character = text[end]
-                if let current = quote {
-                    if character == "\\" {
-                        end = text.index(after: end)
-                        if end < text.endIndex { end = text.index(after: end) }
-                        continue
-                    }
-                    if character == current { quote = nil }
-                } else if character == "\"" || character == "'" {
-                    quote = character
-                } else if character == ">" {
-                    break
-                }
-                end = text.index(after: end)
-            }
-            guard end < text.endIndex else {
-                return (closedEnd, blockStart ?? (closing ? nil : start))
-            }
-            cursor = text.index(after: end)
-            if closing {
-                if depth > 0 {
-                    depth -= 1
-                    if depth == 0 {
-                        closedEnd = cursor
-                        blockStart = nil
-                    }
-                }
-            } else if depth > 0 {
-                depth += 1
-            } else {
-                let tag = text[start..<cursor].lowercased()
-                if tag.contains("type=\"reasoning\"") || tag.contains("type='reasoning'")
-                    || tag.contains("type=\"tool_calls\"") || tag.contains("type='tool_calls'") {
-                    blockStart = start
-                    depth = 1
-                }
+            case .block(let block):
+                if block.isClosed { closedEnd = block.byteRange.upperBound } else { openStart = block.byteRange.lowerBound }
+            case .partialTag(let range):
+                openStart = range.lowerBound
             }
         }
-        return (closedEnd, blockStart)
+        // Scanner offsets always fall on ASCII bytes or whole zero-width
+        // characters, so they are valid String indices.
+        func index(_ offset: Int?) -> String.Index? {
+            offset.map { text.utf8.index(text.utf8.startIndex, offsetBy: $0) }
+        }
+        return (index(closedEnd), index(openStart))
     }
 }

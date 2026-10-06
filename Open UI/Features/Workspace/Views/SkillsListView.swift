@@ -56,6 +56,7 @@ struct SkillsListView: View {
     @Environment(\.theme) private var theme
 
     @State private var searchText = ""
+    @State private var viewFilter: WorkspaceViewFilter = .all
     /// Drives the "New Skill" create sheet — always opened with existingSkill: nil.
     @State private var showCreateSheet = false
     /// Drives the "Edit Skill" sheet — set to a fetched SkillDetail when a row is tapped.
@@ -87,9 +88,11 @@ struct SkillsListView: View {
 
     private var filtered: [SkillItem] {
         guard let manager else { return [] }
-        if searchText.isEmpty { return manager.skills }
+        let me = dependencies.authViewModel.currentUser?.id
+        let scoped = manager.skills.filter { viewFilter.matches(ownerId: $0.userId, currentUserId: me) }
+        if searchText.isEmpty { return scoped }
         let q = searchText.lowercased()
-        return manager.skills.filter {
+        return scoped.filter {
             $0.name.lowercased().contains(q) ||
             ($0.description ?? "").lowercased().contains(q)
         }
@@ -111,6 +114,9 @@ struct SkillsListView: View {
     private func content(manager: SkillsManager) -> some View {
         VStack(spacing: 0) {
             searchBar
+            HStack { WorkspaceViewFilterMenu(selection: $viewFilter); Spacer() }
+                .padding(.horizontal, Spacing.md)
+                .padding(.bottom, Spacing.xs)
 
             if manager.isLoading && manager.skills.isEmpty {
                 loadingView

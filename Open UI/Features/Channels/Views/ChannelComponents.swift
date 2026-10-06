@@ -1185,16 +1185,8 @@ struct ThreadDetailSheet: View {
     // BUG-011 fix: Thread attachment processing uses threadAttachments
     private func processThreadPhotos(_ items: [PhotosPickerItem]) async {
         for item in items {
-            if let data = try? await item.loadTransferable(type: Data.self) {
-                let image = UIImage(data: data)
-                let thumbnail = image.map { Image(uiImage: $0) }
-                let resized = FileAttachmentService.downsampleForUpload(data: data, image: image)
-                let attachment = ChatAttachment(
-                    type: .image,
-                    name: "Photo_\(Int(Date.now.timeIntervalSince1970)).jpg",
-                    thumbnail: thumbnail,
-                    data: resized
-                )
+            if let data = try? await item.loadTransferable(type: Data.self),
+               let attachment = FileAttachmentService.makeImageAttachment(data: data) {
                 viewModel.threadAttachments.append(attachment)
                 viewModel.uploadAttachmentImmediately(attachmentId: attachment.id, isThread: true)
             }

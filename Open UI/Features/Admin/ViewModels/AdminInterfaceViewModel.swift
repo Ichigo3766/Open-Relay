@@ -70,26 +70,32 @@ final class AdminInterfaceViewModel {
         isLoading = false
     }
 
+    /// `DEFAULT_INTERFACE_SETTINGS` lives in the admin config
+    /// (`GET /api/v1/auths/admin/config`), the same place the web UI's General
+    /// settings read it from.
     private func loadDefaultInterfaceSettings(api: APIClient) async {
         do {
-            // DEFAULT_INTERFACE_SETTINGS is stored under ui.default_interface_settings in the
-            // server config. Load it via GET /api/v1/configs/ui which returns the full ui config.
-            let json = try await api.network.requestJSON(path: "/api/v1/configs/ui")
-            // The value is nested under the "default_interface_settings" key
-            if let nested = json["default_interface_settings"],
-               let data = try? JSONSerialization.data(withJSONObject: nested, options: [.prettyPrinted]),
+            let auth = try await api.getAdminAuthConfig()
+            let value = auth.defaultInterfaceSettings
+            if !value.isEmpty,
+               let data = try? JSONSerialization.data(withJSONObject: value, options: [.prettyPrinted, .sortedKeys]),
                let str = String(data: data, encoding: .utf8) {
                 defaultInterfaceSettingsJSON = str
             } else {
                 defaultInterfaceSettingsJSON = "{}"
             }
+            loadedDefaultInterfaceJSON = defaultInterfaceSettingsJSON
             defaultInterfaceError = nil
         } catch {
-            // Endpoint may not exist on older servers — silently ignore
             defaultInterfaceSettingsJSON = "{}"
-            logger.debug("Default interface settings endpoint unavailable: \(error.localizedDescription)")
+            loadedDefaultInterfaceJSON = nil
+            defaultInterfaceError = APIError.from(error).errorDescription ?? error.localizedDescription
+            logger.error("Failed to load default interface settings: \(error.localizedDescription)")
         }
     }
+
+    /// The JSON text as loaded — used to skip the save when nothing changed.
+    private var loadedDefaultInterfaceJSON: String?
 
     // MARK: - Save
 
@@ -128,19 +134,33 @@ final class AdminInterfaceViewModel {
         isSaving = false
     }
 
+    /// Saves through `POST /api/v1/auths/admin/config`. The full admin config is
+    /// re-fetched first and re-sent with only `DEFAULT_INTERFACE_SETTINGS` changed,
+    /// so no other admin setting is touched.
     private func saveDefaultInterfaceSettings(api: APIClient) async {
         let trimmed = defaultInterfaceSettingsJSON.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty, trimmed != "{}" else { return }
-        guard let data = trimmed.data(using: .utf8),
-              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            defaultInterfaceError = "Invalid JSON"
-            return
+        // Only save if loading succeeded and the text actually changed.
+        guard let loaded = loadedDefaultInterfaceJSON,
+              trimmed != loaded.trimmingCharacters(in: .whitespacesAndNewlines) else { return }
+        let value: [String: Any]
+        if trimmed.isEmpty {
+            value = [:]
+        } else {
+            guard let data = trimmed.data(using: .utf8),
+                  let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                defaultInterfaceError = "Default interface settings must be a JSON object."
+                return
+            }
+            value = json
         }
         do {
-            _ = try await api.network.requestJSON(path: "/api/v1/configs/interface", method: .post, body: json)
+            var auth = try await api.getAdminAuthConfig()
+            auth.defaultInterfaceSettings = value
+            _ = try await api.updateAdminAuthConfig(auth)
+            loadedDefaultInterfaceJSON = trimmed
             defaultInterfaceError = nil
         } catch {
-            defaultInterfaceError = error.localizedDescription
+            defaultInterfaceError = APIError.from(error).errorDescription ?? error.localizedDescription
             logger.error("Failed to save default interface settings: \(error.localizedDescription)")
         }
     }

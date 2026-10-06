@@ -1,5 +1,6 @@
 import Foundation
 import AVFoundation
+import UIKit
 import os.log
 
 // MARK: - DictationState
@@ -24,7 +25,7 @@ enum DictationState: Sendable, Equatable {
 /// Using `AVAudioRecorder` for both modes means the waveform meter is
 /// always live and continuous — no segment restart gaps.
 @MainActor @Observable
-final class DictationService {
+final class DictationService: NSObject, AVAudioRecorderDelegate {
 
     // MARK: - State
 
@@ -80,6 +81,10 @@ final class DictationService {
     private var recordingSession = UUID()
     private var isCurrentContext: (() -> Bool)?
     private var currentDraft: (() -> String?)?
+    @ObservationIgnored private var lifecycleObservers: [NSObjectProtocol] = []
+    @ObservationIgnored private var transcriptionBackgroundTask: UIBackgroundTaskIdentifier = .invalid
+    private var attemptEnteredBackground = false
+    private var resumeOnForeground: Bool? // Preserve an explicit on-device fallback.
 
     var savedAudioURL: URL? { pendingRecording.map(recoveryStore.audioURL) }
     var showsRecovery: Bool { pendingRecording != nil && state != .listening && state != .requesting }
@@ -90,7 +95,21 @@ final class DictationService {
 
     init(recoveryStore: DictationRecoveryStore? = nil) {
         self.recoveryStore = recoveryStore ?? .shared
+        super.init()
+        lifecycleObservers = [UIApplication.didEnterBackgroundNotification, UIApplication.didBecomeActiveNotification].map { name in
+            NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                Task { @MainActor [weak self] in
+                    guard let self else { return }
+                    if name == UIApplication.didEnterBackgroundNotification, self.attemptID != nil {
+                        self.attemptEnteredBackground = true
+                    }
+                    self.resumeTranscriptionIfActive()
+                }
+            }
+        }
     }
+
+    deinit { lifecycleObservers.forEach(NotificationCenter.default.removeObserver) }
 
     func bind(to context: DictationContext, isCurrent: @escaping () -> Bool,
               draft: @escaping () -> String?, deliver: @escaping (String) -> Void) {
@@ -158,6 +177,9 @@ final class DictationService {
     private var recorder: AVAudioRecorder?
     private var meteringTimer: Timer?
     private var durationTimer: Timer?
+    /// Lock Screen / Dynamic Island recording indicator (timestamps only — no content).
+    private let liveActivity = DictationLiveActivityController()
+    private var recordingObservers: [NSObjectProtocol] = []
 
     // MARK: - Engine Preference
 
@@ -197,7 +219,8 @@ final class DictationService {
 
     private func finishRecording() {
         stopTimers()
-        recordingDuration = recorder?.currentTime ?? recordingDuration
+        // currentTime is only valid while recording; interruptions can reset it.
+        if let recorder, recorder.isRecording { recordingDuration = recorder.currentTime }
         recorder?.stop()
         recorder = nil
         intensity = 0
@@ -212,6 +235,8 @@ final class DictationService {
     }
 
     func cancelAttempt() {
+        resumeOnForeground = nil
+        endTranscriptionBackgroundTask()
         attemptID = nil
         attemptTask?.cancel()
         // Keep the task until it exits, even if a backend ignores cancellation.
@@ -247,13 +272,36 @@ final class DictationService {
         let authorization = client?.network.authToken.map { "Bearer " + $0 }
         let localService = onDeviceASRService
         let useDevice = onDevice || pending.engine != "server"
+        // Auto-stop can finish recording while locked; don't start GPU work there.
+        if useDevice, UIApplication.shared.applicationState != .active {
+            resumeOnForeground = true
+            state = .processing
+            return
+        }
         let id = UUID()
         attemptID = id
+        resumeOnForeground = nil
+        attemptEnteredBackground = UIApplication.shared.applicationState != .active
         activeEngine = useDevice ? "device" : "server"
         state = .processing
+        if !useDevice {
+            transcriptionBackgroundTask = UIApplication.shared.beginBackgroundTask(withName: "DictationTranscription") { [weak self] in
+                Task { @MainActor [weak self] in
+                    guard let self, self.attemptID == id else { return }
+                    self.resumeOnForeground = false
+                    self.attemptTask?.cancel()
+                    self.endTranscriptionBackgroundTask()
+                }
+            }
+        }
         attemptTask = Task { [weak self] in
             guard let self else { return }
-            defer { self.attemptTask = nil }
+            defer {
+                self.attemptTask = nil
+                if self.attemptID == id { self.attemptID = nil }
+                self.endTranscriptionBackgroundTask()
+                self.resumeTranscriptionIfActive()
+            }
             do {
                 try Task.checkCancellation()
                 guard self.context == context, isCurrentContext?() == true else {
@@ -291,9 +339,31 @@ final class DictationService {
                 state = .idle
             } catch {
                 guard attemptID == id, self.context == context, pendingRecording?.id == pending.id else { return }
-                fail(error)
+                let networkError = error as NSError
+                let interruptedConnection = !useDevice && attemptEnteredBackground && networkError.domain == NSURLErrorDomain
+                    && [NSURLErrorNetworkConnectionLost, NSURLErrorTimedOut].contains(networkError.code)
+                if case ASRError.backgroundInterrupted = error {
+                    resumeOnForeground = useDevice
+                } else if interruptedConnection {
+                    resumeOnForeground = false
+                } else if resumeOnForeground == nil {
+                    fail(error)
+                }
             }
         }
+    }
+
+    private func resumeTranscriptionIfActive() {
+        guard let onDevice = resumeOnForeground, attemptTask == nil,
+              UIApplication.shared.applicationState == .active else { return }
+        resumeOnForeground = nil
+        retry(onDevice: onDevice)
+    }
+
+    private func endTranscriptionBackgroundTask() {
+        guard transcriptionBackgroundTask != .invalid else { return }
+        UIApplication.shared.endBackgroundTask(transcriptionBackgroundTask)
+        transcriptionBackgroundTask = .invalid
     }
 
     /// Cancels dictation without producing any transcript.
@@ -381,6 +451,13 @@ final class DictationService {
             let url = recoveryStore.audioURL(pending)
             recorder = try AVAudioRecorder(url: url, settings: settings)
             recorder?.isMeteringEnabled = true
+            recorder?.delegate = self
+            guard recorder?.prepareToRecord() == true else {
+                throw CocoaError(.fileWriteUnknown)
+            }
+            // Keep the active file accessible after locking, just like its recovery metadata.
+            try FileManager.default.setAttributes(
+                [.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication], ofItemAtPath: url.path)
             guard recorder?.record() == true else {
                 state = .error("Failed to start recording")
                 onError?("Failed to start recording")
@@ -394,6 +471,8 @@ final class DictationService {
         }
 
         state = .listening
+        observeRecordingInterruptions()
+        liveActivity.start(at: Date().addingTimeInterval(-(recorder?.currentTime ?? 0)))
         startDurationTimer()
         startMeteringTimer()
         logger.info("Recording started (\(self.activeEngine) mode)")
@@ -404,15 +483,59 @@ final class DictationService {
         onError?(error.localizedDescription)
     }
 
+    // MARK: - Interruptions
+
+    /// Phone calls, Siri, or a media-services reset stop the recorder; save the audio
+    /// so it can still be transcribed instead of silently losing the recording.
+    private func observeRecordingInterruptions() {
+        recordingObservers.forEach(NotificationCenter.default.removeObserver)
+        let sessionID = recordingSession
+        recordingObservers = [AVAudioSession.interruptionNotification,
+                              AVAudioSession.mediaServicesWereResetNotification].map { name in
+            NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak self] notification in
+                if name == AVAudioSession.interruptionNotification,
+                   (notification.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt)
+                    != AVAudioSession.InterruptionType.began.rawValue { return }
+                Task { @MainActor [weak self] in
+                    guard self?.recordingSession == sessionID else { return }
+                    self?.recordingInterrupted()
+                }
+            }
+        }
+    }
+
+    private func recordingInterrupted() {
+        guard state == .listening else { return }
+        finishRecording()
+        guard state == .error("Recording saved") else { return }
+        state = .error("Recording interrupted · Audio saved")
+        onError?("Recording interrupted · Audio saved")
+    }
+
+    nonisolated func audioRecorderDidFinishRecording(_ recorder: AVAudioRecorder, successfully flag: Bool) {
+        Task { @MainActor [weak self] in
+            guard let self, self.recorder === recorder else { return }
+            self.recordingInterrupted()
+        }
+    }
+
+    nonisolated func audioRecorderEncodeErrorDidOccur(_ recorder: AVAudioRecorder, error: Error?) {
+        audioRecorderDidFinishRecording(recorder, successfully: false)
+    }
+
     // MARK: - Timers
 
     private func startDurationTimer() {
         durationTimer?.invalidate()
-        let start = Date()
         durationTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in
                 guard let self, self.state == .listening else { return }
-                self.recordingDuration = Date().timeIntervalSince(start)
+                guard let recorder = self.recorder, recorder.isRecording else {
+                    self.recordingInterrupted()
+                    return
+                }
+                self.recordingDuration = recorder.currentTime
+                self.liveActivity.confirmRecording()
             }
         }
     }
@@ -448,6 +571,9 @@ final class DictationService {
     }
 
     private func stopTimers() {
+        liveActivity.end()
+        recordingObservers.forEach(NotificationCenter.default.removeObserver)
+        recordingObservers.removeAll()
         meteringTimer?.invalidate()
         meteringTimer = nil
         durationTimer?.invalidate()

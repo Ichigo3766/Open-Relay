@@ -8,6 +8,7 @@ struct PendingApprovalView: View {
     @State private var isChecking = false
     @State private var pulseAnimation = false
     @State private var checkResult: CheckResult?
+    @State private var adminContact: String?
 
     private enum CheckResult {
         case approved
@@ -91,6 +92,18 @@ struct PendingApprovalView: View {
                             title: "Check Back Later",
                             subtitle: "Once approved, tap the button below to check your status and get started."
                         )
+
+                        // Web parity (AccountPending.svelte): who to contact, if the admin shares it.
+                        if let contact = adminContact {
+                            Divider()
+                                .background(theme.divider)
+                            infoRow(
+                                icon: "envelope",
+                                iconColor: theme.brandPrimary,
+                                title: "Contact Admin",
+                                subtitle: contact
+                            )
+                        }
                     }
                     .padding(Spacing.lg)
                     .background(
@@ -166,6 +179,13 @@ struct PendingApprovalView: View {
         .onAppear {
             appeared = true
             pulseAnimation = true
+        }
+        .task {
+            // 400 when the admin has turned off "Show Admin Details" — then nothing is shown.
+            if let details = try? await viewModel.adminDetailsForPendingScreen() {
+                let parts = [details.name, details.email].compactMap { $0?.isEmpty == false ? $0 : nil }
+                adminContact = parts.isEmpty ? nil : parts.joined(separator: " · ")
+            }
         }
     }
 

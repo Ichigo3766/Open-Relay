@@ -42,6 +42,7 @@ struct DrawerFolderRow: View {
     var depth: Int = 0
 
     @Environment(\.theme) private var theme
+    @Environment(AppDependencyContainer.self) private var dependencies: AppDependencyContainer?
     @State private var showDeleteConfirmation = false
     @State private var chatToDelete: Conversation?
 
@@ -101,6 +102,9 @@ struct DrawerFolderRow: View {
                             .scaledFont(size: 14, weight: isActiveWorkspace ? .semibold : .medium, context: .list)
                             .foregroundStyle(isActiveWorkspace ? theme.brandPrimary : theme.textPrimary)
                             .lineLimit(1)
+
+                        // Web RecursiveFolder: unread count next to the name.
+                        FolderUnreadBadge(folder: folder)
 
                         Spacer()
 
@@ -179,6 +183,9 @@ struct DrawerFolderRow: View {
                 } label: {
                     Label("Share", systemImage: "square.and.arrow.up")
                 }
+
+                // Web FolderMenu: Mark all as read.
+                MarkFolderReadMenuItem(folder: folder, apiClient: dependencies?.apiClient)
 
                 Divider()
 
@@ -500,6 +507,10 @@ struct DrawerFolderRow: View {
                             .cornerRadius(1)
                             .padding(.leading, 22 + CGFloat(depth) * 16)
 
+                        if let store = dependencies?.activeChatStore {
+                            ChatUnreadDot(conversation: chat, activeChatStore: store)
+                        }
+
                         Text(chat.title)
                             .scaledFont(size: 14)
                             .fontWeight(activeConversationId == chat.id ? .semibold : .regular)
@@ -585,6 +596,10 @@ struct DrawerFolderRow: View {
                             systemImage: chat.pinned ? "pin.slash" : "pin"
                         )
                     }
+
+                    // Mark as Unread (web ChatMenu)
+                    MarkUnreadMenuItem(conversation: chat, apiClient: dependencies?.apiClient,
+                                       isOpen: activeConversationId == chat.id)
 
                     // Clone
                     Button {

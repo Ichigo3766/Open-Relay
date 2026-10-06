@@ -1,6 +1,10 @@
 import SwiftUI
 import UniformTypeIdentifiers
 
+enum AdminModelBulk: String {
+    case enableAll = "Enable All", disableAll = "Disable All", showAll = "Show All", hideAll = "Hide All"
+}
+
 // MARK: - AdminModelsSettingsView
 
 struct AdminModelsSettingsView: View {
@@ -14,7 +18,15 @@ struct AdminModelsSettingsView: View {
     @State private var exportData: Data? = nil
     @State private var importError: String? = nil
     @State private var editingModelDetail: ModelDetail? = nil
+    /// True when the base model has no workspace DB record yet — saving creates one.
+    @State private var editingIsNewBaseRecord = false
     @State private var isLoadingEditId: String? = nil
+    // Web `viewOption` / search (Models.svelte): base | workspace | enabled | disabled |
+    // visible | hidden | public | private | selected | pinned | "" (all).
+    @State private var viewOption = ""
+    @State private var searchValue = ""
+    @State private var showResetConfirm = false
+    @State private var pendingBulk: AdminModelBulk?
     @State private var ollamaManagerURLIdx: Int? = nil
 
     var body: some View {
@@ -40,6 +52,9 @@ struct AdminModelsSettingsView: View {
                             .padding(.bottom, Spacing.sm)
                     }
 
+                    filterRow
+                        .padding(.horizontal, Spacing.screenPadding)
+                        .padding(.bottom, Spacing.sm)
                     modelsList
                 }
                 Spacer(minLength: 80)
@@ -85,11 +100,41 @@ struct AdminModelsSettingsView: View {
             NavigationStack {
                 ModelEditorView(
                     existingModel: detail,
+                    isNewBaseRecord: editingIsNewBaseRecord,
                     onSave: { _ in
                         Task { await viewModel.loadAll() }
                     }
                 )
             }
+        }
+        .confirmationDialog(
+            pendingBulk.map { "\($0.rawValue)?" } ?? "",
+            isPresented: .init(get: { pendingBulk != nil }, set: { if !$0 { pendingBulk = nil } }),
+            titleVisibility: .visible
+        ) {
+            Button(pendingBulk?.rawValue ?? "") {
+                if let action = pendingBulk {
+                    pendingBulk = nil
+                    let subset = filteredModels
+                    Task {
+                        switch action {
+                        case .enableAll: await viewModel.setActiveForAll(true, in: subset)
+                        case .disableAll: await viewModel.setActiveForAll(false, in: subset)
+                        case .showAll: await viewModel.setHiddenForAll(false, in: subset)
+                        case .hideAll: await viewModel.setHiddenForAll(true, in: subset)
+                        }
+                    }
+                }
+            }
+            Button("Cancel", role: .cancel) { pendingBulk = nil }
+        } message: {
+            Text("Applies to the \(filteredModels.count) models currently shown.")
+        }
+        .confirmationDialog("Reset All Models?", isPresented: $showResetConfirm, titleVisibility: .visible) {
+            Button("Reset All", role: .destructive) { Task { await viewModel.resetAllModels() } }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This will delete all models including custom models and cannot be undone.")
         }
         // Import file picker
         .fileImporter(
@@ -218,9 +263,72 @@ struct AdminModelsSettingsView: View {
 
     // MARK: - Models List
 
+    /// Mirrors the web's `filteredModels` (search by name + view filter).
+    private var filteredModels: [ModelItem] {
+        let q = searchValue.trimmingCharacters(in: .whitespaces).lowercased()
+        return viewModel.models.filter { m in
+            if !q.isEmpty, !m.name.lowercased().contains(q) { return false }
+            switch viewOption {
+            case "base": return m.baseModelId == nil
+            case "workspace": return m.baseModelId != nil
+            case "enabled": return m.isActive
+            case "disabled": return !m.isActive
+            case "visible": return !m.isHidden
+            case "hidden": return m.isHidden
+            case "public": return m.isPublic
+            case "private": return !m.isPublic
+            case "selected": return viewModel.defaultModelId.split(separator: ",").map(String.init).contains(m.id)
+            case "pinned": return viewModel.defaultPinnedModelIds.contains(m.id)
+            default: return true
+            }
+        }
+    }
+
+    private static let viewOptions: [(String, String)] = [
+        ("", "All"), ("base", "Base Models"), ("workspace", "Workspace Models"),
+        ("enabled", "Enabled"), ("disabled", "Disabled"), ("visible", "Visible"), ("hidden", "Hidden"),
+        ("public", "Public"), ("private", "Private"), ("selected", "Selected"), ("pinned", "Pinned")
+    ]
+
+    private var filterRow: some View {
+        VStack(spacing: Spacing.xs) {
+            HStack(spacing: 8) {
+                Image(systemName: "magnifyingglass").foregroundStyle(theme.textTertiary)
+                TextField("Search Models", text: $searchValue)
+                    .scaledFont(size: 14).autocorrectionDisabled().textInputAutocapitalization(.never)
+                if !searchValue.isEmpty {
+                    Button { searchValue = "" } label: { Image(systemName: "xmark.circle.fill").foregroundStyle(theme.textTertiary) }
+                }
+                Menu {
+                    ForEach(Self.viewOptions, id: \.0) { opt in
+                        Button { viewOption = opt.0 } label: {
+                            if viewOption == opt.0 { Label(opt.1, systemImage: "checkmark") } else { Text(opt.1) }
+                        }
+                    }
+                } label: {
+                    Image(systemName: viewOption.isEmpty ? "line.3.horizontal.decrease.circle" : "line.3.horizontal.decrease.circle.fill")
+                        .foregroundStyle(viewOption.isEmpty ? theme.textTertiary : theme.brandPrimary)
+                }
+                Menu {
+                    Button("Enable All", systemImage: "checkmark.circle") { pendingBulk = .enableAll }
+                    Button("Disable All", systemImage: "pause.circle") { pendingBulk = .disableAll }
+                    Button("Show All", systemImage: "eye") { pendingBulk = .showAll }
+                    Button("Hide All", systemImage: "eye.slash") { pendingBulk = .hideAll }
+                    Divider()
+                    Button("Reset All Models", systemImage: "trash", role: .destructive) { showResetConfirm = true }
+                } label: {
+                    Image(systemName: "ellipsis.circle").foregroundStyle(theme.textTertiary)
+                }
+            }
+            .padding(.horizontal, Spacing.md).padding(.vertical, 8)
+            .background(theme.surfaceContainer.opacity(0.6))
+            .clipShape(RoundedRectangle(cornerRadius: CornerRadius.md, style: .continuous))
+        }
+    }
+
     private var modelsList: some View {
         LazyVStack(spacing: 0) {
-            ForEach(viewModel.models, id: \.id) { model in
+            ForEach(filteredModels, id: \.id) { model in
                 modelRow(model)
                 Divider()
                     .background(theme.inputBorder.opacity(0.3))
@@ -327,10 +435,18 @@ struct AdminModelsSettingsView: View {
                 }
 
                 Button {
-                    // Copy a shareable link to the model
+                    Task { await viewModel.toggleModelPrivacy(id: model.id) }
+                } label: {
+                    Label(model.isPublic ? "Make Private" : "Make Public",
+                          systemImage: model.isPublic ? "lock" : "globe")
+                }
+
+                Button {
+                    // Same link the web copies: <server>/?model=<id> (`models=` never selected the model).
                     if let base = dependencies.apiClient?.baseURL {
-                        let link = "\(base)/?models=\(model.id)"
-                        UIPasteboard.general.string = link
+                        let trimmed = base.hasSuffix("/") ? String(base.dropLast()) : base
+                        let enc = model.id.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? model.id
+                        UIPasteboard.general.string = "\(trimmed)/?model=\(enc)"
                     }
                 } label: {
                     Label("Copy Link", systemImage: "link")
@@ -362,16 +478,23 @@ struct AdminModelsSettingsView: View {
         isLoadingEditId = model.id
         defer { isLoadingEditId = nil }
         do {
-            let detail = try await api.getWorkspaceModelDetail(id: model.id)
-            editingModelDetail = detail
+            if let detail = try await api.getWorkspaceModelRecord(id: model.id) {
+                editingIsNewBaseRecord = false
+                editingModelDetail = detail
+            } else {
+                // Connection base model without a DB record (the web admin's
+                // upsertModelHandler creates one on save). It is NOT based on another
+                // model, so `baseModelId` stays nil.
+                editingIsNewBaseRecord = true
+                editingModelDetail = ModelDetail(
+                    id: model.id,
+                    name: model.name,
+                    baseModelId: nil,
+                    description: model.description
+                )
+            }
         } catch {
-            // If not found as workspace model, create a default detail for it
-            editingModelDetail = ModelDetail(
-                id: model.id,
-                name: model.name,
-                baseModelId: model.baseModelId ?? model.id,
-                description: model.description
-            )
+            viewModel.errorMessage = error.localizedDescription
         }
     }
 
@@ -380,9 +503,8 @@ struct AdminModelsSettingsView: View {
     private func exportSingleModel(id: String) async {
         guard let api = dependencies.apiClient else { return }
         do {
-            let detail = try await api.getWorkspaceModelDetail(id: id)
-            let payload = detail.toUpdatePayload()
-            let data = try JSONSerialization.data(withJSONObject: [payload], options: .prettyPrinted)
+            let exported = try await api.exportWorkspaceModels(ids: [id])
+            let data = try JSONSerialization.data(withJSONObject: exported, options: .prettyPrinted)
             exportData = data
         } catch {
             viewModel.errorMessage = error.localizedDescription
@@ -440,12 +562,15 @@ struct AdminModelsManageSheet: View {
     @Environment(AppDependencyContainer.self) private var dependencies
     let viewModel: AdminModelsSettingsViewModel
     var onManageOllama: (Int) -> Void = { _ in }
+    @State private var providerConnections: [ProviderConnectionRef] = []
+    @State private var managingProvider: ProviderConnectionRef?
 
     var body: some View {
         NavigationStack {
             ScrollView {
                 VStack(spacing: Spacing.lg) {
                     ollamaSection
+                    if !providerConnections.isEmpty { providerSection }
                     Spacer(minLength: 40)
                 }
                 .padding(Spacing.screenPadding)
@@ -460,6 +585,57 @@ struct AdminModelsManageSheet: View {
                         .tint(.secondary)
                 }
             }
+            .task {
+                // Web ManageModelsModal: OpenAI-compatible connections whose provider is
+                // llama.cpp or LM Studio can manage models from Open WebUI.
+                guard let cfg = try? await dependencies.apiClient?.getOpenAIConfig(), cfg.enableOpenAIAPI else { return }
+                providerConnections = cfg.orderedConnections
+                    .filter { $0.config.supportsModelManagement }
+                    .map { ProviderConnectionRef(idx: $0.index, url: $0.url, provider: $0.config.providerType) }
+            }
+            .sheet(item: $managingProvider) { ref in
+                ProviderModelsSheet(urlIdx: ref.idx, url: ref.url, provider: ref.provider)
+                    .presentationDetents([.large])
+            }
+        }
+    }
+
+    struct ProviderConnectionRef: Identifiable, Hashable {
+        let idx: Int
+        let url: String
+        let provider: String
+        var id: Int { idx }
+    }
+
+    private var providerSection: some View {
+        VStack(alignment: .leading, spacing: Spacing.sm) {
+            Text("llama.cpp / LM Studio")
+                .scaledFont(size: 13, weight: .semibold)
+                .foregroundStyle(theme.textTertiary)
+                .textCase(.uppercase)
+            VStack(spacing: 0) {
+                ForEach(providerConnections) { ref in
+                    HStack {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(ref.provider == "lmstudio" ? "LM Studio" : "llama.cpp")
+                                .scaledFont(size: 14, weight: .medium).foregroundStyle(theme.textPrimary)
+                            Text(ref.url).scaledFont(size: 12).foregroundStyle(theme.textTertiary)
+                                .lineLimit(1).truncationMode(.middle)
+                        }
+                        Spacer()
+                        Button("Manage") { managingProvider = ref }
+                            .scaledFont(size: 13, weight: .medium)
+                            .foregroundStyle(theme.brandPrimary)
+                            .buttonStyle(.plain)
+                    }
+                    .padding(Spacing.md)
+                    if ref.idx != providerConnections.last?.idx { Divider().padding(.horizontal, Spacing.md) }
+                }
+            }
+            .background(theme.surfaceContainer)
+            .clipShape(RoundedRectangle(cornerRadius: CornerRadius.md, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: CornerRadius.md, style: .continuous)
+                .strokeBorder(theme.cardBorder, lineWidth: 0.5))
         }
     }
 

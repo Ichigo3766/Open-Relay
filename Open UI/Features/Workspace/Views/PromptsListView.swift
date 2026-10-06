@@ -55,6 +55,7 @@ struct PromptsListView: View {
     @Environment(\.theme) private var theme
 
     @State private var searchText = ""
+    @State private var viewFilter: WorkspaceViewFilter = .all
     @State private var selectedTag: String?
     @State private var showEditor = false
     @State private var editingPrompt: PromptDetail?
@@ -83,7 +84,8 @@ struct PromptsListView: View {
 
     private var filteredPrompts: [PromptItem] {
         guard let manager else { return [] }
-        var list = manager.prompts
+        let me = dependencies.authViewModel.currentUser?.id
+        var list = manager.prompts.filter { viewFilter.matches(ownerId: $0.userId, currentUserId: me) }
         if !searchText.isEmpty {
             let q = searchText.lowercased()
             list = list.filter {
@@ -112,6 +114,9 @@ struct PromptsListView: View {
         VStack(spacing: 0) {
             // Search bar
             searchBar
+            HStack { WorkspaceViewFilterMenu(selection: $viewFilter); Spacer() }
+                .padding(.horizontal, Spacing.md)
+                .padding(.bottom, Spacing.xs)
 
             // Tag filter pills
             if !manager.allTags.isEmpty {

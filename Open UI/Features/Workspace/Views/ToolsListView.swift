@@ -21,6 +21,7 @@ struct ToolsListView: View {
     @Environment(\.theme) private var theme
 
     @State private var searchText = ""
+    @State private var viewFilter: WorkspaceViewFilter = .all
     @State private var showCreateSheet = false
     @State private var editingTool: ToolDetail? = nil
     @State private var deletingTool: WorkspaceToolItem? = nil
@@ -51,9 +52,11 @@ struct ToolsListView: View {
 
     private var filtered: [WorkspaceToolItem] {
         guard let manager else { return [] }
-        if searchText.isEmpty { return manager.tools }
+        let me = dependencies.authViewModel.currentUser?.id
+        let scoped = manager.tools.filter { viewFilter.matches(ownerId: $0.userId, currentUserId: me) }
+        if searchText.isEmpty { return scoped }
         let q = searchText.lowercased()
-        return manager.tools.filter {
+        return scoped.filter {
             $0.name.lowercased().contains(q) ||
             ($0.description ?? "").lowercased().contains(q) ||
             ($0.authorName ?? "").lowercased().contains(q)
@@ -76,6 +79,9 @@ struct ToolsListView: View {
     private func content(manager: ToolsManager) -> some View {
         VStack(spacing: 0) {
             searchBar
+            HStack { WorkspaceViewFilterMenu(selection: $viewFilter); Spacer() }
+                .padding(.horizontal, Spacing.md)
+                .padding(.bottom, Spacing.xs)
 
             if manager.isLoading && manager.tools.isEmpty {
                 loadingView

@@ -819,6 +819,10 @@ struct ToolEditorView: View {
                           || toolId.trimmingCharacters(in: .whitespaces).isEmpty)
             }
         }
+        // Web ToolkitEditor: Black-format the Python code (server-side; admins only).
+        ToolbarItem(placement: .topBarTrailing) {
+            FormatPythonButton(code: $content)
+        }
     }
 
     // MARK: - Access Control Actions
@@ -1157,7 +1161,7 @@ struct ToolEditorView: View {
 
         do {
             if let existing = existingTool {
-                let detail = ToolDetail(
+                var detail = ToolDetail(
                     id: trimmedId,
                     name: trimmedName,
                     content: content,
@@ -1170,6 +1174,7 @@ struct ToolEditorView: View {
                     createdAt: existing.createdAt,
                     updatedAt: existing.updatedAt
                 )
+                detail.originalMetaJSON = existing.originalMetaJSON
                 var updated = try await manager.updateTool(detail)
 
                 // Update access grants via dedicated endpoint

@@ -39,13 +39,15 @@ final class KnowledgeManager {
             let items: [KnowledgeItem] = raw.compactMap { entry -> KnowledgeItem? in
                 guard let id = entry["id"] as? String,
                       let name = entry["name"] as? String else { return nil }
-                return KnowledgeItem(
+                var item = KnowledgeItem(
                     id: id,
                     name: name,
                     description: entry["description"] as? String,
                     type: .collection,
                     fileCount: nil
                 )
+                item.isExternal = (entry["meta"] as? [String: Any])?["source"] as? String == "external"
+                return item
             }
             knowledgeBases = items
 
@@ -151,174 +153,103 @@ final class KnowledgeManager {
         return raw.compactMap { KnowledgeFileEntry(json: $0) }
     }
 
-    /// Uploads multiple files in parallel (each with server-side processing), then
-    /// adds them all to the knowledge base individually.
-    ///
-    /// The batch-add endpoint (`/files/batch/add`) triggers a broken server-side
-    /// `process_files_batch()` call on some OpenWebUI versions, so we use the
-    /// individual `/file/add` endpoint instead. Uploads still run in parallel for speed.
+    /// Uploads multiple files in parallel. Each upload is processed and linked to the
+    /// knowledge base (into `directoryId`) by the server, like the web client.
+    /// One failing file (e.g. "Duplicate content") does not stop the others; failures are
+    /// collected and thrown together at the end.
     ///
     /// - Parameters:
     ///   - files: Array of (data, fileName) tuples to upload.
     ///   - knowledgeId: The knowledge base to add files to.
-    ///   - onProgress: Called with a value 0…1 as uploads + adds complete.
+    ///   - directoryId: Target folder, or nil for the top level.
+    ///   - onProgress: Called with a value 0…1 as uploads complete.
     func uploadAndAddFilesBatch(
         files: [(data: Data, fileName: String)],
         knowledgeId: String,
+        directoryId: String? = nil,
         onProgress: ((Double) -> Void)? = nil
     ) async throws {
         guard !files.isEmpty else { return }
 
         let total = Double(files.count)
         let counter = ProgressCounter()
+        var failures: [String] = []
 
-        // Upload all files in parallel (each with ?process=true for server-side indexing),
-        // then immediately add each to the knowledge base as soon as its upload finishes.
-        try await withThrowingTaskGroup(of: Void.self) { group in
+        await withTaskGroup(of: String?.self) { group in
             for file in files {
                 group.addTask { [self] in
-                    // Upload with processing so the server extracts text/embeddings
-                    let (fileId, _) = try await self.apiClient.uploadFile(
-                        data: file.data,
-                        fileName: file.fileName,
-                        knowledgeId: knowledgeId
-                    )
-                    // Add to knowledge base
-                    _ = try await self.apiClient.addFileToKnowledge(
-                        knowledgeId: knowledgeId,
-                        fileId: fileId
-                    )
+                    var failure: String? = nil
+                    do {
+                        _ = try await self.apiClient.uploadFile(
+                            data: file.data, fileName: file.fileName,
+                            knowledgeId: knowledgeId, directoryId: directoryId)
+                    } catch {
+                        failure = "\(file.fileName): \(error.localizedDescription)"
+                    }
                     let completed = await counter.increment()
                     onProgress?(Double(completed) / total)
+                    return failure
                 }
             }
-            for try await _ in group {}
+            for await failure in group { if let failure { failures.append(failure) } }
         }
 
         onProgress?(1.0)
-
-        // Sync list entry with updated file count
-        if let idx = knowledgeBases.firstIndex(where: { $0.id == knowledgeId }) {
-            let count = (try? await apiClient.getKnowledgeFileCount(knowledgeId)) ?? 0
-            knowledgeBases[idx] = KnowledgeItem(
-                id: knowledgeBases[idx].id,
-                name: knowledgeBases[idx].name,
-                description: knowledgeBases[idx].description,
-                type: knowledgeBases[idx].type,
-                fileCount: count
-            )
+        await refreshFileCount(knowledgeId)
+        if !failures.isEmpty {
+            throw KnowledgeUploadError(failures: failures, total: files.count)
         }
     }
 
-    /// Uploads a file and then adds it to the knowledge base.
-    /// Passes `knowledgeId` as metadata so the server can associate the file during upload.
-    @discardableResult
+    /// Re-reads the file count so the list row stays accurate after uploads.
+    private func refreshFileCount(_ knowledgeId: String) async {
+        guard let idx = knowledgeBases.firstIndex(where: { $0.id == knowledgeId }) else { return }
+        let count = (try? await apiClient.getKnowledgeFileCount(knowledgeId)) ?? knowledgeBases[idx].fileCount ?? 0
+        var item = KnowledgeItem(
+            id: knowledgeBases[idx].id, name: knowledgeBases[idx].name,
+            description: knowledgeBases[idx].description, type: knowledgeBases[idx].type, fileCount: count)
+        item.isExternal = knowledgeBases[idx].isExternal
+        knowledgeBases[idx] = item
+    }
+
+    /// Uploads one file. The server links it to the knowledge base (into `directoryId`)
+    /// as part of the upload, exactly like the web client — no separate /file/add call.
     func uploadAndAddFile(
         fileData: Data,
         fileName: String,
         knowledgeId: String,
+        directoryId: String? = nil,
         onUploaded: ((String) -> Void)? = nil
-    ) async throws -> KnowledgeDetail {
-        // 1. Upload the file, passing knowledge_id metadata so the server indexes it correctly.
-        let (fileId, _) = try await apiClient.uploadFile(
-            data: fileData,
-            fileName: fileName,
-            knowledgeId: knowledgeId,
-            onUploaded: onUploaded
-        )
-        // 2. Add to knowledge base
-        let json = try await apiClient.addFileToKnowledge(
-            knowledgeId: knowledgeId,
-            fileId: fileId
-        )
-        guard let updated = KnowledgeDetail(json: json) else {
-            throw KnowledgeManagerError.invalidResponse
-        }
-        // Sync list entry with new file count
-        if let idx = knowledgeBases.firstIndex(where: { $0.id == knowledgeId }) {
-            knowledgeBases[idx] = updated.toKnowledgeItem()
-        }
-        return updated
+    ) async throws {
+        _ = try await apiClient.uploadFile(
+            data: fileData, fileName: fileName, knowledgeId: knowledgeId,
+            directoryId: directoryId, onUploaded: onUploaded)
+        await refreshFileCount(knowledgeId)
     }
 
-    /// Scrapes a web page and adds its content as a text file to the knowledge base.
-    ///
-    /// Flow:
-    /// 1. POST /api/v1/retrieval/process/web?process=false → get scraped text
-    /// 2. Upload text as a .txt file (with knowledge_id metadata)
-    /// 3. POST /api/v1/knowledge/{id}/file/add
-    @discardableResult
-    func addWebPage(url: String, knowledgeId: String) async throws -> KnowledgeDetail {
-        // 1. Scrape the web page
+    /// Scrapes a web page and stores its text as a file in the knowledge base.
+    /// 1. POST /api/v1/retrieval/process/web?process=false → scraped text
+    /// 2. Upload the text as a .txt (server links it via `knowledge_id` metadata)
+    func addWebPage(url: String, knowledgeId: String, directoryId: String? = nil) async throws {
         let content = try await apiClient.processWebPage(url: url)
-
-        // 2. Derive a filename from the URL
         let host = URL(string: url)?.host ?? "webpage"
-        let sanitized = host.replacingOccurrences(of: "www.", with: "")
-        let fileName = "\(sanitized).txt"
-
-        // 3. Upload as a text file
-        guard let fileData = content.data(using: .utf8) else {
-            throw KnowledgeManagerError.invalidResponse
-        }
-        let (fileId, _) = try await apiClient.uploadFile(
-            data: fileData,
-            fileName: fileName,
-            knowledgeId: knowledgeId
-        )
-
-        // 4. Add to knowledge base
-        let json = try await apiClient.addFileToKnowledge(
-            knowledgeId: knowledgeId,
-            fileId: fileId
-        )
-        guard let updated = KnowledgeDetail(json: json) else {
-            throw KnowledgeManagerError.invalidResponse
-        }
-        if let idx = knowledgeBases.firstIndex(where: { $0.id == knowledgeId }) {
-            knowledgeBases[idx] = updated.toKnowledgeItem()
-        }
-        return updated
+        let fileName = "\(host.replacingOccurrences(of: "www.", with: "")).txt"
+        guard let fileData = content.data(using: .utf8) else { throw KnowledgeManagerError.invalidResponse }
+        _ = try await apiClient.uploadFile(
+            data: fileData, fileName: fileName, knowledgeId: knowledgeId, directoryId: directoryId)
+        await refreshFileCount(knowledgeId)
     }
 
-    /// Creates a plain-text file from `text` and adds it to the knowledge base.
-    ///
-    /// Flow:
-    /// 1. Encode text as UTF-8 bytes
-    /// 2. Upload as a .txt file (with knowledge_id metadata)
-    /// 3. POST /api/v1/knowledge/{id}/file/add
-    @discardableResult
-    func addTextContent(
-        text: String,
-        title: String,
-        knowledgeId: String
-    ) async throws -> KnowledgeDetail {
-        guard let fileData = text.data(using: .utf8) else {
-            throw KnowledgeManagerError.invalidResponse
-        }
-        // Build a safe filename from the title
+    /// Stores typed text as a .txt file in the knowledge base.
+    func addTextContent(text: String, title: String, knowledgeId: String, directoryId: String? = nil) async throws {
+        guard let fileData = text.data(using: .utf8) else { throw KnowledgeManagerError.invalidResponse }
         let safe = title.trimmingCharacters(in: .whitespaces)
             .components(separatedBy: .init(charactersIn: "/\\:*?\"<>|"))
             .joined(separator: "_")
         let fileName = safe.isEmpty ? "content.txt" : "\(safe).txt"
-
-        let (fileId, _) = try await apiClient.uploadFile(
-            data: fileData,
-            fileName: fileName,
-            knowledgeId: knowledgeId
-        )
-
-        let json = try await apiClient.addFileToKnowledge(
-            knowledgeId: knowledgeId,
-            fileId: fileId
-        )
-        guard let updated = KnowledgeDetail(json: json) else {
-            throw KnowledgeManagerError.invalidResponse
-        }
-        if let idx = knowledgeBases.firstIndex(where: { $0.id == knowledgeId }) {
-            knowledgeBases[idx] = updated.toKnowledgeItem()
-        }
-        return updated
+        _ = try await apiClient.uploadFile(
+            data: fileData, fileName: fileName, knowledgeId: knowledgeId, directoryId: directoryId)
+        await refreshFileCount(knowledgeId)
     }
 
     // MARK: - Access Grants
@@ -407,5 +338,15 @@ enum KnowledgeManagerError: LocalizedError {
         switch self {
         case .invalidResponse: return "The server returned an unexpected response."
         }
+    }
+}
+
+/// One or more files in a batch failed to upload or process.
+struct KnowledgeUploadError: LocalizedError {
+    let failures: [String]
+    let total: Int
+    var errorDescription: String? {
+        "\(failures.count) of \(total) file\(total == 1 ? "" : "s") failed:\n" + failures.prefix(4).joined(separator: "\n")
+            + (failures.count > 4 ? "\n…" : "")
     }
 }

@@ -1,3 +1,4 @@
+import UniformTypeIdentifiers
 import SwiftUI
 
 // MARK: - Users Sub-Tab
@@ -114,7 +115,7 @@ struct AdminConsoleView: View {
                 case .analytics:
                     AdminAnalyticsView()
                 case .evaluations:
-                    AdminFeedbackView()
+                    AdminEvaluationsView()
                 case .functions:
                     AdminFunctionsView()
                 case .settings:
@@ -727,6 +728,8 @@ struct AddUserSheet: View {
     @Bindable var viewModel: AdminViewModel
     @Environment(\.dismiss) private var dismiss
     @Environment(\.theme) private var theme
+    @State private var showCSVPicker = false
+    @State private var csvMessage: String?
 
     var body: some View {
         NavigationStack {
@@ -758,6 +761,32 @@ struct AddUserSheet: View {
                             .scaledFont(size: 12, weight: .medium)
                             .foregroundStyle(theme.error)
                     }
+                }
+
+                Section {
+                    Button { showCSVPicker = true } label: {
+                        Label("Import from CSV", systemImage: "tablecells")
+                    }
+                    if let csvMessage {
+                        Text(csvMessage).scaledFont(size: 12).foregroundStyle(theme.textSecondary)
+                    }
+                } footer: {
+                    Text("Columns: name, email, password, role (admin, user or pending). The first row is a header.")
+                }
+            }
+            .fileImporter(isPresented: $showCSVPicker, allowedContentTypes: [.commaSeparatedText, .plainText]) { result in
+                guard case .success(let url) = result else { return }
+                let accessed = url.startAccessingSecurityScopedResource()
+                defer { if accessed { url.stopAccessingSecurityScopedResource() } }
+                guard let text = try? String(contentsOf: url, encoding: .utf8) else {
+                    csvMessage = "Could not read that file."
+                    return
+                }
+                Task {
+                    let r = await viewModel.importUsersCSV(text)
+                    csvMessage = "Imported \(r.imported) user\(r.imported == 1 ? "" : "s")."
+                        + (r.errors.isEmpty ? "" : "\n" + r.errors.prefix(5).joined(separator: "\n"))
+                    if r.errors.isEmpty && r.imported > 0 { Haptics.notify(.success); dismiss() }
                 }
             }
             .navigationTitle("Add User")

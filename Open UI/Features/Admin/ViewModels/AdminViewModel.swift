@@ -337,6 +337,48 @@ final class AdminViewModel {
     }
 
     /// Creates a new user on the server.
+    /// Result of a CSV import.
+    struct CSVImportResult { var imported = 0; var errors: [String] = [] }
+
+    /// Web format (AddUserModal): header row, then `name,email,password,role` where role is
+    /// admin | user | pending. Rows are added 10 at a time; bad rows are reported, not fatal.
+    func importUsersCSV(_ text: String) async -> CSVImportResult {
+        guard let api = apiClient else { return CSVImportResult(errors: ["Not connected."]) }
+        var result = CSVImportResult()
+        var valid: [(row: Int, form: AdminAddUserForm)] = []
+        let rows = text.replacingOccurrences(of: "\r", with: "").components(separatedBy: "\n")
+        for (idx, line) in rows.enumerated() where idx > 0 {
+            if line.trimmingCharacters(in: .whitespaces).isEmpty { continue }
+            let c = line.components(separatedBy: ",").map { $0.trimmingCharacters(in: .whitespaces) }
+            guard c.count == 4, ["admin", "user", "pending"].contains(c[3].lowercased()) else {
+                result.errors.append("Row \(idx + 1): invalid format.")
+                continue
+            }
+            valid.append((idx, AdminAddUserForm(name: c[0], email: c[1], password: c[2],
+                                                role: c[3].lowercased(), profileImageURL: "/user.png")))
+        }
+        isAddingUser = true
+        var start = 0
+        while start < valid.count {
+            let batch = Array(valid[start..<min(start + 10, valid.count)])
+            await withTaskGroup(of: (Int, AdminUser?, String?).self) { group in
+                for item in batch {
+                    group.addTask {
+                        do { return (item.row, try await api.addAdminUser(form: item.form), nil) }
+                        catch { return (item.row, nil, error.localizedDescription) }
+                    }
+                }
+                for await (row, user, err) in group {
+                    if let user { users.insert(user, at: 0); result.imported += 1 }
+                    else if let err { result.errors.append("Row \(row + 1): \(err)") }
+                }
+            }
+            start += 10
+        }
+        isAddingUser = false
+        return result
+    }
+
     func addUser() async {
         guard let api = apiClient else { return }
 

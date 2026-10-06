@@ -2,17 +2,20 @@
 //  LockScreenWidget.swift
 //  OpenUIWidgets
 //
-//  Lock-screen and StandBy accessories for Open Relay.
-//  All three accessory families are provided so the user can choose
-//  whichever fits their lock-screen layout.
+//  Lock Screen accessories for Open Relay, styled after Apple's own
+//  Lock Screen widgets (system text styles, `AccessoryWidgetBackground`,
+//  single-tint SF Symbols that follow the user's Lock Screen colour).
 //
-//  Every accessory deep-links to openui://new-chat.
-//  • accessoryCircular  — circular icon badge
-//  • accessoryRectangular — icon + two lines of text
-//  • accessoryInline   — small inline text label
+//  • LockScreenWidget  — "New Chat" (circular / rectangular / inline)
+//  • VoiceLockScreenWidget  — "Voice" (circular)
+//  • CameraLockScreenWidget — "Camera" (circular)
+//
+//  Taps are handled with `.widgetURL(_:)` — the only reliable way to open the
+//  app from a Lock Screen accessory. (Interactive `Button(intent:)` with an
+//  extension-only `OpenURLIntent` silently did nothing on tap.) The URLs are
+//  routed by `handleDeepLink` in `Open_UIApp.swift`.
 //
 
-import AppIntents
 import SwiftUI
 import WidgetKit
 
@@ -47,17 +50,19 @@ struct LockScreenEntry: TimelineEntry {
     let date: Date
 }
 
-// MARK: - Widget Configuration
+// MARK: - Widget Configurations
 
+/// "New Chat" — the primary Lock Screen widget. Keeps the original `kind`
+/// so widgets users have already placed keep working after updating.
 struct LockScreenWidget: Widget {
     static let kind: String = "com.openui.openui.LockScreenWidget"
 
     var body: some WidgetConfiguration {
-        StaticConfiguration(kind: Self.kind, provider: LockScreenProvider()) { entry in
-            LockScreenEntryView(entry: entry)
+        StaticConfiguration(kind: Self.kind, provider: LockScreenProvider()) { _ in
+            NewChatAccessoryView()
         }
-        .configurationDisplayName("Open Relay")
-        .description("Tap to start a new AI chat from your lock screen.")
+        .configurationDisplayName("New Chat")
+        .description("Start a new chat with Open Relay.")
         .supportedFamilies([
             .accessoryCircular,
             .accessoryRectangular,
@@ -66,109 +71,154 @@ struct LockScreenWidget: Widget {
     }
 }
 
-// MARK: - Entry View Dispatcher
+/// "Voice" — one tap into a voice call.
+struct VoiceLockScreenWidget: Widget {
+    static let kind: String = "com.openui.openui.VoiceLockScreenWidget"
 
-struct LockScreenEntryView: View {
-    @Environment(\.widgetFamily) private var family
-    let entry: LockScreenEntry
-
-    var body: some View {
-        switch family {
-        case .accessoryCircular:
-            AccessoryCircularView()
-        case .accessoryRectangular:
-            AccessoryRectangularView()
-        case .accessoryInline:
-            AccessoryInlineView()
-        default:
-            AccessoryCircularView()
+    var body: some WidgetConfiguration {
+        StaticConfiguration(kind: Self.kind, provider: LockScreenProvider()) { _ in
+            CircularActionView(symbol: "waveform", accessibilityText: "Start Voice Call")
+                .widgetURL(OpenUIURL.voiceCall)
         }
+        .configurationDisplayName("Voice")
+        .description("Start a voice call with Open Relay.")
+        .supportedFamilies([.accessoryCircular])
     }
 }
 
-// MARK: - accessoryCircular
+/// "Camera" — new chat with the camera already open.
+struct CameraLockScreenWidget: Widget {
+    static let kind: String = "com.openui.openui.CameraLockScreenWidget"
 
-/// Circular badge: tinted background with the chat SF Symbol.
-/// Tapping launches openui://new-chat.
-private struct AccessoryCircularView: View {
-    var body: some View {
-        Button(intent: NewChatWidgetIntent()) {
-            ZStack {
-                // System fills the circle with the lock-screen accent colour
-                // in accented/vibrant modes — we let containerBackground handle it.
-                Image(systemName: "bubble.left.and.text.bubble.right.fill")
-                    .font(.system(size: 18, weight: .medium))
-                    .symbolRenderingMode(.hierarchical)
-                    .widgetAccentable()
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+    var body: some WidgetConfiguration {
+        StaticConfiguration(kind: Self.kind, provider: LockScreenProvider()) { _ in
+            CircularActionView(symbol: "camera.fill", accessibilityText: "Camera Chat")
+                .widgetURL(OpenUIURL.cameraChat)
         }
-        .buttonStyle(.plain)
-        .containerBackground(.fill.tertiary, for: .widget)
+        .configurationDisplayName("Camera")
+        .description("Snap a photo and ask Open Relay about it.")
+        .supportedFamilies([.accessoryCircular])
+    }
+}
+
+// MARK: - New Chat Views
+
+/// Picks the right layout for each accessory family. The whole widget is a
+/// single tap target that opens `openui://new-chat`.
+private struct NewChatAccessoryView: View {
+    @Environment(\.widgetFamily) private var family
+
+    var body: some View {
+        Group {
+            switch family {
+            case .accessoryRectangular:
+                NewChatRectangularView()
+            case .accessoryInline:
+                NewChatInlineView()
+            default:
+                CircularActionView(symbol: "plus.bubble.fill", accessibilityText: "New Chat")
+            }
+        }
+        .widgetURL(OpenUIURL.newChat)
+    }
+}
+
+// MARK: - Shared Circular Accessory
+
+/// Circular accessory in the system style: the adaptive Lock Screen backdrop
+/// with a single centred SF Symbol that picks up the user's Lock Screen tint.
+private struct CircularActionView: View {
+    let symbol: String
+    let accessibilityText: String
+
+    var body: some View {
+        ZStack {
+            AccessoryWidgetBackground()
+            Image(systemName: symbol)
+                .font(.system(size: 22, weight: .semibold))
+                .symbolRenderingMode(.hierarchical)
+                .widgetAccentable()
+        }
+        .containerBackground(for: .widget) { Color.clear }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(accessibilityText)
+        .accessibilityAddTraits(.isButton)
     }
 }
 
 // MARK: - accessoryRectangular
 
-/// Horizontal pill: icon on the left, app name + subtitle on the right.
-private struct AccessoryRectangularView: View {
+/// Laid out like Apple's Calendar / Reminders accessories: a small tinted
+/// app caption on top, a headline, then a secondary line.
+private struct NewChatRectangularView: View {
     var body: some View {
-        Button(intent: NewChatWidgetIntent()) {
-            HStack(spacing: 8) {
+        VStack(alignment: .leading, spacing: 1) {
+            Label {
+                Text("Open Relay")
+            } icon: {
                 Image(systemName: "bubble.left.and.text.bubble.right.fill")
-                    .font(.system(size: 22, weight: .medium))
-                    .symbolRenderingMode(.hierarchical)
-                    .widgetAccentable()
-
-                VStack(alignment: .leading, spacing: 1) {
-                    Text("Open Relay")
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundStyle(.primary)
-                        .widgetAccentable()
-                    Text("New Chat")
-                        .font(.system(size: 11, weight: .regular))
-                        .foregroundStyle(.secondary)
-                }
-
-                Spacer()
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+            .font(.caption2.weight(.semibold))
+            .textCase(.uppercase)
+            .widgetAccentable()
+
+            Text("New Chat")
+                .font(.headline)
+
+            Text("Ask anything…")
+                .font(.caption)
+                .foregroundStyle(.secondary)
         }
-        .buttonStyle(.plain)
-        .containerBackground(.fill.tertiary, for: .widget)
+        .lineLimit(1)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+        .containerBackground(for: .widget) { Color.clear }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Open Relay, New Chat")
+        .accessibilityAddTraits(.isButton)
     }
 }
 
 // MARK: - accessoryInline
 
-/// Single-line text accessory shown in the lock screen clock area.
-private struct AccessoryInlineView: View {
+/// Single line above the clock. Falls back to a shorter label when space is tight.
+private struct NewChatInlineView: View {
     var body: some View {
-        Button(intent: NewChatWidgetIntent()) {
-            Label("Open Relay", systemImage: "bubble.left.and.text.bubble.right.fill")
-                .widgetAccentable()
+        ViewThatFits {
+            Label("Ask Open Relay", systemImage: "plus.bubble.fill")
+            Label("New Chat", systemImage: "plus.bubble.fill")
         }
-        .buttonStyle(.plain)
-        .containerBackground(.clear, for: .widget)
+        .containerBackground(for: .widget) { Color.clear }
     }
 }
 
 // MARK: - Previews
 
-#Preview("Circular", as: .accessoryCircular) {
+#Preview("New Chat · Circular", as: .accessoryCircular) {
     LockScreenWidget()
 } timeline: {
     LockScreenEntry(date: .now)
 }
 
-#Preview("Rectangular", as: .accessoryRectangular) {
+#Preview("New Chat · Rectangular", as: .accessoryRectangular) {
     LockScreenWidget()
 } timeline: {
     LockScreenEntry(date: .now)
 }
 
-#Preview("Inline", as: .accessoryInline) {
+#Preview("New Chat · Inline", as: .accessoryInline) {
     LockScreenWidget()
+} timeline: {
+    LockScreenEntry(date: .now)
+}
+
+#Preview("Voice", as: .accessoryCircular) {
+    VoiceLockScreenWidget()
+} timeline: {
+    LockScreenEntry(date: .now)
+}
+
+#Preview("Camera", as: .accessoryCircular) {
+    CameraLockScreenWidget()
 } timeline: {
     LockScreenEntry(date: .now)
 }

@@ -25,21 +25,6 @@ struct OpenUIWidgetsControl: ControlWidget {
     }
 }
 
-// MARK: - Control Intent
-
-struct OpenNewChatControlIntent: AppIntent {
-    static var title: LocalizedStringResource = "New Chat"
-    static var description = IntentDescription("Open a new chat in Open Relay.")
-    static var openAppWhenRun: Bool = true
-    // Prevent this Control Center-only intent from appearing in the Shortcuts app.
-    // The main app's NewChatIntent (in AppIntentsService.swift) is the canonical shortcut.
-    static var isDiscoverable: Bool = false
-
-    func perform() async throws -> some IntentResult & OpensIntent {
-        // Open the app via the deep link URL, which triggers the .onOpenURL
-        // handler in Open_UIApp.swift — the same path used by the home screen widget.
-        // This is far more reliable than the cross-process UserDefaults relay, which
-        // had a race condition where the main app might read before the value was set.
-        return .result(opensIntent: OpenURLIntent(URL(string: "openui://new-chat")!))
-    }
-}
+// `OpenNewChatControlIntent` lives in `Open UI/Shared/Widgets/ControlCenterIntents.swift`
+// and is compiled into both the app and this extension. That's required for an
+// `openAppWhenRun` control intent to actually run in the app when tapped.

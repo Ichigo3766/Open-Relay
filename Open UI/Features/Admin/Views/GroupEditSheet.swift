@@ -55,6 +55,13 @@ struct GroupEditSheet: View {
                         case .general:
                             generalTab
                         case .permissions:
+                            HStack {
+                                Spacer()
+                                Button("Reset to Defaults") {
+                                    Task { await viewModel.resetGroupPermissionsToDefaults() }
+                                }
+                                .scaledFont(size: 13)
+                            }
                             GroupPermissionsEditor(permissions: $viewModel.editPermissions)
                                 .padding(.top, Spacing.sm)
                         case .users:

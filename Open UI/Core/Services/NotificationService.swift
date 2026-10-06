@@ -327,17 +327,9 @@ final class NotificationService: NSObject, @unchecked Sendable {
     static func stripThinkingAndToolBlocks(from content: String) -> String {
         var result = content
 
-        // 1. <details …>…</details> blocks (reasoning + tool calls)
-        if let detailsRegex = try? NSRegularExpression(
-            pattern: #"<details[^>]*>[\s\S]*?</details>"#,
-            options: [.caseInsensitive]
-        ) {
-            result = detailsRegex.stringByReplacingMatches(
-                in: result,
-                range: NSRange(result.startIndex..., in: result),
-                withTemplate: ""
-            )
-        }
+        // 1. <details …>…</details> blocks (reasoning, tool calls, any other
+        //    section) — nesting-aware so nested blocks leave nothing behind.
+        result = DetailsBlockScanner.strip(result)
 
         // 2. Raw model reasoning tags
         let rawTagPairs: [(String, String)] = [

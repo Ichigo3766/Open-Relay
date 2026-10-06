@@ -166,6 +166,8 @@ struct ChatFolder: Identifiable, Hashable, Sendable {
     /// and they only have read permission — chats inside are view-only.
     var readonly: Bool
 
+    /// Unread chats in this folder and its subfolders (server `unread_count`).
+    var unreadCount: Int = 0
     init(
         id: String,
         name: String,
@@ -233,6 +235,8 @@ struct ChatFolder: Identifiable, Hashable, Sendable {
             && lhs.chats.map(\.id) == rhs.chats.map(\.id)
             && lhs.chats.map(\.title) == rhs.chats.map(\.title)
             && lhs.chats.map(\.pinned) == rhs.chats.map(\.pinned)
+            && lhs.chats.map(\.lastReadAt) == rhs.chats.map(\.lastReadAt)
+            && lhs.unreadCount == rhs.unreadCount
     }
 
     func hash(into hasher: inout Hasher) {
@@ -292,6 +296,8 @@ extension ChatFolder {
 
         self.chats = []
         self.childFolders = []
+        // Server `unread_count` (GET /folders/) — includes subfolders.
+        self.unreadCount = (json["unread_count"] as? Int) ?? Int(json["unread_count"] as? Double ?? 0)
 
         // Parse owner
         self.userId = json["user_id"] as? String

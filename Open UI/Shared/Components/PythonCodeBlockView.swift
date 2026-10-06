@@ -40,6 +40,7 @@ struct PythonCodeBlockView: View {
     @Environment(\.theme) private var theme
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.accessibilityScale) private var accessibilityScale
+    @Environment(AppDependencyContainer.self) private var dependencies: AppDependencyContainer?
 
     private static let baseBodyFontSize: CGFloat = UIFont.preferredFont(forTextStyle: .body).pointSize
 
@@ -321,6 +322,18 @@ struct PythonCodeBlockView: View {
     // MARK: - Run Action
 
     private func runCode() {
+        // Web CodeBlock parity: when the admin set Code Execution → Engine to Jupyter,
+        // run on the server (`/utils/code/execute`) instead of on-device Pyodide.
+        if dependencies?.authViewModel.backendConfig?.code?.engine == "jupyter", let api = dependencies?.apiClient {
+            runState = .running
+            Task { @MainActor in
+                let result = await api.executeCodeOnServer(code)
+                withAnimation(.easeInOut(duration: 0.2)) { self.runState = .done(result: result) }
+                Haptics.notify(result.status == .success ? .success : .error)
+            }
+            return
+        }
+
         let service = PythonExecutionService.shared
 
         // Set state based on current engine state

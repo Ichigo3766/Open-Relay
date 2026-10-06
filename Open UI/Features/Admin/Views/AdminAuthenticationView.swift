@@ -191,6 +191,17 @@ struct AdminAuthenticationView: View {
                 // Sign-ups and API Keys
                 SettingsSection {
                     inlineToggleRow(
+                        title: "Login Form",
+                        subtitle: "Show the email and password form on the sign-in page. Turn off only if single sign-on (OAuth/LDAP/trusted header) is set up, or nobody can sign in with a password.",
+                        isOn: Binding(
+                            get: { viewModel.authConfig.enableLoginForm },
+                            set: { viewModel.authConfig.enableLoginForm = $0 }
+                        )
+                    )
+
+                    Divider().padding(.leading, Spacing.md)
+
+                    inlineToggleRow(
                         title: "New Sign Ups",
                         subtitle: "Allow new users to create accounts.",
                         isOn: Binding(
@@ -498,6 +509,43 @@ struct AdminAuthenticationView: View {
                         Divider().padding(.leading, Spacing.md)
                         inlineTextFieldRow(title: "Sub Claim", placeholder: "sub",
                             text: Binding(get: { viewModel.oauthConfig.oauthSubClaim }, set: { viewModel.oauthConfig.oauthSubClaim = $0 }))
+                        Divider().padding(.leading, Spacing.md)
+                        inlineTextFieldRow(title: "Audience", placeholder: "Optional",
+                            text: Binding(get: { viewModel.oauthConfig.oauthAudience ?? "" }, set: { viewModel.oauthConfig.oauthAudience = $0 }))
+                        Divider().padding(.leading, Spacing.md)
+                        inlineTextFieldRow(title: "PKCE Method", placeholder: "S256",
+                            text: Binding(get: { viewModel.oauthConfig.oauthCodeChallengeMethod ?? "" }, set: { viewModel.oauthConfig.oauthCodeChallengeMethod = $0 }))
+                        Divider().padding(.leading, Spacing.md)
+                        inlineTextFieldRow(title: "Token Auth Method", placeholder: "client_secret_post",
+                            text: Binding(get: { viewModel.oauthConfig.oauthTokenEndpointAuthMethod ?? "" }, set: { viewModel.oauthConfig.oauthTokenEndpointAuthMethod = $0 }))
+                        Divider().padding(.leading, Spacing.md)
+                        inlineTextFieldRow(title: "End Session URL", placeholder: "Optional logout endpoint",
+                            text: Binding(get: { viewModel.oauthConfig.openidEndSessionEndpoint ?? "" }, set: { viewModel.oauthConfig.openidEndSessionEndpoint = $0 }))
+                        Divider().padding(.leading, Spacing.md)
+                        inlineTextFieldRow(title: "Timeout (s)", placeholder: "Default",
+                            text: Binding(get: { viewModel.oauthConfig.oauthTimeout ?? "" }, set: { viewModel.oauthConfig.oauthTimeout = $0 }))
+                        Divider().padding(.leading, Spacing.md)
+                        inlineTextFieldRow(title: "Client Timeout (s)", placeholder: "Default",
+                            text: Binding(get: { viewModel.oauthConfig.oauthClientTimeout ?? "" }, set: { viewModel.oauthConfig.oauthClientTimeout = $0 }))
+                        Divider().padding(.leading, Spacing.md)
+                        inlineToggleRow(title: "Include Scope on Refresh", subtitle: "Send the configured scopes when refreshing tokens.",
+                            isOn: Binding(get: { viewModel.oauthConfig.oauthRefreshTokenIncludeScope ?? false }, set: { viewModel.oauthConfig.oauthRefreshTokenIncludeScope = $0 }))
+                        Divider().padding(.leading, Spacing.md)
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text("Default Group Sharing").scaledFont(size: 15).foregroundStyle(theme.textPrimary)
+                            Picker("Default Group Sharing", selection: Binding(
+                                get: { (viewModel.oauthConfig.oauthGroupDefaultShare ?? "true").lowercased() },
+                                set: { viewModel.oauthConfig.oauthGroupDefaultShare = $0 }
+                            )) {
+                                Text("Anyone").tag("true")
+                                Text("Members").tag("members")
+                                Text("Nobody").tag("false")
+                            }
+                            .pickerStyle(.segmented)
+                            Text("Who can share to groups created by OAuth group sync.")
+                                .scaledFont(size: 12).foregroundStyle(theme.textTertiary)
+                        }
+                        .padding(.horizontal, Spacing.md).padding(.vertical, 10)
                         Divider().padding(.leading, Spacing.md)
                         inlineToggleRow(title: "OAuth Signup", subtitle: "Allow users to create accounts through OAuth.",
                             isOn: Binding(get: { viewModel.oauthConfig.enableOAuthSignup }, set: { viewModel.oauthConfig.enableOAuthSignup = $0 }))

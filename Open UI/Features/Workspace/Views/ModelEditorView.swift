@@ -18,6 +18,9 @@ struct ModelEditorView: View {
     var existingModel: ModelDetail?
     /// When set, pre-fills the editor with this model's data in "create new" mode (clone flow).
     var cloneSource: ModelDetail? = nil
+    /// Admin → Models: `existingModel` is a connection base model with no DB record
+    /// yet. Saving creates the record (POST /create) instead of updating.
+    var isNewBaseRecord: Bool = false
     var onSave: ((ModelDetail) -> Void)?
 
     // MARK: - Basic Info
@@ -139,6 +142,7 @@ struct ModelEditorView: View {
     @State private var advStreamResponse: Bool? = nil
     @State private var advStreamDeltaChunkSize: Int? = nil
     @State private var advFunctionCalling: String? = nil
+    @State private var advCompactTokenThreshold: Int? = nil
     @State private var advReasoningEffort: String? = nil
     @State private var advReasoningTagsEnabled: Bool? = nil
     @State private var advReasoningTagStart: String? = nil
@@ -185,6 +189,25 @@ struct ModelEditorView: View {
     @State private var isSaving = false
     @State private var validationError: String? = nil
     @State private var showDiscardConfirm = false
+    /// Fingerprint of the editor state right after loading — used by `hasChanges`.
+    @State private var baselinePayload: Data? = nil
+
+    // MARK: - Background image (meta.background_image_url)
+
+    @State private var pendingBackground: ModelBackgroundImage.Validated? = nil
+    @State private var backgroundRemoved = false
+    @State private var backgroundURL: String? = nil
+    /// Set during `save()` once the picked image is uploaded; read by `buildDetail`.
+    @State private var pendingUploadedPath: String? = nil
+
+    // MARK: - Translations (meta.i18n)
+
+    @State private var i18n: LocalizedMap = [:]
+
+    // MARK: - Suggestions (voices, tags)
+
+    @State private var voiceSuggestions: [(id: String, name: String)] = []
+    @State private var tagSuggestions: [String] = []
 
     @FocusState private var focusedField: Field?
     private enum Field: Hashable { case name, modelId, description, systemPrompt, ttsVoice, newSuggestion }
@@ -206,13 +229,24 @@ struct ModelEditorView: View {
     }
 
     private var hasChanges: Bool {
-        guard let existing = existingModel else {
+        guard existingModel != nil else {
             return !name.isEmpty || !modelId.isEmpty || !systemPrompt.isEmpty
         }
-        return name != existing.name
-            || modelId != existing.id
-            || systemPrompt != existing.systemPrompt
-            || description != (existing.description ?? "")
+        // Compare the payload the editor would send against the one it loaded.
+        if pendingBackground != nil || backgroundRemoved { return true }
+        guard let baseline = baselinePayload else { return true }
+        return currentPayloadFingerprint != baseline
+    }
+
+    /// Fingerprint of everything `save()` would send (sorted-key JSON).
+    private var currentPayloadFingerprint: Data? {
+        var d = buildDetail(id: existingModel?.id ?? modelId.trimmingCharacters(in: .whitespaces))
+        var grants = localAccessGrants
+        if !isPrivate {
+            grants.append(AccessGrant(id: "", userId: "*", groupId: nil, read: true, write: false))
+        }
+        d.accessGrants = grants
+        return try? JSONSerialization.data(withJSONObject: d.toCreatePayload(), options: [.sortedKeys])
     }
 
     // Resolved profile image URL for displaying in the editor.
@@ -251,6 +285,92 @@ struct ModelEditorView: View {
         return nil
     }
 
+    /// Mirrors `getBaseModelItems` in ModelEditor.svelte: hides self, presets
+    /// (workspace models wrapping another model), arena and direct-connection
+    /// models, and models hidden by an admin (unless admin, or already selected).
+    private func baseModelAllowed(_ model: AIModel) -> Bool {
+        let raw = model.rawModelItem ?? [:]
+        let isCurrentBase = isEditing && model.id == baseModelId
+        if model.id == modelId, !isCurrentBase { return false }
+        let info = raw["info"] as? [String: Any]
+        let infoBase = (info?["base_model_id"] as? String) ?? ""
+        let isPreset = (raw["preset"] as? Bool ?? false) || !infoBase.isEmpty
+        if isPreset && !isCurrentBase { return false }
+        if raw["owned_by"] as? String == "arena" || raw["arena"] as? Bool == true { return false }
+        if raw["direct"] as? Bool == true { return false }
+        let hidden = ((info?["meta"] as? [String: Any])?["hidden"] as? Bool) ?? false
+        let isAdmin = dependencies.authViewModel.currentUser?.role == .admin
+        if hidden && !isAdmin && model.id != baseModelId { return false }
+        return true
+    }
+
+    // MARK: - Suggestion helpers
+
+    private var voiceMatches: [(id: String, name: String)] {
+        let q = ttsVoice.trimmingCharacters(in: .whitespaces).lowercased()
+        let list = voiceSuggestions.filter {
+            q.isEmpty || $0.id.lowercased().contains(q) || $0.name.lowercased().contains(q)
+        }
+        // Hide the list once the field exactly matches a voice.
+        if list.count == 1, list[0].id == ttsVoice { return [] }
+        return Array(list.prefix(8))
+    }
+
+    private var currentTags: [String] {
+        tags.components(separatedBy: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+    }
+
+    private var tagMatches: [String] {
+        let typing = (tags.components(separatedBy: ",").last ?? "").trimmingCharacters(in: .whitespaces).lowercased()
+        let used = Set(currentTags.map { $0.lowercased() })
+        return Array(tagSuggestions.filter {
+            !used.contains($0.lowercased()) && (typing.isEmpty || $0.lowercased().contains(typing))
+        }.prefix(8))
+    }
+
+    private func addTag(_ tag: String) {
+        var parts = tags.components(separatedBy: ",").map { $0.trimmingCharacters(in: .whitespaces) }
+        // Replace the fragment being typed, if any, else append.
+        if let last = parts.last, !last.isEmpty, tag.lowercased().contains(last.lowercased()) { parts.removeLast() }
+        parts = parts.filter { !$0.isEmpty }
+        parts.append(tag)
+        tags = parts.joined(separator: ", ")
+        Haptics.play(.light)
+    }
+
+    @ViewBuilder
+    private func suggestionChips(_ items: [(String, String)], onPick: @escaping (String) -> Void) -> some View {
+        if !items.isEmpty {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 6) {
+                    ForEach(items, id: \.0) { item in
+                        Button { onPick(item.0) } label: {
+                            Text(item.1)
+                                .scaledFont(size: 12)
+                                .padding(.vertical, 4).padding(.horizontal, 10)
+                                .background(Capsule().fill(theme.surfaceContainer))
+                                .foregroundStyle(theme.textSecondary)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            }
+        }
+    }
+
+    private func loadSuggestions() async {
+        guard let api = dependencies.apiClient else { return }
+        if let voices = try? await api.getVoices() {
+            voiceSuggestions = voices.compactMap {
+                guard let id = $0["id"] as? String else { return nil }
+                return (id: id, name: ($0["name"] as? String) ?? id)
+            }
+        }
+        // Web: preset models suggest tags from /models/tags; base-model records (admin) from /models/base/tags.
+        let isBase = isNewBaseRecord || isProviderModel
+        tagSuggestions = (try? await (isBase ? api.getBaseModelTags() : api.getWorkspaceModelTags())) ?? []
+    }
+
     // MARK: - Slugify helper
 
     /// Converts a display name into a URL-safe slug: "Abhi AI" → "abhi-ai"
@@ -272,12 +392,21 @@ struct ModelEditorView: View {
                     profileImageSection
                     basicInfoSection
                     systemPromptSection
+                    ModelTranslationsSection(i18n: $i18n)
+                    ModelBackgroundSection(
+                        currentURL: backgroundURL,
+                        serverBaseURL: serverBaseURL,
+                        authToken: authToken,
+                        pending: $pendingBackground,
+                        removed: $backgroundRemoved
+                    )
                     // Advanced params extracted into a child struct to prevent stack overflow
                     ModelAdvancedParamsSection(
                         showAdvancedParams: $showAdvancedParams,
                         advStreamResponse: $advStreamResponse,
                         advStreamDeltaChunkSize: $advStreamDeltaChunkSize,
                         advFunctionCalling: $advFunctionCalling,
+                        advCompactTokenThreshold: $advCompactTokenThreshold,
                         advReasoningEffort: $advReasoningEffort,
                         advReasoningTagsEnabled: $advReasoningTagsEnabled,
                         advReasoningTagStart: $advReasoningTagStart,
@@ -301,6 +430,7 @@ struct ModelEditorView: View {
                         advUseMmap: $advUseMmap,
                         advUseMlock: $advUseMlock,
                         advThink: $advThink,
+                        advThinkCustom: $advThinkCustom,
                         advFormat: $advFormat,
                         advNumKeep: $advNumKeep,
                         advNumCtx: $advNumCtx,
@@ -362,18 +492,7 @@ struct ModelEditorView: View {
             }
             .sheet(isPresented: $showBaseModelPicker) {
                 BaseModelPickerSheet(
-                    availableModels: availableModels.filter { model in
-                        // Exclude self
-                        guard model.id != modelId else { return false }
-                        // Exclude workspace models — models that have a base_model_id set
-                        // are custom models wrapping another model, not provider models.
-                        if let info = model.rawModelItem?["info"] as? [String: Any],
-                           let baseId = info["base_model_id"] as? String,
-                           !baseId.isEmpty {
-                            return false
-                        }
-                        return true
-                    },
+                    availableModels: availableModels.filter { baseModelAllowed($0) },
                     selectedModelId: baseModelId,
                     serverBaseURL: serverBaseURL,
                     authToken: authToken,
@@ -427,6 +546,10 @@ struct ModelEditorView: View {
                 await fetchToolsAndFunctions()
                 await fetchTerminalServers()
                 await resolveGroupNames()
+                await loadSuggestions()
+                // Loading (defaults, global filters/actions) is done — anything
+                // changed from here on is a user edit.
+                if baselinePayload == nil { baselinePayload = currentPayloadFingerprint }
             }
         }
         .onChange(of: selectedPhotoItem) { _, newItem in
@@ -663,6 +786,10 @@ struct ModelEditorView: View {
                     }
                     .padding(.vertical, 12)
                     .padding(.horizontal, Spacing.md)
+
+                    suggestionChips(tagMatches.map { ($0, $0) }) { addTag($0) }
+                        .padding(.horizontal, Spacing.md)
+                        .padding(.bottom, tagMatches.isEmpty ? 0 : 10)
                 }
             }
         }
@@ -697,6 +824,7 @@ struct ModelEditorView: View {
                     .scrollContentBackground(.hidden)
                     .padding(Spacing.sm)
             }
+            ChatVariablesPreviewView(preview: ChatVariablesPreview.scan(systemPrompt))
         }
     }
 
@@ -843,7 +971,7 @@ struct ModelEditorView: View {
                                 Text(entry.name)
                                     .scaledFont(size: 14, weight: .medium)
                                     .foregroundStyle(theme.textPrimary)
-                                Text(entry.type == .collection ? "Collection" : "File")
+                                Text(entry.typeLabel)
                                     .scaledFont(size: 12)
                                     .foregroundStyle(theme.textTertiary)
                             }
@@ -1067,6 +1195,7 @@ struct ModelEditorView: View {
                 .padding(.horizontal, Spacing.md)
                 .padding(.vertical, 12)
             }
+            suggestionChips(voiceMatches.map { ($0.id, $0.name) }) { ttsVoice = $0 }
         }
     }
 
@@ -1103,11 +1232,6 @@ struct ModelEditorView: View {
                     .disabled(isTogglingActive)
                     .padding(.horizontal, Spacing.md)
                     .padding(.vertical, 12)
-                    .onChange(of: isActive) { oldVal, newVal in
-                        guard isEditing, newVal != initialIsActive else { return }
-                        initialIsActive = newVal
-                        Task { await persistActiveToggle(id: existingModel?.id) }
-                    }
 
                     Divider().background(theme.inputBorder.opacity(0.4))
                     accessControlSection
@@ -1264,7 +1388,7 @@ struct ModelEditorView: View {
         suggestionPrompts = model.suggestionPrompts
         useCustomPrompts = !model.suggestionPrompts.isEmpty
         knowledgeItems = model.knowledgeItems
-        profileImageURL = isCloneMode ? nil : model.profileImageURL // don't copy profile image on clone
+        profileImageURL = model.profileImageURL // web clone copies the full model, image included
 
         capVision = model.capVision; capFileUpload = model.capFileUpload
         capFileContext = model.capFileContext; capWebSearch = model.capWebSearch
@@ -1275,6 +1399,9 @@ struct ModelEditorView: View {
         capMemory = model.capMemory
         terminalId = model.terminalId ?? ""
         originalMetaJSON = model.originalMetaJSON
+        // Cloning copies the model (web `cloneModelHandler` spreads the full model, background included).
+        backgroundURL = decodeOriginalMeta(model.originalMetaJSON)["background_image_url"] as? String
+        i18n = LocalizedContent.read(decodeOriginalMeta(model.originalMetaJSON))
 
         defaultWebSearch = model.defaultFeatureWebSearch
         defaultImageGen = model.defaultFeatureImageGen
@@ -1294,6 +1421,7 @@ struct ModelEditorView: View {
         advStreamResponse = model.advStreamResponse
         advStreamDeltaChunkSize = model.advStreamDeltaChunkSize
         advFunctionCalling = model.advFunctionCalling
+        advCompactTokenThreshold = model.advCompactTokenThreshold
         advReasoningEffort = model.advReasoningEffort
         advReasoningTagsEnabled = model.advReasoningTagsEnabled
         advReasoningTagStart = model.advReasoningTagStart
@@ -1317,6 +1445,7 @@ struct ModelEditorView: View {
         advUseMmap = model.advUseMmap
         advUseMlock = model.advUseMlock
         advThink = model.advThink
+        advThinkCustom = model.advThinkCustom
         advFormat = model.advFormat
         advNumKeep = model.advNumKeep
         advNumCtx = model.advNumCtx
@@ -1385,11 +1514,48 @@ struct ModelEditorView: View {
     /// from the admin's `DEFAULT_MODEL_METADATA` — exactly like the web ModelEditor.
     /// Falls back to OpenWebUI's DEFAULT_CAPABILITIES when the call fails.
     private func applyAdminDefaultsIfNew() async {
-        guard originalMetaJSON == nil, cloneSource == nil,
-              let api = dependencies.apiClient else { return }
+        guard cloneSource == nil, let api = dependencies.apiClient else { return }
         let defaults = (try? await api.getModelsDefaultMetadata()) ?? [:]
-        // Bail if a server-backed model was populated while we were waiting.
-        guard originalMetaJSON == nil else { return }
+        guard !defaults.isEmpty else { return }
+
+        // Existing model: ModelEditor.svelte layers the model's own capabilities over
+        // the admin defaults (`{ ...defaults, ...model.meta.capabilities }`), so a
+        // capability the model doesn't define takes the admin default, not a built-in.
+        if originalMetaJSON != nil {
+            let own = (decodeOriginalMeta(originalMetaJSON)["capabilities"] as? [String: Any]) ?? [:]
+            let adminCaps = defaults["capabilities"] as? [String: Any] ?? [:]
+            func fill(_ key: String, _ current: Bool) -> Bool {
+                own[key] == nil ? (adminCaps[key] as? Bool ?? current) : current
+            }
+            capVision = fill("vision", capVision); capFileUpload = fill("file_upload", capFileUpload)
+            capFileContext = fill("file_context", capFileContext); capWebSearch = fill("web_search", capWebSearch)
+            capImageGeneration = fill("image_generation", capImageGeneration)
+            capCodeInterpreter = fill("code_interpreter", capCodeInterpreter)
+            capTerminal = fill("terminal", capTerminal); capUsage = fill("usage", capUsage)
+            capCitations = fill("citations", capCitations); capStatusUpdates = fill("status_updates", capStatusUpdates)
+            capMemory = fill("memory", capMemory); capBuiltinTools = fill("builtin_tools", capBuiltinTools)
+            // `defaultFeatureIds` / `builtinTools` are whole-value overrides in the web editor.
+            let ownMeta = decodeOriginalMeta(originalMetaJSON)
+            if ownMeta["defaultFeatureIds"] == nil {
+                let defF = defaults["defaultFeatureIds"] as? [String] ?? []
+                defaultWebSearch = defF.contains("web_search")
+                defaultImageGen = defF.contains("image_generation")
+                defaultCodeInterpreter = defF.contains("code_interpreter")
+            }
+            if ownMeta["builtinTools"] == nil {
+                let bt = defaults["builtinTools"] as? [String: Any] ?? [:]
+                func tool(_ key: String) -> Bool { bt[key] as? Bool ?? true }
+                builtinTime = tool("time"); builtinUserInput = tool("user_input"); builtinMemory = tool("memory")
+                builtinChats = tool("chats"); builtinNotes = tool("notes"); builtinKnowledge = tool("knowledge")
+                builtinFiles = tool("files"); builtinChannels = tool("channels")
+                builtinNotifications = tool("notifications")
+                builtinTaskManagement = bt["tasks"] as? Bool ?? bt["task_management"] as? Bool ?? true
+                builtinAutomations = tool("automations"); builtinCalendar = tool("calendar")
+                builtinSubagents = tool("subagents"); builtinWebSearch = tool("web_search")
+                builtinImageGen = tool("image_generation"); builtinCodeInterpreter = tool("code_interpreter")
+            }
+            return
+        }
 
         let caps = defaults["capabilities"] as? [String: Any] ?? [:]
         func cap(_ key: String, _ fallback: Bool) -> Bool { caps[key] as? Bool ?? fallback }
@@ -1558,6 +1724,7 @@ struct ModelEditorView: View {
         detail.advStreamResponse = advStreamResponse
         detail.advStreamDeltaChunkSize = advStreamDeltaChunkSize
         detail.advFunctionCalling = advFunctionCalling
+        detail.advCompactTokenThreshold = advCompactTokenThreshold
         detail.advReasoningEffort = advReasoningEffort
         detail.advReasoningTagsEnabled = advReasoningTagsEnabled
         detail.advReasoningTagStart = advReasoningTagStart
@@ -1582,7 +1749,8 @@ struct ModelEditorView: View {
         detail.advRepeatPenalty = advRepeatPenalty
         detail.advUseMmap = advUseMmap
         detail.advUseMlock = advUseMlock
-        detail.advThink = advThink
+        detail.advThink = advThinkCustom == nil ? advThink : nil
+        detail.advThinkCustom = advThinkCustom
         detail.advFormat = advFormat
         detail.advNumKeep = advNumKeep
         detail.advNumCtx = advNumCtx
@@ -1591,7 +1759,7 @@ struct ModelEditorView: View {
         detail.advNumGpu = advNumGpu
         detail.advKeepAlive = advKeepAlive
         detail.customParams = customParams.filter { !$0.key.isEmpty }
-        detail.originalMetaJSON = originalMetaJSON
+        detail.originalMetaJSON = metaJSONWithBackground(originalMetaJSON, uploadedPath: pendingUploadedPath)
         // Tools, Skills, Filters
         detail.toolIds = Array(selectedToolIds)
         // Filter IDs: exclude global filters (server applies them automatically).
@@ -1605,6 +1773,33 @@ struct ModelEditorView: View {
         detail.actionIds = selectedActionFunctionIds.subtracting(globalActionIds).sorted()
         detail.skillIds = selectedActionIds.sorted()
         return detail
+    }
+
+    // MARK: - Background image
+
+    /// `background_image_url` for the next save: the uploaded file path when a new
+    /// image was picked, `null` when removed, else the stored value untouched.
+    private func metaJSONWithBackground(_ base: Data?, uploadedPath: String? = nil) -> Data? {
+        var meta = decodeOriginalMeta(base)
+        let pruned = LocalizedContent.prune(i18n)
+        if pruned.isEmpty { meta.removeValue(forKey: "i18n") } else { meta["i18n"] = pruned }
+        if let uploadedPath {
+            meta["background_image_url"] = uploadedPath
+        } else if backgroundRemoved {
+            meta["background_image_url"] = NSNull()
+        }
+        return try? JSONSerialization.data(withJSONObject: meta)
+    }
+
+    /// Uploads the picked image (`process=false`, like the web) and returns its file id.
+    private func uploadPendingBackground() async throws -> String? {
+        guard let pending = pendingBackground, let api = dependencies.apiClient else { return nil }
+        let res = try await api.uploadFileOnly(data: pending.data, fileName: pending.fileName)
+        guard let id = res["id"] as? String else {
+            throw NSError(domain: "ModelEditor", code: -1,
+                          userInfo: [NSLocalizedDescriptionKey: "Failed to upload background image."])
+        }
+        return id
     }
 
     // MARK: - Save
@@ -1622,7 +1817,23 @@ struct ModelEditorView: View {
             isSaving = false; return
         }
         guard !trimmedId.isEmpty else {
-            validationError = "Please enter a Model ID."
+            validationError = "Model ID is required."
+            isSaving = false; return
+        }
+        // Server `ModelForm.id` must match ^\S+$ and is capped at 256 chars.
+        guard !trimmedId.contains(where: { $0.isWhitespace }) else {
+            validationError = "Model ID cannot contain whitespace."
+            isSaving = false; return
+        }
+        guard trimmedId.count <= 256 else {
+            validationError = "The model ID is too long. Please make sure your model ID is less than 256 characters long."
+            isSaving = false; return
+        }
+        // Workspace models wrap a base model; only admin-created base records
+        // (Admin → Models) have none. The server otherwise rejects with a bare 401.
+        if !isNewBaseRecord, !isProviderModel,
+           baseModelId.trimmingCharacters(in: .whitespaces).isEmpty {
+            validationError = "Base Model is required."
             isSaving = false; return
         }
 
@@ -1631,8 +1842,29 @@ struct ModelEditorView: View {
             allGrants.append(AccessGrant(id: UUID().uuidString, userId: "*", groupId: nil, read: true, write: false))
         }
 
+        var uploadedId: String? = nil
+        var savedOK = false
+        defer {
+            // A failed save must not leave an orphaned upload behind (web deletes it too).
+            if let uploadedId, !savedOK {
+                Task { try? await dependencies.apiClient?.deleteFile(id: uploadedId) }
+            }
+        }
+
         do {
-            if let existing = existingModel {
+            uploadedId = try await uploadPendingBackground()
+            let uploadedPath = uploadedId.map { ModelBackgroundImage.contentPath(forFileId: $0) }
+            if uploadedPath != nil { pendingUploadedPath = uploadedPath }
+            if let existing = existingModel, isNewBaseRecord {
+                // Same as the web admin upsertModelHandler: create the base record
+                // (base_model_id null) with the edited settings.
+                var detail = buildDetail(id: existing.id)
+                detail.baseModelId = nil
+                detail.accessGrants = allGrants
+                let created = try await manager.create(from: detail)
+                onSave?(created)
+                NotificationCenter.default.post(name: .functionsConfigChanged, object: nil)
+            } else if let existing = existingModel {
                 var detail = buildDetail(id: existing.id)
                 detail.accessGrants = allGrants
 
@@ -1670,8 +1902,10 @@ struct ModelEditorView: View {
                 logger.info("[Save] Model created successfully: id='\(created.id)' name='\(created.name)'")
                 onSave?(created)
             }
+            savedOK = true
             dismiss()
         } catch {
+            pendingUploadedPath = nil
             logger.error("[Save] Error saving model: \(error.localizedDescription)")
             validationError = error.localizedDescription
         }
@@ -1680,136 +1914,40 @@ struct ModelEditorView: View {
 
     // MARK: - Access Control Actions
 
+    // Access edits stay local and are written by `save()` (update + access/update),
+    // matching the web editor, which only applies sharing changes on Save.
+
     private func handleAccessModeChange(isPrivate: Bool) async {
-        guard let id = existingModel?.id, let manager else { return }
-        isUpdatingAccess = true
-        do {
-            let updated = try await manager.updateAccessGrants(
-                modelId: id,
-                modelName: existingModel?.name ?? name,
-                grants: localAccessGrants,
-                isPublic: !isPrivate
-            )
-            localAccessGrants = updated
-            Haptics.notify(.success)
-        } catch {
-            self.isPrivate = !isPrivate
-            accessUpdateError = error.localizedDescription
-            Haptics.notify(.error)
-        }
-        isUpdatingAccess = false
+        Haptics.play(.light)
     }
 
     private func addGrants(userIds: [String], groupIds: [String]) async {
-        guard let id = existingModel?.id, let manager else {
-            for userId in userIds {
-                if !localAccessGrants.contains(where: { $0.userId == userId }) {
-                    localAccessGrants.append(AccessGrant(id: UUID().uuidString, userId: userId, groupId: nil, read: true, write: false))
-                }
-            }
-            for groupId in groupIds {
-                if !localAccessGrants.contains(where: { $0.groupId == groupId }) {
-                    localAccessGrants.append(AccessGrant(id: UUID().uuidString, userId: nil, groupId: groupId, read: true, write: false))
-                }
-            }
-            Haptics.notify(.success)
-            return
+        for userId in userIds where !localAccessGrants.contains(where: { $0.userId == userId }) {
+            localAccessGrants.append(AccessGrant(id: UUID().uuidString, userId: userId, groupId: nil, read: true, write: false))
         }
-        isUpdatingAccess = true
-        var newGrants = localAccessGrants
-        for userId in userIds {
-            if !newGrants.contains(where: { $0.userId == userId }) {
-                newGrants.append(AccessGrant(id: UUID().uuidString, userId: userId, groupId: nil, read: true, write: false))
-            }
+        for groupId in groupIds where !localAccessGrants.contains(where: { $0.groupId == groupId }) {
+            localAccessGrants.append(AccessGrant(id: UUID().uuidString, userId: nil, groupId: groupId, read: true, write: false))
         }
-        for groupId in groupIds {
-            if !newGrants.contains(where: { $0.groupId == groupId }) {
-                newGrants.append(AccessGrant(id: UUID().uuidString, userId: nil, groupId: groupId, read: true, write: false))
-            }
-        }
-        do {
-            let updated = try await manager.updateAccessGrants(
-                modelId: id,
-                modelName: existingModel?.name ?? name,
-                grants: newGrants
-            )
-            localAccessGrants = updated
-            await resolveGroupNames()
-            Haptics.notify(.success)
-        } catch {
-            accessUpdateError = error.localizedDescription
-            Haptics.notify(.error)
-        }
-        isUpdatingAccess = false
+        await resolveGroupNames()
+        Haptics.notify(.success)
     }
 
     private func togglePermission(principalId: String, isGroup: Bool, currentlyWrite: Bool) async {
-        let idx: Array<AccessGrant>.Index?
-        if isGroup {
-            idx = localAccessGrants.firstIndex(where: { $0.groupId == principalId })
-        } else {
-            idx = localAccessGrants.firstIndex(where: { $0.userId == principalId })
-        }
+        let idx = isGroup
+            ? localAccessGrants.firstIndex(where: { $0.groupId == principalId })
+            : localAccessGrants.firstIndex(where: { $0.userId == principalId })
         guard let idx else { return }
         let old = localAccessGrants[idx]
-        let newGrant = AccessGrant(id: old.id, userId: old.userId, groupId: old.groupId, read: true, write: !currentlyWrite)
-        var newGrants = localAccessGrants
-        newGrants[idx] = newGrant
-        guard let id = existingModel?.id, let manager else {
-            localAccessGrants = newGrants
-            Haptics.play(.light)
-            return
-        }
-        isUpdatingAccess = true
-        do {
-            let updated = try await manager.updateAccessGrants(
-                modelId: id,
-                modelName: existingModel?.name ?? name,
-                grants: newGrants
-            )
-            localAccessGrants = updated
-            Haptics.play(.light)
-        } catch {
-            accessUpdateError = error.localizedDescription
-            Haptics.notify(.error)
-        }
-        isUpdatingAccess = false
+        localAccessGrants[idx] = AccessGrant(id: old.id, userId: old.userId, groupId: old.groupId, read: true, write: !currentlyWrite)
+        Haptics.play(.light)
     }
 
     private func removeGrant(principalId: String, isGroup: Bool) async {
-        guard let id = existingModel?.id, let manager else {
-            if isGroup {
-                localAccessGrants.removeAll { $0.groupId == principalId }
-            } else {
-                localAccessGrants.removeAll { $0.userId == principalId }
-            }
-            Haptics.play(.light)
-            return
-        }
         withAnimation(.easeInOut(duration: 0.2)) {
-            if isGroup {
-                localAccessGrants.removeAll { $0.groupId == principalId }
-            } else {
-                localAccessGrants.removeAll { $0.userId == principalId }
-            }
+            if isGroup { localAccessGrants.removeAll { $0.groupId == principalId } }
+            else { localAccessGrants.removeAll { $0.userId == principalId } }
         }
-        isUpdatingAccess = true
-        do {
-            let updated = try await manager.updateAccessGrants(
-                modelId: id,
-                modelName: existingModel?.name ?? name,
-                grants: localAccessGrants
-            )
-            localAccessGrants = updated
-            Haptics.play(.light)
-        } catch {
-            if let detail = try? await manager.getDetail(id: id) {
-                localAccessGrants = detail.accessGrants.filter { $0.userId != "*" }
-            }
-            accessUpdateError = error.localizedDescription
-            Haptics.notify(.error)
-        }
-        isUpdatingAccess = false
+        Haptics.play(.light)
     }
 
     private func resolveGroupNames() async {
@@ -1825,23 +1963,6 @@ struct ModelEditorView: View {
         } catch {}
     }
 
-    private func persistActiveToggle(id: String?) async {
-        guard let id, let manager else { return }
-        logger.info("[Toggle] Toggling active state for model='\(id)' to isActive=\(isActive)")
-        isTogglingActive = true
-        do {
-            try await manager.toggle(id: id)
-            logger.info("[Toggle] Active state toggled successfully")
-            Haptics.play(.light)
-        } catch {
-            isActive = !isActive
-            initialIsActive = isActive
-            accessUpdateError = error.localizedDescription
-            logger.error("[Toggle] Error toggling active state: \(error.localizedDescription)")
-            Haptics.notify(.error)
-        }
-        isTogglingActive = false
-    }
 }
 
 // MARK: - BaseModelPickerSheet
@@ -1992,6 +2113,7 @@ struct ModelAdvancedParamsSection: View {
     @Binding var advStreamResponse: Bool?
     @Binding var advStreamDeltaChunkSize: Int?
     @Binding var advFunctionCalling: String?
+    @Binding var advCompactTokenThreshold: Int?
     @Binding var advReasoningEffort: String?
     @Binding var advReasoningTagsEnabled: Bool?
     @Binding var advReasoningTagStart: String?
@@ -2015,6 +2137,7 @@ struct ModelAdvancedParamsSection: View {
     @Binding var advUseMmap: Bool?
     @Binding var advUseMlock: Bool?
     @Binding var advThink: Bool?
+    @Binding var advThinkCustom: String?
     @Binding var advFormat: String?
     @Binding var advNumKeep: Int?
     @Binding var advNumCtx: Int?
@@ -2074,6 +2197,9 @@ struct ModelAdvancedParamsSection: View {
             divider
             advNativeToggleRow(label: "Function Calling", value: $advFunctionCalling)
             divider
+            advIntSliderRow(label: "Context Compaction Threshold (tokens)", value: $advCompactTokenThreshold,
+                            range: 1000...1_000_000, step: 1000, defaultValue: 80000)
+            divider
             advTextRow(label: "Reasoning Effort", placeholder: "e.g. low, medium, high", value: $advReasoningEffort)
             divider
             advReasoningTagsRow
@@ -2127,7 +2253,7 @@ struct ModelAdvancedParamsSection: View {
             divider
             advBoolRow(label: "use_mlock", value: $advUseMlock, defaultValue: false)
             divider
-            advBoolRow(label: "think (Ollama)", value: $advThink)
+            thinkRow
             divider
             advTextRow(label: "format (Ollama)", placeholder: "e.g. json", value: $advFormat)
             divider
@@ -2335,6 +2461,60 @@ struct ModelAdvancedParamsSection: View {
     }
 
     // MARK: - Row Builders
+
+    /// `think` (Ollama): Default → On → Custom level → Off → Default — same cycle
+    /// as the web UI's AdvancedParams, where Custom stores an effort string.
+    @ViewBuilder
+    private var thinkRow: some View {
+        let label: String = {
+            if advThinkCustom != nil { return "Custom" }
+            switch advThink {
+            case .some(true): return "On"
+            case .some(false): return "Off"
+            case .none: return "Default"
+            }
+        }()
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text("think (Ollama)")
+                    .scaledFont(size: 14)
+                    .foregroundStyle(theme.textPrimary)
+                Spacer()
+                Button {
+                    if advThinkCustom != nil {
+                        advThinkCustom = nil; advThink = false
+                    } else {
+                        switch advThink {
+                        case .none: advThink = true
+                        case .some(true): advThink = nil; advThinkCustom = "medium"
+                        case .some(false): advThink = nil
+                        }
+                    }
+                    Haptics.play(.light)
+                } label: {
+                    Text(label)
+                        .scaledFont(size: 12, weight: .semibold)
+                        .foregroundStyle(theme.brandPrimary)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 3)
+                        .background(theme.brandPrimary.opacity(0.12))
+                        .clipShape(Capsule())
+                }
+                .buttonStyle(.plain)
+            }
+            if advThinkCustom != nil {
+                TextField("e.g. 'low', 'medium', 'high'", text: Binding(
+                    get: { advThinkCustom ?? "" },
+                    set: { advThinkCustom = $0 }
+                ))
+                .scaledFont(size: 13)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+            }
+        }
+        .padding(.horizontal, Spacing.md)
+        .padding(.vertical, 10)
+    }
 
     /// Single cycling pill: Default → On → Off → Default
     @ViewBuilder

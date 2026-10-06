@@ -387,42 +387,29 @@ final class PasteInterceptingTextView: UITextView {
         // 1. Check for images (PNG, JPEG, TIFF, GIF, HEIC, WebP)
         if let images = pb.images, !images.isEmpty {
             for (index, image) in images.enumerated() {
-                let data = resizedJPEGData(for: image)
-                let attachment = ChatAttachment(
-                    type: .image,
-                    name: "Pasted_Image_\(Int(Date.now.timeIntervalSince1970))_\(index).jpg",
-                    thumbnail: Image(uiImage: image),
-                    data: data
-                )
-                pastedAttachments.append(attachment)
+                if let attachment = FileAttachmentService.makeImageAttachment(
+                    image: image, name: "Pasted_Image_\(Int(Date.now.timeIntervalSince1970))_\(index)") {
+                    pastedAttachments.append(attachment)
+                }
             }
         } else if pb.hasImages, let image = pb.image {
             // Single image fallback
-            let data = resizedJPEGData(for: image)
-            let attachment = ChatAttachment(
-                type: .image,
-                name: "Pasted_Image_\(Int(Date.now.timeIntervalSince1970)).jpg",
-                thumbnail: Image(uiImage: image),
-                data: data
-            )
-            pastedAttachments.append(attachment)
+            if let attachment = FileAttachmentService.makeImageAttachment(
+                image: image, name: "Pasted_Image_\(Int(Date.now.timeIntervalSince1970))") {
+                pastedAttachments.append(attachment)
+            }
         }
 
         // 2. Check for file URLs (e.g., files copied from Files.app)
         if let urls = pb.urls {
             for url in urls where url.isFileURL {
                 if let data = try? Data(contentsOf: url) {
-                    let isImage = UTType(filenameExtension: url.pathExtension)?.conforms(to: .image) ?? false
+                    let isImage = FileAttachmentService.isImageFile(name: url.lastPathComponent)
                     if isImage {
                         // Only add as image if we didn't already get it from pb.images
-                        if pastedAttachments.isEmpty {
-                            let thumbnail: Image? = UIImage(data: data).map { Image(uiImage: $0) }
-                            let attachment = ChatAttachment(
-                                type: .image,
-                                name: url.lastPathComponent,
-                                thumbnail: thumbnail,
-                                data: data
-                            )
+                        if pastedAttachments.isEmpty,
+                           let attachment = FileAttachmentService.makeImageAttachment(
+                            data: data, name: url.lastPathComponent) {
                             pastedAttachments.append(attachment)
                         }
                     } else {

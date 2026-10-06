@@ -7,10 +7,13 @@ import Foundation
 struct SharedFileAttachment: Codable, Sendable {
     /// Original filename (e.g. "report.pdf", "IMG_1234.jpg").
     let name: String
-    /// Raw file data.
-    let data: Data
+    /// Raw file data. Empty when the bytes live on disk (see `storedFileName`).
+    var data: Data
     /// MIME type (e.g. "image/jpeg", "application/pdf"). May be nil if unknown.
     let mimeType: String?
+    /// File name inside `<AppGroup>/SharedInbox/` when the Share Extension wrote the
+    /// bytes to disk instead of inlining them (nil for older extension builds).
+    var storedFileName: String? = nil
     /// Whether this attachment is an image.
     var isImage: Bool {
         mimeType?.hasPrefix("image/") ?? false

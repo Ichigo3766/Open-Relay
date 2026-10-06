@@ -38,6 +38,11 @@ enum APIError: LocalizedError, Sendable {
     /// A request was cancelled by the caller.
     case cancelled
 
+    /// The session token expired and silent renewal (native SSO) couldn't reach
+    /// the identity provider right now. The session is likely still valid — this
+    /// must never sign the user out.
+    case sessionRenewalUnavailable
+
     /// An unexpected or unclassified error.
     case unknown(underlying: Error?)
 
@@ -81,6 +86,9 @@ enum APIError: LocalizedError, Sendable {
 
         case .cancelled:
             return "Request was cancelled."
+
+        case .sessionRenewalUnavailable:
+            return "Couldn't refresh your session right now. Check your connection — you're still signed in."
 
         case .unknown:
             return "Something went wrong. Please try again."
@@ -207,7 +215,7 @@ enum APIError: LocalizedError, Sendable {
                 }
             }
             return true
-        case .sslError:
+        case .sslError, .sessionRenewalUnavailable:
             return true
         default:
             return false

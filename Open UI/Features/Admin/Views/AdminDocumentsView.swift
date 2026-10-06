@@ -21,6 +21,7 @@ struct AdminDocumentsView: View {
                     }
                     filesSection
                     integrationSection
+                    AdminDocumentsDangerZone()
                     Spacer(minLength: 100)
                 }
                 .padding(.top, Spacing.md)
@@ -530,25 +531,6 @@ struct AdminDocumentsView: View {
 
                     Divider().padding(.leading, Spacing.md)
 
-                    inlineToggleRow(
-                        title: "CSV Shape Summary",
-                        subtitle: "Include a brief column-shape description when indexing CSV files to improve retrieval accuracy.",
-                        isOn: $viewModel.retrievalConfig.enableRagCsvSummary
-                    )
-
-                    Divider().padding(.leading, Spacing.md)
-
-                    inlineTextFieldRow(
-                        title: "Metadata Max Value Characters",
-                        placeholder: "Leave empty for no limit",
-                        subtitle: "Truncate metadata field values to this many characters to avoid bloating the index.",
-                        text: Binding(
-                            get: { viewModel.retrievalConfig.ragMetadataMaxValueChars.map { String($0) } ?? "" },
-                            set: { viewModel.retrievalConfig.ragMetadataMaxValueChars = $0.isEmpty ? nil : Int($0) }
-                        ),
-                        keyboardType: .numberPad
-                    )
-
                     VStack(alignment: .leading, spacing: Spacing.xs) {
                         Text("RAG Template")
                             .scaledFont(size: 14, weight: .medium)
@@ -616,15 +598,7 @@ struct AdminDocumentsView: View {
                         title: "Image Compression Height",
                         placeholder: "Leave empty for no compression",
                         text: $viewModel.fileImageCompressionHeightString,
-                        keyboardType: .numberPad
-                    )
-
-                    Divider().padding(.leading, Spacing.md)
-
-                    inlineToggleRow(
-                        title: "Knowledge File Retention",
-                        subtitle: "Keep uploaded files after they've been ingested into the knowledge base.",
-                        isOn: $viewModel.retrievalConfig.enableKnowledgeFileRetention,
+                        keyboardType: .numberPad,
                         showDivider: false
                     )
                 }

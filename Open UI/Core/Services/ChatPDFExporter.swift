@@ -36,6 +36,9 @@ nonisolated enum ChatPDFExporter {
                         append("Tool: " + tool.name, bold: true)
                         if let arguments = tool.arguments { append(arguments) }
                         if let result = tool.result { append(result) }
+                    case .details(let details):
+                        append(details.summary, bold: true)
+                        if !details.body.isEmpty { append(details.body) }
                     }
                 }
             } else {

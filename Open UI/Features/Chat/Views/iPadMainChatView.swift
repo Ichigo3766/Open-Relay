@@ -336,6 +336,10 @@ struct iPadMainChatView: View {
                 router.presentVoiceCall(viewModel: voiceCallVM)
             }
         }
+        .onChange(of: activeConversationId, initial: true) { oldId, newId in
+            // Web Chat.svelte: mark the chat being left and the one opened as read.
+            ChatReadState.shared.handleOpenChatChange(from: oldId == newId ? nil : oldId, to: newId)
+        }
         .onChange(of: activeChannelId) { _, newId in
             // When entering a channel, the server marks it as read via GET /channels/{id}.
             // Refresh the channel list after a short delay to clear the unread badge.
@@ -1888,6 +1892,13 @@ struct iPadSidebarContent: View {
                 )
             }
             .buttonStyle(.plain)
+            // Web Sidebar: Chats header "More" menu → Mark all as read.
+            .contextMenu {
+                MarkAllReadMenuItem(
+                    conversations: listViewModel.conversations + listViewModel.pinnedConversations
+                        + folderVM.folders.flatMap(\.chats),
+                    apiClient: dependencies.apiClient)
+            }
 
             if chatsExpanded {
                 // LazyVStack so only visible rows are created.
@@ -2046,6 +2057,7 @@ struct iPadSidebarContent: View {
                 } label: {
                     let isActive = activeConversationId == conversation.id
                     HStack {
+                        ChatUnreadDot(conversation: conversation, activeChatStore: dependencies.activeChatStore)
                         Text(conversation.title)
                             .scaledFont(size: 14, context: .list)
                             .fontWeight(isActive ? .semibold : .regular)
@@ -2399,6 +2411,10 @@ private struct iPadConversationContextMenu: View {
             Label(conversation.pinned ? "Unpin" : "Pin",
                   systemImage: conversation.pinned ? "pin.slash" : "pin")
         }
+
+        // Mark as Unread (web ChatMenu)
+        MarkUnreadMenuItem(conversation: conversation, apiClient: dependencies.apiClient,
+                           isOpen: activeConversationId == conversation.id)
 
         // Clone
         Button {

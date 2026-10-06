@@ -31,12 +31,14 @@ final class NetworkManager: NSObject, Sendable {
     // MARK: - Native SSO 401 recovery (opt-in)
 
     /// Silent session-renewal hook, consulted when an authenticated request gets
-    /// a 401 — BEFORE the failure surfaces. Returns `true` when a fresh JWT was
-    /// installed in the Keychain; the request is then retried exactly once.
+    /// a 401 — BEFORE the failure surfaces. On `.renewed` a fresh JWT is in the
+    /// Keychain and the request is retried exactly once. On `.unavailable` the
+    /// renewal couldn't run right now (offline / IdP down), so the request fails
+    /// with a non-auth error instead of a sign-out-triggering 401.
     ///
     /// Only registered for servers with native SSO enabled. When `nil` (every
     /// other server), `performRequest` behaves exactly as it always has.
-    var onUnauthorizedRecover: (@MainActor @Sendable () async -> Bool)? {
+    var onUnauthorizedRecover: (@MainActor @Sendable () async -> NativeSSORenewalOutcome)? {
         get {
             _recoverLock.lock()
             defer { _recoverLock.unlock() }
@@ -50,34 +52,34 @@ final class NetworkManager: NSObject, Sendable {
     }
 
     private let _recoverLock = NSLock()
-    private var _onUnauthorizedRecover: (@MainActor @Sendable () async -> Bool)?
+    private var _onUnauthorizedRecover: (@MainActor @Sendable () async -> NativeSSORenewalOutcome)?
     /// In-flight renewal shared by concurrent 401s (single-flight).
-    private var _recoveryTask: Task<Bool, Never>?
+    private var _recoveryTask: Task<NativeSSORenewalOutcome, Never>?
 
     /// Returns the shared in-flight renewal, starting one if needed.
     /// Lock work stays in this synchronous helper (NSLock must not span `await`).
-    private func sharedRecoveryTask() -> Task<Bool, Never>? {
+    private func sharedRecoveryTask() -> Task<NativeSSORenewalOutcome, Never>? {
         _recoverLock.lock()
         defer { _recoverLock.unlock() }
         if let existing = _recoveryTask { return existing }
         guard let hook = _onUnauthorizedRecover else { return nil }
-        let task = Task<Bool, Never> { await hook() }
+        let task = Task<NativeSSORenewalOutcome, Never> { await hook() }
         _recoveryTask = task
         return task
     }
 
-    private func finishRecovery(_ task: Task<Bool, Never>) {
+    private func finishRecovery(_ task: Task<NativeSSORenewalOutcome, Never>) {
         _recoverLock.lock()
         // Only clear the marker if it still refers to this round.
         if _recoveryTask == task { _recoveryTask = nil }
         _recoverLock.unlock()
     }
 
-    private func attemptSilentRecovery() async -> Bool {
-        guard let task = sharedRecoveryTask() else { return false }
-        let recovered = await task.value
+    private func attemptSilentRecovery() async -> NativeSSORenewalOutcome {
+        guard let task = sharedRecoveryTask() else { return .rejected }
+        let outcome = await task.value
         finishRecovery(task)
-        return recovered
+        return outcome
     }
 
     // MARK: - Initialisation
@@ -192,7 +194,8 @@ final class NetworkManager: NSObject, Sendable {
         body: Data? = nil,
         contentType: String? = "application/json",
         authenticated: Bool = true,
-        timeout: TimeInterval? = nil
+        timeout: TimeInterval? = nil,
+        pathIsEncoded: Bool = false
     ) throws -> URLRequest {
         guard let baseURL else {
             throw APIError.invalidURL(serverConfig.url)
@@ -202,7 +205,16 @@ final class NetworkManager: NSObject, Sendable {
         let basePath = components.path.hasSuffix("/")
             ? String(components.path.dropLast())
             : components.path
-        components.path = basePath + path
+        if pathIsEncoded {
+            // The caller already percent-encoded its segments (e.g. an id containing "/" sent as
+            // "%2F"); assigning to `.path` would encode the "%" again.
+            let encodedBase = components.percentEncodedPath.hasSuffix("/")
+                ? String(components.percentEncodedPath.dropLast())
+                : components.percentEncodedPath
+            components.percentEncodedPath = encodedBase + path
+        } else {
+            components.path = basePath + path
+        }
         if let queryItems, !queryItems.isEmpty {
             components.queryItems = queryItems
         }
@@ -291,7 +303,8 @@ final class NetworkManager: NSObject, Sendable {
         authenticated: Bool = true,
         timeout: TimeInterval? = nil,
         ifNoneMatch: String? = nil,
-        deduplicate: Bool = true
+        deduplicate: Bool = true,
+        pathIsEncoded: Bool = false
     ) async throws -> (Data, HTTPURLResponse) {
         var urlRequest = try buildRequest(
             path: path,
@@ -300,7 +313,8 @@ final class NetworkManager: NSObject, Sendable {
             body: body,
             contentType: contentType,
             authenticated: authenticated,
-            timeout: timeout
+            timeout: timeout,
+            pathIsEncoded: pathIsEncoded
         )
 
         if let ifNoneMatch { urlRequest.setValue(ifNoneMatch, forHTTPHeaderField: "If-None-Match") }
@@ -752,13 +766,31 @@ final class NetworkManager: NSObject, Sendable {
             // without native SSO, so this block is skipped entirely for them.
             if let http = result.1 as? HTTPURLResponse, http.statusCode == 401,
                onUnauthorizedRecover != nil,
-               request.value(forHTTPHeaderField: "Authorization") != nil,
-               await attemptSilentRecovery(),
-               let fresh = authToken {
-                var retry = request
-                retry.setValue("Bearer \(fresh)", forHTTPHeaderField: "Authorization")
-                logger.info("Native SSO: retrying request after silent session renewal")
-                return try await session.data(for: retry)
+               let sentAuth = request.value(forHTTPHeaderField: "Authorization") {
+                // Another request already renewed the session while this one was
+                // in flight with the old token — just retry with the current one.
+                if let current = authToken, sentAuth != "Bearer \(current)" {
+                    var retry = request
+                    retry.setValue("Bearer \(current)", forHTTPHeaderField: "Authorization")
+                    logger.info("Native SSO: retrying request with already-renewed token")
+                    return try await session.data(for: retry)
+                }
+                switch await attemptSilentRecovery() {
+                case .renewed:
+                    guard let fresh = authToken else { return result }
+                    var retry = request
+                    retry.setValue("Bearer \(fresh)", forHTTPHeaderField: "Authorization")
+                    logger.info("Native SSO: retrying request after silent session renewal")
+                    return try await session.data(for: retry)
+                case .unavailable:
+                    // The IdP couldn't be reached — the session may well still be
+                    // valid. Fail this request as a transient, non-auth error so
+                    // nothing signs the user out.
+                    logger.warning("Native SSO: renewal unavailable — deferring, keeping user signed in")
+                    throw APIError.sessionRenewalUnavailable
+                case .rejected:
+                    return result
+                }
             }
             return result
         } catch {

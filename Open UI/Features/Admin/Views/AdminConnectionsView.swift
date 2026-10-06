@@ -488,6 +488,9 @@ struct EditOpenAIConnectionSheet: View {
                     Picker("Provider Type", selection: $viewModel.editOpenAIProviderType) {
                         Text("OpenAI").tag("")
                         Text("Azure OpenAI").tag("azure")
+                        Text("llama.cpp").tag("llama.cpp")
+                        Text("LM Studio").tag("lmstudio")
+                        Text("LiteLLM").tag("litellm")
                     }
 
                     if viewModel.editOpenAIProviderType == "azure" {
@@ -733,6 +736,9 @@ struct AddOpenAIConnectionSheet: View {
                     Picker("Provider Type", selection: $viewModel.addOpenAIProviderType) {
                         Text("OpenAI").tag("")
                         Text("Azure OpenAI").tag("azure")
+                        Text("llama.cpp").tag("llama.cpp")
+                        Text("LM Studio").tag("lmstudio")
+                        Text("LiteLLM").tag("litellm")
                     }
 
                     if viewModel.addOpenAIProviderType == "azure" {

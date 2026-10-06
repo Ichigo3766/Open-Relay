@@ -90,6 +90,13 @@ final class AdminIntegrationsViewModel {
     var editTermEnableInChats = true
     var editTermEnableInAutomations = true
     var editTermScope = "global"
+    // Web AddTerminalServerModal parity (stored in the connection / its `config` dict).
+    var editTermForwardCookies = false
+    var editTermChatUploads = "default"          // "default" | "filesystem"
+    var editTermChatContext = "default"          // "default" | "chat_id" | "off"   (orchestrator)
+    var editTermAutomationContext = "default"    // "default" | "automation_id" | "off"
+    var editTermServerType: String?              // "orchestrator" | "terminal" (from Verify)
+    var editTermPolicyId = ""
 
     var isSavingEditedTerminal = false
     var showDeleteTerminalConfirmation = false
@@ -444,6 +451,21 @@ final class AdminIntegrationsViewModel {
         editTermEnableInChats = conn.enable_in_chats ?? true
         editTermEnableInAutomations = conn.enable_in_automations ?? true
         editTermScope = conn.scope ?? "global"
+        editTermForwardCookies = conn.forward_cookies ?? false
+        let cfgExtra = conn.config?.extra ?? [:]
+        if case .string(let v)? = cfgExtra["chat_uploads"], v == "filesystem" { editTermChatUploads = "filesystem" } else { editTermChatUploads = "default" }
+        if case .string(let t)? = conn.extra["server_type"] { editTermServerType = t } else { editTermServerType = nil }
+        if case .string(let p)? = conn.extra["policy_id"] { editTermPolicyId = p } else { editTermPolicyId = "" }
+        func mode(_ key: String, _ custom: String) -> String {
+            guard editTermServerType == "orchestrator", case .object(let ctx)? = cfgExtra["contexts"] else { return "default" }
+            switch ctx[key] {
+            case .bool(false)?: return "off"
+            case .object(let o)?: if case .string(let id)? = o["context_id"], id == custom { return custom }; return "default"
+            default: return "default"
+            }
+        }
+        editTermChatContext = mode("chat", "chat_id")
+        editTermAutomationContext = mode("automation", "automation_id")
     }
 
     func saveTerminalEdit() async {
@@ -461,6 +483,22 @@ final class AdminIntegrationsViewModel {
         conn.enable_in_chats = editTermEnableInChats
         conn.enable_in_automations = editTermEnableInAutomations
         conn.scope = editTermScope
+        conn.forward_cookies = editTermForwardCookies
+        // server_type / policy_id (web: only set when known), config.chat_uploads, config.contexts
+        if let t = editTermServerType { conn.extra["server_type"] = .string(t) }
+        let policy = editTermPolicyId.trimmingCharacters(in: .whitespaces)
+        if editTermServerType == "orchestrator", !policy.isEmpty { conn.extra["policy_id"] = .string(policy) }
+        var cfg = conn.config ?? TerminalServerConnectionConfig()
+        if editTermChatUploads == "filesystem" { cfg.extra["chat_uploads"] = .string("filesystem") }
+        else { cfg.extra.removeValue(forKey: "chat_uploads") }
+        var contexts: [String: AnyJSON] = [:]
+        if editTermChatContext == "off" { contexts["chat"] = .bool(false) }
+        else if editTermChatContext == "chat_id" { contexts["chat"] = .object(["context_id": .string("chat_id")]) }
+        if editTermAutomationContext == "off" { contexts["automation"] = .bool(false) }
+        else if editTermAutomationContext == "automation_id" { contexts["automation"] = .object(["context_id": .string("automation_id")]) }
+        if editTermServerType == "orchestrator", !contexts.isEmpty { cfg.extra["contexts"] = .object(contexts) }
+        else { cfg.extra.removeValue(forKey: "contexts") }
+        conn.config = cfg
 
         terminalServersConfig.TERMINAL_SERVER_CONNECTIONS[idx] = conn
         await saveTerminalServersConfig(api: api)

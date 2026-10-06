@@ -29,7 +29,7 @@ final class APIClient: @unchecked Sendable {
 
     /// Native-SSO silent renewal hook, forwarded to `NetworkManager`.
     /// Set by `DependencyContainer` only for servers with native SSO enabled.
-    var onUnauthorizedRecover: (@MainActor @Sendable () async -> Bool)? {
+    var onUnauthorizedRecover: (@MainActor @Sendable () async -> NativeSSORenewalOutcome)? {
         get { network.onUnauthorizedRecover }
         set { network.onUnauthorizedRecover = newValue }
     }
@@ -1571,7 +1571,7 @@ final class APIClient: @unchecked Sendable {
             archived: archived,
             folderId: folderId,
             tags: tags
-        )
+        ).withLastReadAt(json["last_read_at"])
     }
 
     /// GET /api/v1/folders/shared
@@ -1656,6 +1656,8 @@ final class APIClient: @unchecked Sendable {
         data fileData: Data,
         fileName: String,
         knowledgeId: String? = nil,
+        directoryId: String? = nil,
+        fileHash: String? = nil,
         onUploaded: ((String) -> Void)? = nil
     ) async throws -> (fileId: String, fileObject: [String: Any]) {
         let mime = mimeType(for: fileName)
@@ -1670,8 +1672,17 @@ final class APIClient: @unchecked Sendable {
         // Per the API spec, attach knowledge_id as a metadata field in the multipart body
         // so the server can associate the file with the knowledge base during upload.
         var additionalFields: [String: String]? = nil
+        // With `knowledge_id` the SERVER links the file to the knowledge base (into
+        // `directory_id` when given) once processing finishes — the client must not call
+        // /file/add afterwards (it would fail: the file is already linked).
         if let knowledgeId {
-            additionalFields = ["metadata": "{\"knowledge_id\":\"\(knowledgeId)\"}"]
+            var meta: [String: Any] = ["knowledge_id": knowledgeId]
+            if let directoryId, !directoryId.isEmpty { meta["directory_id"] = directoryId }
+            if let fileHash, !fileHash.isEmpty { meta["file_hash"] = fileHash }
+            if let json = try? JSONSerialization.data(withJSONObject: meta),
+               let text = String(data: json, encoding: .utf8) {
+                additionalFields = ["metadata": text]
+            }
         }
 
         let response = try await network.uploadMultipart(
@@ -2089,12 +2100,29 @@ final class APIClient: @unchecked Sendable {
         )
     }
 
+    /// GET /api/v1/prompts/id/{id}/history?page=N — the server returns 20 entries
+    /// per page, starting at page 0. Pages until a short page is returned.
     func getPromptHistory(id: String) async throws -> [[String: Any]] {
-        let (data, _) = try await network.requestRaw(path: "/api/v1/prompts/id/\(id)/history")
-        guard let array = try JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
-            return []
+        let pageSize = 20
+        var all: [[String: Any]] = []
+        var page = 0
+        while page < 100 {
+            let (data, _) = try await network.requestRaw(
+                path: "/api/v1/prompts/id/\(id)/history",
+                queryItems: [URLQueryItem(name: "page", value: "\(page)")]
+            )
+            guard let array = try JSONSerialization.jsonObject(with: data) as? [[String: Any]] else { break }
+            all.append(contentsOf: array)
+            if array.count < pageSize { break }
+            page += 1
         }
-        return array
+        return all
+    }
+
+    /// DELETE /api/v1/prompts/id/{id}/history/{history_id}
+    func deletePromptHistoryEntry(id: String, historyId: String) async throws {
+        try await network.requestVoid(
+            path: "/api/v1/prompts/id/\(id)/history/\(historyId)", method: .delete)
     }
 
     /// Sets a specific history version as the production (live) version.
@@ -2459,6 +2487,55 @@ final class APIClient: @unchecked Sendable {
         return allItems
     }
 
+    /// GET /api/v1/models/list — server-side search, view filter, tag and sort, one page.
+    /// `viewOption`: "" (all) | "created" | "shared". `orderBy`: name | created_at | updated_at.
+    func listWorkspaceModelsPage(
+        query: String? = nil, viewOption: String? = nil, tag: String? = nil,
+        orderBy: String? = nil, direction: String? = nil, page: Int = 1
+    ) async throws -> (items: [ModelItem], total: Int) {
+        var q: [URLQueryItem] = [URLQueryItem(name: "page", value: "\(page)")]
+        if let query, !query.isEmpty { q.append(URLQueryItem(name: "query", value: query)) }
+        if let viewOption, !viewOption.isEmpty { q.append(URLQueryItem(name: "view_option", value: viewOption)) }
+        if let tag, !tag.isEmpty { q.append(URLQueryItem(name: "tag", value: tag)) }
+        if let orderBy, !orderBy.isEmpty { q.append(URLQueryItem(name: "order_by", value: orderBy)) }
+        if let direction, !direction.isEmpty { q.append(URLQueryItem(name: "direction", value: direction)) }
+        let (data, _) = try await network.requestRaw(path: "/api/v1/models/list", queryItems: q)
+        guard let dict = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let items = dict["items"] as? [[String: Any]] else { return ([], 0) }
+        return (items.compactMap { ModelItem(json: $0) }, dict["total"] as? Int ?? items.count)
+    }
+
+    /// Pages through every result of `listWorkspaceModelsPage` for the given filters.
+    func listAllWorkspaceModels(
+        query: String? = nil, viewOption: String? = nil, tag: String? = nil,
+        orderBy: String? = nil, direction: String? = nil
+    ) async throws -> [ModelItem] {
+        var all: [ModelItem] = []
+        var page = 1
+        while page <= 200 {
+            let res = try await listWorkspaceModelsPage(
+                query: query, viewOption: viewOption, tag: tag,
+                orderBy: orderBy, direction: direction, page: page)
+            if res.items.isEmpty { break }
+            all.append(contentsOf: res.items)
+            if all.count >= res.total { break }
+            page += 1
+        }
+        return all
+    }
+
+    /// GET /api/v1/models/tags — tags across the models this user can see.
+    func getWorkspaceModelTags() async throws -> [String] {
+        let (data, _) = try await network.requestRaw(path: "/api/v1/models/tags")
+        return (try JSONSerialization.jsonObject(with: data) as? [String]) ?? []
+    }
+
+    /// GET /api/v1/models/base/tags (admin) — tags on base models.
+    func getBaseModelTags() async throws -> [String] {
+        let (data, _) = try await network.requestRaw(path: "/api/v1/models/base/tags")
+        return (try JSONSerialization.jsonObject(with: data) as? [String]) ?? []
+    }
+
     /// GET /api/v1/models — ALL models for admin (includes base/provider models + workspace models)
     func listAllModels() async throws -> [ModelItem] {
         let (data, _) = try await network.requestRaw(path: "/api/v1/models")
@@ -2507,6 +2584,18 @@ final class APIClient: @unchecked Sendable {
         guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let items = json["data"] as? [[String: Any]] else { return [] }
         return items.compactMap { ModelItem(json: $0) }
+    }
+
+    /// GET /api/v1/models/model?id={id} — returns `nil` when the model has no
+    /// workspace DB record yet (server responds 404 NOT_FOUND). Base models from a
+    /// connection only get a record once an admin edits, hides or toggles them.
+    func getWorkspaceModelRecord(id: String) async throws -> ModelDetail? {
+        do {
+            return try await getWorkspaceModelDetail(id: id)
+        } catch let error as APIError {
+            if case .httpError(let code, _, _) = error, code == 404 { return nil }
+            throw error
+        }
     }
 
     /// GET /api/v1/models/model?id={id} — full model detail (typed wrapper)
@@ -2565,9 +2654,17 @@ final class APIClient: @unchecked Sendable {
         )
     }
 
-    /// GET /api/v1/models/export — returns array of model JSON objects
-    func exportWorkspaceModels() async throws -> [[String: Any]] {
-        let (data, _) = try await network.requestRaw(path: "/api/v1/models/export")
+    /// DELETE /api/v1/models/delete/all (admin) — removes every workspace model record.
+    func deleteAllWorkspaceModels() async throws {
+        try await network.requestVoid(path: "/api/v1/models/delete/all", method: .delete)
+    }
+
+    /// GET /api/v1/models/export[?ids=a&ids=b] — returns an array of model JSON
+    /// objects in the server's export format (background images embedded as
+    /// `background_image_data`), which `/api/v1/models/import` and the web UI accept.
+    func exportWorkspaceModels(ids: [String]? = nil) async throws -> [[String: Any]] {
+        let query = ids?.map { URLQueryItem(name: "ids", value: $0) }
+        let (data, _) = try await network.requestRaw(path: "/api/v1/models/export", queryItems: query)
         guard let array = try JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
             return []
         }
@@ -2839,6 +2936,12 @@ final class APIClient: @unchecked Sendable {
             return [:]
         }
         return json
+    }
+
+    /// POST /api/v1/functions/load/url (admin) — fetch a function's source from a link.
+    /// Returns `{ "name": ..., "content": ... }`.
+    func loadFunctionFromURL(url: String) async throws -> [String: Any] {
+        try await network.requestJSON(path: "/api/v1/functions/load/url", method: .post, body: ["url": url])
     }
 
     /// POST /api/v1/tools/load/url — import a tool from a remote URL
@@ -3960,11 +4063,22 @@ final class APIClient: @unchecked Sendable {
                 return []
             }()
 
+            // Per-language overrides (meta.i18n): name, description, starter prompts —
+            // the web resolves these for the UI language (utils/localizedContent.ts).
+            let metaForI18n = ((raw["info"] as? [String: Any])?["meta"] as? [String: Any]) ?? (raw["meta"] as? [String: Any]) ?? [:]
+            let i18nMap = LocalizedContent.read(metaForI18n)
+            let localeKeys = LocalizedContent.deviceLocaleCandidates()
+            let localizedName = LocalizedContent.string(name, i18n: i18nMap, key: "name", candidates: localeKeys) ?? name
+            let localizedDescription = LocalizedContent.string(
+                (raw["description"] as? String) ?? (metaForI18n["description"] as? String),
+                i18n: i18nMap, key: "description", candidates: localeKeys)
+
             // Extract per-model suggestion prompts from info.meta.suggestion_prompts
             let suggestionPrompts: [BackendConfig.PromptSuggestion] = {
                 if let info = raw["info"] as? [String: Any],
                    let meta = info["meta"] as? [String: Any],
-                   let arr = meta["suggestion_prompts"] as? [[String: Any]], !arr.isEmpty {
+                   let arr = LocalizedContent.promptSuggestions(i18n: i18nMap, candidates: localeKeys)
+                        ?? (meta["suggestion_prompts"] as? [[String: Any]]), !arr.isEmpty {
                     // Re-serialize to JSON Data and decode as [PromptSuggestion]
                     if let data = try? JSONSerialization.data(withJSONObject: arr),
                        let decoded = try? JSONDecoder().decode([BackendConfig.PromptSuggestion].self, from: data) {
@@ -3976,8 +4090,10 @@ final class APIClient: @unchecked Sendable {
 
             return AIModel(
                 id: id,
-                name: name,
-                description: raw["description"] as? String,
+                name: localizedName,
+                description: localizedDescription,
+                serverName: name,
+                serverDescription: (raw["description"] as? String) ?? (metaForI18n["description"] as? String),
                 isMultimodal: isMultimodal,
                 supportsStreaming: true,
                 supportsRAG: supportsRAG,
@@ -4037,7 +4153,7 @@ final class APIClient: @unchecked Sendable {
             archived: archived,
             folderId: folderId,
             tags: tags
-        )
+        ).withLastReadAt(json["last_read_at"])
     }
 
     nonisolated func parseFullConversation(_ json: [String: Any]) -> Conversation {
@@ -5925,6 +6041,12 @@ final class APIClient: @unchecked Sendable {
         return try JSONDecoder().decode(GroupPermissions.self, from: data)
     }
 
+    /// GET `/api/v1/users/default/permissions/defaults` — stock values from the server config.
+    func getStockDefaultPermissions() async throws -> GroupPermissions {
+        let (data, _) = try await network.requestRaw(path: "/api/v1/users/default/permissions/defaults")
+        return try JSONDecoder().decode(GroupPermissions.self, from: data)
+    }
+
     /// POST `/api/v1/users/default/permissions` — update default user permissions.
     @discardableResult
     func updateDefaultPermissions(_ permissions: GroupPermissions) async throws -> GroupPermissions {
@@ -6021,9 +6143,13 @@ final class APIClient: @unchecked Sendable {
         return try decoder.decode(RetrievalConfig.self, from: data)
     }
 
-    /// POST `/api/v1/retrieval/config/update` — fire-and-forget; we don't parse the response.
-    func updateRetrievalConfig(_ config: RetrievalConfig) async throws {
+    /// POST `/api/v1/retrieval/config/update`.
+    /// - Parameter includeWeb: send the `web` object. Only the Web Search screen
+    ///   should pass `true` — the server overwrites every `web.*` key whenever
+    ///   `web` is present, so other screens must omit it.
+    func updateRetrievalConfig(_ config: RetrievalConfig, includeWeb: Bool = false) async throws {
         let encoder = JSONEncoder()
+        encoder.userInfo[RetrievalConfig.includeWebKey] = includeWeb
         let bodyData = try encoder.encode(config)
         _ = try await network.requestRaw(
             path: "/api/v1/retrieval/config/update",
@@ -6040,13 +6166,13 @@ final class APIClient: @unchecked Sendable {
         return try decoder.decode(EmbeddingConfig.self, from: data)
     }
 
-    /// POST `/api/v1/retrieval/embedding`
+    /// POST `/api/v1/retrieval/embedding/update` (the bare `/embedding` path is GET-only).
     @discardableResult
     func updateEmbeddingConfig(_ config: EmbeddingConfig) async throws -> EmbeddingConfig {
         let encoder = JSONEncoder()
         let bodyData = try encoder.encode(config)
         let (data, _) = try await network.requestRaw(
-            path: "/api/v1/retrieval/embedding",
+            path: "/api/v1/retrieval/embedding/update",
             method: .post,
             body: bodyData,
             contentType: "application/json"
@@ -6097,18 +6223,8 @@ final class APIClient: @unchecked Sendable {
         // Build the SCREAMING_SNAKE_CASE body manually to match what the server expects.
         var configsDict: [String: Any] = [:]
         for (key, conn) in config.openAIAPIConfigs {
-            configsDict[key] = [
-                "enable": conn.enable,
-                "tags": conn.tags.map { ["name": $0.name] },
-                "prefix_id": conn.prefixId,
-                "model_ids": conn.modelIds,
-                "connection_type": conn.connectionType,
-                "auth_type": conn.authType,
-                "headers": conn.headers,
-                "provider_type": conn.providerType,
-                "api_version": conn.apiVersion,
-                "api_type": conn.apiType
-            ]
+            // Full dict: keeps provider, azure, forward_cookies, passthrough_params, etc.
+            configsDict[key] = conn.toJSON()
         }
         let body: [String: Any] = [
             "ENABLE_OPENAI_API": config.enableOpenAIAPI,
@@ -6483,10 +6599,11 @@ final class APIClient: @unchecked Sendable {
         _ = try await network.requestRaw(path: "/api/v1/configs/import", method: .post, body: data)
     }
 
-    /// GET /api/v1/chats/stats/export — download all user chats as JSON.
+    /// GET /api/v1/chats/all/db (admin) — every user's chats as JSON, like the web's
+    /// Admin → Database → "Export All Chats (All Users)". (Previously this called
+    /// `/chats/stats/export`, which returns anonymised stats, not chats.)
     func exportAllChats() async throws -> Data {
-        let (data, _) = try await network.requestRaw(path: "/api/v1/chats/stats/export")
-        return data
+        try await exportAllUsersChats()
     }
 
     // MARK: - Pipelines

@@ -425,18 +425,11 @@ nonisolated enum TTSTextPreprocessor {
     static func removeThinkingBlocks(_ text: String) -> String {
         var result = text
 
-        // 1. Server-normalised <details type="reasoning">…</details> blocks.
-        //    Matches both done="true" (complete) and done="false" (in-progress).
-        //    Uses (?s) so . matches newlines inside multi-line thinking blocks.
-        if let regex = try? NSRegularExpression(
-            pattern: #"(?s)<details\s[^>]*type\s*=\s*["']reasoning["'][^>]*>.*?</details>"#
-        ) {
-            result = regex.stringByReplacingMatches(
-                in: result,
-                range: NSRange(result.startIndex..., in: result),
-                withTemplate: ""
-            )
-        }
+        // 1. Server-normalised <details type="reasoning">…</details> blocks,
+        //    both done="true" (complete) and done="false" (in-progress, removed
+        //    through to the end). Nesting-aware, so a <details> inside thinking
+        //    never truncates it.
+        result = DetailsBlockScanner.strip(result) { $0.type == "reasoning" }
 
         // 2. Raw model reasoning tag pairs — complete (open+close both present).
         let rawTagPairs: [(open: String, close: String)] = [
@@ -527,7 +520,7 @@ nonisolated enum TTSTextPreprocessor {
 
     static func removeHTMLTags(_ text: String) -> String {
         var result = text
-        result = regexReplace(result, pattern: "(?s)<details[^>]*>.*?</details>", with: "")
+        result = DetailsBlockScanner.strip(result)
         result = result.replacingOccurrences(
             of: "<[^>]+>",
             with: "",

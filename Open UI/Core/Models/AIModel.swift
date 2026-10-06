@@ -33,6 +33,11 @@ struct AIModel: Codable, Identifiable, Hashable, Sendable {
     let id: String
     var name: String
     var description: String?
+    /// The name stored on the server. `name` may be a per-language translation (meta.i18n)
+    /// for display; anything written back to the server must use this one.
+    var serverName: String?
+    /// The description stored on the server (see `serverName`).
+    var serverDescription: String?
     var isMultimodal: Bool
     var supportsStreaming: Bool
     var supportsRAG: Bool
@@ -94,6 +99,8 @@ struct AIModel: Codable, Identifiable, Hashable, Sendable {
         id: String,
         name: String,
         description: String? = nil,
+        serverName: String? = nil,
+        serverDescription: String? = nil,
         isMultimodal: Bool = false,
         supportsStreaming: Bool = true,
         supportsRAG: Bool = false,
@@ -116,6 +123,8 @@ struct AIModel: Codable, Identifiable, Hashable, Sendable {
         self.id = id
         self.name = name
         self.description = description
+        self.serverName = serverName
+        self.serverDescription = serverDescription
         self.isMultimodal = isMultimodal
         self.supportsStreaming = supportsStreaming
         self.supportsRAG = supportsRAG
@@ -138,6 +147,21 @@ struct AIModel: Codable, Identifiable, Hashable, Sendable {
         let meta = (info?["meta"] ?? rawModelItem?["meta"]) as? [String: Any]
         self.chatVariablesSchema = (meta?["chat_variables_schema"] as? [String: Any])
             .flatMap { try? JSONSerialization.data(withJSONObject: $0, options: .sortedKeys) }
+    }
+
+    /// The name to persist (never a translation).
+    var persistedName: String { serverName ?? name }
+    /// The description to persist (never a translation).
+    var persistedDescription: String? { serverDescription ?? description }
+
+    /// `meta.background_image_url` — drawn behind the chat while this model is
+    /// selected (below a folder's background, above the user's own).
+    /// Always an internal `/api/v1/files/{id}/content` path (server-validated).
+    var backgroundImageURL: String? {
+        let info = rawModelItem?["info"] as? [String: Any]
+        let meta = (info?["meta"] ?? rawModelItem?["meta"]) as? [String: Any]
+        let url = meta?["background_image_url"] as? String
+        return (url?.isEmpty ?? true) ? nil : url
     }
 
     /// Whether the memory builtin tool is enabled for this model.

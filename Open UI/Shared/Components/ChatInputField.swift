@@ -1,4 +1,5 @@
 import SwiftUI
+import Photos
 import PhotosUI
 import UniformTypeIdentifiers
 import PDFKit
@@ -140,6 +141,12 @@ struct ChatInputField: View {
     var onFileAttachment: (() -> Void)?
     var onPhotoAttachment: (() -> Void)?
     var onCameraCapture: (() -> Void)?
+    /// In-composer camera: receives the captured photo. When set, the Camera tile
+    /// grows the + card into a live viewfinder instead of calling `onCameraCapture`.
+    var onCameraCaptured: ((UIImage) -> Void)? = nil
+    /// Ready-made attachments from the card (e.g. scans). The parent appends them
+    /// and starts uploading; if nil they're appended locally.
+    var onAttachmentsCreated: (([ChatAttachment]) -> Void)? = nil
     var onWebAttachment: (() -> Void)?
     var onReferenceChatAttachment: (() -> Void)?
     var onFilesAttachment: (() -> Void)?
@@ -190,14 +197,14 @@ struct ChatInputField: View {
     /// Called when the user changes the mode in the + sheet.
     var onToolApprovalModeChange: ((String) -> Void)? = nil
 
-    @Environment(\.theme) private var theme
+    @Environment(\.theme) var theme
     @Environment(\.accessibilityScale) private var accessibilityScale
     @Environment(\.layoutDirection) private var layoutDirection
-    @FocusState private var isFocused: Bool
+    @FocusState var isFocused: Bool
     /// Real first-responder state of the UIKit text view (SwiftUI focus doesn't
     /// drive UIViewRepresentable). Drives the expanded composer layout so it
     /// works on iPad even when no keyboard notifications arrive.
-    @State private var textViewFocused = false
+    @State var textViewFocused = false
 
     /// iPad on iOS 26 already gets press feedback from the interactive glass;
     /// skipping the extra scale animation keeps taps on the large composer snappy.
@@ -208,10 +215,26 @@ struct ChatInputField: View {
     }
 
     /// UI chrome scale (buttons, icons, touch targets) — mirrors AccessibilityManager.uiScale.
-    private var uiScale: CGFloat { accessibilityScale.scale(for: .ui) }
-    @State private var showToolsSheet = false
+    var uiScale: CGFloat { accessibilityScale.scale(for: .ui) }
     @State private var connectingTool: ToolItem?
     @State private var previewingAttachmentId: AttachmentID? = nil
+
+    // MARK: - Morph card state (composer → + menu / camera)
+    // Internal (not private) so the ChatInputField+MorphCard extension can reach it.
+    @State var morph: ComposerMorph? = nil
+    /// Whether the camera page was reached from the menu (‹ goes back) or directly.
+    @State var cameraFromMenu = false
+    /// A sub-page (Files, Notes…) is open inside the menu card → card grows taller.
+    @State var morphMenuExpanded = false
+    /// The card is shrinking back into the composer.
+    @State var morphClosing = false
+    /// The card has finished growing (deferred work such as loading tools runs then).
+    @State var morphOpened = false
+    /// Runs once the card has fully shrunk back into the composer.
+    @State var morphPendingAction: (() -> Void)?
+    @State var morphRefocusOnClose = false
+    /// Captured photo flying from the camera card into its (hidden) composer tile.
+    @State var morphHandoff: ComposerMorphHandoff?
 
     // MARK: - Expand-to-compose state (interactive swipe-up)
     //
@@ -319,19 +342,20 @@ struct ChatInputField: View {
                         ))
                     }
 
-                    // Attachment previews
-                    if !attachments.isEmpty {
-                        attachmentStrip
-                            .padding(.horizontal, Spacing.screenPadding)
-                            .padding(.bottom, Spacing.xs)
-                            .transition(.asymmetric(
-                                insertion: .move(edge: .bottom).combined(with: .opacity),
-                                removal: .opacity
-                            ))
-                    }
-
-                    // Composer
+                    // Composer (attachments live inside it, at the top). While the + card
+                    // is open, the chat screen draws the card over everything from this
+                    // exact frame and the composer hides its contents underneath.
                     composerShell
+                        .opacity(morph == nil ? 1 : 0)
+                        .animation(.easeOut(duration: morph == nil ? 0.01 : 0.1), value: morph == nil)
+                        .allowsHitTesting(morph == nil)
+                        // Transform (not set) so the hand-off tile's anchor from inside
+                        // the attachment strip is kept alongside the composer's.
+                        .transformAnchorPreference(key: ComposerMorphKey.self, value: .bounds) { state, anchor in
+                            state.composerAnchor = anchor
+                            state.composerCornerRadius = composerCornerRadius
+                            state.request = morphRequest
+                        }
                         .padding(.horizontal, Spacing.screenPadding)
                 }
                 .transition(.asymmetric(
@@ -348,46 +372,16 @@ struct ChatInputField: View {
         .onReceive(NotificationCenter.default.publisher(for: .chatInputFieldRequestFocus)) { _ in
             isFocused = true
         }
-        .sheet(isPresented: $showToolsSheet) {
-            ToolsMenuSheet(
-                webSearchEnabled: $webSearchEnabled,
-                imageGenerationEnabled: $imageGenerationEnabled,
-                codeInterpreterEnabled: $codeInterpreterEnabled,
-                isWebSearchAvailable: isWebSearchAvailable,
-                isImageGenerationAvailable: isImageGenerationAvailable,
-                isCodeInterpreterAvailable: isCodeInterpreterAvailable,
-                tools: tools,
-                selectedToolIds: $selectedToolIds,
-                isLoadingTools: isLoadingTools,
-                onRefreshTools: onRefreshTools,
-                onFileAttachment: onFileAttachment,
-                onPhotoAttachment: onPhotoAttachment,
-                onCameraCapture: onCameraCapture,
-                onWebAttachment: onWebAttachment,
-                onFilesAttachment: onFilesAttachment,
-                onNotesAttachment: onNotesAttachment,
-                onKnowledgeAttachment: onKnowledgeAttachment,
-                onReferenceChatAttachment: onReferenceChatAttachment,
-                apiClient: apiClient,
-                notesManager: notesManager,
-                conversationManager: conversationManager,
-                selectedNotes: $selectedNotes,
-                selectedKnowledgeItems: $selectedKnowledgeItems,
-                selectedReferenceChats: $selectedReferenceChats,
-                onFilesSelected: onFilesSelected,
-                photoPicker: photoPicker,
-                onOpenToolUserValves: onOpenToolUserValves,
-                isNotesEnabled: true,
-                skills: skills,
-                selectedSkillIds: $selectedSkillIds,
-                isLoadingSkills: isLoadingSkills,
-                isToolPermissionsEnabled: isToolPermissionsEnabled,
-                toolApprovalMode: toolApprovalMode,
-                onToolApprovalModeChange: onToolApprovalModeChange
-            )
+        // Widget / Siri "Camera Chat" → open straight into the in-composer camera.
+        .onReceive(NotificationCenter.default.publisher(for: .composerOpenCamera)) { _ in
+            guard isEnabled, onCameraCaptured != nil else { return }
+            openMorph(.camera, cameraFromMenu: false)
         }
-        .onChange(of: showToolsSheet) { _, isPresented in
-            if isPresented { onToolsSheetPresented?() }
+        .onReceive(NotificationCenter.default.publisher(for: .openUIDismissOverlays)) { _ in
+            if morph != nil { closeMorph() }
+        }
+        .onChange(of: isEnabled) { _, enabled in
+            if !enabled && morph != nil { closeMorph() }
         }
         .modifier(ToolConnectionSheetModifier(tool: $connectingTool, apiClient: apiClient,
                                               onRefresh: onRefreshTools, selectedToolIds: $selectedToolIds))
@@ -471,7 +465,7 @@ struct ChatInputField: View {
     }
 
     /// Collapses the expanded composer with the standard spring (send, dismiss).
-    private func collapseComposer() {
+    func collapseComposer() {
         guard composerIsExpanded || composerDragHeight != nil else { return }
         withAnimation(Self.composerSpring) {
             composerIsExpanded = false
@@ -501,6 +495,17 @@ struct ChatInputField: View {
 
     private var composerShell: some View {
         VStack(spacing: 0) {
+            // Attachments: part of the composer itself. It grows to fit them and
+            // the row scrolls sideways (edge to edge inside the rounded box).
+            if !attachments.isEmpty {
+                attachmentStrip
+                    .padding(.top, 10)
+                    .transition(.asymmetric(
+                        insertion: .opacity.combined(with: .scale(scale: 0.96, anchor: .bottom)),
+                        removal: .opacity
+                    ))
+            }
+
             // Model override chip (above text input)
             if mentionedModel != nil {
                 mentionedModelChip
@@ -565,7 +570,7 @@ struct ChatInputField: View {
                 }
             }
             .padding(.horizontal, 16)
-            .padding(.top, (selectedKnowledgeItems.isEmpty && selectedReferenceChats.isEmpty && selectedNotes.isEmpty && mentionedModel == nil) ? 10 : 6)
+            .padding(.top, (attachments.isEmpty && selectedKnowledgeItems.isEmpty && selectedReferenceChats.isEmpty && selectedNotes.isEmpty && mentionedModel == nil) ? 10 : 6)
             .padding(.bottom, hasQuickPills ? 6 : 10)
 
             // Quick pills row (only when pills are configured)
@@ -615,9 +620,10 @@ struct ChatInputField: View {
         }
     }
 
-    private var composerCornerRadius: CGFloat {
-        // Shrink corners slightly for multiline content
-        text.contains("\n") || text.count > 60 ? 18 : 22
+    var composerCornerRadius: CGFloat {
+        // Taller box with attachments reads as a card; shrink corners for multiline text.
+        if !attachments.isEmpty { return 24 }
+        return text.contains("\n") || text.count > 60 ? 18 : 22
     }
 
     private var composerBorderColor: Color {
@@ -631,8 +637,7 @@ struct ChatInputField: View {
     private var inlinePlusButton: some View {
         Button {
             Haptics.play(.light)
-            isFocused = false
-            showToolsSheet = true
+            openMorph(.menu)
         } label: {
             ZStack {
                 Circle()
@@ -1277,27 +1282,50 @@ struct ChatInputField: View {
 
     // MARK: - Attachment Strip
 
-    /// Modern horizontal attachment strip — taller image tiles with upload ring,
-    /// wider file/audio pill cards, and a +N overflow badge for 5+ images.
+    /// Size of image tiles (matches the 64pt height of file/audio cards).
+    static let attachmentTileSize: CGFloat = 64
+
+    /// Horizontal row inside the composer: square image tiles and wider file/audio
+    /// cards, scrolling sideways. New items scroll into view at the end.
     private var attachmentStrip: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 8) {
-                ForEach(attachments) { attachment in
-                    attachmentTile(attachment)
-                        .transition(.asymmetric(
-                            insertion: .scale(scale: 0.5, anchor: .bottomLeading)
-                                .combined(with: .opacity),
-                            removal: .scale(scale: 0.7, anchor: .bottomLeading)
-                                .combined(with: .opacity)
-                        ))
+        ScrollViewReader { proxy in
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    ForEach(attachments) { attachment in
+                        attachmentTile(attachment)
+                            .id(attachment.id)
+                            // The camera photo flies into this tile: keep it hidden and
+                            // report its frame until the photo lands.
+                            .opacity(morphHandoff?.attachmentId == attachment.id ? 0 : 1)
+                            .transformAnchorPreference(key: ComposerMorphKey.self, value: .bounds) { state, anchor in
+                                if morphHandoff?.attachmentId == attachment.id {
+                                    state.handoffTileAnchor = anchor
+                                }
+                            }
+                            .transition(.asymmetric(
+                                insertion: .scale(scale: 0.6, anchor: .center).combined(with: .opacity),
+                                removal: .scale(scale: 0.7, anchor: .center).combined(with: .opacity)
+                            ))
+                    }
+                }
+                .padding(.horizontal, 10)
+            }
+            .onChange(of: attachments.count) { old, new in
+                guard new > old, let last = attachments.last?.id else { return }
+                if morphHandoff != nil {
+                    // Settle instantly so the flying photo aims at the final spot.
+                    proxy.scrollTo(last, anchor: .trailing)
+                } else {
+                    withAnimation(.spring(response: 0.35, dampingFraction: 0.86)) {
+                        proxy.scrollTo(last, anchor: .trailing)
+                    }
                 }
             }
-            .padding(.horizontal, 4)
-            .padding(.vertical, 2)
         }
     }
 
-    /// Single tile — image tiles are square 76×76, file/audio are wider pill cards.
+    /// Single tile: image tiles are 64pt squares, file/audio are wider cards.
+    /// The remove button sits inside the tile so the composer never clips it.
     private func attachmentTile(_ attachment: ChatAttachment) -> some View {
         ZStack(alignment: .topTrailing) {
             Group {
@@ -1311,29 +1339,28 @@ struct ChatInputField: View {
                 }
             }
 
-            // Remove button — top-right corner
+            // Remove button (top-right corner, inside the tile)
             Button {
-                withAnimation(.spring(response: 0.25, dampingFraction: 0.7)) {
+                withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
                     attachments.removeAll { $0.id == attachment.id }
                 }
                 Haptics.play(.light)
             } label: {
-                ZStack {
-                    Circle()
-                        .fill(Color.black.opacity(0.55))
-                        .frame(width: 20, height: 20)
-                    Image(systemName: "xmark")
-                        .scaledFont(size: 8, weight: .bold)
-                        .foregroundStyle(.white)
-                }
+                Image(systemName: "xmark")
+                    .scaledFont(size: 8, weight: .bold)
+                    .foregroundStyle(.white)
+                    .frame(width: 20, height: 20)
+                    .background(Circle().fill(Color.black.opacity(0.55)))
+                    .padding(4)
+                    // Bigger touch area than the drawn circle.
+                    .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .offset(x: 6, y: -6)
             .accessibilityLabel("Remove \(attachment.name)")
         }
     }
 
-    // MARK: Image Tile (76×76 square with upload ring overlay)
+    // MARK: Image Tile (64×64 square with upload ring overlay)
 
     @ViewBuilder
     private func imageTile(_ attachment: ChatAttachment) -> some View {
@@ -1346,12 +1373,12 @@ struct ChatInputField: View {
                 thumbnail
                     .resizable()
                     .aspectRatio(contentMode: .fill)
-                    .frame(width: 76, height: 76)
+                    .frame(width: Self.attachmentTileSize, height: Self.attachmentTileSize)
                     .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
             } else {
                 RoundedRectangle(cornerRadius: 14, style: .continuous)
                     .fill(theme.surfaceContainer)
-                    .frame(width: 76, height: 76)
+                    .frame(width: Self.attachmentTileSize, height: Self.attachmentTileSize)
                     .overlay(
                         Image(systemName: "photo")
                             .scaledFont(size: 22)
@@ -1363,7 +1390,7 @@ struct ChatInputField: View {
             if isError {
                 RoundedRectangle(cornerRadius: 14, style: .continuous)
                     .fill(Color.black.opacity(0.45))
-                    .frame(width: 76, height: 76)
+                    .frame(width: Self.attachmentTileSize, height: Self.attachmentTileSize)
                     .overlay(
                         Button {
                             NotificationCenter.default.post(
@@ -1386,7 +1413,7 @@ struct ChatInputField: View {
             } else if isUploading {
                 RoundedRectangle(cornerRadius: 14, style: .continuous)
                     .fill(Color.black.opacity(0.35))
-                    .frame(width: 76, height: 76)
+                    .frame(width: Self.attachmentTileSize, height: Self.attachmentTileSize)
                     .overlay(
                         UploadRingView(color: .white)
                             .frame(width: 28, height: 28)
@@ -1404,10 +1431,10 @@ struct ChatInputField: View {
                             .padding(5)
                     }
                 }
-                .frame(width: 76, height: 76)
+                .frame(width: Self.attachmentTileSize, height: Self.attachmentTileSize)
             }
         }
-        .frame(width: 76, height: 76)
+        .frame(width: Self.attachmentTileSize, height: Self.attachmentTileSize)
         .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: 14, style: .continuous)
@@ -1490,7 +1517,8 @@ struct ChatInputField: View {
                 .foregroundStyle(isError ? theme.error.opacity(0.7) : theme.textTertiary)
             }
         }
-        .padding(.horizontal, 10)
+        .padding(.leading, 10)
+        .padding(.trailing, 24)  // room for the × button
         .frame(height: 64)
         .frame(minWidth: 160, maxWidth: 200)
         .background(
@@ -1593,7 +1621,8 @@ struct ChatInputField: View {
                 }
             }
         }
-        .padding(.horizontal, 10)
+        .padding(.leading, 10)
+        .padding(.trailing, 24)  // room for the × button
         .frame(height: 64)
         .frame(minWidth: 160, maxWidth: 220)
         .background(

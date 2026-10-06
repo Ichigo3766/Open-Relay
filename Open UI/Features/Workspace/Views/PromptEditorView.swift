@@ -702,7 +702,12 @@ struct PromptEditorView: View {
         // For create mode, grants are in localAccessGrants.
         // For edit mode, grants are already persisted via dedicated /access/update calls.
         // toUpdatePayload() no longer sends access_grants to avoid creating version history.
-        let grants = localAccessGrants
+        // The full grant list is sent (server replaces grants when present), so the
+        // public wildcard must be included or a public prompt would turn private.
+        var grants = localAccessGrants.filter { $0.userId != "*" }
+        if !isPrivate {
+            grants.append(AccessGrant(id: UUID().uuidString, userId: "*", groupId: nil, read: true, write: false))
+        }
         let detail = PromptDetail(
             id: existing?.id ?? UUID().uuidString,
             command: trimmedCommand,
@@ -717,6 +722,29 @@ struct PromptEditorView: View {
             updatedAt: Date()
         )
         let commit = commitMessage.trimmingCharacters(in: .whitespaces)
+
+        // Web parity: a change to only the name, command or tags is saved with
+        // /update/meta, which does NOT create a new version in the history.
+        if let existing, commit.isEmpty, content == existing.content, isActive == existing.isActive,
+           Set(localAccessGrants.compactMap { $0.userId }) == Set(existing.accessGrants.compactMap { $0.userId }),
+           isPrivate == !existing.accessGrants.contains(where: { $0.userId == "*" }) {
+            Task {
+                do {
+                    try await dependencies.apiClient?.updatePromptMetadata(
+                        id: existing.id, name: trimmedName, command: trimmedCommand, tags: tags)
+                    await manager?.fetchPrompts()
+                    await manager?.fetchTags()
+                    isSaving = false
+                    dismiss()
+                } catch {
+                    // e.g. the command is already used by another prompt
+                    isSaving = false
+                    validationError = error.localizedDescription
+                }
+            }
+            return
+        }
+
         onSave(detail, commit.isEmpty ? nil : commit)
         isSaving = false
         dismiss()
@@ -759,6 +787,9 @@ private struct PromptHistoryView: View {
     @State private var liveVersionId: String?
     /// Inline error shown in a banner at the top of the sheet.
     @State private var setProductionError: String?
+    /// Versions deleted this session (the parent's list is immutable here).
+    @State private var deletedIds: Set<String> = []
+    @State private var deleteCandidate: PromptVersion?
 
     private static let dateFormatter: DateFormatter = {
         let f = DateFormatter()
@@ -812,14 +843,45 @@ private struct PromptHistoryView: View {
                             .listRowSeparator(.hidden)
                         }
 
-                        ForEach(versions) { version in
+                        ForEach(versions.filter { !deletedIds.contains($0.id) }) { version in
                             versionRow(version)
                                 .listRowBackground(theme.background)
                                 .listRowSeparator(.hidden)
+                                // The live version can't be deleted (server returns 400).
+                                .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                                    if !isLive(version), promptId != nil {
+                                        Button(role: .destructive) { deleteCandidate = version } label: {
+                                            Label("Delete Version", systemImage: "trash")
+                                        }
+                                    }
+                                }
                         }
                     }
                     .listStyle(.plain)
                 }
+            }
+            .confirmationDialog(
+                "Delete Version",
+                isPresented: .init(get: { deleteCandidate != nil }, set: { if !$0 { deleteCandidate = nil } }),
+                titleVisibility: .visible
+            ) {
+                Button("Delete", role: .destructive) {
+                    if let v = deleteCandidate, let pid = promptId {
+                        deleteCandidate = nil
+                        Task {
+                            do {
+                                try await manager?.deleteHistoryVersion(promptId: pid, versionId: v.id)
+                                deletedIds.insert(v.id)
+                                Haptics.notify(.success)
+                            } catch {
+                                setProductionError = error.localizedDescription
+                            }
+                        }
+                    }
+                }
+                Button("Cancel", role: .cancel) { deleteCandidate = nil }
+            } message: {
+                Text("This version will be permanently removed from the history.")
             }
             .background(theme.background)
             .navigationTitle("Version History")

@@ -1,0 +1,77 @@
+import Foundation
+
+/// Locale codes Open WebUI supports for `meta.i18n` translations
+/// (`src/lib/i18n/locales/languages.json`). The server stores translations under
+/// these exact keys, so the list must match the web app.
+enum OpenWebUILanguages {
+    static let all: [(code: String, title: String)] = [
+        ("en-US", "English (US)"),
+        ("en-GB", "English (GB)"),
+        ("ar", "Arabic (العربية)"),
+        ("ar-BH", "Arabic (Bahrain)"),
+        ("az-AZ", "Azərbaycanca"),
+        ("eu-ES", "Basque (Euskara)"),
+        ("bn-BD", "Bengali (বাংলা)"),
+        ("bs-BA", "Bosanski Latinica"),
+        ("bo-TB", "Tibetan (བོད)"),
+        ("bg-BG", "Bulgarian (български)"),
+        ("ca-ES", "Catalan (català)"),
+        ("ceb-PH", "Cebuano (Filipino)"),
+        ("hr-HR", "Croatian (Hrvatski)"),
+        ("cs-CZ", "Czech (čeština)"),
+        ("da-DK", "Danish (Denmark)"),
+        ("nl-NL", "Dutch (Netherlands)"),
+        ("et-EE", "Estonian (Eesti)"),
+        ("fi-FI", "Finnish (Suomalainen)"),
+        ("fo-FO", "Faroese (Faroe Islands)"),
+        ("fr-CA", "French (Canada)"),
+        ("fr-FR", "French (France)"),
+        ("gl-ES", "Galician (Galego)"),
+        ("ka-GE", "Georgian (ქართული)"),
+        ("de-DE", "German (Deutsch)"),
+        ("el-GR", "Greek (Ἑλλάδα)"),
+        ("he-IL", "Hebrew (עברית)"),
+        ("hi-IN", "Hindi (हिंदी)"),
+        ("hu-HU", "Hungarian (Magyar)"),
+        ("id-ID", "Indonesian (Bahasa Indonesia)"),
+        ("ie-GA", "Irish (Gaeilge)"),
+        ("it-IT", "Italian (Italiano)"),
+        ("ja-JP", "Japanese (日本語)"),
+        ("kab-DZ", "Kabyle (Taqbaylit)"),
+        ("ko-KR", "Korean (한국어)"),
+        ("lt-LT", "Lithuanian (Lietuvių)"),
+        ("lv-LV", "Latvian (Latviešu)"),
+        ("ms-MY", "Malay (Bahasa Malaysia)"),
+        ("nb-NO", "Norwegian Bokmål (Norway)"),
+        ("fa-IR", "Persian (فارسی)"),
+        ("pl-PL", "Polish (Polski)"),
+        ("pt-BR", "Portuguese (Brazil)"),
+        ("pt-PT", "Portuguese (Portugal)"),
+        ("pa-IN", "Punjabi (India)"),
+        ("ro-RO", "Romanian (Romania)"),
+        ("ru-RU", "Russian (Russia)"),
+        ("sr-RS", "Serbian (Српски)"),
+        ("sk-SK", "Slovak (Slovenčina)"),
+        ("sl-SI", "Slovenian (Slovenščina)"),
+        ("es-ES", "Spanish (Español)"),
+        ("sv-SE", "Swedish (Svenska)"),
+        ("fil-PH", "Tagalog (Filipino)"),
+        ("ta-IN", "தமிழ் (இந்தியா)"),
+        ("th-TH", "Thailand (ไทย)"),
+        ("tr-TR", "Turkish (Türkçe)"),
+        ("tk-TM", "Turkmen (Türkmençe)"),
+        ("uk-UA", "Ukrainian (Українська)"),
+        ("ur-PK", "Urdu (اردو)"),
+        ("ug-CN", "Uyghur (ئۇيغۇرچە)"),
+        ("uz-Cyrl-UZ", "Uzbek (Cyrillic)"),
+        ("uz-Latn-UZ", "Uzbek (Latin)"),
+        ("vi-VN", "Vietnamese (Tiếng Việt)"),
+        ("zh-CN", "Chinese (简体中文)"),
+        ("zh-TW", "Chinese (繁體中文)"),
+        ("dg-DG", "Doge (🐶)")
+    ]
+
+    static func title(for code: String) -> String {
+        all.first(where: { $0.code == code })?.title ?? code
+    }
+}

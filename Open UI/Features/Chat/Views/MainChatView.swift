@@ -1218,6 +1218,10 @@ struct MainChatView: View {
                 if showFileBrowser { closeFileBrowserAnimated() }
                 terminalBrowserVM.reset()
             }
+            .onChange(of: activeConversationId, initial: true) { oldId, newId in
+                // Web Chat.svelte: mark the chat being left and the one opened as read.
+                ChatReadState.shared.handleOpenChatChange(from: oldId == newId ? nil : oldId, to: newId)
+            }
             // Model tool events: open displayed files in the panel and refresh
             // the listing when files are written or commands run.
             .onReceive(NotificationCenter.default.publisher(for: .terminalFileEvent)) { note in
@@ -1805,6 +1809,13 @@ struct MainChatView: View {
                                 )
                             }
                             .buttonStyle(.plain)
+                            // Web Sidebar: Chats header "More" menu → Mark all as read.
+                            .contextMenu {
+                                MarkAllReadMenuItem(
+                                    conversations: listViewModel.conversations + listViewModel.pinnedConversations
+                                        + listViewModel.folderViewModel.folders.flatMap(\.chats),
+                                    apiClient: dependencies.apiClient)
+                            }
 
                             if chatsExpanded {
                                 // LazyVStack so only visible rows are created.
@@ -2797,6 +2808,7 @@ struct MainChatView: View {
                     }
                 } label: {
                     HStack {
+                        ChatUnreadDot(conversation: conversation, activeChatStore: dependencies.activeChatStore)
                         Text(conversation.title)
                             .scaledFont(size: 14, context: .list)
                             .fontWeight(activeConversationId == conversation.id ? .semibold : .regular)
@@ -2886,6 +2898,10 @@ struct MainChatView: View {
                             systemImage: conversation.pinned ? "pin.slash" : "pin"
                         )
                     }
+
+                    // Mark as Unread (web ChatMenu)
+                    MarkUnreadMenuItem(conversation: conversation, apiClient: dependencies.apiClient,
+                                       isOpen: activeConversationId == conversation.id)
 
                     // Clone
                     Button {
@@ -3522,8 +3538,8 @@ let conversationId: String?
             // Construct a default ModelDetail so the editor opens in "create" mode.
             editingModelDetail = ModelDetail(
                 id: model.id,
-                name: model.name,
-                description: model.description,
+                name: model.persistedName,
+                description: model.persistedDescription,
                 profileImageURL: model.profileImageURL
             )
         }

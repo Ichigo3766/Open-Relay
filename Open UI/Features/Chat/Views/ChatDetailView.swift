@@ -264,12 +264,6 @@ struct ChatDetailView: View {
     /// from the very first frame (avoids the top→centre jump when a new
     /// ChatDetailView is instantiated and the async measurement hasn't fired yet).
     @State private var viewState_containerHeight: CGFloat = UIScreen.main.bounds.height
-    /// True once a response has streamed while this chat is on screen. Keeps the
-    /// last turn's viewport-height reservation after the stream ends, so a reply the
-    /// user just watched doesn't jump when the reserved writing space would vanish.
-    /// Starts false on every new ChatDetailView instance (each chat has a unique .id),
-    /// so reopened chats render completed turns at their natural height.
-    @State private var hasStreamedThisSession = false
     // currentScrollOffsetY and topmostVisibleMessageId are stored in _pumpRef (PumpRef class)
     // to avoid @State observation overhead — writing them on every 120Hz scroll frame was
     // causing the entire view body to re-evaluate, causing low-FPS scrolling. They are read
@@ -394,7 +388,6 @@ struct ChatDetailView: View {
     @State private var showPhotosPicker = false
     @State private var showAnimatedPhotoPicker = false
     @State private var showAudioPicker = false
-    @State private var showCameraPicker = false
     @State private var showWebURLAlert = false
     @State private var webURLInput = ""
     @State private var showReferenceChatPicker = false
@@ -599,12 +592,16 @@ struct ChatDetailView: View {
             // to _folderWorkspace directly, preventing the background from showing
             // on regular chats when _lockedFolderBgUrl was never set (i.e. the
             // folderId guard in .onAppear correctly rejected it).
+            // Precedence (Chat.svelte): folder background → selected model's background.
             let _bgUrl: String? = _lockedFolderBgUrl
                 ?? (initialConversationId == nil ? _folderWorkspace?.backgroundImageUrl : nil)
+                ?? viewModel.selectedModel?.backgroundImageURL
             if let bgUrl = _bgUrl, !bgUrl.isEmpty {
                 GeometryReader { geo in
                     folderBackgroundImage(url: bgUrl, containerSize: geo.size)
                 }
+                .id(bgUrl)
+                .onChange(of: bgUrl) { _, _ in _cachedFolderBgImage = nil }
                 .ignoresSafeArea()
             }
 
@@ -671,6 +668,11 @@ struct ChatDetailView: View {
         }
         // Keep the explicit backdrop unless this build supports native status-area blur.
         .statusBarGlassBackdrop(background: theme.background)
+        // + menu / camera card: drawn over the whole chat from the composer's frame,
+        // so it never changes the bottom bar's height or re-lays out the messages.
+        .overlayPreferenceValue(ComposerMorphKey.self) { state in
+            ComposerMorphOverlayHost(state: state)
+        }
         .navigationBarHidden(true)
         // Configure the view model synchronously on first appearance so that the
         // toolbar (model selector, terminal icon) is fully populated before the
@@ -833,10 +835,6 @@ struct ChatDetailView: View {
                 }
             }
         }
-        .fullScreenCover(isPresented: $showCameraPicker) {
-            CameraPickerView { image in processCameraImage(image) }
-                .ignoresSafeArea()
-        }
         .modifier(WebSearchConsentAlert(consent: viewModel.isVoiceMode ? nil : viewModel.webSearchConsent))
         .alert("Add Web Link", isPresented: $showWebURLAlert) {
             TextField("https://example.com", text: $webURLInput)
@@ -924,7 +922,7 @@ struct ChatDetailView: View {
                 )
             }
         }
-        // Intercept link taps from MarkdownView and vizSendPrompt bridge calls.
+        // Intercept link taps from MarkdownView (authenticated file downloads).
         // Extracted into a private extension to keep the type-checker expression size manageable.
         .applyLinkAndPromptHandlers(
             viewModel: viewModel,
@@ -1040,7 +1038,6 @@ struct ChatDetailView: View {
         .applyWidgetAndPickerHandlers(
             isEnabled: isEnabled,
             acceptsQuickActions: viewModel.noteChatSession == nil,
-            showCameraPicker: $showCameraPicker,
             showPhotosPicker: $showPhotosPicker,
             showAnimatedPhotoPicker: $showAnimatedPhotoPicker,
             showFilePicker: $showFilePicker,
@@ -1719,7 +1716,14 @@ struct ChatDetailView: View {
                         showAnimatedPhotoPicker = true
                     }
                 },
-                onCameraCapture: { showCameraPicker = true },
+                onCameraCaptured: { image in processCameraImage(image) },
+                onAttachmentsCreated: { created in
+                    // Only used by the camera card, which animates the hand-off itself.
+                    viewModel.attachments.append(contentsOf: created)
+                    for attachment in created {
+                        viewModel.uploadAttachmentImmediately(attachmentId: attachment.id)
+                    }
+                },
                 onWebAttachment: { showWebURLAlert = true },
                 // Voice call — gated by permissions.chat.call
                 onVoiceInput: showVoiceModeButton && dependencies.authViewModel.chatPermissions.call ? { toggleVoiceInput() } : nil,
@@ -1925,9 +1929,6 @@ struct ChatDetailView: View {
                 let isSend = lastMessage?.role == .user
                     || (new - old >= 2 && viewModel.messages.dropLast().last?.role == .user)
                 if isSend {
-                    // A send: reserve the reply's writing space now, so the page
-                    // height does not jump when streaming starts mid-glide.
-                    hasStreamedThisSession = true
                     _pumpRef.sendGlideUntil = Date().addingTimeInterval(0.95)
                 }
                 UIApplication.shared.sendAction(
@@ -1955,10 +1956,6 @@ struct ChatDetailView: View {
                 // first so the in-flight offset changes don't misfire the nav-bar /
                 // breakout observer while the spring is running.
                 _pumpRef.programmaticScrollUntil = Date().addingTimeInterval(0.7)
-                // Reserve the reply's writing space immediately. Streaming starts a
-                // moment later (after the request is built), and turning the
-                // reservation on then grew the page by up to a screen mid-glide.
-                hasStreamedThisSession = true
                 // The glide is the only scroll until it lands: 80ms settle + spring.
                 _pumpRef.sendGlideUntil = Date().addingTimeInterval(0.6)
                 Task { @MainActor in
@@ -1978,7 +1975,6 @@ struct ChatDetailView: View {
         // performs any structural view swap, and the follower tracks the typewriter's
         // last characters via lastContentGrowthAt — nothing to do here.
         .onChange(of: viewModel.isStreaming) { oldStreaming, newStreaming in
-            if newStreaming { hasStreamedThisSession = true }
             if newStreaming && streamingAutoScroll {
                 // Stream started — re-engage auto-scroll.
                 isScrolledUp = false
@@ -2614,7 +2610,7 @@ struct ChatDetailView: View {
 
         let reservedHeight: CGFloat? = {
             guard lastTurnIsUserTurn,
-                  viewModel.isStreaming || hasStreamedThisSession else { return nil }
+                  viewModel.isStreaming || viewModel.streamingStore.isActive else { return nil }
             return max(viewState_containerHeight, 0)
         }()
 
@@ -2629,10 +2625,8 @@ struct ChatDetailView: View {
                     messageSlot(message: message, index: index, isDrawn: isDrawn)
                 }
             }
-            // Reserve writing space only on the last turn, and only while streaming
-            // or after a stream in this on-screen session (so the finished reply
-            // doesn't jump). Completed turns in a freshly opened chat use their
-            // natural height, leaving no blank area below finished replies.
+            // Keep writing space through final processing, then let completed
+            // turns use their natural height after blocks collapse.
             .frame(minHeight: turn.id == lastTurnId ? reservedHeight : nil, alignment: .top)
         }
     }
@@ -2809,7 +2803,6 @@ struct ChatDetailView: View {
             AnimatedPresence(visible: message.role == .assistant && !message.isStreaming) {
                 if message.role == .assistant && !message.isStreaming {
                     assistantActionBar(for: message)
-                        .padding(.horizontal, Spacing.screenPadding)
                         .padding(.top, Spacing.xs)
                         // Popover must live at the row level (not inside the ForEach action bar)
                         // so that every message gets its own independent popover anchor.
@@ -3702,86 +3695,93 @@ struct ChatDetailView: View {
                 || dependencies.textToSpeechService.readAloudPlayer.messageID == message.id
         )
 
-        return FeedbackFlowLayout(spacing: 6) {
-            // Version switcher (only when siblings exist and not overriding with a user edit version)
-            if totalVersions > 1 && !viewModel.isStreaming && assistantContentOverride[message.id] == nil {
-                HStack(spacing: 2) {
-                    Button {
-                        // Navigate to the sibling BEFORE the current one in sorted order.
-                        let currentPos = displayIndex - 1 // 0-based
-                        let targetPos = currentPos - 1
-                        if targetPos >= 0 {
-                            let targetId = allSiblings[targetPos].id
-                            // restoreAssistantVersionById() calls rederiveMessages() which
-                            // replaces the message object entirely. After that, the target
-                            // sibling IS the main message and all state is correct.
-                            // Clear stale activeVersionIndex/assistantContentOverride so the
-                            // new main message renders its own files and content — not whatever
-                            // the old activeVersionIndex was pointing to.
-                            activeVersionIndex.removeValue(forKey: message.id)
-                            assistantContentOverride.removeValue(forKey: message.id)
-                            viewModel.restoreAssistantVersionById(targetSiblingId: targetId)
-                            Haptics.play(.light)
-                        }
-                    } label: {
-                        compactActionIcon(icon: "chevron.left", isActive: false, size: 10)
-                    }
-                    .buttonStyle(CompactActionButtonStyle())
-                    .accessibilityLabel("Previous response version")
-                    .disabled(displayIndex == 1)
-                    .opacity(displayIndex == 1 ? 0.35 : 1)
-
-                    Text("\(displayIndex)/\(totalVersions)")
-                        .scaledFont(size: 11, weight: .semibold)
-                        .foregroundStyle(theme.textSecondary)
-                        .frame(minWidth: 28)
-
-                    Button {
-                        // Navigate to the sibling AFTER the current one in sorted order.
-                        let currentPos = displayIndex - 1 // 0-based
-                        let targetPos = currentPos + 1
-                        if targetPos < allSiblings.count {
-                            let targetId = allSiblings[targetPos].id
-                            // Same cleanup as the ← button above.
-                            activeVersionIndex.removeValue(forKey: message.id)
-                            assistantContentOverride.removeValue(forKey: message.id)
-                            viewModel.restoreAssistantVersionById(targetSiblingId: targetId)
-                            Haptics.play(.light)
-                        }
-
-                    } label: {
-                        compactActionIcon(icon: "chevron.right", isActive: false, size: 10)
-                    }
-                    .buttonStyle(CompactActionButtonStyle())
-                    .accessibilityLabel("Next response version")
-                    .disabled(displayIndex == totalVersions)
-                    .opacity(displayIndex == totalVersions ? 0.35 : 1)
-                }
-            }
-
-            ForEach(actions) { item in
-                assistantAction(item, for: message, totalVersions: totalVersions)
-            }
-
-            // Action buttons (from model's configured actions — e.g. Generate Image)
-            if !viewModel.isStreaming {
-                let model = resolveModel(for: message)
-                if let actions = model?.actions, !actions.isEmpty {
-                    ForEach(actions) { action in
+        return ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 6) {
+                // Version switcher (only when siblings exist and not overriding with a user edit version)
+                if totalVersions > 1 && !viewModel.isStreaming && assistantContentOverride[message.id] == nil {
+                    HStack(spacing: 2) {
                         Button {
-                            Task { await invokeActionButton(action: action, message: message) }
-                            Haptics.play(.medium)
+                            // Navigate to the sibling BEFORE the current one in sorted order.
+                            let currentPos = displayIndex - 1 // 0-based
+                            let targetPos = currentPos - 1
+                            if targetPos >= 0 {
+                                let targetId = allSiblings[targetPos].id
+                                // restoreAssistantVersionById() calls rederiveMessages() which
+                                // replaces the message object entirely. After that, the target
+                                // sibling IS the main message and all state is correct.
+                                // Clear stale activeVersionIndex/assistantContentOverride so the
+                                // new main message renders its own files and content — not whatever
+                                // the old activeVersionIndex was pointing to.
+                                activeVersionIndex.removeValue(forKey: message.id)
+                                assistantContentOverride.removeValue(forKey: message.id)
+                                viewModel.restoreAssistantVersionById(targetSiblingId: targetId)
+                                Haptics.play(.light)
+                            }
                         } label: {
-                            actionButtonIcon(action: action)
+                            compactActionIcon(icon: "chevron.left", isActive: false, size: 10)
                         }
                         .buttonStyle(CompactActionButtonStyle())
-                        .accessibilityLabel(action.name)
+                        .accessibilityLabel("Previous response version")
+                        .disabled(displayIndex == 1)
+                        .opacity(displayIndex == 1 ? 0.35 : 1)
+
+                        Text("\(displayIndex)/\(totalVersions)")
+                            .scaledFont(size: 11, weight: .semibold)
+                            .foregroundStyle(theme.textSecondary)
+                            .frame(minWidth: 28)
+
+                        Button {
+                            // Navigate to the sibling AFTER the current one in sorted order.
+                            let currentPos = displayIndex - 1 // 0-based
+                            let targetPos = currentPos + 1
+                            if targetPos < allSiblings.count {
+                                let targetId = allSiblings[targetPos].id
+                                // Same cleanup as the ← button above.
+                                activeVersionIndex.removeValue(forKey: message.id)
+                                assistantContentOverride.removeValue(forKey: message.id)
+                                viewModel.restoreAssistantVersionById(targetSiblingId: targetId)
+                                Haptics.play(.light)
+                            }
+
+                        } label: {
+                            compactActionIcon(icon: "chevron.right", isActive: false, size: 10)
+                        }
+                        .buttonStyle(CompactActionButtonStyle())
+                        .accessibilityLabel("Next response version")
+                        .disabled(displayIndex == totalVersions)
+                        .opacity(displayIndex == totalVersions ? 0.35 : 1)
+                    }
+                }
+
+                ForEach(actions) { item in
+                    assistantAction(item, for: message, totalVersions: totalVersions)
+                }
+
+                // Action buttons (from model's configured actions — e.g. Generate Image)
+                if !viewModel.isStreaming {
+                    let model = resolveModel(for: message)
+                    if let actions = model?.actions, !actions.isEmpty {
+                        ForEach(actions) { action in
+                            Button {
+                                Task { await invokeActionButton(action: action, message: message) }
+                                Haptics.play(.medium)
+                            } label: {
+                                actionButtonIcon(action: action)
+                            }
+                            .buttonStyle(CompactActionButtonStyle())
+                            .accessibilityLabel(action.name)
+                        }
                     }
                 }
             }
-
-            Spacer()
+            // Padding lives inside the scroll content so scrolled buttons glide to
+            // the screen edges while the resting position matches the message text.
+            .padding(.horizontal, Spacing.screenPadding)
+            .padding(.vertical, 2)
         }
+        // One line that scrolls sideways instead of wrapping onto a second row.
+        .scrollBounceBehavior(.basedOnSize, axes: .horizontal)
+        .modifier(ActionBarEdgeFade())
     }
 
     @ViewBuilder
@@ -3804,9 +3804,8 @@ struct ChatDetailView: View {
     /// Runs a user-selected Apple Shortcut with the cleaned assistant message as text input.
     private func runShortcut(_ action: ShortcutMessageAction, with message: ChatMessage) {
         var clean = message.content
-        if let re = try? NSRegularExpression(pattern: #"<details[^>]*>.*?</details>"#, options: [.dotMatchesLineSeparators]) {
-            clean = re.stringByReplacingMatches(in: clean, range: NSRange(clean.startIndex..., in: clean), withTemplate: "")
-        }
+        // Nesting-aware: nested <details> never leave a stray </details> behind.
+        clean = DetailsBlockScanner.strip(clean)
         clean = clean
             .replacingOccurrences(of: "\n\n\n+", with: "\n\n", options: .regularExpression)
             .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -4070,6 +4069,36 @@ struct ChatDetailView: View {
                 .scaleEffect(configuration.isPressed ? 0.88 : 1.0)
                 .opacity(configuration.isPressed ? 0.65 : 1.0)
                 .animation(.spring(response: 0.2, dampingFraction: 0.85), value: configuration.isPressed)
+        }
+    }
+
+    /// Fades the edges of the scrollable action bar only where more buttons are
+    /// hidden, hinting that it scrolls. No fade when everything fits.
+    private struct ActionBarEdgeFade: ViewModifier {
+        @State private var fadeLeading = false
+        @State private var fadeTrailing = false
+
+        func body(content: Content) -> some View {
+            content
+                .onScrollGeometryChange(for: [Bool].self) { geo in
+                    let maxOffset = geo.contentSize.width - geo.containerSize.width
+                    let x = geo.contentOffset.x + geo.contentInsets.leading
+                    return [x > 1, maxOffset - x > 1]
+                } action: { _, edges in
+                    fadeLeading = edges[0]
+                    fadeTrailing = edges[1]
+                }
+                .mask {
+                    HStack(spacing: 0) {
+                        LinearGradient(colors: [.black.opacity(fadeLeading ? 0 : 1), .black],
+                                       startPoint: .leading, endPoint: .trailing)
+                            .frame(width: 24)
+                        Rectangle().fill(.black)
+                        LinearGradient(colors: [.black, .black.opacity(fadeTrailing ? 0 : 1)],
+                                       startPoint: .leading, endPoint: .trailing)
+                            .frame(width: 24)
+                    }
+                }
         }
     }
 
@@ -4679,8 +4708,8 @@ struct ChatDetailView: View {
             isLoadingModelDetail = false
             editingModelDetail = ModelDetail(
                 id: model.id,
-                name: model.name,
-                description: model.description,
+                name: model.persistedName,
+                description: model.persistedDescription,
                 profileImageURL: model.profileImageURL
             )
         }
@@ -4706,7 +4735,6 @@ struct ChatDetailView: View {
 
     /// Dismiss all picker/overlay states so a new quick action doesn't stack.
     private func dismissAllPickers() {
-        showCameraPicker = false
         showFilePicker = false
         showPhotosPicker = false
         showAnimatedPhotoPicker = false
@@ -4750,9 +4778,6 @@ struct ChatDetailView: View {
         NotificationService.shared.activeConversationId =
             viewModel.conversationId ?? viewModel.conversation?.id
         await viewModel.load()
-        // Joining a chat that is already streaming: onChange(of: isStreaming) won't
-        // fire for the initial value, so opt into the reserved writing space here.
-        if viewModel.isStreaming { hasStreamedThisSession = true }
         // After messages load, draw only the rows at the bottom of the chat.
         let loadedCount = viewModel.messages.count
         if loadedCount > 0 {
@@ -5426,9 +5451,8 @@ struct ChatDetailView: View {
 
     private func copyMessage(_ message: ChatMessage) {
         var clean = message.content
-        if let re = try? NSRegularExpression(pattern: #"<details[^>]*>.*?</details>"#, options: [.dotMatchesLineSeparators]) {
-            clean = re.stringByReplacingMatches(in: clean, range: NSRange(clean.startIndex..., in: clean), withTemplate: "")
-        }
+        // Nesting-aware: nested <details> never leave a stray </details> behind.
+        clean = DetailsBlockScanner.strip(clean)
         clean = clean
             .replacingOccurrences(of: "\n\n\n+", with: "\n\n", options: .regularExpression)
             .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -5453,9 +5477,8 @@ struct ChatDetailView: View {
     private func shareMessage(_ message: ChatMessage) {
         var clean = message.content
         // Strip hidden reasoning/tool-call <details> blocks — same as copyMessage.
-        if let re = try? NSRegularExpression(pattern: #"<details[^>]*>.*?</details>"#, options: [.dotMatchesLineSeparators]) {
-            clean = re.stringByReplacingMatches(in: clean, range: NSRange(clean.startIndex..., in: clean), withTemplate: "")
-        }
+        // Nesting-aware: nested <details> never leave a stray </details> behind.
+        clean = DetailsBlockScanner.strip(clean)
         clean = clean
             .replacingOccurrences(of: "\n\n\n+", with: "\n\n", options: .regularExpression)
             .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -5476,15 +5499,8 @@ struct ChatDetailView: View {
 private func processSelectedPhotos(_ items: [PhotosPickerItem]) async {
 for item in items {
             do {
-                if let data = try await item.loadTransferable(type: Data.self) {
-                    let image = UIImage(data: data)
-                    let thumbnail = image.map { Image(uiImage: $0) }
-                    // Downsample to ≤ 2 MP to stay under the API's 5 MB base64 limit
-                    let resized = FileAttachmentService.downsampleForUpload(data: data, image: image)
-                    let attachment = ChatAttachment(
-                        type: .image, name: "Photo_\(Int(Date.now.timeIntervalSince1970)).jpg",
-                        thumbnail: thumbnail, data: resized
-                    )
+                if let data = try await item.loadTransferable(type: Data.self),
+                   let attachment = FileAttachmentService.makeImageAttachment(data: data) {
                     viewModel.attachments.append(attachment)
                     // Start uploading immediately so it's ready by send time
                     viewModel.uploadAttachmentImmediately(attachmentId: attachment.id)
@@ -5496,8 +5512,8 @@ for item in items {
     }
 
     /// Process PHAssets selected from the AnimatedPhotoPicker.
-    /// Loads full-res data via PHImageManager and creates ChatAttachment objects
-    /// with thumbnails, then immediately starts uploading each one.
+    /// Loads full-res data via PHImageManager, runs it through the shared image
+    /// pipeline, then immediately starts uploading each one.
     private func processSelectedPHAssets(_ assets: [PHAsset]) async {
         for asset in assets {
             await withCheckedContinuation { cont in
@@ -5510,22 +5526,15 @@ for item in items {
                     for: asset, options: opts
                 ) { data, _, _, _ in
                     guard let data else { cont.resume(); return }
-                    let image = UIImage(data: data)
-                    let thumbnail = image.map { Image(uiImage: $0) }
-                    let resized = FileAttachmentService.downsampleForUpload(data: data, image: image)
-                    let attachment = ChatAttachment(
-                        type: .image,
-                        name: "Photo_\(Int(Date.now.timeIntervalSince1970)).jpg",
-                        thumbnail: thumbnail,
-                        data: resized
-                    )
                     DispatchQueue.main.async {
-                        withAnimation(.spring(response: 0.35, dampingFraction: 0.78)) {
-                            viewModel.attachments.append(attachment)
+                        if let attachment = FileAttachmentService.makeImageAttachment(data: data) {
+                            withAnimation(.spring(response: 0.35, dampingFraction: 0.78)) {
+                                viewModel.attachments.append(attachment)
+                            }
+                            viewModel.uploadAttachmentImmediately(attachmentId: attachment.id)
                         }
-                        viewModel.uploadAttachmentImmediately(attachmentId: attachment.id)
+                        cont.resume()
                     }
-                    cont.resume()
                 }
             }
         }
@@ -5538,15 +5547,8 @@ for item in items {
             viewModel.errorMessage = "Failed to read file."
             return
         }
-        let isImage = UTType(filenameExtension: url.pathExtension)?.conforms(to: .image) ?? false
-        if isImage {
-            // Downsample to ≤ 2 MP to stay under the API's 5 MB base64 limit
-            let resized = FileAttachmentService.downsampleForUpload(data: data)
-            let thumbnail: Image? = UIImage(data: resized).map { Image(uiImage: $0) }
-            let attachment = ChatAttachment(
-                type: .image, name: url.lastPathComponent,
-                thumbnail: thumbnail, data: resized
-            )
+        let isImage = FileAttachmentService.isImageFile(name: url.lastPathComponent)
+        if isImage, let attachment = FileAttachmentService.makeImageAttachment(data: data, name: url.lastPathComponent) {
             viewModel.attachments.append(attachment)
             viewModel.uploadAttachmentImmediately(attachmentId: attachment.id)
         } else {
@@ -5560,14 +5562,11 @@ for item in items {
     }
 
     private func processCameraImage(_ image: UIImage?) {
-        guard let image else { return }
-        // Downsample to ≤ 2 MP to stay under the API's 5 MB base64 limit
-        let data = FileAttachmentService.downsampleForUpload(image: image)
-        guard !data.isEmpty else { return }
-        let attachment = ChatAttachment(
-            type: .image, name: "Camera_\(Int(Date.now.timeIntervalSince1970)).jpg",
-            thumbnail: Image(uiImage: image), data: data
-        )
+        guard let image,
+              let attachment = FileAttachmentService.makeImageAttachment(
+                image: image, name: "Camera_\(Int(Date.now.timeIntervalSince1970))")
+        else { return }
+        // No animation: the composer lands the photo in its tile itself.
         viewModel.attachments.append(attachment)
         viewModel.uploadAttachmentImmediately(attachmentId: attachment.id)
     }
@@ -5945,37 +5944,6 @@ private struct IsolatedAssistantMessage: View {
 
     // MARK: - Static Preprocessing (no ChatDetailView dependency)
 
-    /// Strips all `<details type="tool_calls" ...>...</details>` blocks from `text`.
-    ///
-    /// The Open WebUI server embeds a 100KB+ HTML blob in the `embeds` attribute of
-    /// these blocks (the web UI's iframe-based visualization renderer). On iOS we don't
-    /// use those embeds — we render natively — so processing this giant string on every
-    /// streaming frame is pure waste and causes UI lag.
-    ///
-    /// Critically, the embeds blob contains a fake `@@@VIZ-START` marker that was
-    /// triggering false-positive VIZ detection and causing the wrong render branch to
-    /// be selected during streaming. Stripping the entire block eliminates both problems.
-    ///
-    /// This runs in a single O(n) scan and avoids any regex overhead.
-    static func stripToolCallDetails(_ text: String) -> String {
-        let openTag = "<details type=\"tool_calls\""
-        let closeTag = "</details>"
-        var result = text
-        var searchStart = result.startIndex
-        while searchStart < result.endIndex,
-              let open = result.range(of: openTag, range: searchStart..<result.endIndex) {
-            if let close = result.range(of: closeTag, range: open.lowerBound..<result.endIndex) {
-                result.removeSubrange(open.lowerBound..<close.upperBound)
-                searchStart = open.lowerBound
-            } else {
-                // Unclosed block — strip from the open tag to the end of string
-                result = String(result[..<open.lowerBound])
-                break
-            }
-        }
-        return result
-    }
-
     static func preprocessCitations(_ content: String, sources: [ChatSourceReference], preferDomain: Bool = true) -> String {
         guard !sources.isEmpty else { return content }
 
@@ -6351,38 +6319,6 @@ struct DocumentPickerView: UIViewControllerRepresentable {
     }
 }
 
-// MARK: - Camera Picker (UIKit Wrapper)
-
-struct CameraPickerView: UIViewControllerRepresentable {
-    let onCapture: (UIImage?) -> Void
-    @Environment(\.dismiss) private var dismiss
-
-    func makeUIViewController(context: Context) -> UIImagePickerController {
-        let picker = UIImagePickerController()
-        picker.sourceType = .camera
-        picker.cameraCaptureMode = .photo
-        picker.delegate = context.coordinator
-        return picker
-    }
-
-    func updateUIViewController(_ uiViewController: UIImagePickerController, context: Context) {}
-    func makeCoordinator() -> Coordinator { Coordinator(onCapture: onCapture, dismiss: dismiss) }
-
-    class Coordinator: NSObject, UIImagePickerControllerDelegate, UINavigationControllerDelegate {
-        let onCapture: (UIImage?) -> Void
-        let dismiss: DismissAction
-        init(onCapture: @escaping (UIImage?) -> Void, dismiss: DismissAction) {
-            self.onCapture = onCapture; self.dismiss = dismiss
-        }
-        func imagePickerController(_ picker: UIImagePickerController,
-                                   didFinishPickingMediaWithInfo info: [UIImagePickerController.InfoKey: Any]) {
-            onCapture(info[.originalImage] as? UIImage)
-            dismiss()
-        }
-        func imagePickerControllerDidCancel(_ picker: UIImagePickerController) { dismiss() }
-    }
-}
-
 // MARK: - Share Sheet (UIKit Wrapper)
 
 /// Wraps UIActivityViewController for presenting the iOS share sheet.
@@ -6631,7 +6567,6 @@ private extension View {
     func applyWidgetAndPickerHandlers(
         isEnabled: Bool,
         acceptsQuickActions: Bool,
-        showCameraPicker: Binding<Bool>,
         showPhotosPicker: Binding<Bool>,
         showAnimatedPhotoPicker: Binding<Bool>,
         showFilePicker: Binding<Bool>,
@@ -6655,7 +6590,8 @@ private extension View {
             }
             .onReceive(NotificationCenter.default.publisher(for: .openUICameraChat)) { _ in
                 guard acceptsQuickActions else { return }
-                showCameraPicker.wrappedValue = true
+                // Opens the in-composer camera card directly.
+                NotificationCenter.default.post(name: .composerOpenCamera, object: nil)
             }
             .onReceive(NotificationCenter.default.publisher(for: .openUIPhotosChat)) { _ in
                 guard acceptsQuickActions else { return }
@@ -6762,11 +6698,10 @@ private extension View {
     }
 }
 
-// MARK: - Link Tap & vizSendPrompt Handlers (Type-Checker Relief)
+// MARK: - Link Tap Handlers (Type-Checker Relief)
 
-/// Handles `.markdownLinkTapped` (authenticated file download) and `.vizSendPrompt`
-/// (InlineVisualizerView prompt bridge). Extracted from body so the Swift type-checker
-/// doesn't have to resolve these closures inline.
+/// Handles `.markdownLinkTapped` (authenticated file download). Extracted from
+/// body so the Swift type-checker doesn't have to resolve this closure inline.
 private extension View {
     func applyLinkAndPromptHandlers(
         viewModel: ChatViewModel,
@@ -6803,17 +6738,6 @@ private extension View {
                     downloadAndShareURL(url)
                 } else {
                     openURL(url)
-                }
-            }
-            // Handle sendPrompt bridge calls from InlineVisualizerView.
-            .onReceive(NotificationCenter.default.publisher(for: .vizSendPrompt)) { notification in
-                guard isEnabled else { return }
-                guard let text = notification.userInfo?["text"] as? String, !text.isEmpty else { return }
-                if viewModel.isStreaming {
-                    viewModel.inputText = text
-                } else {
-                    viewModel.inputText = text
-                    Task { await viewModel.sendMessage() }
                 }
             }
     }

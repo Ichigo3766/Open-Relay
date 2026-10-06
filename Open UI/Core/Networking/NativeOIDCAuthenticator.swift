@@ -85,7 +85,9 @@ nonisolated enum NativeOIDCAuthError: LocalizedError, Sendable {
     case providerError(description: String)
     case stateMismatch
     case missingAuthorizationCode
-    case tokenRequestFailed(statusCode: Int, detail: String?)
+    /// `oauthError` is the RFC 6749 `error` code (e.g. `invalid_grant`), when the
+    /// IdP returned a proper OAuth error body.
+    case tokenRequestFailed(statusCode: Int, oauthError: String?, detail: String?)
     case exchangeFailed(statusCode: Int, detail: String?)
 
     var errorDescription: String? {
@@ -108,20 +110,104 @@ nonisolated enum NativeOIDCAuthError: LocalizedError, Sendable {
             return "The sign-in response failed validation. Please try again."
         case .missingAuthorizationCode:
             return "Your identity provider didn't return an authorization code."
-        case .tokenRequestFailed(_, let detail):
-            return "Your identity provider didn't issue a token.\(detail.map { " \($0)" } ?? "")"
+        case .tokenRequestFailed(_, let oauthError, let detail):
+            let reason = detail ?? oauthError
+            return "Your identity provider didn't issue a token.\(reason.map { " \($0)" } ?? "")"
         case .exchangeFailed(let code, let detail):
             if let detail, !detail.isEmpty { return "Open WebUI rejected the sign-in: \(detail)" }
             return "Open WebUI rejected the sign-in (HTTP \(code)). Token exchange may not be enabled on this server."
         }
     }
 
-    /// True when the IdP rejected the refresh token itself (expired / revoked),
-    /// meaning the stored refresh token should be discarded.
+    /// True ONLY when the IdP explicitly rejected the refresh token itself
+    /// (`invalid_grant` — the offline session expired, was revoked, or the token
+    /// is stale). This is the one signal that the user must sign in again and the
+    /// stored refresh token should be discarded.
     var isRefreshTokenRejected: Bool {
-        if case .tokenRequestFailed(let status, _) = self { return status == 400 || status == 401 }
+        if case .tokenRequestFailed(let status, let code, _) = self {
+            return (status == 400 || status == 401) && code == "invalid_grant"
+        }
         return false
     }
+
+    /// True when the IdP returned a well-formed OAuth error other than
+    /// `invalid_grant` (e.g. `invalid_client`, `unauthorized_client`). These are
+    /// configuration problems — retrying won't help.
+    var isTokenEndpointConfigurationError: Bool {
+        if case .tokenRequestFailed(let status, let code, _) = self, let code, !code.isEmpty {
+            return (400..<500).contains(status) && code != "invalid_grant"
+        }
+        return false
+    }
+
+    /// True when Open WebUI's token exchange explicitly refused the IdP token.
+    var isExchangeRejected: Bool {
+        if case .exchangeFailed(let status, _) = self { return (400..<500).contains(status) && status != 408 && status != 429 }
+        return false
+    }
+
+    /// True for failures that are likely temporary — the network wasn't ready yet,
+    /// the IdP / server hiccupped (5xx, 429), or something in between (captive
+    /// portal, proxy) answered with a non-OAuth body. Worth retrying, and never a
+    /// reason to sign the user out.
+    var isTransient: Bool {
+        func transientStatus(_ s: Int) -> Bool { s < 0 || s >= 500 || s == 408 || s == 429 }
+        switch self {
+        case .discoveryFailed:
+            // Discovery worked at sign-in, so a failure now is almost always a
+            // network / proxy hiccup rather than a real configuration change.
+            return true
+        case .missingEndpoints:
+            // Usually a captive portal / proxy page instead of real discovery JSON.
+            return true
+        case .tokenRequestFailed(let status, let code, _):
+            return transientStatus(status) || code == nil || code?.isEmpty == true
+        case .exchangeFailed(let status, _):
+            return transientStatus(status)
+        default:
+            return false
+        }
+    }
+}
+
+// MARK: - Renewal outcome
+
+/// Reads the `exp` claim of an Open WebUI JWT without verifying it — used only
+/// to decide whether to renew proactively. The server stays the authority.
+nonisolated enum JWTExpiry {
+    static func expirationDate(of jwt: String) -> Date? {
+        let parts = jwt.split(separator: ".")
+        guard parts.count >= 2 else { return nil }
+        var base64 = String(parts[1])
+            .replacingOccurrences(of: "-", with: "+")
+            .replacingOccurrences(of: "_", with: "/")
+        while base64.count % 4 != 0 { base64.append("=") }
+        guard let data = Data(base64Encoded: base64),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { return nil }
+        if let exp = json["exp"] as? Double { return Date(timeIntervalSince1970: exp) }
+        if let exp = json["exp"] as? Int { return Date(timeIntervalSince1970: TimeInterval(exp)) }
+        return nil
+    }
+
+    /// True when the token has an `exp` claim that is past (or within `leeway`).
+    /// Tokens without `exp` (non-expiring) are never considered expiring.
+    static func isExpiring(_ jwt: String, within leeway: TimeInterval) -> Bool {
+        guard let exp = expirationDate(of: jwt) else { return false }
+        return exp.timeIntervalSinceNow <= leeway
+    }
+}
+
+/// Result of a silent native-SSO renewal attempt.
+nonisolated enum NativeSSORenewalOutcome: Sendable, Equatable {
+    /// A fresh Open WebUI JWT was installed — retry the request.
+    case renewed
+    /// The session is genuinely gone (IdP said `invalid_grant`, the server refused
+    /// the exchange, or there is no refresh token) — let the 401 surface.
+    case rejected
+    /// Renewal couldn't complete right now (offline, timeouts, 5xx). The session
+    /// may still be valid — keep the user signed in and try again later.
+    case unavailable
 }
 
 // MARK: - Session result
@@ -201,13 +287,42 @@ final class NativeOIDCAuthenticator {
     /// Silent renewal — no UI. Refreshes the IdP access token and re-runs the
     /// Open WebUI exchange. The input refresh token is echoed back when the IdP
     /// doesn't rotate it, so the caller can always overwrite its stored value.
-    func renew(issuerURL: String, clientID: String, refreshToken: String) async throws -> NativeSSOSession {
-        let metadata = try await Self.fetchDiscovery(issuer: issuerURL, allowSelfSigned: server.allowSelfSignedCertificates, clientCertificateServerURL: server.url)
-        let tokens = try await tokenRequest(endpoint: metadata.tokenEndpoint, form: [
-            ("grant_type", "refresh_token"),
-            ("refresh_token", refreshToken),
-            ("client_id", clientID),
-        ])
+    ///
+    /// `onRefreshTokenRotated` fires the moment the IdP hands back a NEW refresh
+    /// token — before the Open WebUI exchange runs — so a rotated token is never
+    /// lost if the exchange (or the app) dies afterwards. Losing it would leave
+    /// only the old, already-revoked token and force a real sign-out next time.
+    func renew(
+        issuerURL: String,
+        clientID: String,
+        refreshToken: String,
+        onRefreshTokenRotated: (String) -> Void = { _ in }
+    ) async throws -> NativeSSOSession {
+        let metadata = try await Self.cachedDiscovery(
+            issuer: issuerURL,
+            allowSelfSigned: server.allowSelfSignedCertificates,
+            clientCertificateServerURL: server.url
+        )
+        let tokens: TokenResponse
+        do {
+            tokens = try await tokenRequest(endpoint: metadata.tokenEndpoint, form: [
+                ("grant_type", "refresh_token"),
+                ("refresh_token", refreshToken),
+                ("client_id", clientID),
+            ], waitForConnectivity: true)
+        } catch {
+            // A stale cached endpoint is possible (IdP moved) — re-discover next time
+            // unless the IdP clearly answered with an OAuth error.
+            if let authError = error as? NativeOIDCAuthError,
+               authError.isRefreshTokenRejected || authError.isTokenEndpointConfigurationError {
+                throw error
+            }
+            Self.discoveryCache[Self.discoveryCacheKey(issuerURL)] = nil
+            throw error
+        }
+        if let rotated = tokens.refreshToken, rotated != refreshToken {
+            onRefreshTokenRotated(rotated)
+        }
         let exchanged = try await exchange(accessToken: tokens.accessToken)
         logger.info("Native SSO: silent renewal succeeded")
         return NativeSSOSession(jwt: exchanged.token, userId: exchanged.userId, refreshToken: tokens.refreshToken ?? refreshToken)
@@ -282,6 +397,29 @@ final class NativeOIDCAuthenticator {
 
     // MARK: Discovery
 
+    /// In-memory discovery cache (per issuer) so silent renewal is two requests
+    /// (token + exchange) instead of three. Cleared when a renewal fails oddly.
+    private static var discoveryCache: [String: OIDCMetadata] = [:]
+
+    private static func discoveryCacheKey(_ issuer: String) -> String {
+        var key = issuer.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        while key.hasSuffix("/") { key.removeLast() }
+        return key
+    }
+
+    private static func cachedDiscovery(issuer: String, allowSelfSigned: Bool, clientCertificateServerURL: String?) async throws -> OIDCMetadata {
+        let key = discoveryCacheKey(issuer)
+        if let cached = discoveryCache[key] { return cached }
+        let metadata = try await fetchDiscovery(
+            issuer: issuer,
+            allowSelfSigned: allowSelfSigned,
+            clientCertificateServerURL: clientCertificateServerURL,
+            waitForConnectivity: true
+        )
+        discoveryCache[key] = metadata
+        return metadata
+    }
+
     fileprivate struct OIDCMetadata: Decodable, Sendable {
         let authorizationEndpoint: String
         let tokenEndpoint: String
@@ -294,7 +432,7 @@ final class NativeOIDCAuthenticator {
         }
     }
 
-    private static func fetchDiscovery(issuer: String, allowSelfSigned: Bool, clientCertificateServerURL: String?) async throws -> OIDCMetadata {
+    private static func fetchDiscovery(issuer: String, allowSelfSigned: Bool, clientCertificateServerURL: String?, waitForConnectivity: Bool = false) async throws -> OIDCMetadata {
         let trimmed = issuer.trimmingCharacters(in: .whitespacesAndNewlines)
         guard var components = URLComponents(string: trimmed),
               let scheme = components.scheme?.lowercased(), scheme == "https" || scheme == "http",
@@ -310,7 +448,7 @@ final class NativeOIDCAuthenticator {
 
         var request = URLRequest(url: url, timeoutInterval: 15)
         request.setValue("application/json", forHTTPHeaderField: "Accept")
-        let (data, response) = try await send(request, trustHosts: [host], allowSelfSigned: allowSelfSigned, clientCertificateServerURL: clientCertificateServerURL)
+        let (data, response) = try await send(request, trustHosts: [host], allowSelfSigned: allowSelfSigned, clientCertificateServerURL: clientCertificateServerURL, waitForConnectivity: waitForConnectivity)
         guard response.statusCode == 200 else {
             throw NativeOIDCAuthError.discoveryFailed(statusCode: response.statusCode)
         }
@@ -400,7 +538,7 @@ final class NativeOIDCAuthenticator {
         let error_description: String?
     }
 
-    private func tokenRequest(endpoint: String, form: [(String, String)]) async throws -> TokenResponse {
+    private func tokenRequest(endpoint: String, form: [(String, String)], waitForConnectivity: Bool = false) async throws -> TokenResponse {
         guard let url = URL(string: endpoint), let host = url.host?.lowercased() else {
             throw NativeOIDCAuthError.missingEndpoints
         }
@@ -410,11 +548,14 @@ final class NativeOIDCAuthenticator {
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         request.httpBody = Data(Self.formEncode(form).utf8)
 
-        let (data, response) = try await Self.send(request, trustHosts: [host], allowSelfSigned: server.allowSelfSignedCertificates, clientCertificateServerURL: server.url)
+        let (data, response) = try await Self.send(request, trustHosts: [host], allowSelfSigned: server.allowSelfSignedCertificates, clientCertificateServerURL: server.url, waitForConnectivity: waitForConnectivity)
         let wire = try? JSONDecoder().decode(TokenWire.self, from: data)
         guard response.statusCode == 200, let access = wire?.access_token, !access.isEmpty else {
+            let oauthError = wire?.error?.trimmingCharacters(in: .whitespacesAndNewlines)
+            logger.warning("Native SSO: token endpoint returned HTTP \(response.statusCode, privacy: .public) error=\(oauthError ?? "none", privacy: .public)")
             throw NativeOIDCAuthError.tokenRequestFailed(
                 statusCode: response.statusCode,
+                oauthError: (oauthError?.isEmpty == false) ? oauthError : nil,
                 detail: wire?.error_description ?? wire?.error
             )
         }
@@ -462,6 +603,7 @@ final class NativeOIDCAuthenticator {
         let status = (response as? HTTPURLResponse)?.statusCode ?? -1
         let wire = try? JSONDecoder().decode(ExchangeWire.self, from: data)
         guard status == 200, let token = wire?.token, !token.isEmpty else {
+            logger.warning("Native SSO: token exchange returned HTTP \(status, privacy: .public)")
             throw NativeOIDCAuthError.exchangeFailed(statusCode: status, detail: wire?.detail)
         }
         return (token, wire?.id)
@@ -477,11 +619,19 @@ final class NativeOIDCAuthenticator {
         trustHosts: Set<String>,
         allowSelfSigned: Bool,
         clientCertificateServerURL: String? = nil,
-        followRedirects: Bool = true
+        followRedirects: Bool = true,
+        waitForConnectivity: Bool = false
     ) async throws -> (Data, HTTPURLResponse) {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.timeoutIntervalForRequest = 30
         configuration.urlCache = nil
+        if waitForConnectivity {
+            // Silent renewal often runs the instant the app wakes, before Wi-Fi /
+            // cellular is fully back. Wait for a usable path instead of failing
+            // straight away, but cap the total so renewal can't hang forever.
+            configuration.waitsForConnectivity = true
+            configuration.timeoutIntervalForResource = 45
+        }
         let delegate = IdPSessionDelegate(
             trustHosts: allowSelfSigned ? trustHosts : [],
             clientCertificateServerURL: clientCertificateServerURL,

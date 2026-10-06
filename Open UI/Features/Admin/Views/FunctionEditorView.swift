@@ -14,6 +14,8 @@ struct FunctionEditorView: View {
     // MARK: - Input
 
     var existingFunction: FunctionDetail?
+    /// Pre-fills a new (unsaved) function, e.g. one imported from a link.
+    var prefillDetail: FunctionDetail? = nil
     var onSave: ((FunctionDetail) -> Void)?
 
     // MARK: - Form State
@@ -46,7 +48,8 @@ struct FunctionEditorView: View {
     private var manager: FunctionsManager? { dependencies.functionsManager }
     private var isEditing: Bool { existingFunction != nil }
 
-    private let typeOptions = ["filter", "pipe", "action"]
+    // The server detects the type from the class in the code (Pipe / Filter / Action / Event).
+    private let typeOptions = ["filter", "pipe", "action", "event"]
 
     private var hasChanges: Bool {
         guard let existing = existingFunction else {
@@ -331,6 +334,10 @@ struct FunctionEditorView: View {
                           || functionId.trimmingCharacters(in: .whitespaces).isEmpty)
             }
         }
+        // Web FunctionEditor: Black-format the Python code (server-side, admin).
+        ToolbarItem(placement: .topBarTrailing) {
+            FormatPythonButton(code: $content)
+        }
     }
 
     // MARK: - Helpers
@@ -355,7 +362,7 @@ struct FunctionEditorView: View {
     }
 
     private func populateFields() {
-        guard let fn = existingFunction else { return }
+        guard let fn = existingFunction ?? prefillDetail else { return }
         name = fn.name
         functionId = fn.id
         type = fn.type
@@ -414,7 +421,7 @@ struct FunctionEditorView: View {
 
         do {
             if let existing = existingFunction {
-                let detail = FunctionDetail(
+                var detail = FunctionDetail(
                     id: trimmedId,
                     name: trimmedName,
                     type: type,
@@ -427,6 +434,7 @@ struct FunctionEditorView: View {
                     createdAt: existing.createdAt,
                     updatedAt: existing.updatedAt
                 )
+                detail.originalMetaJSON = existing.originalMetaJSON
                 let updated = try await manager.updateFunction(detail)
                 onSave?(updated)
             } else {

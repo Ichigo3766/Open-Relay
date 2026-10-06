@@ -11,6 +11,9 @@ struct AdminGroupsView: View {
     @State private var viewModel = AdminGroupsViewModel()
     @State private var showGroupSheet = false
     @State private var showDefaultPermissionsSheet = false
+    @State private var previewGroup: GroupDetail?
+    @State private var exportURL: URL?
+    @State private var showExportShare = false
 
     var body: some View {
         List {
@@ -74,7 +77,9 @@ struct AdminGroupsView: View {
                             },
                             onDelete: {
                                 viewModel.groupToDelete = group
-                            }
+                            },
+                            onPreview: { previewGroup = group },
+                            onExport: { Task { await exportGroup(group) } }
                         )
                         .listRowInsets(EdgeInsets(top: 0, leading: 0, bottom: 0, trailing: 0))
                         .listRowBackground(theme.cardBackground)
@@ -137,6 +142,13 @@ struct AdminGroupsView: View {
             .presentationDetents([.large])
             .presentationDragIndicator(.visible)
             .presentationCornerRadius(24)
+        }
+        .sheet(item: $previewGroup) { g in
+            GroupPreviewSheet(groupId: g.id, groupName: g.name)
+                .presentationDetents([.medium, .large])
+        }
+        .sheet(isPresented: $showExportShare) {
+            if let exportURL { ActivityShareSheet(items: [exportURL]) }
         }
         .sheet(isPresented: $showDefaultPermissionsSheet) {
             DefaultPermissionsSheet(viewModel: viewModel)
@@ -203,6 +215,16 @@ struct AdminGroupsView: View {
         .padding(.top, Spacing.sm)
     }
 
+    private func exportGroup(_ group: GroupDetail) async {
+        guard let api = dependencies.apiClient,
+              let data = try? await api.exportGroup(id: group.id) else { return }
+        let safe = group.name.replacingOccurrences(of: "/", with: "-")
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("group-\(safe).json")
+        try? data.write(to: url, options: .atomic)
+        exportURL = url
+        showExportShare = true
+    }
+
     // MARK: - Group List
 
     private var groupList: some View {
@@ -218,7 +240,9 @@ struct AdminGroupsView: View {
                         },
                         onDelete: {
                             viewModel.groupToDelete = group
-                        }
+                        },
+                        onPreview: { previewGroup = group },
+                        onExport: { Task { await exportGroup(group) } }
                     )
                     if group.id != groups.last?.id {
                         Divider()
@@ -332,6 +356,8 @@ private struct GroupRow: View {
     let group: GroupDetail
     let onEdit: () -> Void
     let onDelete: () -> Void
+    var onPreview: (() -> Void)? = nil
+    var onExport: (() -> Void)? = nil
     @Environment(\.theme) private var theme
 
     var body: some View {
@@ -374,6 +400,12 @@ private struct GroupRow: View {
         .padding(.horizontal, Spacing.screenPadding)
         .padding(.vertical, 12)
         .contentShape(Rectangle())
+        .contextMenu {
+            Button("Edit", systemImage: "pencil", action: onEdit)
+            if let onPreview { Button("Preview Access", systemImage: "eye", action: onPreview) }
+            if let onExport { Button("Export", systemImage: "square.and.arrow.up", action: onExport) }
+            Button("Delete", systemImage: "trash", role: .destructive, action: onDelete)
+        }
         .swipeActions(edge: .trailing, allowsFullSwipe: false) {
             Button(role: .destructive) {
                 Haptics.play(.medium)
@@ -406,6 +438,13 @@ struct DefaultPermissionsSheet: View {
                         .frame(maxWidth: .infinity)
                         .padding(.top, 80)
                     } else {
+                        HStack {
+                            Spacer()
+                            Button("Reset to Defaults") {
+                                Task { await viewModel.resetDefaultPermissionsToStock() }
+                            }
+                            .scaledFont(size: 13)
+                        }
                         GroupPermissionsEditor(permissions: $viewModel.defaultPermissions)
                             .padding(.top, Spacing.sm)
 

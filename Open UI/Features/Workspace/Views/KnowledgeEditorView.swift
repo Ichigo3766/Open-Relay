@@ -63,6 +63,39 @@ struct KnowledgeEditorView: View {
 
     // MARK: File management state
     @State private var files: [KnowledgeFileEntry] = []
+    // Folder navigation (knowledge directories)
+    /// nil = root. The server treats `directory_id=""` as root.
+    @State private var currentDirectoryId: String? = nil
+    @State private var directories: [KnowledgeDirectory] = []
+    @State private var breadcrumbs: [KnowledgeDirectory] = []
+    @State private var fileTotal: Int = 0
+    @State private var filePage: Int = 1
+    @State private var isLoadingMoreFiles: Bool = false
+    @State private var fileSearch: String = ""
+    @State private var fileSort: KnowledgeFileSort = .nameAsc
+    @State private var searchTask: Task<Void, Never>?
+    @State private var showNewFolderAlert: Bool = false
+    @State private var newFolderName: String = ""
+    @State private var renamingDirectory: KnowledgeDirectory?
+    @State private var renameDirectoryName: String = ""
+    @State private var deletingDirectory: KnowledgeDirectory?
+    @State private var movingFileIds: [String] = []
+    @State private var movingDirectory: KnowledgeDirectory?
+    private enum FolderMode { case upload, sync }
+    @State private var folderMode: FolderMode = .upload
+    /// Folder picked for a sync, waiting for the user to confirm the deletions.
+    @State private var pendingSyncURL: URL?
+    @State private var pendingSyncCount = 0
+    /// False for read-only shares and connected (external) knowledge bases.
+    private var canEdit: Bool { existing?.canEdit ?? true }
+    private var isAdmin: Bool { dependencies.authViewModel.currentUser?.role == .admin }
+    @State private var pendingFiles: [[String: Any]] = []
+    @State private var exportZipURL: URL?
+    @State private var showExportShare = false
+    @State private var isExportingZip = false
+    @State private var showMoveSheet: Bool = false
+    @State private var renamingFile: KnowledgeFileEntry?
+    @State private var renameFileName: String = ""
     @State private var isLoadingFiles: Bool = false
     @State private var isUploadingFile: Bool = false
     @State private var uploadProgress: Double = 0
@@ -136,7 +169,17 @@ struct KnowledgeEditorView: View {
                 FolderPicker(
                     onPick: { url in
                         showFolderPicker = false
-                        Task { await uploadFolder(from: url) }
+                        if folderMode == .sync {
+                            // Count on a background task: large folders take a moment.
+                            Task.detached {
+                                let accessed = url.startAccessingSecurityScopedResource()
+                                let n = KnowledgeManifest.count(root: url)
+                                if accessed { url.stopAccessingSecurityScopedResource() }
+                                await MainActor.run { pendingSyncCount = n; pendingSyncURL = url }
+                            }
+                        } else {
+                            Task { await uploadFolderRun(from: url) }
+                        }
                     },
                     onCancel: { showFolderPicker = false }
                 )
@@ -145,7 +188,8 @@ struct KnowledgeEditorView: View {
             .sheet(item: $previewFile) { file in
                 KnowledgeFilePreviewSheet(
                     file: file,
-                    apiClient: dependencies.apiClient
+                    apiClient: dependencies.apiClient,
+                    canEdit: canEdit
                 )
             }
             .navigationTitle(isEditMode ? "Edit Knowledge Base" : "New Knowledge Base")
@@ -216,6 +260,42 @@ struct KnowledgeEditorView: View {
             )) {
                 Button("OK", role: .cancel) {}
             } message: { Text(accessUpdateError ?? "") }
+            .modifier(KnowledgeFolderDialogs(
+                knowledgeId: existing?.id,
+                showNewFolder: $showNewFolderAlert, newFolderName: $newFolderName,
+                renamingDirectory: $renamingDirectory, renameDirectoryName: $renameDirectoryName,
+                deletingDirectory: $deletingDirectory,
+                renamingFile: $renamingFile, renameFileName: $renameFileName,
+                showMoveSheet: $showMoveSheet, movingFileIds: $movingFileIds, movingDirectory: $movingDirectory,
+                onCreateFolder: { n in Task { await createFolder(n) } },
+                onRenameFolder: { d, n in Task { await renameFolder(d, to: n) } },
+                onDeleteFolder: { d, keep in Task { await deleteFolder(d, moveFiles: keep) } },
+                onRenameFile: { f, n in Task { await renameKnowledgeFile(f, to: n) } },
+                onMove: { target in Task { await performMove(to: target) } }))
+            .onChange(of: fileSearch) { _, _ in
+                searchTask?.cancel()
+                searchTask = Task {
+                    try? await Task.sleep(nanoseconds: 350_000_000)
+                    guard !Task.isCancelled, let id = existing?.id else { return }
+                    await fetchFiles(knowledgeId: id)
+                }
+            }
+            .alert("Sync directory?", isPresented: .init(
+                get: { pendingSyncURL != nil }, set: { if !$0 { pendingSyncURL = nil } }
+            )) {
+                Button("Sync") {
+                    if let url = pendingSyncURL { pendingSyncURL = nil; Task { await syncFolder(from: url) } }
+                }
+                Button("Cancel", role: .cancel) { pendingSyncURL = nil }
+            } message: {
+                Text("\(pendingSyncCount) files found. Only new and modified files will be uploaded. Files and folders that are not in this folder will be REMOVED from the whole knowledge base. Continue?")
+            }
+            .sheet(isPresented: $showExportShare) {
+                if let exportZipURL { ActivityShareSheet(items: [exportZipURL]) }
+            }
+            .onChange(of: fileSort) { _, _ in
+                if let id = existing?.id { Task { await fetchFiles(knowledgeId: id) } }
+            }
         }
         .onAppear {
             populateFromExisting()
@@ -225,6 +305,7 @@ struct KnowledgeEditorView: View {
             }
             if let id = existing?.id {
                 Task { await fetchFiles(knowledgeId: id) }
+                Task { await pollPendingFiles(knowledgeId: id) }
             }
         }
     }
@@ -327,6 +408,17 @@ struct KnowledgeEditorView: View {
                         if !selectedFileIds.isEmpty {
                             Button {
                                 Haptics.play(.light)
+                                movingDirectory = nil
+                                movingFileIds = Array(selectedFileIds)
+                                showMoveSheet = true
+                            } label: {
+                                Text("Move")
+                                    .scaledFont(size: 13, weight: .semibold)
+                                    .foregroundStyle(theme.brandPrimary)
+                            }
+                            .buttonStyle(.plain)
+                            Button {
+                                Haptics.play(.light)
                                 showBulkDeleteConfirm = true
                             } label: {
                                 Text("Delete (\(selectedFileIds.count))")
@@ -347,24 +439,65 @@ struct KnowledgeEditorView: View {
                         }
                         .buttonStyle(.plain)
                     } else {
-                        Text("\(files.count) file\(files.count == 1 ? "" : "s")")
-                            .scaledFont(size: 12)
-                            .foregroundStyle(theme.textTertiary)
+                        if isAdmin && existing?.isExternal != true {
                         Button {
-                            Haptics.play(.light)
-                            isSelecting = true
-                            selectedFileIds = []
+                            Task { await exportZip() }
                         } label: {
-                            Image(systemName: "checkmark.circle")
-                                .scaledFont(size: 16)
-                                .foregroundStyle(theme.textTertiary)
+                            if isExportingZip {
+                                ProgressView().controlSize(.mini)
+                            } else {
+                                Image(systemName: "square.and.arrow.up")
+                                    .scaledFont(size: 15)
+                                    .foregroundStyle(theme.textTertiary)
+                            }
                         }
                         .buttonStyle(.plain)
+                        .disabled(isExportingZip)
+                        }
+                        Text("\(fileTotal) file\(fileTotal == 1 ? "" : "s")")
+                            .scaledFont(size: 12)
+                            .foregroundStyle(theme.textTertiary)
+                        if canEdit {
+                            Button {
+                                Haptics.play(.light)
+                                isSelecting = true
+                                selectedFileIds = []
+                            } label: {
+                                Image(systemName: "checkmark.circle")
+                                    .scaledFont(size: 16)
+                                    .foregroundStyle(theme.textTertiary)
+                            }
+                            .buttonStyle(.plain)
+                        }
                     }
                 }
             }
 
-            if files.isEmpty && !isUploadingFile && !isLoadingFiles {
+            if existing != nil && !canEdit {
+                Label(existing?.isExternal == true
+                      ? "Connected\(existing?.externalProvider.map { " · \($0)" } ?? "") — read only"
+                      : "Read only — you don't have edit access",
+                      systemImage: "lock")
+                    .scaledFont(size: 12, weight: .medium)
+                    .foregroundStyle(theme.textSecondary)
+                    .padding(.horizontal, 10).padding(.vertical, 6)
+                    .background(theme.surfaceContainer.opacity(0.7))
+                    .clipShape(Capsule())
+            }
+            KnowledgePendingBanner(names: pendingFiles.map {
+                (($0["meta"] as? [String: Any])?["name"] as? String) ?? ($0["filename"] as? String) ?? "File"
+            })
+            if existing != nil {
+                KnowledgeFileToolbar(
+                    search: $fileSearch, sort: $fileSort, canWrite: canEdit,
+                    isSearching: !fileSearch.trimmingCharacters(in: .whitespaces).isEmpty,
+                    onNewFolder: { newFolderName = ""; showNewFolderAlert = true })
+                KnowledgeBreadcrumbBar(breadcrumbs: breadcrumbs) { id in
+                    Task { await openDirectory(id) }
+                }
+            }
+
+            if files.isEmpty && directories.isEmpty && !isUploadingFile && !isLoadingFiles {
                 fieldCard {
                     VStack(spacing: Spacing.md) {
                         Image(systemName: "doc.badge.plus")
@@ -377,7 +510,7 @@ struct KnowledgeEditorView: View {
                             .scaledFont(size: 13)
                             .foregroundStyle(theme.textSecondary)
                             .multilineTextAlignment(.center)
-                        uploadButton
+                        if canEdit { uploadButton }
                     }
                     .padding(Spacing.xl)
                     .frame(maxWidth: .infinity)
@@ -399,19 +532,36 @@ struct KnowledgeEditorView: View {
             } else {
                 fieldCard {
                     VStack(spacing: 0) {
+                        ForEach(directories) { dir in
+                            KnowledgeFolderRow(
+                                directory: dir, canWrite: canEdit,
+                                onOpen: { Task { await openDirectory(dir.id) } },
+                                onRename: { renameDirectoryName = dir.name; renamingDirectory = dir },
+                                onMove: { movingFileIds = []; movingDirectory = dir; showMoveSheet = true },
+                                onDelete: { deletingDirectory = dir })
+                            Divider()
+                                .background(theme.inputBorder.opacity(0.3))
+                                .padding(.leading, Spacing.md + 36)
+                        }
                         ForEach(Array(files.enumerated()), id: \.element.id) { index, file in
                             fileRow(file)
+                                .onAppear {
+                                    if index >= files.count - 3 { Task { await loadMoreFiles() } }
+                                }
                             if index < files.count - 1 {
                                 Divider()
                                     .background(theme.inputBorder.opacity(0.3))
                                     .padding(.leading, Spacing.md + 36)
                             }
                         }
+                        if isLoadingMoreFiles {
+                            ProgressView().controlSize(.small).padding(Spacing.sm)
+                        }
                         if isUploadingFile {
                             Divider().background(theme.inputBorder.opacity(0.3))
                             uploadProgressRow
                         }
-                        if !isUploadingFile && !isSelecting {
+                        if !isUploadingFile && !isSelecting && canEdit {
                             Divider().background(theme.inputBorder.opacity(0.3))
                             uploadButton.padding(.vertical, Spacing.sm)
                         }
@@ -487,8 +637,8 @@ struct KnowledgeEditorView: View {
 
             Spacer()
 
-            // Delete button (only in non-selection mode)
-            if !isSelecting {
+            // Delete button (only in non-selection mode, and only where the server allows it)
+            if !isSelecting && canEdit {
                 Button {
                     Haptics.play(.light)
                     pendingRemoveFile = file
@@ -513,6 +663,20 @@ struct KnowledgeEditorView: View {
                 ? theme.brandPrimary.opacity(0.08)
                 : Color.clear
         )
+        .contextMenu {
+            if canEdit {
+                Button("Rename", systemImage: "pencil") {
+                    renameFileName = file.name; renamingFile = file
+                }
+                Button("Move", systemImage: "folder") {
+                    movingDirectory = nil; movingFileIds = [file.id]; showMoveSheet = true
+                }
+                Button("Re-process", systemImage: "arrow.clockwise") {
+                    Task { await reprocessFile(file) }
+                }
+                Button("Remove", systemImage: "trash", role: .destructive) { pendingRemoveFile = file }
+            }
+        }
     }
 
     private var uploadProgressRow: some View {
@@ -553,9 +717,18 @@ struct KnowledgeEditorView: View {
 
             Button {
                 Haptics.play(.light)
+                folderMode = .upload
                 showFolderPicker = true
             } label: {
                 Label("Upload directory", systemImage: "folder.badge.plus")
+            }
+
+            Button {
+                Haptics.play(.light)
+                folderMode = .sync
+                showFolderPicker = true
+            } label: {
+                Label("Sync directory", systemImage: "arrow.triangle.2.circlepath")
             }
 
             Button {
@@ -871,15 +1044,222 @@ struct KnowledgeEditorView: View {
 
     // MARK: - File Actions
 
+    /// Loads page 1 of the current folder (files + sub-folders + breadcrumbs).
+    /// With a search query the server searches the whole knowledge base (no folder scope),
+    /// like the web client.
     private func fetchFiles(knowledgeId: String) async {
-        guard let manager else { return }
+        guard let api = dependencies.apiClient else { return }
         isLoadingFiles = true
         do {
-            files = try await manager.getFiles(knowledgeId: knowledgeId)
+            let searching = !fileSearch.trimmingCharacters(in: .whitespaces).isEmpty
+            let page = try await api.getKnowledgeFolderPage(
+                knowledgeId: knowledgeId,
+                directoryId: searching ? nil : (currentDirectoryId ?? ""),
+                page: 1, query: fileSearch, sort: fileSort)
+            files = page.files
+            directories = searching ? [] : page.directories
+            breadcrumbs = searching ? [] : page.breadcrumbs
+            fileTotal = page.total
+            filePage = 1
         } catch {
             // Non-critical — show empty state
         }
         isLoadingFiles = false
+    }
+
+    /// Loads the next page (30 per page) when the user reaches the end of the list.
+    private func loadMoreFiles() async {
+        guard let api = dependencies.apiClient, let id = existing?.id,
+              !isLoadingMoreFiles, files.count < fileTotal else { return }
+        isLoadingMoreFiles = true
+        let searching = !fileSearch.trimmingCharacters(in: .whitespaces).isEmpty
+        if let page = try? await api.getKnowledgeFolderPage(
+            knowledgeId: id, directoryId: searching ? nil : (currentDirectoryId ?? ""),
+            page: filePage + 1, query: fileSearch, sort: fileSort) {
+            files.append(contentsOf: page.files.filter { f in !files.contains(where: { $0.id == f.id }) })
+            fileTotal = page.total
+            filePage += 1
+        }
+        isLoadingMoreFiles = false
+    }
+
+    // MARK: - Directory sync
+
+    /// Incremental sync of a local folder into the folder being viewed: unchanged files are
+    /// skipped, changed ones replaced, removed ones deleted, and sub-folders are recreated.
+    private func syncFolder(from folderURL: URL) async {
+        guard let api = dependencies.apiClient, let id = existing?.id else { return }
+        let accessed = folderURL.startAccessingSecurityScopedResource()
+        defer { if accessed { folderURL.stopAccessingSecurityScopedResource() } }
+
+        isUploadingFile = true
+        uploadProgress = 0.3
+        uploadStatusMessage = "Syncing…"
+        do {
+            // Mirrors onto the WHOLE knowledge base (the server diffs against all of it), so
+            // no current-folder prefix is applied — exactly like the web client's sync.
+            let result = try await KnowledgeSyncService.sync(api: api, knowledgeId: id, root: folderURL) { msg in
+                uploadStatusMessage = msg
+            }
+            finishFolderRun(result, verb: "Sync")
+            await openDirectory(nil)
+        } catch {
+            errorMessage = error.localizedDescription
+            Haptics.notify(.error)
+        }
+        isUploadingFile = false
+        uploadProgress = 0
+        uploadStatusMessage = ""
+        Task { await pollPendingFiles(knowledgeId: id) }
+    }
+
+    /// Upload directory: adds the picked folder's files beneath the folder being viewed.
+    private func uploadFolderRun(from folderURL: URL) async {
+        guard let api = dependencies.apiClient, let id = existing?.id else { return }
+        let accessed = folderURL.startAccessingSecurityScopedResource()
+        defer { if accessed { folderURL.stopAccessingSecurityScopedResource() } }
+
+        isUploadingFile = true
+        uploadProgress = 0.3
+        uploadStatusMessage = "Uploading…"
+        do {
+            let result = try await KnowledgeSyncService.uploadDirectory(
+                api: api, knowledgeId: id, root: folderURL,
+                currentFolderPath: breadcrumbs.map(\.name).joined(separator: "/"),
+                currentFolderId: currentDirectoryId
+            ) { msg in uploadStatusMessage = msg }
+            finishFolderRun(result, verb: "Upload")
+            await fetchFiles(knowledgeId: id)
+        } catch {
+            errorMessage = error.localizedDescription
+            Haptics.notify(.error)
+        }
+        isUploadingFile = false
+        uploadProgress = 0
+        uploadStatusMessage = ""
+        Task { await pollPendingFiles(knowledgeId: id) }
+    }
+
+    private func finishFolderRun(_ result: KnowledgeSyncResult, verb: String) {
+        Haptics.notify(result.failed == 0 ? .success : .warning)
+        if result.failed > 0 {
+            errorMessage = "\(verb) finished with \(result.failed) failed upload\(result.failed == 1 ? "" : "s"):\n"
+                + result.failures.prefix(4).joined(separator: "\n")
+        }
+    }
+
+    // MARK: - Export / pending
+
+    private func exportZip() async {
+        guard let api = dependencies.apiClient, let id = existing?.id else { return }
+        isExportingZip = true
+        do {
+            let data = try await api.exportKnowledgeZip(knowledgeId: id)
+            let safe = name.replacingOccurrences(of: "/", with: "-")
+            let url = FileManager.default.temporaryDirectory
+                .appendingPathComponent("\(safe.isEmpty ? "knowledge" : safe).zip")
+            try data.write(to: url, options: .atomic)
+            exportZipURL = url
+            showExportShare = true
+        } catch { errorMessage = error.localizedDescription }
+        isExportingZip = false
+    }
+
+    /// Files uploaded elsewhere (e.g. the web) can still be processing; poll until none remain.
+    private func pollPendingFiles(knowledgeId: String) async {
+        guard let api = dependencies.apiClient else { return }
+        var rounds = 0
+        while !Task.isCancelled, rounds < 60 {
+            let pending = (try? await api.getPendingKnowledgeFiles(knowledgeId: knowledgeId)) ?? []
+            let hadPending = !pendingFiles.isEmpty
+            pendingFiles = pending
+            if pending.isEmpty {
+                if hadPending { await fetchFiles(knowledgeId: knowledgeId) }
+                return
+            }
+            rounds += 1
+            try? await Task.sleep(nanoseconds: 3_000_000_000)
+        }
+    }
+
+    // MARK: - Folder actions
+
+    /// Rebuilds one file's search index (web: `updateFileFromKnowledgeById`).
+    private func reprocessFile(_ file: KnowledgeFileEntry) async {
+        guard let api = dependencies.apiClient, let id = existing?.id else { return }
+        removingFileId = file.id
+        do {
+            try await api.reprocessKnowledgeFile(knowledgeId: id, fileId: file.id)
+            Haptics.notify(.success)
+        } catch {
+            errorMessage = error.localizedDescription
+            Haptics.notify(.error)
+        }
+        removingFileId = nil
+    }
+
+    private func createFolder(_ name: String) async {
+        guard let api = dependencies.apiClient, let id = existing?.id else { return }
+        do {
+            _ = try await api.createKnowledgeDirectory(knowledgeId: id, name: name, parentId: currentDirectoryId)
+            await fetchFiles(knowledgeId: id)
+            Haptics.notify(.success)
+        } catch { errorMessage = error.localizedDescription }
+    }
+
+    private func renameFolder(_ dir: KnowledgeDirectory, to name: String) async {
+        guard let api = dependencies.apiClient, let id = existing?.id else { return }
+        do {
+            try await api.updateKnowledgeDirectory(knowledgeId: id, directoryId: dir.id, name: name)
+            await fetchFiles(knowledgeId: id)
+        } catch { errorMessage = error.localizedDescription }
+    }
+
+    private func deleteFolder(_ dir: KnowledgeDirectory, moveFiles: Bool) async {
+        guard let api = dependencies.apiClient, let id = existing?.id else { return }
+        do {
+            try await api.deleteKnowledgeDirectory(knowledgeId: id, directoryId: dir.id, moveFiles: moveFiles)
+            await fetchFiles(knowledgeId: id)
+            Haptics.notify(.success)
+        } catch { errorMessage = error.localizedDescription }
+    }
+
+    private func renameKnowledgeFile(_ file: KnowledgeFileEntry, to name: String) async {
+        guard let api = dependencies.apiClient, let id = existing?.id else { return }
+        do {
+            try await api.renameFile(id: file.id, filename: name)
+            await fetchFiles(knowledgeId: id)
+        } catch { errorMessage = error.localizedDescription }
+    }
+
+    /// Moves either the folder in `movingDirectory` or the files in `movingFileIds`.
+    private func performMove(to target: String?) async {
+        guard let api = dependencies.apiClient, let id = existing?.id else { return }
+        // Snapshot: the sheet's onDismiss clears these while this async work is still running.
+        let dirToMove = movingDirectory
+        let fileIdsToMove = movingFileIds
+        do {
+            if let dir = dirToMove {
+                try await api.updateKnowledgeDirectory(
+                    knowledgeId: id, directoryId: dir.id,
+                    parent: target.map { .folder($0) } ?? .root)
+            } else {
+                for fid in fileIdsToMove {
+                    try await api.moveKnowledgeFile(knowledgeId: id, fileId: fid, directoryId: target)
+                }
+            }
+            movingDirectory = nil; movingFileIds = []
+            isSelecting = false; selectedFileIds = []
+            await fetchFiles(knowledgeId: id)
+            Haptics.notify(.success)
+        } catch { errorMessage = error.localizedDescription }
+    }
+
+    private func openDirectory(_ id: String?) async {
+        currentDirectoryId = id
+        isSelecting = false
+        selectedFileIds = []
+        if let kid = existing?.id { await fetchFiles(knowledgeId: kid) }
     }
 
     private func handleFileImport(_ result: Result<[URL], Error>) {
@@ -924,57 +1304,6 @@ struct KnowledgeEditorView: View {
 
         guard !fileTuples.isEmpty else {
             errorMessage = "Could not read any of the selected files."
-            isUploadingFile = false; uploadProgress = 0; uploadStatusMessage = ""
-            return
-        }
-
-        await uploadFileTuples(fileTuples, knowledgeId: id, manager: manager)
-    }
-
-    /// Recursively collects all files inside a folder and uploads them.
-    private func uploadFolder(from folderURL: URL) async {
-        guard let id = existing?.id, let manager else { return }
-
-        let accessed = folderURL.startAccessingSecurityScopedResource()
-        defer { if accessed { folderURL.stopAccessingSecurityScopedResource() } }
-
-        isUploadingFile = true
-        uploadProgress = 0.02
-        uploadStatusMessage = "Scanning folder…"
-
-        var fileTuples: [(data: Data, fileName: String)] = []
-        let enumerator = FileManager.default.enumerator(
-            at: folderURL,
-            includingPropertiesForKeys: [.isRegularFileKey, .isHiddenKey],
-            options: [.skipsHiddenFiles, .skipsPackageDescendants]
-        )
-
-        let supportedExtensions: Set<String> = [
-            "pdf", "txt", "md", "markdown", "docx", "doc",
-            "csv", "json", "xml", "HTML", "htm", "xlsx", "xls",
-            "pptx", "ppt", "rst", "yaml", "yml", "toml",
-            "mp3", "wav", "m4a", "ogg", "flac", "aac", "wma", "opus", "webm", "caf", "aiff", "aif"
-        ]
-
-        // Collect all URLs into an array synchronously before entering async context,
-        // since NSEnumerator.makeIterator() is unavailable from async contexts in Swift 6.
-        let allURLs = enumerator?.allObjects.compactMap { $0 as? URL } ?? []
-        for fileURL in allURLs {
-            guard let resourceValues = try? fileURL.resourceValues(forKeys: [.isRegularFileKey]),
-                  resourceValues.isRegularFile == true else { continue }
-            let ext = fileURL.pathExtension.lowercased()
-            guard supportedExtensions.contains(ext) else { continue }
-            do {
-                let data = try Data(contentsOf: fileURL)
-                let relativePath = fileURL.path
-                    .replacingOccurrences(of: folderURL.path + "/", with: "")
-                    .replacingOccurrences(of: "/", with: "_")
-                fileTuples.append((data: data, fileName: relativePath))
-            } catch {}
-        }
-
-        guard !fileTuples.isEmpty else {
-            errorMessage = "No supported files found in the selected folder."
             isUploadingFile = false; uploadProgress = 0; uploadStatusMessage = ""
             return
         }
@@ -1043,6 +1372,7 @@ struct KnowledgeEditorView: View {
             try await manager.uploadAndAddFilesBatch(
                 files: finalFiles,
                 knowledgeId: knowledgeId,
+                directoryId: currentDirectoryId,
                 onProgress: { [self] p in
                     uploadProgress = 0.1 + p * 0.85
                     let completed = Int(p * Double(uploadTotal))
@@ -1114,7 +1444,7 @@ struct KnowledgeEditorView: View {
         uploadProgress = 0.2
         uploadStatusMessage = "Scraping webpage…"
         do {
-            _ = try await manager.addWebPage(url: url, knowledgeId: id)
+            try await manager.addWebPage(url: url, knowledgeId: id, directoryId: currentDirectoryId)
             uploadProgress = 1.0
             await fetchFiles(knowledgeId: id)
             Haptics.notify(.success)
@@ -1137,7 +1467,7 @@ struct KnowledgeEditorView: View {
         uploadProgress = 0.2
         uploadStatusMessage = "Uploading text content…"
         do {
-            _ = try await manager.addTextContent(text: body, title: title, knowledgeId: id)
+            try await manager.addTextContent(text: body, title: title, knowledgeId: id, directoryId: currentDirectoryId)
             uploadProgress = 1.0
             await fetchFiles(knowledgeId: id)
             Haptics.notify(.success)
@@ -1242,15 +1572,26 @@ struct KnowledgeFilePreviewSheet: View {
 
     let file: KnowledgeFileEntry
     let apiClient: APIClient?
+    var canEdit: Bool = true
 
     @State private var content: String = ""
     @State private var isLoading: Bool = true
     @State private var errorMessage: String?
+    // Editing (web: updateFileDataContentById — re-extracts and re-indexes the file)
+    @State private var isEditing = false
+    @State private var draft = ""
+    @State private var isSavingContent = false
+    @State private var saveError: String?
 
     var body: some View {
         NavigationStack {
             Group {
-                if isLoading {
+                if isEditing {
+                    TextEditor(text: $draft)
+                        .scaledFont(size: 14)
+                        .padding(Spacing.sm)
+                        .background(theme.background)
+                } else if isLoading {
                     VStack(spacing: Spacing.md) {
                         ProgressView().tint(theme.brandPrimary)
                         Text("Loading content…")
@@ -1307,15 +1648,48 @@ struct KnowledgeFilePreviewSheet: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
-                    Button("Done", systemImage: "xmark") { dismiss() }
-                        .labelStyle(.iconOnly)
-                        .tint(.secondary)
+                    if isEditing {
+                        if isSavingContent {
+                            ProgressView()
+                        } else {
+                            Button("Save", systemImage: "checkmark") { Task { await saveContent() } }
+                                .labelStyle(.iconOnly)
+                        }
+                    } else {
+                        Button("Done", systemImage: "xmark") { dismiss() }
+                            .labelStyle(.iconOnly)
+                            .tint(.secondary)
+                    }
+                }
+                ToolbarItem(placement: .topBarLeading) {
+                    if isEditing {
+                        Button("Cancel") { isEditing = false }
+                    } else if canEdit && !isLoading && errorMessage == nil {
+                        Button("Edit", systemImage: "pencil") { draft = content; isEditing = true }
+                    }
                 }
             }
+            .alert("Could not save", isPresented: .init(
+                get: { saveError != nil }, set: { if !$0 { saveError = nil } }
+            )) { Button("OK", role: .cancel) {} } message: { Text(saveError ?? "") }
         }
         .presentationDetents([.medium, .large])
         .presentationDragIndicator(.visible)
         .task { await loadContent() }
+    }
+
+    private func saveContent() async {
+        guard let apiClient else { return }
+        isSavingContent = true
+        do {
+            try await apiClient.updateFileTextContent(id: file.id, content: draft)
+            content = draft
+            isEditing = false
+            Haptics.notify(.success)
+        } catch {
+            saveError = error.localizedDescription
+        }
+        isSavingContent = false
     }
 
     private func loadContent() async {

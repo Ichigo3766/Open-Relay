@@ -160,6 +160,34 @@ final class AdminPipelinesViewModel {
         isDownloading = false
     }
 
+    /// POST /api/v1/pipelines/upload (multipart `file` + `urlIdx`) — web "Upload Pipeline".
+    func uploadPipeline(fileURL: URL, urlIdx: Int) async {
+        guard let api = apiClient else { return }
+        let scoped = fileURL.startAccessingSecurityScopedResource()
+        defer { if scoped { fileURL.stopAccessingSecurityScopedResource() } }
+        guard fileURL.pathExtension.lowercased() == "py" else {
+            error = "Only Python (.py) files are allowed."; return
+        }
+        isDownloading = true
+        downloadSuccess = false
+        error = nil
+        do {
+            let data = try Data(contentsOf: fileURL)
+            _ = try await api.network.uploadMultipart(
+                path: "/api/v1/pipelines/upload", fileData: data, fileName: fileURL.lastPathComponent,
+                mimeType: "text/x-python", additionalFields: ["urlIdx": "\(urlIdx)"], timeout: 300)
+            downloadSuccess = true
+            await loadPipelines(urlIdx: urlIdx)
+            Task {
+                try? await Task.sleep(nanoseconds: 3_000_000_000)
+                downloadSuccess = false
+            }
+        } catch {
+            self.error = error.localizedDescription
+        }
+        isDownloading = false
+    }
+
     func deletePipeline(id: String, urlIdx: Int) async {
         guard let api = apiClient else { return }
         do {

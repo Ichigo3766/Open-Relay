@@ -37,7 +37,10 @@ final class ShareViewController: UIViewController {
         }
 
         Task {
-            let content = await Self.process(providers: providers)
+            var content = await Self.process(providers: providers)
+            // Large payloads (photos, videos, PDFs) don't belong in UserDefaults:
+            // write them to the shared App Group container and pass file paths.
+            content = Self.offloadFilesToContainer(content)
 
             // Persist to the shared App Group so the main app can read it.
             if let defaults = UserDefaults(suiteName: "group.com.openui.openui"),
@@ -50,6 +53,23 @@ final class ShareViewController: UIViewController {
             await openMainApp()
             finish()
         }
+    }
+
+    /// Moves attachment bytes into `<AppGroup>/SharedInbox/` and replaces them with
+    /// the relative file name. Falls back to inline data if the container is unavailable.
+    private static func offloadFilesToContainer(_ content: SharedContent) -> SharedContent {
+        guard let container = FileManager.default
+            .containerURL(forSecurityApplicationGroupIdentifier: "group.com.openui.openui") else { return content }
+        let inbox = container.appendingPathComponent("SharedInbox", isDirectory: true)
+        try? FileManager.default.createDirectory(at: inbox, withIntermediateDirectories: true)
+        var result = content
+        result.fileAttachments = content.fileAttachments.map { file in
+            let stored = UUID().uuidString + "-" + file.name
+            let url = inbox.appendingPathComponent(stored)
+            guard (try? file.data.write(to: url, options: .atomic)) != nil else { return file }
+            return SharedFileAttachment(name: file.name, data: Data(), mimeType: file.mimeType, storedFileName: stored)
+        }
+        return result
     }
 
     // MARK: - Item Processing
@@ -248,6 +268,8 @@ private struct SharedFileAttachment: Codable {
     let name: String
     let data: Data
     let mimeType: String?
+    /// File name inside `<AppGroup>/SharedInbox/` when the bytes were written to disk.
+    var storedFileName: String? = nil
 }
 
 private struct SharedContent: Codable {

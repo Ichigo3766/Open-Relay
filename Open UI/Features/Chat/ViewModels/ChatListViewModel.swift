@@ -104,12 +104,16 @@ final class ChatListViewModel {
     /// This is an independent list — NOT a filtered subset of `conversations` —
     /// so it correctly includes folder chats that are excluded from the main list.
     var conversations: [Conversation] = [] {
-        didSet { contentRevision = UUID() }
+        didSet {
+            contentRevision = UUID()
+            ChatReadState.shared.reconcile(with: conversations)
+        }
     }
 
     var pinnedConversations: [Conversation] = [] {
         didSet {
             contentRevision = UUID()
+            ChatReadState.shared.reconcile(with: pinnedConversations)
             // Keep folderViewModel in sync so folder chat lists can exclude pinned IDs
             // and avoid showing a pinned folder chat both in Pinned and inside its folder.
             folderViewModel.pinnedChatIds = Set(pinnedConversations.map(\.id))

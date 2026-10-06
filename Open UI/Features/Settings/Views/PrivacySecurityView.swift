@@ -6,6 +6,7 @@ struct PrivacySecurityView: View {
     @Environment(\.theme) private var theme
     @Environment(AppDependencyContainer.self) private var dependencies
     @State private var isExporting = false
+    @State private var isExportingStats = false
     @State private var exportURL: URL?
     @State private var showExportSheet = false
     @State private var exportError: String?
@@ -53,12 +54,25 @@ struct PrivacySecurityView: View {
                 SettingsSection(header: "Data Management") {
                     SettingsCell(
                         icon: "arrow.down.circle",
-                        title: "Export Data",
-                        subtitle: isExporting ? "Exporting..." : "Download your conversations as JSON",
+                        title: "Export Chats",
+                        subtitle: isExporting ? "Exporting..." : "Download every chat as JSON (can be imported into Open WebUI)",
                         showDivider: true,
                         accessory: isExporting ? .loading : .chevron
                     ) {
                         Task { await exportData() }
+                    }
+
+                    if dependencies.authViewModel.currentUser?.role == .admin
+                        || dependencies.authViewModel.backendConfig?.features?.enableCommunitySharing == true {
+                        SettingsCell(
+                            icon: "chart.bar.doc.horizontal",
+                            title: "Export Usage Stats",
+                            subtitle: isExportingStats ? "Exporting..." : "Anonymised per-chat statistics, without message text",
+                            showDivider: true,
+                            accessory: isExportingStats ? .loading : .chevron
+                        ) {
+                            Task { await exportStats() }
+                        }
                     }
 
                     excludeFromBackupRow
@@ -318,8 +332,13 @@ struct PrivacySecurityView: View {
             }
             locationManager.isLocationEnabled = true
             locationManager.requestPermissionAndStart()
+            // Web parity: share the switch and send the current fix (if any) right away.
+            ServerLocationSync.shared.setEnabled(true)
+            ServerLocationSync.shared.syncIfNeeded(location: locationManager.cachedLocation,
+                                                   place: locationManager.cachedPlaceName, force: true)
         } else {
             locationManager.isLocationEnabled = false
+            ServerLocationSync.shared.setEnabled(false)
         }
     }
 
@@ -343,30 +362,35 @@ struct PrivacySecurityView: View {
         }
     }
 
+    /// Web parity (DataControls → Export Chats): the full chats from `/chats/all`, which can
+    /// be imported back into any Open WebUI server. The old export only had titles and dates.
     private func exportData() async {
-        guard let manager = dependencies.conversationManager else { return }
+        guard let api = dependencies.apiClient else { return }
         isExporting = true
         defer { isExporting = false }
 
         do {
-            let conversations = try await manager.fetchConversations()
-            let exportPayload: [[String: Any]] = conversations.map { conv in
-                [
-                    "id": conv.id,
-                    "title": conv.title,
-                    "created_at": conv.createdAt.timeIntervalSince1970,
-                    "updated_at": conv.updatedAt.timeIntervalSince1970,
-                    "model": conv.model ?? "",
-                    "pinned": conv.pinned,
-                    "archived": conv.archived,
-                    "tags": conv.tags,
-                    "message_count": conv.messages.count
-                ]
-            }
-
-            let data = try JSONSerialization.data(withJSONObject: exportPayload, options: .prettyPrinted)
+            let data = try await api.exportMyChats()
             let tempURL = FileManager.default.temporaryDirectory
-                .appendingPathComponent("openui_export_\(Int(Date().timeIntervalSince1970)).json")
+                .appendingPathComponent("chat-export-\(Int(Date().timeIntervalSince1970)).json")
+            try data.write(to: tempURL)
+            exportURL = tempURL
+            showExportSheet = true
+        } catch {
+            exportError = error.localizedDescription
+        }
+    }
+
+    /// Anonymised per-chat statistics (models used, message counts, response times) —
+    /// the same file the web's "Sync stats" produces.
+    private func exportStats() async {
+        guard let api = dependencies.apiClient else { return }
+        isExportingStats = true
+        defer { isExportingStats = false }
+        do {
+            let data = try await api.exportAllChatStats()
+            let tempURL = FileManager.default.temporaryDirectory
+                .appendingPathComponent("open-webui-stats-\(Int(Date().timeIntervalSince1970)).json")
             try data.write(to: tempURL)
             exportURL = tempURL
             showExportSheet = true

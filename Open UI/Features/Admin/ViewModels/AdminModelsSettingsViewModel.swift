@@ -198,51 +198,126 @@ final class AdminModelsSettingsViewModel {
         }
     }
 
-    // MARK: - Toggle Model Visibility (eye toggle — sets info.meta.hidden)
+    // MARK: - Base model DB record
+
+    /// Payload that creates a workspace DB record for a connection base model,
+    /// mirroring the web admin (`Models.svelte` upsertModelHandler/toggleModelHandler):
+    /// real name, `base_model_id: null`, empty meta/params, no grants. Empty meta
+    /// matters — admin DEFAULT_MODEL_METADATA only fills keys that are missing.
+    private func baseRecordPayload(for model: ModelItem, isActive: Bool, meta: [String: Any] = [:]) -> [String: Any] {
+        ["id": model.id, "name": model.name, "base_model_id": NSNull(),
+         "meta": meta, "params": [String: Any](), "access_grants": [[String: Any]](),
+         "is_active": isActive]
+    }
+
+    // MARK: - Toggle Model Visibility (eye toggle — sets meta.hidden)
 
     func toggleModelVisibility(id: String) async {
-        guard let api = apiClient else { return }
+        guard let api = apiClient, let model = models.first(where: { $0.id == id }) else { return }
         do {
-            // Try to fetch the workspace record. Base models (Ollama, OpenAI, etc.) may not
-            // have a workspace record yet — if we get a 404/not-found error, create one first.
-            let detail: ModelDetail
-            do {
-                detail = try await api.getWorkspaceModelDetail(id: id)
-            } catch {
-                // No workspace record exists for this base model — create a minimal one
-                // so we can set its hidden flag, then re-fetch the new record.
-                let stub = ModelDetail(id: id, name: id, baseModelId: id)
-                _ = try await api.createWorkspaceModel(payload: stub.toCreatePayload())
-                detail = try await api.getWorkspaceModelDetail(id: id)
+            if var record = try await api.getWorkspaceModelRecord(id: id) {
+                // Flip `hidden` on the stored meta only; everything else is re-sent as-is.
+                var meta = decodeOriginalMeta(record.originalMetaJSON)
+                meta["hidden"] = !(meta["hidden"] as? Bool ?? false)
+                record.originalMetaJSON = try? JSONSerialization.data(withJSONObject: meta)
+                var payload = record.toRawUpdatePayload()
+                payload["meta"] = meta
+                _ = try await api.updateWorkspaceModel(payload: payload)
+            } else {
+                _ = try await api.createWorkspaceModel(
+                    payload: baseRecordPayload(for: model, isActive: model.isActive, meta: ["hidden": !model.isHidden]))
             }
-
-            // Build updated payload with hidden toggled
-            var payload = detail.toUpdatePayload()
-            var meta = payload["meta"] as? [String: Any] ?? [:]
-            let currentHidden = meta["hidden"] as? Bool ?? false
-            meta["hidden"] = !currentHidden
-            payload["meta"] = meta
-            payload["id"] = id
-
-            _ = try await api.updateWorkspaceModel(payload: payload)
-            // Refresh list
             models = try await fetchMergedModels(api: api)
         } catch {
             errorMessage = error.localizedDescription
         }
     }
 
-    // MARK: - Toggle Model Enabled (toggle — sets is_active)
+    // MARK: - Toggle Model Enabled (sets is_active)
 
     func toggleModelEnabled(id: String) async {
-        guard let api = apiClient else { return }
+        guard let api = apiClient, let model = models.first(where: { $0.id == id }) else { return }
         do {
-            _ = try await api.toggleWorkspaceModel(id: id)
-            // Refresh list (include custom models so they stay visible after toggle)
+            if try await api.getWorkspaceModelRecord(id: id) != nil {
+                _ = try await api.toggleWorkspaceModel(id: id)
+            } else {
+                // No record yet — create it with the flipped state (toggle would 401 NOT_FOUND).
+                _ = try await api.createWorkspaceModel(payload: baseRecordPayload(for: model, isActive: !model.isActive))
+            }
             models = try await fetchMergedModels(api: api)
         } catch {
             errorMessage = error.localizedDescription
         }
+    }
+
+    // MARK: - Make Public / Private (web toggleModelPrivacyHandler)
+
+    /// Public = an `{user, "*", read}` grant. Making it private sends `[]`, exactly
+    /// like the web; making it public keeps the model's existing grants and adds `*`.
+    func toggleModelPrivacy(id: String) async {
+        guard let api = apiClient, let model = models.first(where: { $0.id == id }) else { return }
+        do {
+            let existing = try await api.getWorkspaceModelRecord(id: id)
+            var grants: [[String: Any]] = []
+            if !model.isPublic {
+                grants = existing?.buildGrantsPayload() ?? []
+                grants.append(["principal_type": "user", "principal_id": "*", "permission": "read"])
+            }
+            // The server creates a minimal record for base models that have none.
+            _ = try await api.updateModelAccessGrants(id: id, name: model.name, grants: grants)
+            models = try await fetchMergedModels(api: api)
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    // MARK: - Reset All (DELETE /api/v1/models/delete/all)
+
+    /// Deletes every workspace model record (custom models and per-model overrides).
+    func resetAllModels() async {
+        guard let api = apiClient else { return }
+        do {
+            try await api.deleteAllWorkspaceModels()
+            await loadAll()
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    // MARK: - Bulk visibility / enablement (filtered set)
+
+    func setActiveForAll(_ active: Bool, in subset: [ModelItem]) async {
+        guard let api = apiClient else { return }
+        do {
+            for m in subset where m.isActive != active {
+                if try await api.getWorkspaceModelRecord(id: m.id) != nil {
+                    _ = try await api.toggleWorkspaceModel(id: m.id)
+                } else {
+                    _ = try await api.createWorkspaceModel(payload: baseRecordPayload(for: m, isActive: active))
+                }
+            }
+            models = try await fetchMergedModels(api: api)
+        } catch { errorMessage = error.localizedDescription }
+    }
+
+    func setHiddenForAll(_ hidden: Bool, in subset: [ModelItem]) async {
+        guard let api = apiClient else { return }
+        do {
+            for m in subset where m.isHidden != hidden {
+                if var record = try await api.getWorkspaceModelRecord(id: m.id) {
+                    var meta = decodeOriginalMeta(record.originalMetaJSON)
+                    meta["hidden"] = hidden
+                    record.originalMetaJSON = try? JSONSerialization.data(withJSONObject: meta)
+                    var payload = record.toRawUpdatePayload()
+                    payload["meta"] = meta
+                    _ = try await api.updateWorkspaceModel(payload: payload)
+                } else {
+                    _ = try await api.createWorkspaceModel(
+                        payload: baseRecordPayload(for: m, isActive: m.isActive, meta: ["hidden": hidden]))
+                }
+            }
+            models = try await fetchMergedModels(api: api)
+        } catch { errorMessage = error.localizedDescription }
     }
 
     // MARK: - Import / Export
@@ -253,7 +328,7 @@ final class AdminModelsSettingsViewModel {
             throw NSError(domain: "AdminModels", code: -1,
                 userInfo: [NSLocalizedDescriptionKey: "Invalid JSON format for models import"])
         }
-        try await api.importWorkspaceModels(models: array)
+        try await api.importWorkspaceModels(models: array.map { ($0["info"] as? [String: Any]) ?? $0 })
         models = try await fetchMergedModels(api: api)
     }
 
@@ -320,7 +395,8 @@ final class AdminModelsSettingsViewModel {
 
         // Build params dict — only include non-nil values
         var params: [String: Any] = [:]
-        if let v = streamChat { params["stream_chat_response"] = v }
+        // Open WebUI's key is `stream_response` (AdvancedParams.svelte / utils/payload.py).
+        if let v = streamChat { params["stream_response"] = v }
         if let v = streamDeltaChunkSize { params["stream_delta_chunk_size"] = v }
         if let v = functionCalling { params["function_calling"] = v }
         if let v = reasoningTags { params["reasoning_tags"] = v }
@@ -445,7 +521,7 @@ final class AdminModelsSettingsViewModel {
         }
 
         if let p = config["DEFAULT_MODEL_PARAMS"] as? [String: Any], !p.isEmpty {
-            streamChat = p["stream_chat_response"] as? Bool
+            streamChat = (p["stream_response"] as? Bool) ?? (p["stream_chat_response"] as? Bool)
             streamDeltaChunkSize = p["stream_delta_chunk_size"] as? Int
             functionCalling = p["function_calling"] as? String
             reasoningTags = p["reasoning_tags"] as? [String]

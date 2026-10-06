@@ -149,6 +149,11 @@ final class PromptManager {
         return result
     }
 
+    /// DELETE /api/v1/prompts/id/{id}/history/{history_id} — refuses the live version.
+    func deleteHistoryVersion(promptId: String, versionId: String) async throws {
+        try await apiClient.deletePromptHistoryEntry(id: promptId, historyId: versionId)
+    }
+
     // MARK: - Access Grants
 
     /// Updates the access grants for a prompt.

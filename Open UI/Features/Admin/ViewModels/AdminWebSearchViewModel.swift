@@ -2,7 +2,7 @@ import Foundation
 import os.log
 
 /// ViewModel for the Admin Web Search settings screen.
-/// Manages state for the `web` object inside RetrievalConfig.
+/// Manages the `web` object inside RetrievalConfig (raw server JSON, see `WebSearchConfig`).
 @Observable
 final class AdminWebSearchViewModel {
 
@@ -14,48 +14,11 @@ final class AdminWebSearchViewModel {
     var error: String?
     var success = false
 
-    // MARK: - Convenience: domain filter list as comma-separated string
+    /// Linkup params are edited as text and validated on save.
+    var linkupParamsText = ""
 
-    var domainFilterListString: String {
-        get { retrievalConfig.web.domainFilterList.joined(separator: ", ") }
-        set {
-            retrievalConfig.web.domainFilterList = newValue
-                .split(separator: ",")
-                .map { $0.trimmingCharacters(in: .whitespaces) }
-                .filter { !$0.isEmpty }
-        }
-    }
-
-    // MARK: - Visibility toggles for secure fields
-
-    var showSearxngKey = false
-    var showGooglePSEKey = false
-    var showBraveKey = false
-    var showKagiKey = false
-    var showMojeekKey = false
-    var showBochaKey = false
-    var showSerpstackKey = false
-    var showSerperKey = false
-    var showSerplyKey = false
-    var showSearchAPIKey = false
-    var showSerpAPIKey = false
-    var showTavilyKey = false
-    var showJinaKey = false
-    var showBingKey = false
-    var showExaKey = false
-    var showPerplexityKey = false
-    var showSougouSID = false
-    var showSougouSK = false
-    var showFirecrawlKey = false
-    var showExternalSearchKey = false
-    var showYandexKey = false
-    var showYouKey = false
-    var showOllamaCloudKey = false
-    var showPerplexitySearchKey = false
-    var showFirecrawlLoaderKey = false
-    var showTavilyLoaderKey = false
-    var showExternalLoaderKey = false
-    var showPlaywrightWSURL = false
+    /// Secure fields currently revealed (keyed by server key).
+    var revealedKeys: Set<String> = []
 
     // MARK: - Private
 
@@ -68,6 +31,18 @@ final class AdminWebSearchViewModel {
         self.apiClient = apiClient
     }
 
+    // MARK: - Field bindings (exact server keys)
+
+    func string(_ key: String) -> String { retrievalConfig.web.string(key) }
+    func setString(_ key: String, _ value: String) { retrievalConfig.web.setString(key, value) }
+    func bool(_ key: String, default def: Bool = false) -> Bool { retrievalConfig.web.bool(key, default: def) }
+    func setBool(_ key: String, _ value: Bool) { retrievalConfig.web.setBool(key, value) }
+    func intText(_ key: String) -> String { retrievalConfig.web.intText(key) }
+    func setInt(_ key: String, _ text: String) { retrievalConfig.web.setInt(key, text) }
+    func setNumericString(_ key: String, _ text: String) { retrievalConfig.web.setNumericString(key, text) }
+    func listText(_ key: String) -> String { retrievalConfig.web.stringList(key).joined(separator: ", ") }
+    func setList(_ key: String, _ text: String) { retrievalConfig.web.setStringList(key, commaSeparated: text) }
+
     // MARK: - Load
 
     func load() async {
@@ -76,6 +51,7 @@ final class AdminWebSearchViewModel {
         error = nil
         do {
             retrievalConfig = try await api.getRetrievalConfig()
+            linkupParamsText = retrievalConfig.web.linkupSearchParamsJSON
             logger.info("Loaded web search config")
         } catch {
             let apiError = APIError.from(error)
@@ -89,24 +65,33 @@ final class AdminWebSearchViewModel {
 
     func save() async {
         guard let api = apiClient else { return }
+        // Never send an empty `web` object — the server would reset every web
+        // search setting. Only save after a successful load.
+        guard retrievalConfig.web.isLoaded else {
+            error = "Settings haven't loaded yet. Pull to refresh and try again."
+            return
+        }
+        guard retrievalConfig.web.setLinkupSearchParams(linkupParamsText) else {
+            error = "Linkup parameters must be a valid JSON object."
+            return
+        }
         isSaving = true
         error = nil
         success = false
 
-        // Fire-and-forget — server may return 500 on the update endpoint, which is fine.
         do {
-            try await api.updateRetrievalConfig(retrievalConfig)
+            try await api.updateRetrievalConfig(retrievalConfig, includeWeb: true)
+            success = true
+            logger.info("Saved web search config")
+            Task {
+                try? await Task.sleep(nanoseconds: 3_000_000_000)
+                success = false
+            }
         } catch {
-            logger.warning("Retrieval config update returned error (ignored): \(error.localizedDescription)")
+            let apiError = APIError.from(error)
+            self.error = apiError.errorDescription ?? "Failed to save web search configuration."
+            logger.error("Failed to save web search config: \(error.localizedDescription)")
         }
-
-        success = true
         isSaving = false
-        logger.info("Saved web search config")
-
-        Task {
-            try? await Task.sleep(nanoseconds: 3_000_000_000)
-            success = false
-        }
     }
 }

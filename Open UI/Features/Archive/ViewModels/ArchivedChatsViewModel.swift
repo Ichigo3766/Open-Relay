@@ -60,6 +60,39 @@ final class ArchivedChatsViewModel {
         self.apiClient = apiClient
     }
 
+    /// Server-side total (`/chats/archived/count`) — the list itself is paged.
+    /// Adjusted optimistically on restore/delete so "Restore All (N)" stays right.
+    var totalCount: Int?
+
+    /// What the UI shows: never below zero or below the rows already on screen.
+    var displayCount: Int { max(totalCount ?? 0, conversations.count) }
+
+    func loadTotalCount() async {
+        guard let apiClient else { return }
+        // Searches filter the list but not the count, so only the unfiltered total is shown.
+        if let n = try? await apiClient.getArchivedChatCount() { totalCount = max(0, n) }
+    }
+
+    private func adjustTotal(by delta: Int) {
+        guard let n = totalCount else { return }
+        totalCount = max(0, n + delta)
+    }
+
+    /// Every archived chat as JSON, for the share sheet (web: "Export All Archived Chats").
+    func exportArchived() async -> URL? {
+        guard let apiClient else { return nil }
+        do {
+            let data = try await apiClient.exportArchivedChats()
+            let url = FileManager.default.temporaryDirectory
+                .appendingPathComponent("archived-chat-export-\(Int(Date().timeIntervalSince1970)).json")
+            try data.write(to: url, options: .atomic)
+            return url
+        } catch {
+            showTemporaryToast(errorDescription(for: error))
+            return nil
+        }
+    }
+
     // MARK: - Load
 
     /// Loads the first page of archived chats. Resets all pagination state.
@@ -164,6 +197,7 @@ final class ArchivedChatsViewModel {
         withAnimation(.easeInOut(duration: 0.25)) {
             conversations.removeAll { $0.id == conv.id }
         }
+        adjustTotal(by: -1)
 
         Task {
             do {
@@ -175,6 +209,7 @@ final class ArchivedChatsViewModel {
             } catch {
                 // Rollback — re-insert at original position
                 restoringIds.remove(conv.id)
+                adjustTotal(by: 1)
                 withAnimation(.easeInOut(duration: 0.25)) {
                     if let idx = originalIndex, idx <= conversations.count {
                         conversations.insert(conv, at: idx)
@@ -194,7 +229,9 @@ final class ArchivedChatsViewModel {
         guard let apiClient else { return }
         isLoading = true
         let previous = conversations
+        let previousTotal = totalCount
         withAnimation { conversations.removeAll() }
+        if totalCount != nil { totalCount = 0 }
 
         Task {
             do {
@@ -206,6 +243,7 @@ final class ArchivedChatsViewModel {
             } catch {
                 isLoading = false
                 withAnimation { conversations = previous }
+                totalCount = previousTotal
                 Haptics.notify(.error)
                 showTemporaryToast("Failed to restore all chats")
                 logger.error("Failed to unarchive all: \(error.localizedDescription)")
@@ -224,6 +262,7 @@ final class ArchivedChatsViewModel {
         withAnimation(.easeInOut(duration: 0.25)) {
             conversations.removeAll { $0.id == conv.id }
         }
+        adjustTotal(by: -1)
 
         Task {
             do {
@@ -232,6 +271,7 @@ final class ArchivedChatsViewModel {
                 Haptics.notify(.success)
             } catch {
                 deletingIds.remove(conv.id)
+                adjustTotal(by: 1)
                 withAnimation(.easeInOut(duration: 0.25)) {
                     if let idx = originalIndex, idx <= conversations.count {
                         conversations.insert(conv, at: idx)

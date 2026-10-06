@@ -97,6 +97,21 @@ final class FunctionsManager {
         return toggled
     }
 
+    // MARK: - Import from link
+
+    /// Fetches source from a URL via the server and returns an unsaved detail to pre-fill the editor.
+    func loadFromURL(url: String) async throws -> FunctionDetail? {
+        let json = try await apiClient.loadFunctionFromURL(url: url)
+        guard let name = json["name"] as? String, let content = json["content"] as? String else { return nil }
+        let slug = name.lowercased()
+            .components(separatedBy: .alphanumerics.inverted).filter { !$0.isEmpty }.joined(separator: "_")
+        // Type is detected from the class in the code (same as the server's load_function_module).
+        let type = content.contains("class Pipe") ? "pipe"
+            : content.contains("class Action") ? "action"
+            : content.contains("class Event") ? "event" : "filter"
+        return FunctionDetail(id: slug, name: name, type: type, content: content)
+    }
+
     // MARK: - Clone
 
     @discardableResult

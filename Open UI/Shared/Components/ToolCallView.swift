@@ -4,8 +4,6 @@ import os.log
 import UniformTypeIdentifiers
 import MarkdownView
 
-private let vizLog = Logger(subsystem: "com.openui", category: "VizPipeline")
-
 // MARK: - Global Off-Main Parse Cache
 
 /// Process-lifetime, content-keyed cache for `ToolCallParser.parseOrdered` results.
@@ -217,6 +215,35 @@ struct ReasoningData: Identifiable {
     }
 }
 
+// MARK: - Details Data
+
+/// A generic collapsible `<details>` section — anything that isn't a tool call
+/// or a reasoning block: filter/outlet output (e.g. LLMTrace), model-written
+/// `<details>` sections, and `type="code_interpreter"` blocks.
+struct DetailsData: Identifiable {
+    let id: String
+    /// Header title (may contain inline markdown such as `**bold**`).
+    let summary: String
+    /// Raw body markdown; rendered recursively so nested details work.
+    let body: String
+    /// Lowercased `type` attribute (`nil` for plain `<details>`).
+    let type: String?
+    let isDone: Bool
+    /// `<details open>` — start expanded.
+    let startsOpen: Bool
+
+    nonisolated init(summary: String, body: String, type: String?, isDone: Bool, startsOpen: Bool, ordinal: Int) {
+        // Summary + ordinal are fixed once the block starts streaming, so the
+        // view keeps its expanded state while the body grows.
+        self.id = "details-\(ordinal)-\(summary.hashValue)"
+        self.summary = summary
+        self.body = body
+        self.type = type
+        self.isDone = isDone
+        self.startsOpen = startsOpen
+    }
+}
+
 // MARK: - Content Segment
 
 /// Represents a segment of assistant message content in the order it appears.
@@ -227,12 +254,14 @@ enum ContentSegment: Identifiable {
     case text(String)
     case toolCall(ToolCallData)
     case reasoning(ReasoningData)
+    case details(DetailsData)
 
     var id: String {
         switch self {
         case .text(let str): return "text-\(str.hashValue)"
         case .toolCall(let tc): return "tool-\(tc.id)"
         case .reasoning(let r): return "reason-\(r.id)"
+        case .details(let d): return d.id
         }
     }
 }
@@ -316,6 +345,7 @@ enum ToolCallParser {
             case .text(let str): textParts.append(str)
             case .toolCall(let tc): toolCalls.append(tc)
             case .reasoning(let r): reasoning.append(r)
+            case .details: break   // hidden sections are not spoken/plain text
             }
         }
 
@@ -342,282 +372,82 @@ enum ToolCallParser {
         // collapsible ReasoningView instead of raw visible text.
         let content = preprocessThinkTags(content)
 
-        // Use a quote-aware state-machine tokenizer instead of the old regex
-        // `#"<details\s+[^>]*>[\s\S]*?</details>"#`.
-        //
-        // The regex used `[^>]*` to match opening-tag attributes — this breaks
-        // whenever a quoted attribute value (e.g. `result="…"`) contains a `>`
-        // character, which is common in tool results that include HTML snippets,
-        // URLs with query strings, or angle-bracket operators. When that happens
-        // the regex terminates the opening-tag match prematurely, causing the
-        // rest of the block (including all the JSON tool-result content) to be
-        // treated as surrounding text and rendered raw in the chat.
-        //
-        // The tokenizer below tracks quote state so it only treats `>` as the
-        // end of the opening tag when it is NOT inside a quoted string, and it
-        // tracks nesting depth to find the correct matching `</details>` even
-        // when blocks are nested.
-        let matches = findDetailsBlocks(in: content)
-
-        guard !matches.isEmpty else {
-            return OrderedParseResult(
-                segments: [.text(content)],
-                allToolCalls: []
-            )
+        // Tokenize with the shared DetailsBlockScanner — the same rules the
+        // streaming pipeline and every strip path use. It is quote-aware
+        // (`>` / `\"` inside attribute values never end a tag), nesting-aware,
+        // code-aware for plain blocks, and recognises EVERY `<details>`:
+        // tool calls, reasoning, code interpreter and plain sections
+        // (filter/outlet output such as LLMTrace, model-written sections).
+        guard DetailsBlockScanner.mayContainDetails(content) else {
+            return OrderedParseResult(segments: [.text(content)], allToolCalls: [])
         }
 
         var segments: [ContentSegment] = []
         var allToolCalls: [ToolCallData] = []
-        var currentPos = content.startIndex
+        var detailsOrdinal = 0
 
-        for match in matches {
-            // Text before this details block
-            if match.start > currentPos {
-                let textBefore = String(content[currentPos..<match.start])
-                    .replacingOccurrences(of: "\n\n\n+", with: "\n\n", options: .regularExpression)
-                    .trimmingCharacters(in: .whitespacesAndNewlines)
-                if !textBefore.isEmpty {
-                    segments.append(.text(textBefore))
-                }
-            }
-
-            let block = match.block
-
-            if containsTag("type=\"tool_calls\"", in: block, options: []) || containsTag("type='tool_calls'", in: block, options: []) {
-                if let toolCall = parseToolCallBlock(block) {
-                    segments.append(.toolCall(toolCall))
-                    allToolCalls.append(toolCall)
-                }
-            } else if containsTag("type=\"reasoning\"", in: block, options: []) || containsTag("type='reasoning'", in: block, options: []) {
-                if let parsed = parseReasoningBlock(block) {
-                    segments.append(.reasoning(parsed.data))
-                    // Spillover: content that was inside the <details> block AFTER
-                    // a raw closing tag (e.g. </thinking>) — this is the real model
-                    // reply that was accidentally captured inside the reasoning block.
-                    if let spillover = parsed.spillover, !spillover.isEmpty {
-                        segments.append(.text(spillover))
-                    }
-                }
-            }
-
-            currentPos = match.end
+        func appendText(_ raw: String) {
+            let text = DetailsBlockScanner.trimmed(
+                raw.replacingOccurrences(of: "\n\n\n+", with: "\n\n", options: .regularExpression)
+            )
+            if !text.isEmpty { segments.append(.text(text)) }
         }
 
-        // Remaining text after the last details block
-        if currentPos < content.endIndex {
-            let remaining = String(content[currentPos...])
-                .replacingOccurrences(of: "\n\n\n+", with: "\n\n", options: .regularExpression)
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            if !remaining.isEmpty {
-                segments.append(.text(remaining))
+        for piece in DetailsBlockScanner.scan(content) {
+            switch piece {
+            case .text(let text, _):
+                appendText(text)
+            case .partialTag:
+                // An opening/closing tag still arriving — never show it raw.
+                continue
+            case .block(let block):
+                switch block.type {
+                case "tool_calls":
+                    if let toolCall = parseToolCallBlock(block) {
+                        segments.append(.toolCall(toolCall))
+                        allToolCalls.append(toolCall)
+                    }
+                case "reasoning":
+                    if let parsed = parseReasoningBlock(block) {
+                        segments.append(.reasoning(parsed.data))
+                        // Spillover: content that was inside the <details> block AFTER
+                        // a raw closing tag (e.g. </thinking>) — this is the real model
+                        // reply that was accidentally captured inside the reasoning block.
+                        if let spillover = parsed.spillover, !spillover.isEmpty {
+                            segments.append(.text(spillover))
+                        }
+                    }
+                default:
+                    segments.append(.details(parseGenericDetails(block, ordinal: detailsOrdinal)))
+                    detailsOrdinal += 1
+                }
             }
         }
 
         return OrderedParseResult(segments: segments, allToolCalls: allToolCalls)
     }
 
-    // MARK: - State-machine <details> block tokenizer
-
-    /// Represents a single `<details>…</details>` block found by the tokenizer.
-    private struct DetailsMatch {
-        /// Index of the `<` that opens the `<details` tag.
-        let start: String.Index
-        /// Index just past the `>` that closes the `</details>` tag.
-        let end: String.Index
-        /// The full text of the block from `<details` to `</details>`.
-        let block: String
-    }
-
-    /// Scans `content` using a quote-aware state machine and returns every
-    /// top-level `<details>…</details>` block it finds.
-    ///
-    /// Key properties:
-    /// - Tracks whether the scanner is inside a double- or single-quoted
-    ///   attribute value so that a `>` inside e.g. `result="…&gt;…"` does NOT
-    ///   prematurely terminate the opening-tag scan.
-    /// - Tracks nesting depth so nested `<details>` blocks are consumed as
-    ///   part of the outer block rather than returning the outer block early.
-    /// - Returns an incomplete (mid-stream) block only if it starts with a
-    ///   valid `<details` open tag that has a fully-parsed opening tag (i.e. we
-    ///   found the closing `>` of the opening tag) but whose `</details>` has
-    ///   not yet arrived. In that case the block is skipped and left as
-    ///   surrounding text so that streaming does not flash partial content.
-    private nonisolated static func findDetailsBlocks(in content: String) -> [DetailsMatch] {
-        var results: [DetailsMatch] = []
-        var i = content.startIndex
-
-        while i < content.endIndex {
-            // Fast-scan for the literal '<' that starts a potential tag
-            guard let ltIdx = content[i...].firstIndex(of: "<") else { break }
-
-            // Check if this is a <details opening (case-insensitive prefix check)
-            let afterLt = content.index(after: ltIdx)
-            guard afterLt < content.endIndex else { break }
-
-            // We need at least "<details" (7 more chars after '<')
-            let tagNameEnd = content.index(ltIdx, offsetBy: 8, limitedBy: content.endIndex) ?? content.endIndex
-            let tagNameSlice = content[ltIdx..<tagNameEnd].lowercased()
-
-            guard tagNameSlice.hasPrefix("<details") else {
-                // Not a <details tag — advance past this '<' and keep scanning
-                i = afterLt
-                continue
-            }
-
-            // The character right after "<details" must be whitespace, '>', or end
-            // to confirm this is the tag and not e.g. "<detailsview"
-            let charAfterTagName = tagNameEnd < content.endIndex ? content[tagNameEnd] : ">"
-            guard charAfterTagName.isWhitespace || charAfterTagName == ">" else {
-                i = afterLt
-                continue
-            }
-
-            let blockStart = ltIdx
-
-            // --- Phase 1: scan the opening tag in quote-aware mode ---
-            // We walk forward from `<details` until we find the `>` that closes
-            // the opening tag, respecting quoted attribute values.
-            //
-            // We also collect the opening-tag text so we can check for a
-            // recognised `type` attribute (tool_calls / reasoning).  Plain HTML
-            // <details> elements (e.g. inside VIZ HTML content) must NOT be
-            // consumed — if we swallow them the VIZ text gets split across
-            // multiple text segments, breaking VizMarkerParser's ability to find
-            // a complete @@@VIZ-START … @@@VIZ-END block.
-            var j = tagNameEnd
-            var inQuote: Character? = nil
-            var openingTagEnd: String.Index? = nil
-
-            while j < content.endIndex {
-                let ch = content[j]
-                if let q = inQuote {
-                    // Inside a quoted value — a backslash escapes the next char
-                    // (handles \" inside double-quoted attribute values, which are
-                    // common when tool results store JSON with escaped quotes like
-                    // arguments="&quot;{\"query\": \"...\"}&quot;"). Without this,
-                    // the `"` after `\` is mistaken for the closing quote, causing
-                    // the scanner to exit quote mode prematurely and then find a
-                    // false `>` end-of-opening-tag inside the attribute value.
-                    if ch == "\\" {
-                        // Skip the next character (the escaped character)
-                        let next = content.index(after: j)
-                        if next < content.endIndex {
-                            j = content.index(after: next)
-                            continue
-                        }
-                    } else if ch == q {
-                        inQuote = nil
-                    }
-                } else {
-                    if ch == "\"" || ch == "'" {
-                        inQuote = ch
-                    } else if ch == ">" {
-                        // Found the real end of the opening tag
-                        openingTagEnd = content.index(after: j)
-                        break
-                    }
-                }
-                j = content.index(after: j)
-            }
-
-            guard let bodyStart = openingTagEnd else {
-                // Opening tag not yet closed — mid-stream, skip and stop scanning
-                // (everything from here on is still arriving)
-                break
-            }
-
-            // ── Type-guard: only match OpenWebUI's <details type="..."> blocks ──
-            // Plain HTML <details> elements (e.g. inside VIZ HTML content between
-            // @@@VIZ-START and @@@VIZ-END) must pass through as regular text.
-            // If we swallow them, the VIZ text gets split across multiple text
-            // segments and VizMarkerParser never finds a complete block.
-            let openingTagStr = String(content[blockStart..<bodyStart])
-            let openingTagLower = openingTagStr.lowercased()
-            let isToolCallsBlock  = openingTagLower.contains("type=\"tool_calls\"")
-                                 || openingTagLower.contains("type='tool_calls'")
-            let isReasoningBlock  = openingTagLower.contains("type=\"reasoning\"")
-                                 || openingTagLower.contains("type='reasoning'")
-            guard isToolCallsBlock || isReasoningBlock else {
-                // Not an OpenWebUI block — skip past the opening `>` and keep scanning
-                i = bodyStart
-                continue
-            }
-
-            // --- Phase 2: scan for the matching </details> tracking nesting ---
-            var k = bodyStart
-            var depth = 1   // we have one open <details> tag
-
-            while k < content.endIndex && depth > 0 {
-                guard let nextLt = content[k...].firstIndex(of: "<") else {
-                    // No more '<' — closing tag hasn't arrived yet
-                    depth = -1   // sentinel: incomplete block
-                    break
-                }
-
-                let afterNextLt = content.index(after: nextLt)
-                guard afterNextLt < content.endIndex else {
-                    depth = -1
-                    break
-                }
-
-                // Peek ahead for "/details" (closing) or "details" (opening)
-                let peekEnd8 = content.index(nextLt, offsetBy: 9, limitedBy: content.endIndex) ?? content.endIndex
-                let peekSlice = content[nextLt..<peekEnd8].lowercased()
-
-                if peekSlice.hasPrefix("</details") {
-                    // Possible closing tag — consume until its '>'
-                    var m = content.index(nextLt, offsetBy: 9, limitedBy: content.endIndex) ?? content.endIndex
-                    while m < content.endIndex && content[m] != ">" { m = content.index(after: m) }
-                    if m < content.endIndex {
-                        depth -= 1
-                        k = content.index(after: m)
-                    } else {
-                        depth = -1   // mid-stream closing tag
-                        break
-                    }
-                } else if peekSlice.hasPrefix("<details") {
-                    // Nested opening tag — skip its opening tag quote-aware, then bump depth
-                    let nestedNameEnd = content.index(nextLt, offsetBy: 8, limitedBy: content.endIndex) ?? content.endIndex
-                    var m = nestedNameEnd
-                    var nestedInQuote: Character? = nil
-                    var foundClose = false
-                    while m < content.endIndex {
-                        let ch = content[m]
-                        if let q = nestedInQuote {
-                            if ch == q { nestedInQuote = nil }
-                        } else {
-                            if ch == "\"" || ch == "'" { nestedInQuote = ch }
-                            else if ch == ">" { foundClose = true; m = content.index(after: m); break }
-                        }
-                        m = content.index(after: m)
-                    }
-                    if foundClose {
-                        depth += 1
-                        k = m
-                    } else {
-                        depth = -1
-                        break
-                    }
-                } else {
-                    // Some other tag — skip past it
-                    k = afterNextLt
-                }
-            }
-
-            if depth == 0 {
-                // Successfully matched a complete block
-                let blockEnd = k
-                let block = String(content[blockStart..<blockEnd])
-                results.append(DetailsMatch(start: blockStart, end: blockEnd, block: block))
-                i = blockEnd
-            } else {
-                // Block is incomplete (still streaming) — stop; don't advance
-                // so the caller treats everything from blockStart onward as text.
-                break
-            }
-        }
-
-        return results
+    /// Builds a generic collapsible section from any non tool/reasoning block.
+    private nonisolated static func parseGenericDetails(_ block: DetailsBlockScanner.Block, ordinal: Int) -> DetailsData {
+        let split = DetailsBlockScanner.splitSummary(block.body)
+        let isDone: Bool = {
+            if let done = block.attributes["done"]?.lowercased() { return done == "true" }
+            return block.isClosed
+        }()
+        let summary: String = {
+            if block.type == "code_interpreter" { return isDone ? "Analyzed" : "Analyzing..." }
+            let title = DetailsBlockScanner.trimmed(decodeHTMLEntities(split.summary) ?? "")
+            return title.isEmpty ? "Details" : title
+        }()
+        let body = DetailsBlockScanner.trimmed(decodeHTMLEntities(split.rest) ?? "")
+        return DetailsData(
+            summary: summary,
+            body: body,
+            type: block.type,
+            isDone: isDone,
+            startsOpen: block.attributes["open"] != nil,
+            ordinal: ordinal
+        )
     }
 
     /// Parses a `<details type="reasoning">` block.
@@ -629,43 +459,22 @@ enum ToolCallParser {
     ///   embedding a raw closing tag (e.g. `</thinking>`, `</details>`) inside
     ///   the `<details type="reasoning">` block content, with the real response
     ///   following it before the outer `</details>`.
-    private nonisolated static func parseReasoningBlock(_ block: String) -> (data: ReasoningData, spillover: String?)? {
-        let doneStr = extractAttribute("done", from: block)
-        let isDone = doneStr == "true"
-        let duration = extractAttribute("duration", from: block)
+    private nonisolated static func parseReasoningBlock(_ block: DetailsBlockScanner.Block) -> (data: ReasoningData, spillover: String?)? {
+        let isDone = block.attributes["done"]?.lowercased() == "true"
+        let duration = block.attributes["duration"]
 
-        // Extract summary text from <summary>...</summary>
+        // Summary + body come from the shared scanner, so nested `<details>`
+        // inside a thinking block no longer truncate it at the first
+        // `</details>` (the old lazy regex stopped there).
+        let split = DetailsBlockScanner.splitSummary(block.body)
         let summary: String = {
-            let summaryPattern = #"<summary>(.*?)</summary>"#
-            if let regex = cachedRegex(summaryPattern, options: [.dotMatchesLineSeparators]),
-               let match = regex.firstMatch(in: block, range: NSRange(location: 0, length: (block as NSString).length)),
-               match.numberOfRanges > 1 {
-                return (block as NSString).substring(with: match.range(at: 1))
-                    .trimmingCharacters(in: .whitespacesAndNewlines)
-            }
-            if let dur = duration {
-                return "Thought for \(dur) seconds"
-            }
-            return "Reasoning"
+            let title = DetailsBlockScanner.trimmed(split.summary ?? "")
+            if !title.isEmpty { return title }
+            if let dur = duration { return "Thought for \(dur) seconds" }
+            return isDone ? "Thought" : "Thinking..."
         }()
 
-        // Extract content between </summary> and </details>.
-        // We use a lazy match so nested/model-emitted </details> tags stop
-        // the capture at the right place (handled below for spillover).
-        let rawContentText: String = {
-            let contentPattern = #"</summary>([\s\S]*?)</details>"#
-            if let regex = cachedRegex(contentPattern, options: [.dotMatchesLineSeparators]),
-               let match = regex.firstMatch(in: block, range: NSRange(location: 0, length: (block as NSString).length)),
-               match.numberOfRanges > 1 {
-                return decodeHTMLEntities(
-                    (block as NSString).substring(with: match.range(at: 1))
-                        .trimmingCharacters(in: .whitespacesAndNewlines)
-                ) ?? ""
-            }
-            return ""
-        }()
-
-        guard !rawContentText.isEmpty else { return nil }
+        let rawContentText = DetailsBlockScanner.trimmed(decodeHTMLEntities(split.rest) ?? "")
 
         // ── Spillover detection ──────────────────────────────────────────
         // Some models (e.g. Qwen3) skip the opening tag and the server
@@ -713,8 +522,8 @@ enum ToolCallParser {
             }
         }
 
-        guard !contentText.isEmpty else { return nil }
-
+        // An empty (or in-progress) thinking block keeps its header, matching
+        // the web client, instead of silently disappearing.
         let data = ReasoningData(
             summary: summary,
             content: contentText,
@@ -725,33 +534,27 @@ enum ToolCallParser {
     }
 
     /// Parses a single tool call `<details>` block into a `ToolCallData`.
-    private nonisolated static func parseToolCallBlock(_ block: String) -> ToolCallData? {
-        let name = extractAttribute("name", from: block) ?? "tool"
-        let id = extractAttribute("id", from: block) ?? UUID().uuidString
-        let doneStr = extractAttribute("done", from: block)
-        let isDone = doneStr == "true"
-        let status = extractAttribute("status", from: block)
-        let arguments = extractAttribute("arguments", from: block)
+    /// Attributes come from the scanner's quote-aware parser, so an attribute
+    /// name appearing inside another value (e.g. `name=` inside `arguments`)
+    /// can never be picked up by mistake.
+    private nonisolated static func parseToolCallBlock(_ block: DetailsBlockScanner.Block) -> ToolCallData? {
+        let attrs = block.attributes
+        let name = attrs["name"].flatMap { $0.isEmpty ? nil : $0 } ?? "tool"
+        let id = attrs["id"].flatMap { $0.isEmpty ? nil : $0 } ?? "tool-\(name)-\(block.byteRange.lowerBound)"
+        let isDone = attrs["done"]?.lowercased() == "true"
+        let status = attrs["status"]
+        let arguments = attrs["arguments"]
         // Try the result="" attribute first. If absent (OpenWebUI stores the output
         // as the body between </summary> and </details>), fall back to body content.
-        let resultAttr = extractAttribute("result", from: block)
         let result: String? = {
-            if let r = resultAttr, !r.isEmpty { return r }
-            // Body fallback: extract content between </summary> and </details>
-            let bodyPattern = #"</summary>([\s\S]*?)</details>"#
-            if let regex = cachedRegex(bodyPattern, options: [.dotMatchesLineSeparators]),
-               let match = regex.firstMatch(in: block, range: NSRange(location: 0, length: (block as NSString).length)),
-               match.numberOfRanges > 1 {
-                let body = (block as NSString).substring(with: match.range(at: 1))
-                    .trimmingCharacters(in: .whitespacesAndNewlines)
-                return body.isEmpty ? nil : body
-            }
-            return nil
+            if let r = attrs["result"], !r.isEmpty { return r }
+            let body = DetailsBlockScanner.trimmed(DetailsBlockScanner.splitSummary(block.body).rest)
+            return body.isEmpty ? nil : body
         }()
         // Skip embed parsing for in-progress tool calls — embeds are only
         // rendered once isDone == true, so parsing the 30KB+ HTML-entity-encoded
         // iframe blob on every streaming frame is pure wasted CPU on the main thread.
-        let embeds = isDone ? parseEmbedsAttribute(from: block) : []
+        let embeds = isDone ? parseEmbedsAttribute(attrs["embeds"]) : []
 
         return ToolCallData(
             id: id,
@@ -777,14 +580,12 @@ enum ToolCallParser {
     /// Those are JSON escape sequences that must remain intact so JSONSerialization
     /// can parse the array correctly. Raw newlines inside JSON string values make
     /// the JSON invalid and cause parse failure.
-    private nonisolated static func parseEmbedsAttribute(from block: String) -> [String] {
-        guard let raw = extractAttribute("embeds", from: block),
-              !raw.isEmpty else { return [] }
+    private nonisolated static func parseEmbedsAttribute(_ raw: String?) -> [String] {
+        guard let raw, !raw.isEmpty else { return [] }
 
-        // Fast bail: if the raw (still HTML-entity-encoded) attribute contains
-        // "data-iv-build", every decoded embed will be filtered out downstream.
-        // Skip the expensive ~30KB HTML entity decode + JSON parse that runs
-        // 15-20x/sec during VIZ streaming on the main thread.
+        // Fast bail: the legacy Inline Visualizer plugin's embeds (data-iv-build)
+        // need parent.document DOM access, impossible in a sandboxed WKWebView.
+        // Skip the expensive ~30KB HTML entity decode + JSON parse for them.
         if raw.contains("data-iv-build") { return [] }
 
         // Decode ONLY HTML entities — do NOT touch \n or \" (those are JSON escapes)
@@ -803,12 +604,9 @@ enum ToolCallParser {
             return []
         }
 
-        // Filter out data-iv-build embeds — these are the Inline Visualizer plugin's
-        // HTMLResponse iframes that depend on parent.document DOM access (impossible in
-        // a sandboxed WKWebView). The native InlineVisualizerView renders visualizations
-        // instead, so these embeds must be suppressed unconditionally in BOTH the
-        // message-level path (messageEmbeds filter in AssistantMessageContent.body) AND
-        // here in the tool-call path so they never reach RichUIEmbedView.
+        // Filter out data-iv-build embeds (legacy Inline Visualizer plugin
+        // iframes that cannot run in a sandboxed WKWebView). Suppressed here and
+        // in the message-level embeds path so they never reach RichUIEmbedView.
         return array.filter { !$0.isEmpty && !$0.contains("data-iv-build") }
     }
 
@@ -865,137 +663,12 @@ enum ToolCallParser {
             result = convertReasoningTag(pair, in: result)
         }
 
-        // ── Phase 2: Handle incomplete <details type="tool_calls"> blocks ──
-        // During streaming the server emits tool call blocks incrementally.
-        // The closing </details> may not have arrived yet, so the main regex
-        // never matches and the partial block passes through as raw text.
-        // We close the block so the parser can render it as an in-progress tool call.
-        if result.contains("<details") && !result.isEmpty {
-            if let incompleteToolRegex = cachedRegex(#"(<details\s+[^>]*type\s*=\s*["']tool_calls["'][^>]*>)([\s\S]*)$"#,
-                options: [.dotMatchesLineSeparators]) {
-                let nsResult = result as NSString
-                let openToolCount = countOccurrences(of: #"<details\s+[^>]*type\s*=\s*["']tool_calls["']"#, in: result)
-                let closeCount = countOccurrences(of: "</details>", in: result)
+        // Unclosed <details type="tool_calls" | "reasoning"> blocks (mid-stream)
+        // need no patching here: DetailsBlockScanner reports them as unclosed
+        // blocks that run to the end of the content, and the block parsers
+        // treat a missing done="true" as in-progress.
 
-                if openToolCount > closeCount {
-                    let allMatches = incompleteToolRegex.matches(
-                        in: result,
-                        range: NSRange(location: 0, length: nsResult.length)
-                    )
-                    if let match = allMatches.last, match.numberOfRanges > 1 {
-                        let openTag = nsResult.substring(with: match.range(at: 1))
-                        let innerContent = match.numberOfRanges > 2
-                            ? nsResult.substring(with: match.range(at: 2))
-                            : ""
-
-                        // Inject done="false" if not already present so the
-                        // ToolCallView shows an in-progress spinner.
-                        let tagWithDone: String = {
-                            if openTag.contains("done=") { return openTag }
-                            return openTag.replacingOccurrences(of: ">", with: " done=\"false\">")
-                        }()
-
-                        let replacement = tagWithDone + innerContent + "</details>"
-                        result = (result as NSString).replacingCharacters(in: match.range, with: replacement)
-                    }
-                }
-            }
-        }
-
-        // ── Phase 3: Handle incomplete <details type="reasoning"> blocks ──
-        // During streaming, the server may have started a <details> block but
-        // </details> hasn't arrived yet. The main parser's regex requires the
-        // closing tag, so the partial block passes through as raw text — with
-        // <summary> tags visible to the user.
-        // Detect an unclosed <details type="reasoning"...> and wrap it properly.
-        if result.contains("<details") && !result.isEmpty {
-            if let incompleteRegex = cachedRegex(#"(<details\s+[^>]*type\s*=\s*["']reasoning["'][^>]*>)([\s\S]*)$"#,
-                options: [.dotMatchesLineSeparators]) {
-                let nsResult = result as NSString
-                // Only act if there's an unclosed reasoning block.
-                //
-                // BUG FIX: The old code compared openCount (reasoning opens) against
-                // closeCount (ALL </details> tags globally). In a sequence like:
-                //   reasoning_1(closed) + tool_calls(closed) + reasoning_2(in-flight)
-                // openCount=2, closeCount=2 (one from reasoning_1, one from tool_calls),
-                // so 2 > 2 == false and Phase 3 never fires — reasoning_2 stays as
-                // raw HTML forever, causing the pipeline freeze to never release.
-                //
-                // Fix: count only COMPLETED reasoning blocks (open+close pairs) and
-                // compare against total reasoning opens. This is immune to the number
-                // of tool_calls </details> tags in the string.
-                let openCount = countOccurrences(of: #"<details\s+[^>]*type\s*=\s*["']reasoning["']"#, in: result)
-                let completedCount: Int
-                if let completedRegex = cachedRegex(
-                    #"<details\s+[^>]*type\s*=\s*["']reasoning["'][^>]*>[\s\S]*?</details>"#,
-                    options: [.dotMatchesLineSeparators]
-                ) {
-                    completedCount = completedRegex.numberOfMatches(
-                        in: result,
-                        range: NSRange(result.startIndex..., in: result)
-                    )
-                } else {
-                    completedCount = 0
-                }
-
-                if openCount > completedCount {
-                    // Find the LAST unclosed opening tag
-                    let allMatches = incompleteRegex.matches(
-                        in: result,
-                        range: NSRange(location: 0, length: nsResult.length)
-                    )
-                    if let match = allMatches.last, match.numberOfRanges > 2 {
-                        let innerContent = nsResult.substring(with: match.range(at: 2))
-
-                        // Extract summary if present, strip it from content
-                        var summary = "Thinking..."
-                        var bodyContent = innerContent
-                        if let summaryRegex = cachedRegex(#"<summary>([\s\S]*?)</summary>"#,
-                            options: [.dotMatchesLineSeparators]) {
-                            let nsInner = innerContent as NSString
-                            if let sMatch = summaryRegex.firstMatch(
-                                in: innerContent,
-                                range: NSRange(location: 0, length: nsInner.length)
-                            ), sMatch.numberOfRanges > 1 {
-                                summary = nsInner.substring(with: sMatch.range(at: 1))
-                                    .trimmingCharacters(in: .whitespacesAndNewlines)
-                                bodyContent = (innerContent as NSString)
-                                    .replacingCharacters(in: sMatch.range, with: "")
-                                    .trimmingCharacters(in: .whitespacesAndNewlines)
-                            } else {
-                                // Partial <summary> without closing — strip it
-                                if let partialSummary = cachedRegex(#"<summary>([\s\S]*)$"#,
-                                    options: [.dotMatchesLineSeparators]) {
-                                    let nsInner2 = bodyContent as NSString
-                                    if let psMatch = partialSummary.firstMatch(
-                                        in: bodyContent,
-                                        range: NSRange(location: 0, length: nsInner2.length)
-                                    ), psMatch.numberOfRanges > 1 {
-                                        summary = nsInner2.substring(with: psMatch.range(at: 1))
-                                            .trimmingCharacters(in: .whitespacesAndNewlines)
-                                        if summary.isEmpty { summary = "Thinking..." }
-                                        bodyContent = (bodyContent as NSString)
-                                            .replacingCharacters(in: psMatch.range, with: "")
-                                            .trimmingCharacters(in: .whitespacesAndNewlines)
-                                    }
-                                }
-                            }
-                        }
-
-                        // Rebuild as a complete details block (in-progress)
-                        let replacement = """
-                        <details type="reasoning" done="false">\
-                        <summary>\(summary)</summary>\
-                        \(bodyContent)\
-                        </details>
-                        """
-                        result = (result as NSString).replacingCharacters(in: match.range, with: replacement)
-                    }
-                }
-            }
-        }
-
-        // ── Phase 3: Clean up orphaned closing tags ──
+        // ── Phase 2: Clean up orphaned closing tags ──
         // This handles two scenarios:
         //
         // A) **Orphaned closer from split streaming**: The opening <think> was
@@ -1023,11 +696,7 @@ enum ToolCallParser {
             // Also skip if the closer is inside a <details> block (already converted)
             if result.contains("<details") {
                 // Check if the close tag appears outside of any <details>...</details> block
-                let stripped = result.replacingOccurrences(
-                    of: #"<details\s+[^>]*>[\s\S]*?</details>"#,
-                    with: "",
-                    options: .regularExpression
-                )
+                let stripped = DetailsBlockScanner.strip(result)
                 guard containsTag(closeTag, in: stripped) else { continue }
             }
 
@@ -1118,31 +787,6 @@ enum ToolCallParser {
             }
         }
         return result
-    }
-
-    /// Counts regex occurrences in a string.
-    private nonisolated static func countOccurrences(of pattern: String, in text: String) -> Int {
-        guard let regex = cachedRegex(pattern, options: [.dotMatchesLineSeparators]) else { return 0 }
-        return regex.numberOfMatches(in: text, range: NSRange(location: 0, length: (text as NSString).length))
-    }
-
-    /// Extracts an HTML attribute value from a tag string.
-    private nonisolated static func extractAttribute(_ name: String, from html: String) -> String? {
-        // Match attribute="value" with double or single quotes
-        let patterns = [
-            name + #"\s*=\s*"([^"]*)""#,
-            name + #"\s*=\s*'([^']*)'"#
-        ]
-
-        for p in patterns {
-            guard let regex = cachedRegex(p, options: [.dotMatchesLineSeparators]) else { continue }
-            let nsHTML = html as NSString
-            if let match = regex.firstMatch(in: html, range: NSRange(location: 0, length: nsHTML.length)),
-               match.numberOfRanges > 1 {
-                return nsHTML.substring(with: match.range(at: 1))
-            }
-        }
-        return nil
     }
 
     /// Decodes common HTML entities in attribute values.
@@ -2705,18 +2349,22 @@ struct ReasoningView: View {
         let streaming = isStreaming && !reasoning.isDone
         let request = RevealRequest(text: reasoning.content, streaming: streaming,
                                     skipAnimation: reduceMotion || !isExpanded)
+        // An empty thinking block keeps its header but can't be expanded (web parity).
+        let hasContent = !reasoning.content.isEmpty
         VStack(alignment: .leading, spacing: 0) {
             // Header — tappable to expand/collapse
             Button {
+                guard hasContent else { return }
                 withAnimation(.easeInOut(duration: 0.25)) {
                     isExpanded.toggle()
                 }
             } label: {
                 HStack(spacing: Spacing.sm) {
-                    Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
+                    Image(systemName: isExpanded && hasContent ? "chevron.down" : "chevron.right")
                         .scaledFont(size: 9, weight: .bold)
                         .foregroundStyle(theme.textTertiary)
                         .frame(width: 12)
+                        .opacity(hasContent ? 1 : 0.35)
 
                     Image(systemName: "brain.head.profile")
                         .scaledFont(size: 12, weight: .medium)
@@ -2739,7 +2387,7 @@ struct ReasoningView: View {
             // The reasoning text grows live during streaming — AnimatedPresence's
             // GeometryReader-background measures the constrained height, not the
             // natural height, so it locks the frame too early and truncates the text.
-            if isExpanded {
+            if isExpanded && hasContent {
                 StreamingReasoningText(
                     reasoning: reasoning, progress: progress, streaming: streaming,
                     fontSize: round(12 * accessibilityScale.uiScale * 10) / 10,
@@ -2879,52 +2527,15 @@ struct AssistantMessageContent: View {
             return presentation.result ?? .init(segments: [], allToolCalls: [])
         }()
 
-        // Log VIZ presence once per parse (preserved from original).
-        let _ = {
-            let hasViz = content.contains("@@@VIZ-START")
-            if hasViz, resolvedContent == content {
-                let segTypes = ordered.segments.map { seg -> String in
-                    switch seg {
-                    case .text(let s): return "text(\(s.count))"
-                    case .toolCall(let tc): return "toolCall(\(tc.name))"
-                    case .reasoning: return "reasoning"
-                    }
-                }.joined(separator: ", ")
-                vizLog.debug("AssistantMessageContent VIZ segments: \(segTypes)")
-            }
-        }()
-
         let groups: [SegmentGroup] = {
-            let rawBase = Self.groupSegments(ordered.segments)
+            let base = Self.groupSegments(ordered.segments)
 
-            // Phase 5: When @@@VIZ-START markers are present, suppress the entire
-            // `render_visualization` tool call row. The native InlineVisualizerView
-            // already renders the visualization — the tool call header and its giant
-            // result/embed payload are redundant and cause lag as the large HTML blob
-            // is parsed and laid out on every streaming tick.
-            let hasVizMarkers = content.contains("@@@VIZ-START")
-            let base: [SegmentGroup] = hasVizMarkers ? rawBase.compactMap { group in
-                if case .toolCalls(let items) = group {
-                    let filtered = items.filter {
-                        if case .tool(let tc) = $0 { return tc.name != "render_visualization" }
-                        return true  // keep .reasoning items
-                    }
-                    return filtered.isEmpty ? nil : .toolCalls(filtered)
-                }
-                return group
-            } : rawBase
-
-            // Phase 4: Always suppress data-iv-build embeds on iOS.
-            // The inline-visualizer plugin's HTMLResponse embed uses a JS DOM observer
-            // that calls parent.document — which is sandboxed/impossible in WKWebView.
-            // Suppressing unconditionally (not gated on @@@VIZ-START being present yet)
-            // eliminates the race-condition flash where the broken embed briefly appears
-            // before the VIZ markers arrive in displayContent.
-            // The native InlineVisualizerView handles all visualization rendering instead.
+            // Always suppress data-iv-build embeds on iOS: the legacy Inline
+            // Visualizer plugin's HTMLResponse embed calls parent.document,
+            // which is impossible in a sandboxed WKWebView.
             let filteredEmbeds: [String] = messageEmbeds.filter { !$0.contains("data-iv-build") }
             guard !filteredEmbeds.isEmpty else { return base }
             let messageEmbeds = filteredEmbeds
-            vizLog.debug("AssistantMessageContent embed inject: filteredEmbeds=\(filteredEmbeds.count), rawMessageEmbeds=\(self.messageEmbeds.count)")
 
             // Search from the end for the last toolCalls group, and within it
             // find the last .tool item that has no embeds to attach the embed to.
@@ -2981,16 +2592,7 @@ struct AssistantMessageContent: View {
                     case .text(let str):
                         // Only the last text segment gets the streaming cursor
                         let isLastText = index == lastTextIndex && isStreaming
-                        // The inline-visualizer plugin emits an iframe/JS block for the web UI
-                        // between the </details> close and the @@@VIZ-START marker. On iOS this
-                        // block has no purpose — InlineVisualizerView renders from the VIZ markers.
-                        // Strip anything before @@@VIZ-START so it never reaches MarkdownView.
-                        // Use line-anchored detection to avoid false positives from markers
-                        // embedded inside HTML attributes or JS string literals in tool-call payloads.
-                        let effectiveStr: String = {
-                            guard let r = VizMarkerParser.findRealStartMarkerRange(in: str) else { return str }
-                            return String(str[r.lowerBound...])
-                        }()
+                        let effectiveStr = str
                         // Extract inline images from markdown ![alt](url) syntax.
                         // MarkdownView renders images as plain text links — we need
                         // to intercept server file URLs and render them as actual images.
@@ -3034,6 +2636,15 @@ struct AssistantMessageContent: View {
 
                     case .reasoningBlocks(let blocks):
                         ReasoningContainer(blocks: blocks, isStreaming: isStreaming)
+
+                    case .details(let details):
+                        DetailsSectionView(
+                            details: details,
+                            isStreaming: isStreaming,
+                            authToken: authToken,
+                            serverBaseURL: serverBaseURL,
+                            apiClient: apiClient
+                        )
 
                     case .standaloneEmbeds(let embeds):
                         // Standalone embeds: no tool call to attach to.
@@ -3116,6 +2727,7 @@ struct AssistantMessageContent: View {
             case .text: kind = "text"
             case .toolCalls: kind = "tools"
             case .reasoningBlocks: kind = "reasoning"
+            case .details: kind = "details"
             case .standaloneEmbeds: kind = "embeds"
             }
             let ordinal = counts[kind, default: 0]
@@ -3140,11 +2752,14 @@ struct AssistantMessageContent: View {
     /// A reasoning block that is NOT sandwiched between tool calls (e.g. a
     /// leading think before any tools, or a trailing think after the last tool
     /// followed by text) stays as its own `reasoningBlocks` group.
-    /// Text segments remain individual and always break a tool group.
+    /// Text segments and generic `<details>` sections remain individual and
+    /// always break a tool group.
     private enum SegmentGroup {
         case text(String)
         case toolCalls([GroupedItem])
         case reasoningBlocks([ReasoningData])
+        /// A generic collapsible `<details>` section (filter output, model-written, code interpreter).
+        case details(DetailsData)
         /// Message-level embeds with no associated tool call to attach to.
         case standaloneEmbeds([String])
     }
@@ -3153,15 +2768,15 @@ struct AssistantMessageContent: View {
         var groups: [SegmentGroup] = []
 
         // Helper: does a reasoning block at index `i` have a tool call after it
-        // (before any intervening text)? Used to decide whether to fold the
-        // reasoning block into a tool group or emit it as standalone.
+        // (before any intervening text / details section)? Used to decide whether
+        // to fold the reasoning block into a tool group or emit it as standalone.
         func nextNonReasoningIsToolCall(from i: Int) -> Bool {
             var j = i + 1
             while j < segments.count {
                 switch segments[j] {
                 case .toolCall: return true
                 case .reasoning: j += 1   // skip consecutive reasoning blocks
-                case .text: return false
+                case .text, .details: return false
                 }
             }
             return false
@@ -3171,6 +2786,9 @@ struct AssistantMessageContent: View {
             switch segment {
             case .text(let str):
                 groups.append(.text(str))
+
+            case .details(let d):
+                groups.append(.details(d))
 
             case .toolCall(let tc):
                 // Merge with previous group if it is already a toolCalls group

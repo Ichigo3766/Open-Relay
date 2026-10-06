@@ -44,6 +44,7 @@ struct SkillEditorView: View {
     @State private var name = ""
     @State private var slug = ""        // auto-generated from name; editable
     @State private var description = ""
+    @State private var tagsText = ""
     @State private var content = ""
     @State private var isActive = true
 
@@ -202,6 +203,21 @@ struct SkillEditorView: View {
                             .scaledFont(size: 15)
                             .foregroundStyle(theme.textPrimary)
                             .focused($focusedField, equals: .description)
+                    }
+                    .padding(.vertical, 12)
+
+                    Divider().background(theme.inputBorder.opacity(0.4))
+
+                    HStack {
+                        Text("Tags")
+                            .scaledFont(size: 14)
+                            .foregroundStyle(theme.textSecondary)
+                            .frame(width: 80, alignment: .leading)
+                        TextField("Comma-separated, e.g. coding, writing", text: $tagsText)
+                            .scaledFont(size: 15)
+                            .foregroundStyle(theme.textPrimary)
+                            .autocorrectionDisabled()
+                            .textInputAutocapitalization(.never)
                     }
                     .padding(.vertical, 12)
                 }
@@ -507,11 +523,20 @@ struct SkillEditorView: View {
             )
     }
 
+    /// Tags from the comma-separated field: trimmed, de-duplicated, order kept.
+    private var parsedTags: [String] {
+        var seen = Set<String>()
+        return tagsText.components(separatedBy: ",")
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty && seen.insert($0.lowercased()).inserted }
+    }
+
     private func populateIfEditing() {
         guard let skill = existingSkill else { return }
         name = skill.name
         slug = skill.slug
         description = skill.description
+        tagsText = skill.tags.joined(separator: ", ")
         content = skill.content
         isActive = skill.isActive
         initialIsActive = skill.isActive
@@ -576,7 +601,7 @@ struct SkillEditorView: View {
         do {
             if let existing = existingSkill {
                 // Update content/metadata first
-                let detail = SkillDetail(
+                var detail = SkillDetail(
                     id: existing.id,
                     name: trimmedName,
                     slug: trimmedSlug,
@@ -588,6 +613,8 @@ struct SkillEditorView: View {
                     createdAt: existing.createdAt,
                     updatedAt: existing.updatedAt
                 )
+                detail.originalMetaJSON = existing.originalMetaJSON
+                detail.tags = parsedTags
                 var updated = try await manager.updateSkill(detail)
 
                 // Update access grants via dedicated endpoint
@@ -600,7 +627,7 @@ struct SkillEditorView: View {
 
                 onSave?(updated)
             } else {
-                let detail = SkillDetail(
+                var detail = SkillDetail(
                     name: trimmedName,
                     slug: trimmedSlug,
                     description: description,
@@ -608,6 +635,7 @@ struct SkillEditorView: View {
                     isActive: isActive,
                     accessGrants: allGrants
                 )
+                detail.tags = parsedTags
                 let created = try await manager.createSkill(from: detail)
                 onSave?(created)
             }

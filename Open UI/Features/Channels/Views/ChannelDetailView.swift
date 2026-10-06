@@ -1893,16 +1893,8 @@ struct ChannelDetailView: View {
     
     private func processPhotos(_ items: [PhotosPickerItem]) async {
         for item in items {
-            if let data = try? await item.loadTransferable(type: Data.self) {
-                let image = UIImage(data: data)
-                let thumbnail = image.map { Image(uiImage: $0) }
-                let resized = FileAttachmentService.downsampleForUpload(data: data, image: image)
-                let attachment = ChatAttachment(
-                    type: .image,
-                    name: "Photo_\(Int(Date.now.timeIntervalSince1970)).jpg",
-                    thumbnail: thumbnail,
-                    data: resized
-                )
+            if let data = try? await item.loadTransferable(type: Data.self),
+               let attachment = FileAttachmentService.makeImageAttachment(data: data) {
                 viewModel.attachments.append(attachment)
                 viewModel.uploadAttachmentImmediately(attachmentId: attachment.id)
             }

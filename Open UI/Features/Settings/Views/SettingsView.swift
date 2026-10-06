@@ -32,6 +32,7 @@ struct SettingsView: View {
                             ) {
                                 navigationPath.append(SettingsDestination.profile)
                             }
+                            AccountStatusAndUsageRows()
                         }
                     }
 

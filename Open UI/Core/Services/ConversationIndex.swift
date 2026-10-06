@@ -16,6 +16,8 @@ nonisolated struct ConversationIndex: Codable, Sendable {
         var archived: Bool
         var folderId: String?
         var tags: [String]
+        /// Optional so caches written before read-state support still decode.
+        var lastReadAt: TimeInterval?
 
         init(_ conversation: Conversation) {
             id = conversation.id
@@ -27,11 +29,14 @@ nonisolated struct ConversationIndex: Codable, Sendable {
             archived = conversation.archived
             folderId = conversation.folderId
             tags = conversation.tags
+            lastReadAt = conversation.lastReadAt
         }
 
         var conversation: Conversation {
-            Conversation(id: id, title: title, createdAt: createdAt, updatedAt: updatedAt,
+            var c = Conversation(id: id, title: title, createdAt: createdAt, updatedAt: updatedAt,
                 model: model, pinned: pinned, archived: archived, folderId: folderId, tags: tags)
+            c.lastReadAt = lastReadAt
+            return c
         }
     }
 

@@ -1,5 +1,74 @@
 # Changelog
 
+## v6.3 — October 6, 2026
+
+### What's New
+- Added Voice and Camera Lock Screen widgets for one-tap voice calls and photo chats.
+- Added a recording indicator with a live timer on the Lock Screen and in the Dynamic Island while dictating.
+- Added folders to Knowledge bases: create, rename, move, and delete folders, browse with a breadcrumb bar, move or rename files, search, sort, and upload straight into the folder you're viewing.
+- Added search, "Created by you / Shared with you", tag and sort filters to Workspace Models, plus Hide/Show, Keep in Sidebar, Copy Link, and bulk Enable/Disable/Show/Hide actions.
+- Added "Created by you / Shared with you" filters to Prompts, Skills, and Tools.
+- Added a background image for models, shown behind the chat whenever that model is selected.
+- Added per-language translations for a model's name, description, and starter prompts, shown in your device language.
+- Added voice and tag suggestions, a chat variables preview, and a context compaction setting to the model editor.
+- Added a filter, search, Make Public/Private, and bulk actions (including Reset All) to Admin → Models.
+- Added "Import From Link" and the Event type to Admin → Functions, and the ability to delete old prompt versions.
+- Added Upload Directory and Sync Directory to Knowledge bases (sync only uploads new or changed files and removes ones you deleted, after a confirmation), text export for admins, editing a file's text, re-processing a file, read-only and connected knowledge bases, and a banner for files still processing.
+- Added a Local/Connected filter to the Knowledge list.
+- Added a Leaderboard with per-model history, an Arena models editor with per-language names and descriptions, and feedback export to Admin → Evaluations.
+- Added group access preview and export, "Reset to Defaults" for permissions, and CSV import of users.
+- Added model drill-down (topics, feedback, chats) to Admin → Analytics.
+- Added skill tags editing, a Login Form switch, more OAuth settings (audience, PKCE, token auth, timeouts, group sharing) in Admin → Authentication, and a Translations editor in Admin → General.
+- Added a status (emoji and message) you can set or clear from Settings, and an Active Users count showing which models are running.
+- Added "Who can open this link" to shared chats: only people and groups you pick, any signed-in user, or anyone with the link.
+- Added Export to Archived Chats, plus the full archived count on Restore All.
+- Added unread chats like on the web: a blue dot on chats with new replies, unread counts on folders, Mark as Unread (long-press a chat), and Mark All as Read (long-press the Chats header or a folder). Read state stays in sync with the web and your other devices.
+- Added Export Usage Stats to Privacy & Security.
+- Added "Disconnect OAuth" to signed-in MCP tools (long-press the tool in the + menu).
+- Added model management for llama.cpp and LM Studio connections in Admin → Models → Manage: download (with progress), load, unload, and delete models.
+- Added Verify, chat upload and per-chat terminal options, and an orchestrator policy, lifecycle, and Refresh Terminals editor to terminal server connections.
+- Added Check Health and Test Retrieval to external knowledge sources.
+- Added online status, groups, and OAuth sessions to Edit User, Download Database to Admin → Database, Upload Pipeline (.py) to Admin → Pipelines, and Reindex / Reset Upload Directory / Reset Vector Storage to Admin → Documents.
+- Added a Format Code button to the tool and function editors, "Use Gravatar" for your profile photo, and an admin contact on the Pending Approval screen.
+- Python code blocks now run on the server when the admin has set the code execution engine to Jupyter.
+
+### Improvements
+- With Share Location on, your location now also works in system prompts, tools, and other places the server fills in {{USER_LOCATION}}, and the setting matches the web. Turning it off clears the location saved on the server.
+- Redesigned the + menu.
+- Attachments now appear inside the message box, which grows to fit them and scrolls sideways.
+- Redesigned the Lock Screen widgets with a cleaner, native iOS look that matches your Lock Screen colors.
+- Reduced data usage while replies stream and after they finish.
+- Model sharing and the Active switch in the editor now apply when you tap Save, instead of immediately, and unsaved changes are detected across every field.
+- The action buttons under replies now stay on one line and scroll sideways instead of wrapping onto a second row.
+
+### Bug Fixes
+- Fixed collapsible sections (like trace or debug details added by filters, code interpreter output, and nested sections) showing as raw HTML code blocks. They now appear as tappable sections wherever they are in a reply, including while it streams, and no longer leave stray tags in copied, shared, or spoken text.
+- Fixed messages failing with "A selected tool is unavailable" until you turned your tools off and on again.
+- Fixed creating a model without a base model or with spaces in its ID failing with an unhelpful error; you now get a clear message.
+- Fixed the base model picker offering arena, direct, or hidden models, and existing models not using the admin's default capabilities.
+- Fixed cloning a model dropping its profile image, and empty suggestion prompts being saved.
+- Fixed the Copy Link option in Admin → Models producing a link that didn't select the model.
+- Fixed saving terminal server connections dropping settings such as cookie forwarding and server type.
+- Fixed saving an OpenAI connection in Admin → Connections resetting it to a plain OpenAI connection and dropping settings such as cookie forwarding; you can now also choose llama.cpp, LM Studio, or LiteLLM as the provider.
+- Fixed Export Data only exporting chat titles and dates. Export Chats now downloads full chats that can be imported into Open WebUI, and the admin "Export All Chats" now exports chats instead of statistics.
+- Fixed changing only a prompt's name, command, or tags creating a new version in its history.
+- Fixed photos shared from other apps (or opened in Open Relay) being sent at full size and in formats some models can't read. They're now converted and resized just like photos picked in the app.
+- Fixed saving admin Documents or Web Search settings resetting other web search settings (such as loader timeouts, YouTube options, and keys for some search providers), and added the missing search providers and fields.
+- Fixed embedding settings in Admin → Documents not saving, and cleared file upload limits not being removed.
+- Fixed default interface settings in Admin → Interface not loading or saving, and saving General or Authentication settings wiping them.
+- Fixed saving default or group permissions resetting some permissions (skill import/export, chat import, folder/chat/calendar sharing, user webhooks), and added toggles for them along with Calendar.
+- Fixed editing a skill, tool, function, or banner removing its translations and skill tags, and editing a group clearing other group data.
+- Fixed prompt version notes not being saved, only the 20 most recent prompt versions appearing, and editing a public prompt making it private.
+- Fixed saving a workspace model breaking attached notes, older knowledge attachments, and "use entire document" settings, and dropping a "think" level such as low or high.
+- Fixed Admin → Models failing to edit, enable/disable, or hide base models that hadn't been customized yet, and hiding a model renaming it.
+- Fixed exported models not importing on the web, model background images being lost on export, and the default "Stream Chat Response" model setting having no effect.
+- Fixed occasionally being signed out when returning to the app with system-browser (passkey) sign-in, even though your identity provider session was still active. Sessions now refresh ahead of time on return, retry through spotty connections, and only ask you to sign in again when your identity provider has actually ended the session.
+- Fixed Lock Screen widgets not opening the app or starting a new chat when tapped.
+- Fixed the New Chat button in Control Center doing nothing when tapped.
+- Fixed dictation stopping when you leave the app. Recordings interrupted by a phone call or Siri are now saved, and transcriptions interrupted by switching apps finish automatically when you return.
+- Fixed messages disappearing when they couldn't be saved because of a bad connection. Your draft and attachments now come back so you can try again.
+- Fixed a blank gap above the message box after a long reply with thinking or tool calls finished, which could hide the end of the reply.
+
 ## v6.2 — October 2, 2026
 
 ### What's New

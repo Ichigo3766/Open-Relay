@@ -17,6 +17,10 @@ struct ArchivedChatsView: View {
 
     // Confirmation dialogs
     @State private var deletingConversation: Conversation?
+    @State private var exportURL: URL?
+    @State private var isExporting = false
+
+    private struct ExportFile: Identifiable { let url: URL; var id: String { url.path } }
 
     var body: some View {
         NavigationStack {
@@ -46,6 +50,22 @@ struct ArchivedChatsView: View {
                     .labelStyle(.iconOnly)
                     .tint(.secondary)
                 }
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button {
+                        Task {
+                            isExporting = true
+                            exportURL = await viewModel.exportArchived()
+                            isExporting = false
+                        }
+                    } label: {
+                        if isExporting { ProgressView() } else { Image(systemName: "square.and.arrow.up") }
+                    }
+                    .disabled(isExporting || viewModel.conversations.isEmpty)
+                    .accessibilityLabel("Export all archived chats")
+                }
+            }
+            .sheet(item: Binding(get: { exportURL.map { ExportFile(url: $0) } }, set: { exportURL = $0?.url })) { file in
+                ActivityShareSheet(items: [file.url])
             }
             // Unarchive all confirmation
             .confirmationDialog(
@@ -58,7 +78,7 @@ struct ArchivedChatsView: View {
                 }
                 Button("Cancel", role: .cancel) {}
             } message: {
-                Text("This will restore all \(viewModel.conversations.count) archived chats to your main list.")
+                Text("This will restore all \(viewModel.displayCount) archived chats to your main list.")
             }
             // Delete single confirmation
             .confirmationDialog(
@@ -88,6 +108,7 @@ struct ArchivedChatsView: View {
                     viewModel.configure(apiClient: apiClient)
                 }
                 viewModel.loadArchivedChats()
+                await viewModel.loadTotalCount()
             }
             .onChange(of: viewModel.searchText) { viewModel.triggerSearch() }
         }
@@ -108,7 +129,10 @@ struct ArchivedChatsView: View {
             ErrorStateView(
                 message: "Failed to Load",
                 detail: msg,
-                onRetry: { viewModel.loadArchivedChats() }
+                onRetry: {
+                    viewModel.loadArchivedChats()
+                    Task { await viewModel.loadTotalCount() }
+                }
             )
         case .content:
             chatList
@@ -189,6 +213,7 @@ struct ArchivedChatsView: View {
         .searchable(text: $viewModel.searchText, prompt: "Search archived chats")
         .refreshable {
             viewModel.loadArchivedChats()
+            await viewModel.loadTotalCount()
         }
         .safeAreaInset(edge: .bottom) {
             if !viewModel.conversations.isEmpty && !viewModel.isLoading {
@@ -206,7 +231,7 @@ struct ArchivedChatsView: View {
             HStack(spacing: Spacing.sm) {
                 Image(systemName: "arrow.uturn.backward.circle")
                     .scaledFont(size: 15, weight: .medium)
-                Text("Restore All (\(viewModel.conversations.count))")
+                Text("Restore All (\(viewModel.displayCount))")
                     .scaledFont(size: 15, weight: .medium)
             }
             .foregroundStyle(theme.brandPrimary)

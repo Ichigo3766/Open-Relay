@@ -21,6 +21,8 @@ struct KnowledgeItem: Identifiable, Equatable, Hashable, Sendable {
     let fileCount: Int?
     var context: String? = nil
     var fileReference: ChatMessageFile? = nil
+    /// `meta.source == "external"` — a connected, read-only knowledge base.
+    var isExternal: Bool = false
     var identity: String { "\(type.rawValue):\(id)" }
 
     enum KnowledgeType: String, Sendable, Equatable, Hashable {

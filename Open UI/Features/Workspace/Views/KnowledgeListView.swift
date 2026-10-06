@@ -7,6 +7,8 @@ struct KnowledgeListView: View {
     @Environment(\.theme) private var theme
 
     @State private var searchText = ""
+    /// "" (all) | "local" | "external" — the web Knowledge page's type filter.
+    @State private var sourceFilter = ""
     @State private var showEditor = false
     @State private var editingKnowledge: KnowledgeDetail?
     @State private var deletingKnowledge: KnowledgeItem?
@@ -17,9 +19,12 @@ struct KnowledgeListView: View {
 
     private var filteredKnowledge: [KnowledgeItem] {
         guard let manager else { return [] }
-        guard !searchText.isEmpty else { return manager.knowledgeBases }
+        let scoped = manager.knowledgeBases.filter {
+            sourceFilter == "" || ($0.isExternal == (sourceFilter == "external"))
+        }
+        guard !searchText.isEmpty else { return scoped }
         let q = searchText.lowercased()
-        return manager.knowledgeBases.filter {
+        return scoped.filter {
             $0.name.lowercased().contains(q) ||
             ($0.description?.lowercased().contains(q) ?? false)
         }
@@ -161,6 +166,21 @@ struct KnowledgeListView: View {
         .clipShape(RoundedRectangle(cornerRadius: CornerRadius.md, style: .continuous))
         .padding(.horizontal, Spacing.md)
         .padding(.vertical, Spacing.sm)
+        .overlay(alignment: .trailing) {
+            if manager?.knowledgeBases.contains(where: \.isExternal) == true {
+                Menu {
+                    ForEach([("", "All"), ("local", "Local"), ("external", "Connected")], id: \.0) { opt in
+                        Button { sourceFilter = opt.0 } label: {
+                            if sourceFilter == opt.0 { Label(opt.1, systemImage: "checkmark") } else { Text(opt.1) }
+                        }
+                    }
+                } label: {
+                    Image(systemName: sourceFilter.isEmpty ? "line.3.horizontal.decrease.circle" : "line.3.horizontal.decrease.circle.fill")
+                        .foregroundStyle(sourceFilter.isEmpty ? theme.textTertiary : theme.brandPrimary)
+                        .padding(.trailing, Spacing.md + 10)
+                }
+            }
+        }
     }
 
     // MARK: - Knowledge List

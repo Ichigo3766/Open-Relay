@@ -64,6 +64,11 @@ struct EditUserSheet: View {
                         }
                     }
 
+                    // Web parity: groups, online status and OAuth tool sessions for this user.
+                    if let user = viewModel.editingUser {
+                        EditUserDetailsSection(userId: user.id)
+                    }
+
                     // New password
                     SettingsSection(header: "Security") {
                         fieldRow(label: "New Password") {

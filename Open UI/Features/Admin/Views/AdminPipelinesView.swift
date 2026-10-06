@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 // MARK: - Admin Pipelines View
 
@@ -10,6 +11,7 @@ struct AdminPipelinesView: View {
     @State private var viewModel = AdminPipelinesViewModel()
     @State private var showDeleteConfirm = false
     @State private var pipelineToDelete: Pipeline? = nil
+    @State private var showPipelineImporter = false
 
     private var selectedServer: PipelineServer? {
         viewModel.pipelineServers.first { $0.idx == viewModel.selectedServerIdx }
@@ -153,6 +155,27 @@ struct AdminPipelinesView: View {
                 }
                 .padding(.horizontal, Spacing.md)
                 .padding(.vertical, Spacing.chatBubblePadding)
+
+                Divider().padding(.leading, Spacing.md)
+                Button {
+                    showPipelineImporter = true
+                } label: {
+                    HStack {
+                        Image(systemName: "doc.badge.plus")
+                        Text("Upload Pipeline (.py)").scaledFont(size: 14, weight: .medium)
+                        Spacer()
+                    }
+                    .foregroundStyle(theme.brandPrimary)
+                    .padding(.horizontal, Spacing.md)
+                    .padding(.vertical, Spacing.chatBubblePadding)
+                }
+                .buttonStyle(.plain)
+                .disabled(viewModel.isDownloading)
+            }
+            .fileImporter(isPresented: $showPipelineImporter, allowedContentTypes: [.pythonScript, .plainText, .data]) { result in
+                if case .success(let url) = result {
+                    Task { await viewModel.uploadPipeline(fileURL: url, urlIdx: viewModel.selectedServerIdx) }
+                }
             }
 
             if let err = viewModel.error {

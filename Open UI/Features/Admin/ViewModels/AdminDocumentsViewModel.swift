@@ -84,6 +84,7 @@ final class AdminDocumentsViewModel {
             async let e = api.getEmbeddingConfig()
             retrievalConfig = try await r
             embeddingConfig = try await e
+            loadedEmbeddingJSON = Self.fingerprint(embeddingConfig)
             logger.info("Loaded retrieval + embedding config")
         } catch {
             let apiError = APIError.from(error)
@@ -101,38 +102,53 @@ final class AdminDocumentsViewModel {
         error = nil
         success = false
 
-        // Fire both updates concurrently — retrieval config is fire-and-forget
-        // (server may return 500 on the update endpoint, which is fine).
-        // Embedding config we try to parse the response but don't block on errors.
-        async let retrievalTask: Void = {
-            do {
-                try await api.updateRetrievalConfig(self.retrievalConfig)
-            } catch {
-                self.logger.warning("Retrieval config update returned error (ignored): \(error.localizedDescription)")
-            }
-        }()
-
-        async let embeddingTask: EmbeddingConfig? = {
-            do {
-                return try await api.updateEmbeddingConfig(self.embeddingConfig)
-            } catch {
-                self.logger.warning("Embedding config update returned error (ignored): \(error.localizedDescription)")
-                return nil
-            }
-        }()
-
-        _ = await retrievalTask
-        if let updatedEmbedding = await embeddingTask {
-            embeddingConfig = updatedEmbedding
+        // Retrieval config — `web` is intentionally NOT sent from this screen
+        // (the server would overwrite every web search setting).
+        var failures: [String] = []
+        do {
+            try await api.updateRetrievalConfig(retrievalConfig, includeWeb: false)
+        } catch {
+            failures.append(APIError.from(error).errorDescription ?? error.localizedDescription)
+            logger.error("Retrieval config update failed: \(error.localizedDescription)")
         }
 
-        success = true
+        // Embedding config — only when changed. The server unloads and reloads the
+        // embedding model on every update, matching the web UI which only calls
+        // this when the embedding settings were edited.
+        if embeddingChanged {
+            do {
+                embeddingConfig = try await api.updateEmbeddingConfig(embeddingConfig)
+                loadedEmbeddingJSON = Self.fingerprint(embeddingConfig)
+            } catch {
+                failures.append(APIError.from(error).errorDescription ?? error.localizedDescription)
+                logger.error("Embedding config update failed: \(error.localizedDescription)")
+            }
+        }
+
         isSaving = false
-        logger.info("Saved retrieval + embedding config")
-
-        Task {
-            try? await Task.sleep(nanoseconds: 3_000_000_000)
-            success = false
+        if failures.isEmpty {
+            success = true
+            logger.info("Saved documents config")
+            Task {
+                try? await Task.sleep(nanoseconds: 3_000_000_000)
+                success = false
+            }
+        } else {
+            error = failures.joined(separator: "\n")
         }
+    }
+
+    // MARK: - Embedding change tracking
+
+    private var loadedEmbeddingJSON: Data?
+
+    private var embeddingChanged: Bool {
+        Self.fingerprint(embeddingConfig) != loadedEmbeddingJSON
+    }
+
+    private static func fingerprint(_ config: EmbeddingConfig) -> Data? {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = .sortedKeys
+        return try? encoder.encode(config)
     }
 }

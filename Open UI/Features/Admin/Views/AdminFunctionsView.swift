@@ -8,6 +8,7 @@ enum FunctionTypeFilter: String, CaseIterable {
     case filter = "Filter"
     case pipe = "Pipe"
     case action = "Action"
+    case event = "Event"
 }
 
 // MARK: - Function Editor Mode
@@ -15,19 +16,27 @@ enum FunctionTypeFilter: String, CaseIterable {
 enum FunctionEditorMode: Identifiable {
     case new
     case edit(FunctionDetail)
+    /// Unsaved function fetched from a link — opens the create form pre-filled.
+    case imported(FunctionDetail)
 
     var id: String {
         switch self {
         case .new: return "__new__"
         case .edit(let detail): return detail.id
+        case .imported(let detail): return "__import__\(detail.id)"
         }
     }
 
     var existingFunction: FunctionDetail? {
         switch self {
-        case .new: return nil
+        case .new, .imported: return nil
         case .edit(let detail): return detail
         }
+    }
+
+    var prefill: FunctionDetail? {
+        if case .imported(let detail) = self { return detail }
+        return nil
     }
 }
 
@@ -47,6 +56,9 @@ struct AdminFunctionsView: View {
     @State private var editorMode: FunctionEditorMode?
     @State private var valvesSheetItem: FunctionValvesSheetItem?
     @State private var showImportPicker = false
+    @State private var showImportURL = false
+    @State private var importURL = ""
+    @State private var isImportingURL = false
     @State private var showExportShare = false
     @State private var exportData: Data?
 
@@ -125,6 +137,11 @@ struct AdminFunctionsView: View {
                         Label("Import", systemImage: "square.and.arrow.down")
                     }
                     Button {
+                        showImportURL = true
+                    } label: {
+                        Label("Import From Link", systemImage: "link")
+                    }
+                    Button {
                         Task { await exportFunctions() }
                     } label: {
                         Label("Export", systemImage: "square.and.arrow.up")
@@ -156,6 +173,7 @@ struct AdminFunctionsView: View {
         .sheet(item: $editorMode) { mode in
             FunctionEditorView(
                 existingFunction: mode.existingFunction,
+                prefillDetail: mode.prefill,
                 onSave: { _ in
                     Task { await manager?.fetchAll() }
                 }
@@ -174,6 +192,19 @@ struct AdminFunctionsView: View {
             if let data = exportData {
                 ShareSheet(items: [data])
             }
+        }
+        .alert("Import From Link", isPresented: $showImportURL) {
+            TextField("https://…/function.py", text: $importURL)
+                .autocorrectionDisabled()
+                .textInputAutocapitalization(.never)
+            Button("Import") {
+                let url = importURL.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !url.isEmpty else { return }
+                Task { await importFromLink(url) }
+            }
+            Button("Cancel", role: .cancel) { importURL = "" }
+        } message: {
+            Text("Do not install functions from sources you do not fully trust. Functions can execute arbitrary code.")
         }
         .fileImporter(
             isPresented: $showImportPicker,
@@ -431,6 +462,7 @@ struct AdminFunctionsView: View {
         case "filter": return .orange
         case "pipe":   return .purple
         case "action": return .blue
+        case "event":  return .green
         default:       return .gray
         }
     }
@@ -571,6 +603,22 @@ struct AdminFunctionsView: View {
         } catch {
             errorMessage = error.localizedDescription
         }
+    }
+
+    private func importFromLink(_ url: String) async {
+        isImportingURL = true
+        do {
+            if let detail = try await manager?.loadFromURL(url: url) {
+                importURL = ""
+                editorMode = .imported(detail)
+                Haptics.notify(.success)
+            } else {
+                errorMessage = "Could not read a function from that link."
+            }
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+        isImportingURL = false
     }
 
     private func handleImport(_ result: Result<[URL], Error>) async {

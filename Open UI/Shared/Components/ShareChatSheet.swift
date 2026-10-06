@@ -45,6 +45,7 @@ struct ShareChatSheet: View {
 
     /// Error message if something goes wrong.
     @State private var errorMessage: String?
+    @State private var showAccessSheet = false
 
     private var isAlreadyShared: Bool {
         currentShareId != nil && !(currentShareId?.isEmpty ?? true)
@@ -73,6 +74,19 @@ struct ShareChatSheet: View {
 
                 // Action button
                 actionButton
+
+                // Web parity: once a link exists, choose who can open it.
+                if isAlreadyShared {
+                    Button {
+                        showAccessSheet = true
+                    } label: {
+                        Label("Who can open this link", systemImage: "person.2.badge.key")
+                            .scaledFont(size: 14, weight: .medium)
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(theme.brandPrimary)
+                }
             }
             .padding(Spacing.lg)
             .navigationTitle("Share Chat")
@@ -88,7 +102,7 @@ struct ShareChatSheet: View {
                 if showCopiedToast { copiedToastView }
             }
         }
-        .presentationDetents([.height(200)])
+        .presentationDetents([.height(isAlreadyShared ? 250 : 200)])
         .presentationDragIndicator(.visible)
         .presentationCornerRadius(20)
         .onAppear {
@@ -96,6 +110,10 @@ struct ShareChatSheet: View {
         }
         .sheet(isPresented: $showSharedChatDetail) {
             sharedChatDetailSheet
+        }
+        .sheet(isPresented: $showAccessSheet) {
+            SharedChatAccessSheet(chatId: conversation.id)
+                .presentationDetents([.medium, .large])
         }
     }
 

@@ -121,6 +121,10 @@ struct BackendConfig: Codable, Sendable {
         /// Whether the server has tool-approval (human-in-the-loop) permissions enabled.
         /// Maps to `chat.tool_permissions.enable` in the server config.
         let enableToolPermissions: Bool?
+        /// `users.enable_status` — whether users can set an emoji/message status.
+        let enableUserStatus: Bool?
+        /// Whether non-admins may see the active-users count (`/api/usage`).
+        let enablePublicActiveUsersCount: Bool?
 
         // Backward compat aliases
         var authTrustedHeaderAuth: Bool? { authTrustedHeader }
@@ -150,6 +154,8 @@ struct BackendConfig: Codable, Sendable {
             case enableWebsocket = "enable_websocket"
             case enableMessageRating = "enable_message_rating"
             case enableToolPermissions = "enable_tool_permissions"
+            case enableUserStatus = "enable_user_status"
+            case enablePublicActiveUsersCount = "enable_public_active_users_count"
         }
 
         init(from decoder: Decoder) throws {
@@ -176,6 +182,8 @@ struct BackendConfig: Codable, Sendable {
             enableWebsocket = try container.decodeIfPresent(Bool.self, forKey: .enableWebsocket)
             enableMessageRating = try container.decodeIfPresent(Bool.self, forKey: .enableMessageRating)
             enableToolPermissions = try container.decodeIfPresent(Bool.self, forKey: .enableToolPermissions)
+            enableUserStatus = try? container.decodeIfPresent(Bool.self, forKey: .enableUserStatus)
+            enablePublicActiveUsersCount = try? container.decodeIfPresent(Bool.self, forKey: .enablePublicActiveUsersCount)
         }
     }
 
@@ -205,10 +213,16 @@ struct BackendConfig: Codable, Sendable {
     }
 
     enum CodingKeys: String, CodingKey {
-        case status, version, name, features, audio, oauth
+        case status, version, name, features, audio, oauth, code
         case defaultModels = "default_models"
         case defaultPromptSuggestions = "default_prompt_suggestions"
     }
+
+    /// `code.engine` — "pyodide" (run in the app) or "jupyter" (run on the server).
+    struct CodeConfig: Codable, Sendable {
+        let engine: String?
+    }
+    var code: CodeConfig? = nil
 
     /// Custom decoder that gracefully handles missing/malformed nested objects.
     /// If `features`, `audio`, `oauth`, or `defaultPromptSuggestions` fail to
@@ -224,6 +238,7 @@ struct BackendConfig: Codable, Sendable {
         defaultPromptSuggestions = try? container.decodeIfPresent([PromptSuggestion].self, forKey: .defaultPromptSuggestions)
         audio = try? container.decodeIfPresent(AudioConfig.self, forKey: .audio)
         oauth = try? container.decodeIfPresent(OAuthConfig.self, forKey: .oauth)
+        code = try? container.decodeIfPresent(CodeConfig.self, forKey: .code)
     }
 
     /// Merge initializer: copies all fields from `updated`, but if `updated` has
@@ -237,6 +252,7 @@ struct BackendConfig: Codable, Sendable {
         defaultModels = updated.defaultModels
         audio = updated.audio
         oauth = updated.oauth
+        code = updated.code
         if let fresh = updated.defaultPromptSuggestions, !fresh.isEmpty {
             defaultPromptSuggestions = fresh
         } else {
@@ -746,7 +762,7 @@ struct AdminTaskConfig: Codable, Sendable {
 // MARK: - Admin General Settings Models
 
 /// Full auth/general config — GET/POST `/api/v1/auths/admin/config`.
-struct AdminAuthConfig: Codable, Sendable {
+struct AdminAuthConfig: Codable, @unchecked Sendable {
     var showAdminDetails: Bool
     var adminEmail: String
     var webuiURL: String
@@ -777,6 +793,25 @@ struct AdminAuthConfig: Codable, Sendable {
     var pendingUserOverlayTitle: String
     var pendingUserOverlayContent: String
     var responseWatermark: String
+
+    /// Every key returned by the server, kept so that keys this app doesn't model
+    /// (`DEFAULT_INTERFACE_SETTINGS`, `I18N`, `ENABLE_LOGIN_FORM`, future keys) are
+    /// re-sent unchanged. The server resets `DEFAULT_INTERFACE_SETTINGS` to `{}`
+    /// whenever it is missing from the POST body (auths.py update_admin_config).
+    var raw: [String: Any] = [:]
+
+    /// `ENABLE_LOGIN_FORM` — show the email/password form on the sign-in page.
+    /// Kept in `raw` so older servers that omit it are not sent a value they never had.
+    var enableLoginForm: Bool {
+        get { raw["ENABLE_LOGIN_FORM"] as? Bool ?? true }
+        set { raw["ENABLE_LOGIN_FORM"] = newValue }
+    }
+
+    /// `DEFAULT_INTERFACE_SETTINGS` — the default UI settings for new users.
+    var defaultInterfaceSettings: [String: Any] {
+        get { raw["DEFAULT_INTERFACE_SETTINGS"] as? [String: Any] ?? [:] }
+        set { raw["DEFAULT_INTERFACE_SETTINGS"] = newValue }
+    }
 
     enum CodingKeys: String, CodingKey {
         case showAdminDetails              = "SHOW_ADMIN_DETAILS"
@@ -813,6 +848,14 @@ struct AdminAuthConfig: Codable, Sendable {
     /// older server versions don't crash the decode.
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
+        if let any = try? decoder.singleValueContainer().decode([String: JSONAnyCodable].self) {
+            raw = any.mapValues(\.value)
+        }
+        /// FOLDER_MAX_FILE_COUNT / AUTOMATION_* are `int | str | None` on the server.
+        func intOrString(_ key: CodingKeys) -> String {
+            if let i = try? c.decode(Int.self, forKey: key) { return String(i) }
+            return (try? c.decode(String.self, forKey: key)) ?? ""
+        }
         showAdminDetails              = (try? c.decode(Bool.self,   forKey: .showAdminDetails))              ?? true
         adminEmail                    = (try? c.decode(String.self, forKey: .adminEmail))                    ?? ""
         webuiURL                      = (try? c.decode(String.self, forKey: .webuiURL))                      ?? ""
@@ -826,13 +869,13 @@ struct AdminAuthConfig: Codable, Sendable {
         enableCommunitySharing        = (try? c.decode(Bool.self,   forKey: .enableCommunitySharing))        ?? false
         enableMessageRating           = (try? c.decode(Bool.self,   forKey: .enableMessageRating))           ?? false
         enableFolders                 = (try? c.decode(Bool.self,   forKey: .enableFolders))                 ?? true
-        folderMaxFileCount            = (try? c.decode(String.self, forKey: .folderMaxFileCount))            ?? ""
+        folderMaxFileCount = intOrString(.folderMaxFileCount)
         enableChannels                = (try? c.decode(Bool.self,   forKey: .enableChannels))                ?? true
         channelModelResponseMode      = (try? c.decode(String.self, forKey: .channelModelResponseMode))      ?? "thread"
         enableCalendar                = (try? c.decode(Bool.self,   forKey: .enableCalendar))                ?? true
         enableAutomations             = (try? c.decode(Bool.self,   forKey: .enableAutomations))             ?? true
-        automationMaxCount            = (try? c.decode(String.self, forKey: .automationMaxCount))            ?? ""
-        automationMinInterval         = (try? c.decode(String.self, forKey: .automationMinInterval))         ?? ""
+        automationMaxCount = intOrString(.automationMaxCount)
+        automationMinInterval = intOrString(.automationMinInterval)
         enableMemories                = (try? c.decode(Bool.self,   forKey: .enableMemories))                ?? true
         enableMemorySystemContext     = (try? c.decode(Bool.self,   forKey: .enableMemorySystemContext))     ?? true
         enableNotes                   = (try? c.decode(Bool.self,   forKey: .enableNotes))                   ?? true
@@ -841,6 +884,36 @@ struct AdminAuthConfig: Codable, Sendable {
         pendingUserOverlayTitle       = (try? c.decode(String.self, forKey: .pendingUserOverlayTitle))       ?? ""
         pendingUserOverlayContent     = (try? c.decode(String.self, forKey: .pendingUserOverlayContent))     ?? ""
         responseWatermark             = (try? c.decode(String.self, forKey: .responseWatermark))             ?? ""
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var merged = raw
+        let known: [CodingKeys: Any] = [
+            .showAdminDetails: showAdminDetails, .adminEmail: adminEmail, .webuiURL: webuiURL,
+            .enableSignup: enableSignup, .enableAPIKeys: enableAPIKeys,
+            .enableAPIKeysEndpointRestrictions: enableAPIKeysEndpointRestrictions,
+            .apiKeysAllowedEndpoints: apiKeysAllowedEndpoints, .defaultUserRole: defaultUserRole,
+            .defaultGroupID: defaultGroupID, .jwtExpiresIn: jwtExpiresIn,
+            .enableCommunitySharing: enableCommunitySharing, .enableMessageRating: enableMessageRating,
+            .enableFolders: enableFolders, .folderMaxFileCount: folderMaxFileCount,
+            .enableChannels: enableChannels, .channelModelResponseMode: channelModelResponseMode,
+            .enableCalendar: enableCalendar, .enableAutomations: enableAutomations,
+            .automationMaxCount: automationMaxCount, .automationMinInterval: automationMinInterval,
+            .enableMemories: enableMemories, .enableMemorySystemContext: enableMemorySystemContext,
+            .enableNotes: enableNotes, .enableUserWebhooks: enableUserWebhooks,
+            .enableUserStatus: enableUserStatus, .pendingUserOverlayTitle: pendingUserOverlayTitle,
+            .pendingUserOverlayContent: pendingUserOverlayContent, .responseWatermark: responseWatermark
+        ]
+        for (k, v) in known { merged[k.rawValue] = v }
+        // Never send an empty/invalid I18N: the server validator rejects null, and
+        // omitting it leaves the stored value untouched.
+        if !(merged["I18N"] is [String: Any]) { merged.removeValue(forKey: "I18N") }
+        // Keep DEFAULT_INTERFACE_SETTINGS an object (null would reset it).
+        if !(merged["DEFAULT_INTERFACE_SETTINGS"] is [String: Any]) {
+            merged["DEFAULT_INTERFACE_SETTINGS"] = [String: Any]()
+        }
+        var container = encoder.singleValueContainer()
+        try container.encode(merged.mapValues { JSONAnyCodable($0) })
     }
 
     init(
@@ -962,15 +1035,18 @@ struct AdminLdapServerConfig: Codable, Sendable {
 }
 
 /// A single banner item — GET/POST `/api/v1/configs/banners`.
-struct AdminBannerItem: Codable, Identifiable, Sendable {
+struct AdminBannerItem: Codable, Identifiable, @unchecked Sendable {
     var id: String
     var type: String          // "info" | "warning" | "error" | "success"
     var title: String?
     var content: String
     var dismissible: Bool
     var timestamp: Int
+    /// Per-language title/content (`BannerModel.i18n`) and any future keys —
+    /// preserved on save because banners are replaced as a whole list.
+    var extra: [String: Any] = [:]
 
-    enum CodingKeys: String, CodingKey {
+    enum CodingKeys: String, CodingKey, CaseIterable {
         case id, type, title, content, dismissible, timestamp
     }
 
@@ -978,6 +1054,31 @@ struct AdminBannerItem: Codable, Identifiable, Sendable {
          content: String = "", dismissible: Bool = true, timestamp: Int = Int(Date().timeIntervalSince1970)) {
         self.id = id; self.type = type; self.title = title; self.content = content
         self.dismissible = dismissible; self.timestamp = timestamp
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = (try? c.decode(String.self, forKey: .id)) ?? UUID().uuidString
+        type = (try? c.decode(String.self, forKey: .type)) ?? "info"
+        title = try? c.decodeIfPresent(String.self, forKey: .title)
+        content = (try? c.decode(String.self, forKey: .content)) ?? ""
+        dismissible = (try? c.decode(Bool.self, forKey: .dismissible)) ?? true
+        if let i = try? c.decode(Int.self, forKey: .timestamp) { timestamp = i }
+        else if let d = try? c.decode(Double.self, forKey: .timestamp) { timestamp = Int(d) }
+        else { timestamp = Int(Date().timeIntervalSince1970) }
+        if let all = try? decoder.singleValueContainer().decode([String: JSONAnyCodable].self) {
+            let known = Set(CodingKeys.allCasesRaw)
+            extra = all.filter { !known.contains($0.key) }.mapValues(\.value)
+        }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var out = extra
+        out["id"] = id; out["type"] = type; out["content"] = content
+        out["dismissible"] = dismissible; out["timestamp"] = timestamp
+        out["title"] = title ?? NSNull()
+        var container = encoder.singleValueContainer()
+        try container.encode(out.mapValues { JSONAnyCodable($0) })
     }
 }
 
@@ -1085,8 +1186,25 @@ struct AdminOAuthConfig: Codable, Sendable {
     var oauthUpdateEmailOnLogin: Bool
     var oauthUpdateNameOnLogin: Bool
     var oauthUpdatePictureOnLogin: Bool
+    // v0.11 additions. Optional server-side: nil = leave the stored value alone.
+    var oauthAudience: String?
+    var oauthCodeChallengeMethod: String?
+    var oauthTokenEndpointAuthMethod: String?
+    var openidEndSessionEndpoint: String?
+    var oauthTimeout: String?
+    var oauthClientTimeout: String?
+    var oauthGroupDefaultShare: String?
+    var oauthRefreshTokenIncludeScope: Bool?
 
     enum CodingKeys: String, CodingKey {
+        case oauthAudience                 = "OAUTH_AUDIENCE"
+        case oauthCodeChallengeMethod      = "OAUTH_CODE_CHALLENGE_METHOD"
+        case oauthTokenEndpointAuthMethod  = "OAUTH_TOKEN_ENDPOINT_AUTH_METHOD"
+        case openidEndSessionEndpoint      = "OPENID_END_SESSION_ENDPOINT"
+        case oauthTimeout                  = "OAUTH_TIMEOUT"
+        case oauthClientTimeout            = "OAUTH_CLIENT_TIMEOUT"
+        case oauthGroupDefaultShare        = "OAUTH_GROUP_DEFAULT_SHARE"
+        case oauthRefreshTokenIncludeScope = "OAUTH_REFRESH_TOKEN_INCLUDE_SCOPE"
         case enableOAuth                = "ENABLE_OAUTH"
         case oauthProviderName          = "OAUTH_PROVIDER_NAME"
         case openidProviderURL          = "OPENID_PROVIDER_URL"
@@ -1143,6 +1261,67 @@ struct AdminOAuthConfig: Codable, Sendable {
         oauthUpdateEmailOnLogin    = (try? c.decode(Bool.self,   forKey: .oauthUpdateEmailOnLogin))    ?? false
         oauthUpdateNameOnLogin     = (try? c.decode(Bool.self,   forKey: .oauthUpdateNameOnLogin))     ?? false
         oauthUpdatePictureOnLogin  = (try? c.decode(Bool.self,   forKey: .oauthUpdatePictureOnLogin))  ?? false
+        // Timeouts and the group share default may arrive as a number, a string, or a bool.
+        func flexString(_ k: CodingKeys) -> String? {
+            if let s = try? c.decode(String.self, forKey: k) { return s }
+            if let i = try? c.decode(Int.self, forKey: k) { return String(i) }
+            if let b = try? c.decode(Bool.self, forKey: k) { return b ? "true" : "false" }
+            return nil
+        }
+        oauthAudience = try? c.decodeIfPresent(String.self, forKey: .oauthAudience)
+        oauthCodeChallengeMethod = try? c.decodeIfPresent(String.self, forKey: .oauthCodeChallengeMethod)
+        oauthTokenEndpointAuthMethod = try? c.decodeIfPresent(String.self, forKey: .oauthTokenEndpointAuthMethod)
+        openidEndSessionEndpoint = try? c.decodeIfPresent(String.self, forKey: .openidEndSessionEndpoint)
+        oauthTimeout = flexString(.oauthTimeout)
+        oauthClientTimeout = flexString(.oauthClientTimeout)
+        oauthGroupDefaultShare = flexString(.oauthGroupDefaultShare)
+        oauthRefreshTokenIncludeScope = try? c.decodeIfPresent(Bool.self, forKey: .oauthRefreshTokenIncludeScope)
+    }
+
+    /// Synthesized encoding, except `OAUTH_GROUP_DEFAULT_SHARE`: the server treats it as
+    /// `true` | `false` | `"members"`. A string `"true"` would be stored as text and read back as
+    /// something else, so real booleans are sent for true/false.
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(enableOAuth, forKey: .enableOAuth)
+        try c.encode(oauthProviderName, forKey: .oauthProviderName)
+        try c.encode(openidProviderURL, forKey: .openidProviderURL)
+        try c.encode(oauthClientId, forKey: .oauthClientId)
+        try c.encode(oauthClientSecret, forKey: .oauthClientSecret)
+        try c.encode(openidRedirectURI, forKey: .openidRedirectURI)
+        try c.encode(oauthScopes, forKey: .oauthScopes)
+        try c.encode(oauthEmailClaim, forKey: .oauthEmailClaim)
+        try c.encode(oauthUsernameClaim, forKey: .oauthUsernameClaim)
+        try c.encode(oauthPictureClaim, forKey: .oauthPictureClaim)
+        try c.encode(oauthSubClaim, forKey: .oauthSubClaim)
+        try c.encode(enableOAuthSignup, forKey: .enableOAuthSignup)
+        try c.encode(oauthMergeAccountsByEmail, forKey: .oauthMergeAccountsByEmail)
+        try c.encode(oauthAutoRedirect, forKey: .oauthAutoRedirect)
+        try c.encode(oauthAllowedDomains, forKey: .oauthAllowedDomains)
+        try c.encode(enableOAuthRoleManagement, forKey: .enableOAuthRoleManagement)
+        try c.encode(oauthRolesClaim, forKey: .oauthRolesClaim)
+        try c.encode(oauthAdminRoles, forKey: .oauthAdminRoles)
+        try c.encode(oauthAllowedRoles, forKey: .oauthAllowedRoles)
+        try c.encode(enableOAuthGroupManagement, forKey: .enableOAuthGroupManagement)
+        try c.encode(enableOAuthGroupCreation, forKey: .enableOAuthGroupCreation)
+        try c.encode(oauthGroupClaim, forKey: .oauthGroupClaim)
+        try c.encode(oauthBlockedGroups, forKey: .oauthBlockedGroups)
+        try c.encode(oauthUpdateEmailOnLogin, forKey: .oauthUpdateEmailOnLogin)
+        try c.encode(oauthUpdateNameOnLogin, forKey: .oauthUpdateNameOnLogin)
+        try c.encode(oauthUpdatePictureOnLogin, forKey: .oauthUpdatePictureOnLogin)
+        try c.encodeIfPresent(oauthAudience, forKey: .oauthAudience)
+        try c.encodeIfPresent(oauthCodeChallengeMethod, forKey: .oauthCodeChallengeMethod)
+        try c.encodeIfPresent(oauthTokenEndpointAuthMethod, forKey: .oauthTokenEndpointAuthMethod)
+        try c.encodeIfPresent(openidEndSessionEndpoint, forKey: .openidEndSessionEndpoint)
+        try c.encodeIfPresent(oauthTimeout, forKey: .oauthTimeout)
+        try c.encodeIfPresent(oauthClientTimeout, forKey: .oauthClientTimeout)
+        try c.encodeIfPresent(oauthRefreshTokenIncludeScope, forKey: .oauthRefreshTokenIncludeScope)
+        switch oauthGroupDefaultShare?.lowercased() {
+        case "true": try c.encode(true, forKey: .oauthGroupDefaultShare)
+        case "false": try c.encode(false, forKey: .oauthGroupDefaultShare)
+        case .some(let other) where !other.isEmpty: try c.encode(other, forKey: .oauthGroupDefaultShare)
+        default: break
+        }
     }
 
     init(
@@ -1772,7 +1951,13 @@ struct OpenAITag: Codable, Sendable {
 }
 
 /// Per-connection settings inside `OPENAI_API_CONFIGS`.
-struct OpenAIConnectionConfig: Codable, Sendable {
+///
+/// The server reads the provider from `provider` ("azure" | "llama.cpp" | "lmstudio" |
+/// "litellm" | "") plus the legacy `azure: true`. Older builds of this app wrote a
+/// `provider_type` key the server never reads and dropped every other key on save
+/// (`provider`, `azure`, `forward_cookies`, `passthrough_params`…), which silently
+/// reset llama.cpp / LM Studio / Azure connections. `raw` keeps everything we don't model.
+struct OpenAIConnectionConfig: Codable, @unchecked Sendable {
     var enable: Bool
     var tags: [OpenAITag]
     var prefixId: String
@@ -1781,15 +1966,20 @@ struct OpenAIConnectionConfig: Codable, Sendable {
     var authType: String
     /// Additional headers as a key-value dictionary (displayed as JSON in the UI).
     var headers: [String: String]
-    /// Provider type: "" = standard OpenAI-compatible, "azure" = Azure OpenAI.
+    /// Provider: "" = standard OpenAI-compatible, "azure", "llama.cpp", "lmstudio", "litellm".
     var providerType: String
     /// API version string (only used when providerType == "azure").
     var apiVersion: String
     /// API type: "chat_completions" (default) or "responses" (experimental).
     var apiType: String
+    /// The full server dict, so a save never drops keys this struct doesn't model.
+    var raw: [String: Any] = [:]
+
+    /// Providers whose models can be managed (catalog / download / load) from Open WebUI.
+    var supportsModelManagement: Bool { ["llama.cpp", "lmstudio"].contains(providerType) }
 
     enum CodingKeys: String, CodingKey {
-        case enable, tags, headers
+        case enable, tags, headers, provider, azure
         case prefixId       = "prefix_id"
         case modelIds       = "model_ids"
         case connectionType = "connection_type"
@@ -1808,9 +1998,43 @@ struct OpenAIConnectionConfig: Codable, Sendable {
         connectionType = (try? c.decode(String.self,             forKey: .connectionType)) ?? "external"
         authType       = (try? c.decode(String.self,             forKey: .authType))       ?? "bearer"
         headers        = (try? c.decode([String: String].self,   forKey: .headers))        ?? [:]
-        providerType   = (try? c.decode(String.self,             forKey: .providerType))   ?? ""
+        // Web: `provider ?? (azure ? 'azure' : '')`; fall back to this app's old key.
+        let provider   = try? c.decode(String.self, forKey: .provider)
+        let isAzure    = (try? c.decode(Bool.self, forKey: .azure)) ?? false
+        let legacy     = try? c.decode(String.self, forKey: .providerType)
+        providerType   = provider ?? (isAzure ? "azure" : (legacy ?? ""))
         apiVersion     = (try? c.decode(String.self,             forKey: .apiVersion))     ?? ""
         apiType        = (try? c.decode(String.self,             forKey: .apiType))        ?? ""
+        raw = (try? JSONAnyCodable(from: decoder))?.value as? [String: Any] ?? [:]
+    }
+
+    /// Server dict for `/openai/config/update`: every original key, with the fields this
+    /// app edits written the way the web writes them.
+    func toJSON() -> [String: Any] {
+        var out = raw
+        out.removeValue(forKey: "provider_type")     // never read by the server
+        out["enable"] = enable
+        out["tags"] = tags.map { ["name": $0.name] }
+        out["prefix_id"] = prefixId
+        out["model_ids"] = modelIds
+        out["connection_type"] = connectionType
+        out["auth_type"] = authType
+        out["headers"] = headers
+        if providerType.isEmpty { out.removeValue(forKey: "provider") } else { out["provider"] = providerType }
+        if providerType == "azure" {
+            out["azure"] = true
+            out["api_version"] = apiVersion
+        } else {
+            out.removeValue(forKey: "azure")
+            out.removeValue(forKey: "api_version")
+        }
+        if apiType.isEmpty { out.removeValue(forKey: "api_type") } else { out["api_type"] = apiType }
+        return out
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.singleValueContainer()
+        try c.encode(toJSON().mapValues { JSONAnyCodable($0) })
     }
 
     init(enable: Bool = true, tags: [OpenAITag] = [], prefixId: String = "",
@@ -2063,9 +2287,32 @@ struct ToolServersConfigForm: Codable, Sendable {
 /// Config block embedded in a terminal server connection.
 struct TerminalServerConnectionConfig: Codable, Sendable {
     var access_grants: [ToolAccessGrant]
+    /// Keys this app does not model. The server stores `config` as a free-form dict, so a save
+    /// must send them back or they are erased.
+    var extra: [String: AnyJSON] = [:]
 
     init(access_grants: [ToolAccessGrant] = []) {
         self.access_grants = access_grants
+    }
+
+    private struct DynamicKey: CodingKey {
+        var stringValue: String; var intValue: Int? { nil }
+        init?(stringValue: String) { self.stringValue = stringValue }
+        init?(intValue: Int) { nil }
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: DynamicKey.self)
+        access_grants = (try? c.decodeIfPresent([ToolAccessGrant].self, forKey: DynamicKey(stringValue: "access_grants")!)) ?? []
+        for k in c.allKeys where k.stringValue != "access_grants" {
+            if let v = try? c.decode(AnyJSON.self, forKey: k) { extra[k.stringValue] = v }
+        }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: DynamicKey.self)
+        try c.encode(access_grants, forKey: DynamicKey(stringValue: "access_grants")!)
+        for (k, v) in extra { try c.encode(v, forKey: DynamicKey(stringValue: k)!) }
     }
 
     var isPublic: Bool {
@@ -2093,6 +2340,50 @@ struct TerminalServerConnection: Codable, Sendable {
     var enable_in_automations: Bool?
     /// Scope of the terminal server ("global" | "user" | "admin").
     var scope: String?
+    /// `forward_cookies` — send the user's session cookies to the terminal server.
+    var forward_cookies: Bool?
+    /// Keys this app does not model (`server_type`, `policy_id`, future fields). The server
+    /// stores the whole object, so dropping them on save would erase them.
+    var extra: [String: AnyJSON] = [:]
+
+    private static let knownKeys: Set<String> = [
+        "id", "name", "enabled", "url", "path", "key", "auth_type", "config",
+        "enable_in_chats", "enable_in_automations", "scope", "forward_cookies"
+    ]
+
+    private struct DynamicKey: CodingKey {
+        var stringValue: String; var intValue: Int? { nil }
+        init?(stringValue: String) { self.stringValue = stringValue }
+        init?(intValue: Int) { nil }
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: DynamicKey.self)
+        func get<T: Decodable>(_ k: String) -> T? { try? c.decodeIfPresent(T.self, forKey: DynamicKey(stringValue: k)!) }
+        id = get("id"); name = get("name"); enabled = get("enabled")
+        url = get("url") ?? ""
+        path = get("path"); key = get("key"); auth_type = get("auth_type")
+        config = get("config")
+        enable_in_chats = get("enable_in_chats"); enable_in_automations = get("enable_in_automations")
+        scope = get("scope"); forward_cookies = get("forward_cookies")
+        for k in c.allKeys where !Self.knownKeys.contains(k.stringValue) {
+            if let v = try? c.decode(AnyJSON.self, forKey: k) { extra[k.stringValue] = v }
+        }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: DynamicKey.self)
+        func put<T: Encodable>(_ v: T?, _ k: String) throws {
+            if let v { try c.encode(v, forKey: DynamicKey(stringValue: k)!) }
+        }
+        try put(id, "id"); try put(name, "name"); try put(enabled, "enabled")
+        try c.encode(url, forKey: DynamicKey(stringValue: "url")!)
+        try put(path, "path"); try put(key, "key"); try put(auth_type, "auth_type")
+        try put(config, "config")
+        try put(enable_in_chats, "enable_in_chats"); try put(enable_in_automations, "enable_in_automations")
+        try put(scope, "scope"); try put(forward_cookies, "forward_cookies")
+        for (k, v) in extra { try c.encode(v, forKey: DynamicKey(stringValue: k)!) }
+    }
 
     init(
         id: String? = "",
@@ -2264,15 +2555,6 @@ struct RetrievalConfig: Codable, Sendable {
     var fileImageCompressionWidth: Int?
     var fileImageCompressionHeight: Int?
 
-    // Knowledge file retention
-    var enableKnowledgeFileRetention: Bool
-
-    // RAG CSV shape summary
-    var enableRagCsvSummary: Bool
-
-    // RAG metadata max value chars (nil = no limit)
-    var ragMetadataMaxValueChars: Int?
-
     // Integration
     var enableGoogleDriveIntegration: Bool
     var enableOneDriveIntegration: Bool
@@ -2336,9 +2618,6 @@ struct RetrievalConfig: Codable, Sendable {
         case fileMaxCount = "FILE_MAX_COUNT"
         case fileImageCompressionWidth = "FILE_IMAGE_COMPRESSION_WIDTH"
         case fileImageCompressionHeight = "FILE_IMAGE_COMPRESSION_HEIGHT"
-        case enableKnowledgeFileRetention = "ENABLE_KNOWLEDGE_FILE_RETENTION"
-        case enableRagCsvSummary = "ENABLE_RAG_CSV_SUMMARY"
-        case ragMetadataMaxValueChars = "RAG_METADATA_MAX_VALUE_CHARS"
         case enableGoogleDriveIntegration = "ENABLE_GOOGLE_DRIVE_INTEGRATION"
         case enableOneDriveIntegration = "ENABLE_ONEDRIVE_INTEGRATION"
         case web
@@ -2421,19 +2700,23 @@ struct RetrievalConfig: Codable, Sendable {
         ragExternalRerankerTimeout = (try? c.decode(String.self, forKey: .ragExternalRerankerTimeout)) ?? ""
 
         allowedFileExtensions = (try? c.decode([String].self, forKey: .allowedFileExtensions)) ?? []
-        fileMaxSize = try? c.decode(Int.self, forKey: .fileMaxSize)
-        fileMaxCount = try? c.decode(Int.self, forKey: .fileMaxCount)
-        fileImageCompressionWidth = try? c.decode(Int.self, forKey: .fileImageCompressionWidth)
-        fileImageCompressionHeight = try? c.decode(Int.self, forKey: .fileImageCompressionHeight)
+        fileMaxSize = RetrievalConfig.decodeLimit(c, .fileMaxSize)
+        fileMaxCount = RetrievalConfig.decodeLimit(c, .fileMaxCount)
+        fileImageCompressionWidth = RetrievalConfig.decodeLimit(c, .fileImageCompressionWidth)
+        fileImageCompressionHeight = RetrievalConfig.decodeLimit(c, .fileImageCompressionHeight)
 
-        enableKnowledgeFileRetention = (try? c.decode(Bool.self, forKey: .enableKnowledgeFileRetention)) ?? false
-        enableRagCsvSummary = (try? c.decode(Bool.self, forKey: .enableRagCsvSummary)) ?? false
-        ragMetadataMaxValueChars = try? c.decode(Int.self, forKey: .ragMetadataMaxValueChars)
 
         enableGoogleDriveIntegration = (try? c.decode(Bool.self, forKey: .enableGoogleDriveIntegration)) ?? false
         enableOneDriveIntegration = (try? c.decode(Bool.self, forKey: .enableOneDriveIntegration)) ?? false
 
         web = (try? c.decode(WebSearchConfig.self, forKey: .web)) ?? WebSearchConfig()
+    }
+
+    /// File limits come back as int, numeric string, "" or null.
+    private static func decodeLimit(_ c: KeyedDecodingContainer<CodingKeys>, _ key: CodingKeys) -> Int? {
+        if let i = try? c.decode(Int.self, forKey: key) { return i }
+        if let s = try? c.decode(String.self, forKey: key) { return Int(s) }
+        return nil
     }
 
     func encode(to encoder: Encoder) throws {
@@ -2501,17 +2784,30 @@ struct RetrievalConfig: Codable, Sendable {
         try c.encode(ragExternalRerankerAPIKey, forKey: .ragExternalRerankerAPIKey)
         try c.encode(ragExternalRerankerTimeout, forKey: .ragExternalRerankerTimeout)
         try c.encode(allowedFileExtensions, forKey: .allowedFileExtensions)
-        try c.encode(fileMaxSize, forKey: .fileMaxSize)
-        try c.encode(fileMaxCount, forKey: .fileMaxCount)
-        try c.encode(fileImageCompressionWidth, forKey: .fileImageCompressionWidth)
-        try c.encode(fileImageCompressionHeight, forKey: .fileImageCompressionHeight)
-        try c.encode(enableKnowledgeFileRetention, forKey: .enableKnowledgeFileRetention)
-        try c.encode(enableRagCsvSummary, forKey: .enableRagCsvSummary)
-        try c.encode(ragMetadataMaxValueChars, forKey: .ragMetadataMaxValueChars)
+        // File limits: the server treats `null` as "don't change" and `""` as
+        // "clear this limit" (retrieval.py update_rag_config) — mirror the web UI,
+        // which sends `?? ''` for cleared inputs.
+        func encodeLimit(_ v: Int?, _ key: CodingKeys) throws {
+            if let v { try c.encode(v, forKey: key) } else { try c.encode("", forKey: key) }
+        }
+        try encodeLimit(fileMaxSize, .fileMaxSize)
+        try encodeLimit(fileMaxCount, .fileMaxCount)
+        try encodeLimit(fileImageCompressionWidth, .fileImageCompressionWidth)
+        try encodeLimit(fileImageCompressionHeight, .fileImageCompressionHeight)
+        // ENABLE_KNOWLEDGE_FILE_RETENTION, ENABLE_RAG_CSV_SUMMARY and
+        // RAG_METADATA_MAX_VALUE_CHARS are environment-only on the server (not part
+        // of ConfigForm and not returned by GET), so they are never sent.
         try c.encode(enableGoogleDriveIntegration, forKey: .enableGoogleDriveIntegration)
         try c.encode(enableOneDriveIntegration, forKey: .enableOneDriveIntegration)
-        try c.encode(web, forKey: .web)
+        // `web` is only sent by the Web Search screen. The server overwrites every
+        // web.* key when `web` is present, so the Documents screen must omit it.
+        if encoder.userInfo[RetrievalConfig.includeWebKey] as? Bool == true, web.isLoaded {
+            try c.encode(web, forKey: .web)
+        }
     }
+
+    /// `JSONEncoder.userInfo` key — set to `true` to include the `web` object.
+    static let includeWebKey = CodingUserInfoKey(rawValue: "retrievalConfig.includeWeb")!
 
     init() {
         contentExtractionEngine = ""
@@ -2569,9 +2865,6 @@ struct RetrievalConfig: Codable, Sendable {
         fileMaxCount = nil
         fileImageCompressionWidth = nil
         fileImageCompressionHeight = nil
-        enableKnowledgeFileRetention = false
-        enableRagCsvSummary = false
-        ragMetadataMaxValueChars = nil
         enableGoogleDriveIntegration = false
         enableOneDriveIntegration = false
         web = WebSearchConfig()
@@ -2702,8 +2995,25 @@ enum GroupSharePermission: String, Codable, CaseIterable, Sendable {
     }
 }
 
+extension GroupWorkspacePermissions {
+    fileprivate func with(_ f: (inout Self) -> Void) -> Self { var c = self; f(&c); return c }
+}
+
+extension GroupFeaturePermissions {
+    fileprivate func with(_ f: (inout Self) -> Void) -> Self { var c = self; f(&c); return c }
+}
+
+extension CaseIterable where Self: CodingKey {
+    /// Raw string values of every coding key — used to separate modelled keys from extras.
+    static var allCasesRaw: [String] { allCases.map(\.stringValue) }
+}
+
 /// Workspace-level permissions within a group.
-struct GroupWorkspacePermissions: Codable, Sendable {
+struct GroupWorkspacePermissions: Codable, @unchecked Sendable {
+    var skillsImport: Bool = false
+    var skillsExport: Bool = false
+    /// Server keys this struct does not model — preserved and re-sent on save.
+    var extra: [String: Any] = [:]
     var models: Bool
     var knowledge: Bool
     var prompts: Bool
@@ -2716,7 +3026,9 @@ struct GroupWorkspacePermissions: Codable, Sendable {
     var toolsImport: Bool
     var toolsExport: Bool
 
-    enum CodingKeys: String, CodingKey {
+    enum CodingKeys: String, CodingKey, CaseIterable {
+        case skillsImport = "skills_import"
+        case skillsExport = "skills_export"
         case models, knowledge, prompts, tools, skills
         case modelsImport = "models_import"
         case modelsExport = "models_export"
@@ -2739,6 +3051,12 @@ struct GroupWorkspacePermissions: Codable, Sendable {
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
+        skillsImport = (try? c.decode(Bool.self, forKey: .skillsImport)) ?? false
+        skillsExport = (try? c.decode(Bool.self, forKey: .skillsExport)) ?? false
+        if let all = try? decoder.singleValueContainer().decode([String: JSONAnyCodable].self) {
+            let known = Set(CodingKeys.allCasesRaw)
+            extra = all.filter { !known.contains($0.key) }.mapValues(\.value)
+        }
         models = (try? c.decode(Bool.self, forKey: .models)) ?? true
         knowledge = (try? c.decode(Bool.self, forKey: .knowledge)) ?? true
         prompts = (try? c.decode(Bool.self, forKey: .prompts)) ?? false
@@ -2759,11 +3077,36 @@ struct GroupWorkspacePermissions: Codable, Sendable {
         modelsImport: true, modelsExport: true,
         promptsImport: true, promptsExport: true,
         toolsImport: true, toolsExport: true
-    )
+    ).with { $0.skillsImport = true; $0.skillsExport = true }
+
+    func encode(to encoder: Encoder) throws {
+        var out = extra
+        out[CodingKeys.skillsImport.rawValue] = skillsImport
+        out[CodingKeys.skillsExport.rawValue] = skillsExport
+        out[CodingKeys.models.rawValue] = models
+        out[CodingKeys.knowledge.rawValue] = knowledge
+        out[CodingKeys.prompts.rawValue] = prompts
+        out[CodingKeys.tools.rawValue] = tools
+        out[CodingKeys.skills.rawValue] = skills
+        out[CodingKeys.modelsImport.rawValue] = modelsImport
+        out[CodingKeys.modelsExport.rawValue] = modelsExport
+        out[CodingKeys.promptsImport.rawValue] = promptsImport
+        out[CodingKeys.promptsExport.rawValue] = promptsExport
+        out[CodingKeys.toolsImport.rawValue] = toolsImport
+        out[CodingKeys.toolsExport.rawValue] = toolsExport
+        var container = encoder.singleValueContainer()
+        try container.encode(out.mapValues { JSONAnyCodable($0) })
+    }
 }
 
 /// Sharing-level permissions within a group.
-struct GroupSharingPermissions: Codable, Sendable {
+struct GroupSharingPermissions: Codable, @unchecked Sendable {
+    var folders: Bool = false
+    var publicChats: Bool = false
+    var openChats: Bool = false
+    var publicCalendars: Bool = false
+    /// Server keys this struct does not model — preserved and re-sent on save.
+    var extra: [String: Any] = [:]
     var models: Bool
     var publicModels: Bool
     var knowledge: Bool
@@ -2777,7 +3120,11 @@ struct GroupSharingPermissions: Codable, Sendable {
     var notes: Bool
     var publicNotes: Bool
 
-    enum CodingKeys: String, CodingKey {
+    enum CodingKeys: String, CodingKey, CaseIterable {
+        case folders
+        case publicChats = "public_chats"
+        case openChats = "open_chats"
+        case publicCalendars = "public_calendars"
         case models, knowledge, prompts, tools, skills, notes
         case publicModels = "public_models"
         case publicKnowledge = "public_knowledge"
@@ -2799,6 +3146,14 @@ struct GroupSharingPermissions: Codable, Sendable {
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
+        folders = (try? c.decode(Bool.self, forKey: .folders)) ?? false
+        publicChats = (try? c.decode(Bool.self, forKey: .publicChats)) ?? false
+        openChats = (try? c.decode(Bool.self, forKey: .openChats)) ?? false
+        publicCalendars = (try? c.decode(Bool.self, forKey: .publicCalendars)) ?? false
+        if let all = try? decoder.singleValueContainer().decode([String: JSONAnyCodable].self) {
+            let known = Set(CodingKeys.allCasesRaw)
+            extra = all.filter { !known.contains($0.key) }.mapValues(\.value)
+        }
         models = (try? c.decode(Bool.self, forKey: .models)) ?? false
         publicModels = (try? c.decode(Bool.self, forKey: .publicModels)) ?? false
         knowledge = (try? c.decode(Bool.self, forKey: .knowledge)) ?? false
@@ -2812,14 +3167,38 @@ struct GroupSharingPermissions: Codable, Sendable {
         notes = (try? c.decode(Bool.self, forKey: .notes)) ?? false
         publicNotes = (try? c.decode(Bool.self, forKey: .publicNotes)) ?? false
     }
+
+    func encode(to encoder: Encoder) throws {
+        var out = extra
+        out[CodingKeys.folders.rawValue] = folders
+        out[CodingKeys.publicChats.rawValue] = publicChats
+        out[CodingKeys.openChats.rawValue] = openChats
+        out[CodingKeys.publicCalendars.rawValue] = publicCalendars
+        out[CodingKeys.models.rawValue] = models
+        out[CodingKeys.publicModels.rawValue] = publicModels
+        out[CodingKeys.knowledge.rawValue] = knowledge
+        out[CodingKeys.publicKnowledge.rawValue] = publicKnowledge
+        out[CodingKeys.prompts.rawValue] = prompts
+        out[CodingKeys.publicPrompts.rawValue] = publicPrompts
+        out[CodingKeys.tools.rawValue] = tools
+        out[CodingKeys.publicTools.rawValue] = publicTools
+        out[CodingKeys.skills.rawValue] = skills
+        out[CodingKeys.publicSkills.rawValue] = publicSkills
+        out[CodingKeys.notes.rawValue] = notes
+        out[CodingKeys.publicNotes.rawValue] = publicNotes
+        var container = encoder.singleValueContainer()
+        try container.encode(out.mapValues { JSONAnyCodable($0) })
+    }
 }
 
 /// Access-grant permissions.
-struct GroupAccessGrantPermissions: Codable, Sendable {
+struct GroupAccessGrantPermissions: Codable, @unchecked Sendable {
+    /// Server keys this struct does not model — preserved and re-sent on save.
+    var extra: [String: Any] = [:]
     var allowUsers: Bool
     var allowGroups: Bool   // v0.11.0: groups can also grant access
 
-    enum CodingKeys: String, CodingKey {
+    enum CodingKeys: String, CodingKey, CaseIterable {
         case allowUsers  = "allow_users"
         case allowGroups = "allow_groups"
     }
@@ -2831,13 +3210,28 @@ struct GroupAccessGrantPermissions: Codable, Sendable {
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
+        if let all = try? decoder.singleValueContainer().decode([String: JSONAnyCodable].self) {
+            let known = Set(CodingKeys.allCasesRaw)
+            extra = all.filter { !known.contains($0.key) }.mapValues(\.value)
+        }
         allowUsers  = (try? c.decode(Bool.self, forKey: .allowUsers))  ?? true
         allowGroups = (try? c.decode(Bool.self, forKey: .allowGroups)) ?? false
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var out = extra
+        out[CodingKeys.allowUsers.rawValue] = allowUsers
+        out[CodingKeys.allowGroups.rawValue] = allowGroups
+        var container = encoder.singleValueContainer()
+        try container.encode(out.mapValues { JSONAnyCodable($0) })
     }
 }
 
 /// Chat-level permissions within a group.
-struct GroupChatPermissions: Codable, Sendable {
+struct GroupChatPermissions: Codable, @unchecked Sendable {
+    var importChats: Bool = true
+    /// Server keys this struct does not model — preserved and re-sent on save.
+    var extra: [String: Any] = [:]
     var controls: Bool
     var valves: Bool
     var systemPrompt: Bool
@@ -2859,7 +3253,8 @@ struct GroupChatPermissions: Codable, Sendable {
     var temporary: Bool
     var temporaryEnforced: Bool
 
-    enum CodingKeys: String, CodingKey {
+    enum CodingKeys: String, CodingKey, CaseIterable {
+        case importChats = "import"
         case controls, valves, params, edit, share, export, stt, tts, call, temporary
         case systemPrompt = "system_prompt"
         case fileUpload = "file_upload"
@@ -2890,6 +3285,11 @@ struct GroupChatPermissions: Codable, Sendable {
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
+        importChats = (try? c.decode(Bool.self, forKey: .importChats)) ?? true
+        if let all = try? decoder.singleValueContainer().decode([String: JSONAnyCodable].self) {
+            let known = Set(CodingKeys.allCasesRaw)
+            extra = all.filter { !known.contains($0.key) }.mapValues(\.value)
+        }
         controls = (try? c.decode(Bool.self, forKey: .controls)) ?? true
         valves = (try? c.decode(Bool.self, forKey: .valves)) ?? true
         systemPrompt = (try? c.decode(Bool.self, forKey: .systemPrompt)) ?? true
@@ -2911,10 +3311,40 @@ struct GroupChatPermissions: Codable, Sendable {
         temporary = (try? c.decode(Bool.self, forKey: .temporary)) ?? true
         temporaryEnforced = (try? c.decode(Bool.self, forKey: .temporaryEnforced)) ?? false
     }
+
+    func encode(to encoder: Encoder) throws {
+        var out = extra
+        out[CodingKeys.importChats.rawValue] = importChats
+        out[CodingKeys.controls.rawValue] = controls
+        out[CodingKeys.valves.rawValue] = valves
+        out[CodingKeys.systemPrompt.rawValue] = systemPrompt
+        out[CodingKeys.params.rawValue] = params
+        out[CodingKeys.fileUpload.rawValue] = fileUpload
+        out[CodingKeys.webUpload.rawValue] = webUpload
+        out[CodingKeys.delete.rawValue] = delete
+        out[CodingKeys.deleteMessage.rawValue] = deleteMessage
+        out[CodingKeys.continueResponse.rawValue] = continueResponse
+        out[CodingKeys.regenerateResponse.rawValue] = regenerateResponse
+        out[CodingKeys.rateResponse.rawValue] = rateResponse
+        out[CodingKeys.edit.rawValue] = edit
+        out[CodingKeys.share.rawValue] = share
+        out[CodingKeys.export.rawValue] = export
+        out[CodingKeys.stt.rawValue] = stt
+        out[CodingKeys.tts.rawValue] = tts
+        out[CodingKeys.call.rawValue] = call
+        out[CodingKeys.multipleModels.rawValue] = multipleModels
+        out[CodingKeys.temporary.rawValue] = temporary
+        out[CodingKeys.temporaryEnforced.rawValue] = temporaryEnforced
+        var container = encoder.singleValueContainer()
+        try container.encode(out.mapValues { JSONAnyCodable($0) })
+    }
 }
 
 /// Feature permissions within a group.
-struct GroupFeaturePermissions: Codable, Sendable {
+struct GroupFeaturePermissions: Codable, @unchecked Sendable {
+    var webhooks: Bool = false
+    /// Server keys this struct does not model — preserved and re-sent on save.
+    var extra: [String: Any] = [:]
     var apiKeys: Bool
     var notes: Bool
     var channels: Bool
@@ -2927,7 +3357,8 @@ struct GroupFeaturePermissions: Codable, Sendable {
     var automations: Bool
     var calendar: Bool
 
-    enum CodingKeys: String, CodingKey {
+    enum CodingKeys: String, CodingKey, CaseIterable {
+        case webhooks
         case notes, channels, folders, memories, automations, calendar
         case apiKeys = "api_keys"
         case directToolServers = "direct_tool_servers"
@@ -2949,6 +3380,11 @@ struct GroupFeaturePermissions: Codable, Sendable {
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
+        webhooks = (try? c.decode(Bool.self, forKey: .webhooks)) ?? false
+        if let all = try? decoder.singleValueContainer().decode([String: JSONAnyCodable].self) {
+            let known = Set(CodingKeys.allCasesRaw)
+            extra = all.filter { !known.contains($0.key) }.mapValues(\.value)
+        }
         apiKeys = (try? c.decode(Bool.self, forKey: .apiKeys)) ?? false
         notes = (try? c.decode(Bool.self, forKey: .notes)) ?? true
         channels = (try? c.decode(Bool.self, forKey: .channels)) ?? true
@@ -2967,32 +3403,66 @@ struct GroupFeaturePermissions: Codable, Sendable {
         apiKeys: true, notes: true, channels: true, folders: true,
         directToolServers: true, webSearch: true, imageGeneration: true,
         codeInterpreter: true, memories: true, automations: true, calendar: true)
+        .with { $0.webhooks = true }
+
+    func encode(to encoder: Encoder) throws {
+        var out = extra
+        out[CodingKeys.webhooks.rawValue] = webhooks
+        out[CodingKeys.apiKeys.rawValue] = apiKeys
+        out[CodingKeys.notes.rawValue] = notes
+        out[CodingKeys.channels.rawValue] = channels
+        out[CodingKeys.folders.rawValue] = folders
+        out[CodingKeys.directToolServers.rawValue] = directToolServers
+        out[CodingKeys.webSearch.rawValue] = webSearch
+        out[CodingKeys.imageGeneration.rawValue] = imageGeneration
+        out[CodingKeys.codeInterpreter.rawValue] = codeInterpreter
+        out[CodingKeys.memories.rawValue] = memories
+        out[CodingKeys.automations.rawValue] = automations
+        out[CodingKeys.calendar.rawValue] = calendar
+        var container = encoder.singleValueContainer()
+        try container.encode(out.mapValues { JSONAnyCodable($0) })
+    }
 }
 
 /// Settings permissions within a group.
-struct GroupSettingsPermissions: Codable, Sendable {
+struct GroupSettingsPermissions: Codable, @unchecked Sendable {
+    /// Server keys this struct does not model — preserved and re-sent on save.
+    var extra: [String: Any] = [:]
     var interface: Bool
 
     init(interface: Bool = true) { self.interface = interface }
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
+        if let all = try? decoder.singleValueContainer().decode([String: JSONAnyCodable].self) {
+            let known = Set(CodingKeys.allCasesRaw)
+            extra = all.filter { !known.contains($0.key) }.mapValues(\.value)
+        }
         interface = (try? c.decode(Bool.self, forKey: .interface)) ?? true
     }
 
-    enum CodingKeys: String, CodingKey { case interface }
+    enum CodingKeys: String, CodingKey, CaseIterable { case interface }
+
+    func encode(to encoder: Encoder) throws {
+        var out = extra
+        out[CodingKeys.interface.rawValue] = interface
+        var container = encoder.singleValueContainer()
+        try container.encode(out.mapValues { JSONAnyCodable($0) })
+    }
 }
 
 /// Top-level permissions object used in group create/update/default permissions.
-struct GroupPermissions: Codable, Sendable {
+struct GroupPermissions: Codable, @unchecked Sendable {
     var workspace: GroupWorkspacePermissions
     var sharing: GroupSharingPermissions
     var accessGrants: GroupAccessGrantPermissions
     var chat: GroupChatPermissions
     var features: GroupFeaturePermissions
     var settings: GroupSettingsPermissions
+    /// Unmodelled top-level sections — preserved and re-sent on save.
+    var extra: [String: Any] = [:]
 
-    enum CodingKeys: String, CodingKey {
+    enum CodingKeys: String, CodingKey, CaseIterable {
         case workspace, sharing, chat, features, settings
         case accessGrants = "access_grants"
     }
@@ -3015,31 +3485,87 @@ struct GroupPermissions: Codable, Sendable {
         chat = (try? c.decode(GroupChatPermissions.self, forKey: .chat)) ?? GroupChatPermissions()
         features = (try? c.decode(GroupFeaturePermissions.self, forKey: .features)) ?? GroupFeaturePermissions()
         settings = (try? c.decode(GroupSettingsPermissions.self, forKey: .settings)) ?? GroupSettingsPermissions()
+        if let all = try? decoder.singleValueContainer().decode([String: JSONAnyCodable].self) {
+            let known = Set(CodingKeys.allCasesRaw)
+            extra = all.filter { !known.contains($0.key) }.mapValues(\.value)
+        }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: DynamicKey.self)
+        for (k, v) in extra { try c.encode(JSONAnyCodable(v), forKey: DynamicKey(k)) }
+        try c.encode(workspace, forKey: DynamicKey(CodingKeys.workspace.rawValue))
+        try c.encode(sharing, forKey: DynamicKey(CodingKeys.sharing.rawValue))
+        try c.encode(accessGrants, forKey: DynamicKey(CodingKeys.accessGrants.rawValue))
+        try c.encode(chat, forKey: DynamicKey(CodingKeys.chat.rawValue))
+        try c.encode(features, forKey: DynamicKey(CodingKeys.features.rawValue))
+        try c.encode(settings, forKey: DynamicKey(CodingKeys.settings.rawValue))
+    }
+
+    private struct DynamicKey: CodingKey {
+        var stringValue: String
+        var intValue: Int? { nil }
+        init(_ s: String) { stringValue = s }
+        init?(stringValue: String) { self.stringValue = stringValue }
+        init?(intValue: Int) { nil }
     }
 }
 
 /// The `data` field of a group, contains config like share permission.
-struct GroupData: Codable, Sendable {
+struct GroupData: Codable, @unchecked Sendable {
     var config: GroupDataConfig?
+    /// Other keys in `group.data` — preserved because the server replaces `data`
+    /// wholesale on update (the web UI clones the full object).
+    var extra: [String: Any] = [:]
 
-    init(config: GroupDataConfig? = nil) { self.config = config }
+    init(config: GroupDataConfig? = nil, extra: [String: Any] = [:]) {
+        self.config = config; self.extra = extra
+    }
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         config = try? c.decodeIfPresent(GroupDataConfig.self, forKey: .config)
+        if let all = try? decoder.singleValueContainer().decode([String: JSONAnyCodable].self) {
+            extra = all.filter { $0.key != CodingKeys.config.rawValue }.mapValues(\.value)
+        }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var out = extra
+        if let config { out[CodingKeys.config.rawValue] = config.jsonObject }
+        var container = encoder.singleValueContainer()
+        try container.encode(out.mapValues { JSONAnyCodable($0) })
     }
 
     enum CodingKeys: String, CodingKey { case config }
 }
 
-struct GroupDataConfig: Codable, Sendable {
+struct GroupDataConfig: Codable, @unchecked Sendable {
     var share: String?
+    /// Other keys in `group.data.config` — preserved on save.
+    var extra: [String: Any] = [:]
 
-    init(share: String? = "members") { self.share = share }
+    init(share: String? = "members", extra: [String: Any] = [:]) {
+        self.share = share; self.extra = extra
+    }
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         share = try? c.decodeIfPresent(String.self, forKey: .share)
+        if let all = try? decoder.singleValueContainer().decode([String: JSONAnyCodable].self) {
+            extra = all.filter { $0.key != CodingKeys.share.rawValue }.mapValues(\.value)
+        }
+    }
+
+    var jsonObject: [String: Any] {
+        var out = extra
+        if let share { out[CodingKeys.share.rawValue] = share }
+        return out
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        try container.encode(jsonObject.mapValues { JSONAnyCodable($0) })
     }
 
     enum CodingKeys: String, CodingKey { case share }

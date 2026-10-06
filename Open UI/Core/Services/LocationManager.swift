@@ -236,6 +236,7 @@ final class LocationManager: NSObject {
             Task { @MainActor in
                 self.cachedPlaceName = name.isEmpty ? nil : name
                 self.logger.info("Reverse geocoded: \(name)")
+                ServerLocationSync.shared.syncIfNeeded(location: self.cachedLocation, place: self.cachedPlaceName)
             }
         }
     }
@@ -251,6 +252,8 @@ extension LocationManager: CLLocationManagerDelegate {
             self.cachedLocation = latest
             self.logger.info("Location updated: \(latest.coordinate.latitude), \(latest.coordinate.longitude)")
             self.reverseGeocodeIfNeeded(latest)
+            // Keep the server's copy fresh for server-side {{USER_LOCATION}} (throttled).
+            ServerLocationSync.shared.syncIfNeeded(location: latest, place: self.cachedPlaceName)
         }
     }
 

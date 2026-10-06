@@ -25,6 +25,7 @@ struct ToolConnectionView: View {
     let tool: ToolItem
     let apiClient: APIClient
     var onRefresh: (() async -> Void)?
+    var onConnected: (() -> Void)?
     let onDisable: () -> Void
     @Environment(\.dismiss) private var dismiss
     @State private var scope: String?
@@ -33,10 +34,12 @@ struct ToolConnectionView: View {
     @State private var connected = false
     @State private var errorMessage: String?
 
-    init(tool: ToolItem, apiClient: APIClient, onRefresh: (() async -> Void)?, onDisable: @escaping () -> Void) {
+    init(tool: ToolItem, apiClient: APIClient, onRefresh: (() async -> Void)?,
+         onConnected: (() -> Void)? = nil, onDisable: @escaping () -> Void) {
         self.tool = tool
         self.apiClient = apiClient
         self.onRefresh = onRefresh
+        self.onConnected = onConnected
         self.onDisable = onDisable
         _scope = State(initialValue: apiClient.network.conversationCacheScope)
     }
@@ -92,6 +95,8 @@ struct ToolConnectionView: View {
             connected = tools.first(where: { $0["id"] as? String == tool.id }).map { $0["authenticated"] as? Bool ?? true } ?? false
             errorMessage = connected ? nil : "This tool is not connected. Complete authorization with the same account, then check again."
             await onRefresh?()
+            // Select the tool now that it's connected so retrying the message just works.
+            if connected { onConnected?() }
         } catch {
             guard scope == apiClient.network.conversationCacheScope else { return }
             connected = false
@@ -112,6 +117,7 @@ struct ToolConnectionSheetModifier: ViewModifier {
         content.sheet(item: $tool) { tool in
             if let apiClient {
                 ToolConnectionView(tool: tool, apiClient: apiClient, onRefresh: onRefresh,
+                                   onConnected: { selectedToolIds.insert(tool.id) },
                                    onDisable: { selectedToolIds.remove(tool.id) }).themed()
             }
         }

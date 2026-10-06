@@ -496,6 +496,7 @@ final class AppDependencyContainer: ServiceContainer {
         guard let config = serverConfigStore.activeServer else {
             apiClient = nil
             ExternalActivityNotifier.shared.attach(to: nil)
+            ChatReadState.shared.attach(to: nil)
             socketService?.dispose()
             socketService = nil
             conversationManager = nil
@@ -505,6 +506,9 @@ final class AppDependencyContainer: ServiceContainer {
         }
 
         apiClient = APIClient(serverConfig: config)
+        // Server-side {{USER_LOCATION}}: new server/account → start fresh and resend.
+        ServerLocationSync.shared.apiClient = apiClient
+        ServerLocationSync.shared.reset()
         textToSpeechService.configureServerTTS(apiClient: apiClient)
         serverSpeechRecognitionService.configure(apiClient: apiClient)
         // Wire dictation service to its underlying STT backends
@@ -577,7 +581,9 @@ final class AppDependencyContainer: ServiceContainer {
             Task { @MainActor in
                 guard let self else { return }
                 guard self.authViewModel.phase == .authenticated else { return }
-                await self.authViewModel.validateSessionInBackground()
+                // Defers to the next foreground when the 401 came from a
+                // background wake, so a suspended request never signs out.
+                await self.authViewModel.handleAuthTokenInvalid()
             }
         }
 
@@ -588,7 +594,7 @@ final class AppDependencyContainer: ServiceContainer {
         // password / LDAP / embedded-SSO accounts return false immediately.
         if config.nativeSSO != nil {
             apiClient?.onUnauthorizedRecover = { [weak self] in
-                guard let self else { return false }
+                guard let self else { return .rejected }
                 return await self.authViewModel.recoverSessionFrom401()
             }
         }
@@ -601,6 +607,8 @@ final class AppDependencyContainer: ServiceContainer {
 
         // Notifications for channel posts / chats that didn't start on this device.
         ExternalActivityNotifier.shared.attach(to: socketService)
+        // Live chat read/unread state (web Sidebar `chat:list` handling).
+        ChatReadState.shared.attach(to: socketService)
 
         // Wire socket state to the dependency container's observable property
         wireSocketStateTracking()
@@ -644,14 +652,31 @@ final class AppDependencyContainer: ServiceContainer {
     }
 
     /// Processes any pending shared content from the Share Extension.
+    /// Files the extension wrote to `<AppGroup>/SharedInbox/` are read back (and
+    /// deleted) so callers always see inline data.
     func processPendingSharedContent() -> SharedContent? {
         let defaults = UserDefaults(suiteName: SharedDataService.appGroupId)
         guard let data = defaults?.data(forKey: "pending_shared_content"),
-              let content = try? JSONDecoder().decode(SharedContent.self, from: data) else {
+              var content = try? JSONDecoder().decode(SharedContent.self, from: data) else {
             return nil
         }
         // Clear pending content
         defaults?.removeObject(forKey: "pending_shared_content")
+
+        if let inbox = FileManager.default
+            .containerURL(forSecurityApplicationGroupIdentifier: SharedDataService.appGroupId)?
+            .appendingPathComponent("SharedInbox", isDirectory: true) {
+            content.fileAttachments = content.fileAttachments.compactMap { file in
+                guard let stored = file.storedFileName else { return file }
+                let url = inbox.appendingPathComponent(stored)
+                defer { try? FileManager.default.removeItem(at: url) }
+                guard let bytes = try? Data(contentsOf: url) else { return nil }
+                var resolved = file
+                resolved.data = bytes
+                resolved.storedFileName = nil
+                return resolved
+            }
+        }
         return content
     }
 

@@ -1103,6 +1103,8 @@ struct EditTerminalSheet: View {
                     }
                 }
 
+                TerminalServerSetupSection(viewModel: viewModel)
+
                 // Delete
                 Section {
                     Button(role: .destructive) {

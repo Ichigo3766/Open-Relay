@@ -8,6 +8,8 @@ struct AdminExternalKnowledgeView: View {
     @Environment(AppDependencyContainer.self) private var dependencies
 
     @State private var viewModel = AdminExternalKnowledgeViewModel()
+    @State private var retrievalTarget: ExternalKnowledgeConnection?
+    @State private var healthMessage: String?
 
     var body: some View {
         ScrollView {
@@ -32,6 +34,13 @@ struct AdminExternalKnowledgeView: View {
                 .presentationDragIndicator(.visible)
                 .presentationCornerRadius(24)
         }
+        .sheet(item: $retrievalTarget) { conn in
+            ExternalRetrievalTestSheet(connectionId: conn.id, connectionName: conn.name)
+                .presentationDetents([.medium, .large])
+        }
+        .alert("Connection Health", isPresented: .init(get: { healthMessage != nil }, set: { if !$0 { healthMessage = nil } })) {
+            Button("OK", role: .cancel) {}
+        } message: { Text(healthMessage ?? "") }
     }
 
     // MARK: - Loading
@@ -135,7 +144,24 @@ struct AdminExternalKnowledgeView: View {
                 .labelsHidden().tint(theme.brandPrimary)
             }
             .padding(.horizontal, Spacing.screenPadding).padding(.vertical, Spacing.sm)
+            .contentShape(Rectangle())
+            .contextMenu {
+                if let conn {
+                    Button("Check Health", systemImage: "stethoscope") { Task { await checkHealth(conn) } }
+                    Button("Test Retrieval", systemImage: "text.magnifyingglass") { retrievalTarget = conn }
+                }
+            }
             if !isLast { Divider().padding(.leading, Spacing.screenPadding) }
+        }
+    }
+
+    private func checkHealth(_ conn: ExternalKnowledgeConnection) async {
+        guard let api = dependencies.apiClient else { return }
+        do {
+            let h = try await api.testExternalKnowledgeConnection(id: conn.id)
+            healthMessage = (h["ok"] as? Bool) == true ? "\(conn.name) is reachable." : "\(conn.name) is disabled or has no endpoint."
+        } catch {
+            healthMessage = error.localizedDescription
         }
     }
 

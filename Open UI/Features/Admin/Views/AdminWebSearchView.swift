@@ -90,335 +90,275 @@ struct AdminWebSearchView: View {
         .padding(.bottom, Spacing.lg)
     }
 
+    // MARK: - Field Spec
+
+    /// One editable server key. Mirrors the fields `WebSearch.svelte` renders.
+    private enum FieldKind { case text, secure, int, numericString, toggle, list, picker([(String, String)]) }
+    private struct Field { let key: String; let title: String; let placeholder: String; let kind: FieldKind }
+
+    private func f(_ key: String, _ title: String, _ placeholder: String = "", _ kind: FieldKind = .text) -> Field {
+        Field(key: key, title: title, placeholder: placeholder, kind: kind)
+    }
+
+    /// Engine-specific fields — exact keys and grouping from the web UI.
+    private func engineFields(_ engine: String) -> [Field] {
+        switch engine {
+        case "ollama_cloud": return [f("OLLAMA_CLOUD_WEB_SEARCH_API_KEY", "Ollama Cloud API Key", "Enter Ollama Cloud API Key", .secure)]
+        case "perplexity_search": return [
+            f("PERPLEXITY_SEARCH_API_URL", "Perplexity Search API URL", "https://api.perplexity.ai/search"),
+            f("PERPLEXITY_API_KEY", "Perplexity API Key", "Enter Perplexity API Key", .secure)]
+        case "searxng": return [
+            f("SEARXNG_QUERY_URL", "SearXNG Query URL", "Enter Searxng Query URL"),
+            f("SEARXNG_LANGUAGE", "Search Language", "all, en, es, de, fr…")]
+        case "yacy": return [
+            f("YACY_QUERY_URL", "YaCy Instance URL", "http://yacy.example.com:8090"),
+            f("YACY_USERNAME", "YaCy Username", "Enter Yacy Username"),
+            f("YACY_PASSWORD", "YaCy Password", "Enter Yacy Password", .secure)]
+        case "google_pse": return [
+            f("GOOGLE_PSE_API_KEY", "Google PSE API Key", "Enter Google PSE API Key", .secure),
+            f("GOOGLE_PSE_ENGINE_ID", "Google PSE Engine ID", "Enter Google PSE Engine Id")]
+        case "brave": return [f("BRAVE_SEARCH_API_KEY", "Brave Search API Key", "Enter Brave Search API Key", .secure)]
+        case "brave_llm_context": return [
+            f("BRAVE_SEARCH_API_KEY", "Brave Search API Key", "Enter Brave Search API Key", .secure),
+            f("BRAVE_SEARCH_CONTEXT_TOKENS", "Context Tokens", "1024–32768 (default 8192)", .int)]
+        case "kagi": return [f("KAGI_SEARCH_API_KEY", "Kagi Search API Key", "Enter Kagi Search API Key", .secure)]
+        case "mojeek": return [f("MOJEEK_SEARCH_API_KEY", "Mojeek Search API Key", "Enter Mojeek Search API Key", .secure)]
+        case "bocha": return [f("BOCHA_SEARCH_API_KEY", "Bocha Search API Key", "Enter Bocha Search API Key", .secure)]
+        case "serpstack": return [
+            f("SERPSTACK_API_KEY", "Serpstack API Key", "Enter Serpstack API Key", .secure),
+            f("SERPSTACK_HTTPS", "Use HTTPS", "", .toggle)]
+        case "serper": return [f("SERPER_API_KEY", "Serper API Key", "Enter Serper API Key", .secure)]
+        case "serphouse": return [
+            f("SERPHOUSE_API_KEY", "SERPHouse API Key", "Enter SERPHouse API Key", .secure),
+            f("SERPHOUSE_DOMAIN", "SERPHouse Domain", "google.com")]
+        case "serply": return [f("SERPLY_API_KEY", "Serply API Key", "Enter Serply API Key", .secure)]
+        case "tavily": return [f("TAVILY_API_KEY", "Tavily API Key", "Enter Tavily API Key", .secure)]
+        case "staan": return [
+            f("STAAN_API_KEY", "Staan API Key", "Enter Staan API Key", .secure),
+            f("STAAN_MARKET", "Market", "e.g. en-us"),
+            f("STAAN_MAX_SNIPPETS", "Max Snippets", "0", .int)]
+        case "searchapi": return [
+            f("SEARCHAPI_API_KEY", "SearchApi API Key", "Enter SearchApi API Key", .secure),
+            f("SEARCHAPI_ENGINE", "SearchApi Engine", "Enter SearchApi Engine")]
+        case "serpapi": return [
+            f("SERPAPI_API_KEY", "SerpApi API Key", "Enter SerpApi API Key", .secure),
+            f("SERPAPI_ENGINE", "SerpApi Engine", "Enter SerpApi Engine")]
+        case "jina": return [
+            f("JINA_API_BASE_URL", "Jina API Base URL", "Enter Jina API Base URL"),
+            f("JINA_API_KEY", "Jina API Key", "Enter Jina API Key", .secure)]
+        case "bing": return [
+            f("BING_SEARCH_V7_ENDPOINT", "Bing Search V7 Endpoint", "Enter Bing Search V7 Endpoint"),
+            f("BING_SEARCH_V7_SUBSCRIPTION_KEY", "Bing Search V7 Subscription Key", "Enter Subscription Key", .secure)]
+        case "exa": return [
+            f("EXA_API_KEY", "Exa API Key", "Enter Exa API Key", .secure),
+            f("EXA_MAX_CONTENT_LENGTH", "Max Content Length", "No limit", .int)]
+        case "perplexity": return [
+            f("PERPLEXITY_API_KEY", "Perplexity API Key", "Enter Perplexity API Key", .secure),
+            f("PERPLEXITY_MODEL", "Perplexity Model", "", .picker([
+                ("sonar", "Sonar"), ("sonar-pro", "Sonar Pro"), ("sonar-reasoning", "Sonar Reasoning"),
+                ("sonar-reasoning-pro", "Sonar Reasoning Pro"), ("sonar-deep-research", "Sonar Deep Research")])),
+            f("PERPLEXITY_SEARCH_CONTEXT_USAGE", "Search Context Usage", "", .picker([
+                ("low", "Low"), ("medium", "Medium"), ("high", "High")]))]
+        case "microsoft_web_iq": return microsoftWebIQFields
+        case "sougou": return [
+            f("SOUGOU_API_SID", "Sougou Search API sID", "Enter Sougou Search API sID", .secure),
+            f("SOUGOU_API_SK", "Sougou Search API SK", "Enter Sougou Search API SK", .secure)]
+        case "firecrawl": return [
+            f("FIRECRAWL_API_BASE_URL", "Firecrawl API Base URL", "https://api.firecrawl.dev"),
+            f("FIRECRAWL_API_KEY", "Firecrawl API Key", "Enter Firecrawl API Key", .secure),
+            f("FIRECRAWL_TIMEOUT", "Firecrawl Timeout (s)", "Enter Firecrawl Timeout", .numericString)]
+        case "external": return [
+            f("EXTERNAL_WEB_SEARCH_URL", "External Web Search URL", "Enter External Web Search URL"),
+            f("EXTERNAL_WEB_SEARCH_API_KEY", "External Web Search API Key", "Enter External Web Search API Key", .secure)]
+        case "yandex": return [
+            f("YANDEX_WEB_SEARCH_URL", "Yandex Web Search URL", "Enter Yandex Web Search URL"),
+            f("YANDEX_WEB_SEARCH_API_KEY", "Yandex Web Search API Key", "Enter Yandex Web Search API Key", .secure),
+            f("YANDEX_WEB_SEARCH_CONFIG", "Yandex Web Search Config", "JSON config")]
+        case "youcom": return [f("YOUCOM_API_KEY", "You.com API Key", "Enter You.com API Key", .secure)]
+        case "linkup": return [f("LINKUP_API_KEY", "Linkup API Key", "Enter Linkup API Key", .secure)]
+        case "openserp": return [f("OPENSERP_BASE_URL", "OpenSERP Base URL", "Enter OpenSERP Base URL")]
+        case "duckduckgo": return [f("DDGS_BACKEND", "DDGS Backend", "", .picker([
+            ("auto", "Auto (Random)"), ("bing", "Bing"), ("brave", "Brave"), ("duckduckgo", "DuckDuckGo"),
+            ("google", "Google"), ("grokipedia", "Grokipedia"), ("mojeek", "Mojeek"),
+            ("wikipedia", "Wikipedia"), ("yahoo", "Yahoo"), ("yandex", "Yandex")]))]
+        default: return []
+        }
+    }
+
+    private var microsoftWebIQFields: [Field] {
+        [f("MICROSOFT_WEB_IQ_API_BASE_URL", "Microsoft Web IQ API Base URL", "Enter Microsoft Web IQ API Base URL"),
+         f("MICROSOFT_WEB_IQ_API_KEY", "Microsoft Web IQ API Key", "Enter Microsoft Web IQ API Key", .secure),
+         f("MICROSOFT_WEB_IQ_LANGUAGE", "Language", "en")]
+    }
+
+    /// Loader-specific fields. Like the web UI, Firecrawl/Tavily/Web IQ share their
+    /// credentials with the search engine of the same name, so they're only shown
+    /// here when that engine isn't already selected above.
+    private func loaderFields(_ loader: String, searchEngine: String) -> [Field] {
+        switch loader {
+        case "", "safe_web": return [
+            f("WEB_LOADER_TIMEOUT", "Timeout (s)", "Default", .numericString),
+            f("ENABLE_WEB_LOADER_SSL_VERIFICATION", "Verify SSL Certificate", "", .toggle)]
+        case "playwright": return [
+            f("PLAYWRIGHT_WS_URL", "Playwright WebSocket URL", "ws://localhost:3000"),
+            f("PLAYWRIGHT_TIMEOUT", "Playwright Timeout (ms)", "10000", .int)]
+        case "firecrawl": return searchEngine == "firecrawl" ? [] : [
+            f("FIRECRAWL_API_BASE_URL", "Firecrawl API Base URL", "https://api.firecrawl.dev"),
+            f("FIRECRAWL_API_KEY", "Firecrawl API Key", "Enter Firecrawl API Key", .secure)]
+        case "tavily":
+            var fields = [f("TAVILY_EXTRACT_DEPTH", "Tavily Extract Depth", "", .picker([("basic", "Basic"), ("advanced", "Advanced")]))]
+            if searchEngine != "tavily" { fields.append(f("TAVILY_API_KEY", "Tavily API Key", "Enter Tavily API Key", .secure)) }
+            return fields
+        case "microsoft_web_iq": return searchEngine == "microsoft_web_iq" ? [] : microsoftWebIQFields
+        case "external": return [
+            f("EXTERNAL_WEB_LOADER_URL", "External Web Loader URL", "Enter External Web Loader URL"),
+            f("EXTERNAL_WEB_LOADER_API_KEY", "External Web Loader API Key", "Enter External Web Loader API Key", .secure)]
+        default: return []
+        }
+    }
+
+    /// Boolean keys whose server default (config.py) is True — used only when the
+    /// key is absent from the GET response.
+    private static let defaultOnKeys: Set<String> = [
+        "ENABLE_WEB_LOADER_SSL_VERIFICATION", "WEB_SEARCH_TRUST_ENV", "SERPSTACK_HTTPS"
+    ]
+
+    private static let searchEngines: [(String, String)] = [
+        ("", "None"), ("ollama_cloud", "Ollama Cloud"), ("perplexity_search", "Perplexity Search"),
+        ("searxng", "SearXNG"), ("yacy", "YaCy"), ("google_pse", "Google PSE"), ("brave", "Brave"),
+        ("brave_llm_context", "Brave LLM Context"), ("kagi", "Kagi"), ("mojeek", "Mojeek"), ("bocha", "Bocha"),
+        ("serpstack", "Serpstack"), ("serper", "Serper"), ("serphouse", "SERPHouse"), ("serply", "Serply"),
+        ("searchapi", "SearchApi"), ("serpapi", "SerpApi"), ("duckduckgo", "DDGS"), ("tavily", "Tavily"),
+        ("staan", "Staan"), ("jina", "Jina"), ("bing", "Bing"), ("exa", "Exa"), ("perplexity", "Perplexity"),
+        ("microsoft_web_iq", "Microsoft Web IQ"), ("sougou", "Sougou"), ("firecrawl", "Firecrawl"),
+        ("external", "External"), ("yandex", "Yandex"), ("youcom", "You.com"), ("linkup", "Linkup"),
+        ("openserp", "OpenSERP")
+    ]
+
+    private static let loaderEngines: [(String, String)] = [
+        ("", "Default"), ("playwright", "Playwright"), ("firecrawl", "Firecrawl"),
+        ("tavily", "Tavily"), ("microsoft_web_iq", "Microsoft Web IQ"), ("external", "External")
+    ]
+
+    /// Picker options, keeping an unknown current value selectable so it's never silently changed.
+    private func options(_ base: [(String, String)], current: String) -> [(value: String, label: String)] {
+        var opts = base.map { (value: $0.0, label: $0.1) }
+        if !opts.contains(where: { $0.value == current }) { opts.append((value: current, label: current)) }
+        return opts
+    }
+
+    // MARK: - Field Rendering
+
+    @ViewBuilder
+    private func fieldRow(_ field: Field, showDivider: Bool = true) -> some View {
+        switch field.kind {
+        case .text:
+            inlineTextFieldRow(title: field.title, placeholder: field.placeholder,
+                               text: Binding(get: { viewModel.string(field.key) }, set: { viewModel.setString(field.key, $0) }),
+                               showDivider: showDivider)
+        case .secure:
+            inlineSecureRow(title: field.title, placeholder: field.placeholder,
+                            text: Binding(get: { viewModel.string(field.key) }, set: { viewModel.setString(field.key, $0) }),
+                            isVisible: viewModel.revealedKeys.contains(field.key)) {
+                if viewModel.revealedKeys.contains(field.key) { viewModel.revealedKeys.remove(field.key) }
+                else { viewModel.revealedKeys.insert(field.key) }
+            }
+            if showDivider { Divider().padding(.leading, Spacing.md) }
+        case .int:
+            inlineTextFieldRow(title: field.title, placeholder: field.placeholder,
+                               text: Binding(get: { viewModel.intText(field.key) }, set: { viewModel.setInt(field.key, $0) }),
+                               keyboardType: .numberPad, showDivider: showDivider)
+        case .numericString:
+            inlineTextFieldRow(title: field.title, placeholder: field.placeholder,
+                               text: Binding(get: { viewModel.string(field.key) }, set: { viewModel.setNumericString(field.key, $0) }),
+                               keyboardType: .numberPad, showDivider: showDivider)
+        case .toggle:
+            inlineToggleRow(title: field.title,
+                            isOn: Binding(get: { viewModel.bool(field.key, default: Self.defaultOnKeys.contains(field.key)) },
+                                          set: { viewModel.setBool(field.key, $0) }),
+                            showDivider: showDivider)
+        case .list:
+            inlineTextFieldRow(title: field.title, placeholder: field.placeholder,
+                               text: Binding(get: { viewModel.listText(field.key) }, set: { viewModel.setList(field.key, $0) }),
+                               showDivider: showDivider)
+        case .picker(let opts):
+            inlinePickerRow(title: field.title,
+                            selection: Binding(get: { viewModel.string(field.key) }, set: { viewModel.setString(field.key, $0) }),
+                            options: options(opts, current: viewModel.string(field.key)))
+            if showDivider { Divider().padding(.leading, Spacing.md) }
+        }
+    }
+
     // MARK: - General Section
 
     private var generalSection: some View {
-        SettingsSection(header: "General") {
-            inlineToggleRow(
-                title: "Web Search",
-                isOn: $viewModel.retrievalConfig.web.enableWebSearch,
-                showDivider: true
-            )
-
+        let engine = viewModel.retrievalConfig.web.webSearchEngine
+        return SettingsSection(header: "General") {
+            fieldRow(f("ENABLE_WEB_SEARCH", "Web Search", "", .toggle))
             inlinePickerRow(
                 title: "Web Search Engine",
-                selection: $viewModel.retrievalConfig.web.webSearchEngine,
-                options: searchEngineOptions
+                selection: Binding(get: { engine }, set: { viewModel.retrievalConfig.web.webSearchEngine = $0 }),
+                options: options(Self.searchEngines, current: engine)
             )
-
-            // Engine-specific fields
-            engineSpecificFields
-
-            HStack(spacing: Spacing.md) {
-                VStack(alignment: .leading, spacing: Spacing.xs) {
-                    Text("Search Result Count")
-                        .scaledFont(size: 14, weight: .medium)
-                        .foregroundStyle(theme.textSecondary)
-                    TextField("3", value: $viewModel.retrievalConfig.web.searchResultCount, format: .number)
-                        .scaledFont(size: 15)
-                        .keyboardType(.numberPad)
-                        .textInputAutocapitalization(.never)
-                }
-                VStack(alignment: .leading, spacing: Spacing.xs) {
-                    Text("Concurrent Requests")
-                        .scaledFont(size: 14, weight: .medium)
-                        .foregroundStyle(theme.textSecondary)
-                    TextField("10", value: $viewModel.retrievalConfig.web.searchConcurrentRequests, format: .number)
-                        .scaledFont(size: 15)
-                        .keyboardType(.numberPad)
-                        .textInputAutocapitalization(.never)
-                }
-            }
-            .padding(.horizontal, Spacing.md)
-            .padding(.vertical, Spacing.chatBubblePadding)
-
             Divider().padding(.leading, Spacing.md)
-
-            inlineTextFieldRow(
-                title: "Fetch URL Content Length Limit",
-                placeholder: "0",
-                text: Binding(
-                    get: { String(viewModel.retrievalConfig.web.fetchPageContentLengthLimit) },
-                    set: { viewModel.retrievalConfig.web.fetchPageContentLengthLimit = Int($0) ?? 0 }
-                ),
-                keyboardType: .numberPad
-            )
-
-            inlineTextFieldRow(
-                title: "Domain Filter List",
-                placeholder: "e.g. example.com, docs.ai",
-                text: $viewModel.domainFilterListString
-            )
-
-            inlineToggleRow(
-                title: "Bypass Embedding and Retrieval",
-                isOn: $viewModel.retrievalConfig.web.bypassEmbeddingAndRetrieval,
-                showDivider: true
-            )
-
-            inlineToggleRow(
-                title: "Bypass Web Loader",
-                isOn: $viewModel.retrievalConfig.web.bypassWebLoader,
-                showDivider: true
-            )
-
-            inlineToggleRow(
-                title: "Trust Proxy Environment",
-                isOn: $viewModel.retrievalConfig.web.trustProxyEnvironment,
-                showDivider: false
-            )
+            ForEach(engineFields(engine), id: \.key) { fieldRow($0) }
+            fieldRow(f("WEB_SEARCH_RESULT_COUNT", "Search Result Count", "3", .int))
+            fieldRow(f("WEB_SEARCH_CONCURRENT_REQUESTS", "Concurrent Requests", "10", .int))
+            fieldRow(f("WEB_FETCH_MAX_CONTENT_LENGTH", "Fetch URL Content Length Limit", "No limit", .int))
+            fieldRow(f("WEB_SEARCH_DOMAIN_FILTER_LIST", "Domain Filter List", "e.g. example.com, docs.ai", .list))
+            fieldRow(f("BYPASS_WEB_SEARCH_EMBEDDING_AND_RETRIEVAL", "Bypass Embedding and Retrieval", "", .toggle))
+            fieldRow(f("BYPASS_WEB_SEARCH_WEB_LOADER", "Bypass Web Loader", "", .toggle))
+            fieldRow(f("WEB_SEARCH_TRUST_ENV", "Trust Proxy Environment", "", .toggle))
+            fieldRow(f("ENABLE_WEB_SEARCH_CONFIRMATION", "Ask Before Searching", "", .toggle),
+                     showDivider: viewModel.bool("ENABLE_WEB_SEARCH_CONFIRMATION"))
+            if viewModel.bool("ENABLE_WEB_SEARCH_CONFIRMATION") {
+                fieldRow(f("WEB_SEARCH_CONFIRMATION_CONTENT", "Confirmation Message", "Default"), showDivider: false)
+            }
+            if engine == "linkup" {
+                Divider().padding(.leading, Spacing.md)
+                VStack(alignment: .leading, spacing: Spacing.xs) {
+                    Text("Linkup Parameters (JSON)")
+                        .scaledFont(size: 14, weight: .medium)
+                        .foregroundStyle(theme.textSecondary)
+                    TextField("{\n  \"depth\": \"standard\"\n}", text: $viewModel.linkupParamsText, axis: .vertical)
+                        .scaledFont(size: 13)
+                        .lineLimit(3...10)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                }
+                .padding(.horizontal, Spacing.md)
+                .padding(.vertical, Spacing.chatBubblePadding)
+            }
         }
         .padding(.horizontal, Spacing.sm)
-    }
-
-    // MARK: - Engine-Specific Fields
-
-    @ViewBuilder
-    private var engineSpecificFields: some View {
-        let engine = viewModel.retrievalConfig.web.webSearchEngine
-
-        switch engine {
-        case "searxng":
-            inlineTextFieldRow(title: "SearXNG Query URL", placeholder: "http://...", text: $viewModel.retrievalConfig.web.searxngQueryURL)
-            inlineTextFieldRow(title: "Language", placeholder: "en", text: $viewModel.retrievalConfig.web.searxngLanguage)
-
-        case "google_pse":
-            inlineSecureRow(title: "API Key", placeholder: "Enter Google PSE API Key", text: $viewModel.retrievalConfig.web.googlePSEAPIKey, isVisible: viewModel.showGooglePSEKey) { viewModel.showGooglePSEKey.toggle() }
-            inlineTextFieldRow(title: "Engine ID", placeholder: "Enter Engine ID", text: $viewModel.retrievalConfig.web.googlePSEEngineID)
-
-        case "brave":
-            inlineSecureRow(title: "API Key", placeholder: "Enter Brave API Key", text: $viewModel.retrievalConfig.web.braveSearchAPIKey, isVisible: viewModel.showBraveKey) { viewModel.showBraveKey.toggle() }
-
-        case "kagi":
-            inlineSecureRow(title: "API Key", placeholder: "Enter Kagi API Key", text: $viewModel.retrievalConfig.web.kagiSearchAPIKey, isVisible: viewModel.showKagiKey) { viewModel.showKagiKey.toggle() }
-
-        case "mojeek":
-            inlineSecureRow(title: "API Key", placeholder: "Enter Mojeek API Key", text: $viewModel.retrievalConfig.web.mojeekSearchAPIKey, isVisible: viewModel.showMojeekKey) { viewModel.showMojeekKey.toggle() }
-
-        case "bocha":
-            inlineSecureRow(title: "API Key", placeholder: "Enter Bocha API Key", text: $viewModel.retrievalConfig.web.bochaSearchAPIKey, isVisible: viewModel.showBochaKey) { viewModel.showBochaKey.toggle() }
-
-        case "serpstack":
-            inlineSecureRow(title: "API Key", placeholder: "Enter Serpstack API Key", text: $viewModel.retrievalConfig.web.serpstackAPIKey, isVisible: viewModel.showSerpstackKey) { viewModel.showSerpstackKey.toggle() }
-            inlineToggleRow(title: "HTTPS", isOn: $viewModel.retrievalConfig.web.serpstackHTTPS, showDivider: true)
-
-        case "serper":
-            inlineSecureRow(title: "API Key", placeholder: "Enter Serper API Key", text: $viewModel.retrievalConfig.web.serperAPIKey, isVisible: viewModel.showSerperKey) { viewModel.showSerperKey.toggle() }
-
-        case "serply":
-            inlineSecureRow(title: "API Key", placeholder: "Enter Serply API Key", text: $viewModel.retrievalConfig.web.serplyAPIKey, isVisible: viewModel.showSerplyKey) { viewModel.showSerplyKey.toggle() }
-
-        case "searchapi":
-            inlineSecureRow(title: "API Key", placeholder: "Enter SearchAPI API Key", text: $viewModel.retrievalConfig.web.searchAPIAPIKey, isVisible: viewModel.showSearchAPIKey) { viewModel.showSearchAPIKey.toggle() }
-            inlineTextFieldRow(title: "Engine", placeholder: "google", text: $viewModel.retrievalConfig.web.searchAPIEngine)
-
-        case "serpapi":
-            inlineSecureRow(title: "API Key", placeholder: "Enter SerpAPI API Key", text: $viewModel.retrievalConfig.web.serpAPIAPIKey, isVisible: viewModel.showSerpAPIKey) { viewModel.showSerpAPIKey.toggle() }
-            inlineTextFieldRow(title: "Engine", placeholder: "google", text: $viewModel.retrievalConfig.web.serpAPIEngine)
-
-        case "tavily":
-            inlineSecureRow(title: "API Key", placeholder: "Enter Tavily API Key", text: $viewModel.retrievalConfig.web.tavilyAPIKey, isVisible: viewModel.showTavilyKey) { viewModel.showTavilyKey.toggle() }
-            inlineTextFieldRow(title: "Extract Depth", placeholder: "basic", text: $viewModel.retrievalConfig.web.tavilyExtractDepth)
-
-        case "jina":
-            inlineSecureRow(title: "API Key", placeholder: "Enter Jina API Key", text: $viewModel.retrievalConfig.web.jinaAPIKey, isVisible: viewModel.showJinaKey) { viewModel.showJinaKey.toggle() }
-
-        case "bing":
-            inlineSecureRow(title: "Subscription Key", placeholder: "Enter Bing Subscription Key", text: $viewModel.retrievalConfig.web.bingSearchV7SubscriptionKey, isVisible: viewModel.showBingKey) { viewModel.showBingKey.toggle() }
-            inlineTextFieldRow(title: "Endpoint", placeholder: "https://api.bing.microsoft.com/v7.0/search", text: $viewModel.retrievalConfig.web.bingSearchV7Endpoint)
-            inlineTextFieldRow(title: "Region", placeholder: "en-US", text: $viewModel.retrievalConfig.web.bingSearchV7Region)
-
-        case "exa":
-            inlineSecureRow(title: "API Key", placeholder: "Enter Exa API Key", text: $viewModel.retrievalConfig.web.exaAPIKey, isVisible: viewModel.showExaKey) { viewModel.showExaKey.toggle() }
-
-        case "perplexity":
-            inlineSecureRow(title: "API Key", placeholder: "Enter Perplexity API Key", text: $viewModel.retrievalConfig.web.perplexityAPIKey, isVisible: viewModel.showPerplexityKey) { viewModel.showPerplexityKey.toggle() }
-
-        case "sougou":
-            inlineSecureRow(title: "API SID", placeholder: "Enter Sougou API SID", text: $viewModel.retrievalConfig.web.sougouAPISID, isVisible: viewModel.showSougouSID) { viewModel.showSougouSID.toggle() }
-            inlineSecureRow(title: "API SK", placeholder: "Enter Sougou API SK", text: $viewModel.retrievalConfig.web.sougouAPISK, isVisible: viewModel.showSougouSK) { viewModel.showSougouSK.toggle() }
-
-        case "firecrawl":
-            inlineSecureRow(title: "API Key", placeholder: "Enter Firecrawl API Key", text: $viewModel.retrievalConfig.web.firecrawlAPIKey, isVisible: viewModel.showFirecrawlKey) { viewModel.showFirecrawlKey.toggle() }
-            inlineTextFieldRow(title: "API Base URL", placeholder: "https://api.firecrawl.dev", text: $viewModel.retrievalConfig.web.firecrawlAPIBaseURL)
-
-        case "external":
-            inlineTextFieldRow(title: "External Search URL", placeholder: "http://...", text: $viewModel.retrievalConfig.web.externalSearchURL)
-            inlineSecureRow(title: "API Key", placeholder: "Enter External Search API Key", text: $viewModel.retrievalConfig.web.externalSearchAPIKey, isVisible: viewModel.showExternalSearchKey) { viewModel.showExternalSearchKey.toggle() }
-
-        case "yandex":
-            inlineSecureRow(title: "API Key", placeholder: "Enter Yandex API Key", text: $viewModel.retrievalConfig.web.yandexSearchAPIKey, isVisible: viewModel.showYandexKey) { viewModel.showYandexKey.toggle() }
-            inlineTextFieldRow(title: "Folder ID", placeholder: "Enter Folder ID", text: $viewModel.retrievalConfig.web.yandexSearchFolderID)
-            inlineTextFieldRow(title: "Language", placeholder: "en", text: $viewModel.retrievalConfig.web.yandexSearchLang)
-
-        case "youcom":
-            inlineSecureRow(title: "API Key", placeholder: "Enter You.com API Key", text: $viewModel.retrievalConfig.web.youSearchAPIKey, isVisible: viewModel.showYouKey) { viewModel.showYouKey.toggle() }
-
-        case "ollama_cloud":
-            inlineSecureRow(title: "API Key", placeholder: "Enter Ollama Cloud API Key", text: $viewModel.retrievalConfig.web.ollamaCloudAPIKey, isVisible: viewModel.showOllamaCloudKey) { viewModel.showOllamaCloudKey.toggle() }
-            inlineTextFieldRow(title: "API URL", placeholder: "http://...", text: $viewModel.retrievalConfig.web.ollamaCloudAPIURL)
-            inlineTextFieldRow(title: "Model", placeholder: "Enter Model", text: $viewModel.retrievalConfig.web.ollamaCloudModel)
-
-        case "perplexity_search":
-            inlineSecureRow(title: "API Key", placeholder: "Enter Perplexity Search API Key", text: $viewModel.retrievalConfig.web.perplexitySearchAPIKey, isVisible: viewModel.showPerplexitySearchKey) { viewModel.showPerplexitySearchKey.toggle() }
-            inlineTextFieldRow(title: "API URL", placeholder: "http://...", text: $viewModel.retrievalConfig.web.perplexitySearchAPIURL)
-            inlineTextFieldRow(title: "Model", placeholder: "Enter Model", text: $viewModel.retrievalConfig.web.perplexitySearchModel)
-
-        case "openserp":
-            inlineTextFieldRow(title: "Base URL", placeholder: "http://localhost:5001", text: $viewModel.retrievalConfig.web.openSerpBaseURL, keyboardType: .URL)
-
-        case "DDGS":
-            inlineTextFieldRow(title: "Proxy", placeholder: "http://...", text: $viewModel.retrievalConfig.web.ddgsProxy)
-
-        default:
-            EmptyView()
-        }
     }
 
     // MARK: - Loader Section
 
     private var loaderSection: some View {
-        SettingsSection(header: "Loader") {
+        let loader = viewModel.retrievalConfig.web.webLoaderEngine
+        let engine = viewModel.retrievalConfig.web.webSearchEngine
+        return SettingsSection(header: "Loader") {
             inlinePickerRow(
                 title: "Web Loader Engine",
-                selection: $viewModel.retrievalConfig.web.webLoaderEngine,
-                options: [
-                    (value: "", label: "Default"),
-                    (value: "playwright", label: "Playwright"),
-                    (value: "firecrawl", label: "Firecrawl"),
-                    (value: "tavily", label: "Tavily"),
-                    (value: "external", label: "External"),
-                ]
+                selection: Binding(get: { loader }, set: { viewModel.retrievalConfig.web.webLoaderEngine = $0 }),
+                options: options(Self.loaderEngines, current: loader)
             )
-
-            // Loader-engine-specific fields
-            loaderEngineSpecificFields
-
-            inlineTextFieldRow(
-                title: "Timeout",
-                placeholder: "15",
-                text: Binding(
-                    get: { String(viewModel.retrievalConfig.web.webLoaderTimeout) },
-                    set: { viewModel.retrievalConfig.web.webLoaderTimeout = Int($0) ?? 15 }
-                ),
-                keyboardType: .numberPad
-            )
-
-            inlineToggleRow(
-                title: "Verify SSL Certificate",
-                isOn: $viewModel.retrievalConfig.web.webLoaderVerifySSL,
-                showDivider: true
-            )
-
-            inlineTextFieldRow(
-                title: "Concurrent Requests",
-                placeholder: "10",
-                text: Binding(
-                    get: { String(viewModel.retrievalConfig.web.webLoaderConcurrentRequests) },
-                    set: { viewModel.retrievalConfig.web.webLoaderConcurrentRequests = Int($0) ?? 10 }
-                ),
-                keyboardType: .numberPad,
-                showDivider: false
-            )
+            Divider().padding(.leading, Spacing.md)
+            ForEach(loaderFields(loader, searchEngine: engine), id: \.key) { fieldRow($0) }
+            fieldRow(f("WEB_LOADER_CONCURRENT_REQUESTS", "Concurrent Requests", "10", .int), showDivider: false)
         }
         .padding(.horizontal, Spacing.sm)
-    }
-
-    @ViewBuilder
-    private var loaderEngineSpecificFields: some View {
-        let engine = viewModel.retrievalConfig.web.webLoaderEngine
-
-        switch engine {
-        case "playwright":
-            inlineTextFieldRow(title: "WebSocket URL", placeholder: "ws://...", text: $viewModel.retrievalConfig.web.playwrightWSURL)
-            inlineTextFieldRow(
-                title: "Timeout (ms)",
-                placeholder: "60000",
-                text: Binding(
-                    get: { String(viewModel.retrievalConfig.web.playwrightTimeout) },
-                    set: { viewModel.retrievalConfig.web.playwrightTimeout = Int($0) ?? 60000 }
-                ),
-                keyboardType: .numberPad
-            )
-
-        case "firecrawl":
-            inlineSecureRow(title: "API Key", placeholder: "Enter Firecrawl Loader API Key", text: $viewModel.retrievalConfig.web.firecrawlLoaderAPIKey, isVisible: viewModel.showFirecrawlLoaderKey) { viewModel.showFirecrawlLoaderKey.toggle() }
-            inlineTextFieldRow(title: "API Base URL", placeholder: "https://api.firecrawl.dev", text: $viewModel.retrievalConfig.web.firecrawlLoaderAPIBaseURL)
-            inlineTextFieldRow(
-                title: "Timeout (ms)",
-                placeholder: "60000",
-                text: Binding(
-                    get: { String(viewModel.retrievalConfig.web.firecrawlLoaderTimeout) },
-                    set: { viewModel.retrievalConfig.web.firecrawlLoaderTimeout = Int($0) ?? 60000 }
-                ),
-                keyboardType: .numberPad
-            )
-
-        case "tavily":
-            inlineSecureRow(title: "API Key", placeholder: "Enter Tavily Loader API Key", text: $viewModel.retrievalConfig.web.tavilyLoaderAPIKey, isVisible: viewModel.showTavilyLoaderKey) { viewModel.showTavilyLoaderKey.toggle() }
-            inlineTextFieldRow(title: "Extract Depth", placeholder: "basic", text: $viewModel.retrievalConfig.web.tavilyLoaderExtractDepth)
-
-        case "external":
-            inlineTextFieldRow(title: "External Loader URL", placeholder: "http://...", text: $viewModel.retrievalConfig.web.externalLoaderURL)
-            inlineSecureRow(title: "API Key", placeholder: "Enter External Loader API Key", text: $viewModel.retrievalConfig.web.externalLoaderAPIKey, isVisible: viewModel.showExternalLoaderKey) { viewModel.showExternalLoaderKey.toggle() }
-
-        default:
-            EmptyView()
-        }
     }
 
     // MARK: - YouTube Section
 
     private var youtubeSection: some View {
         SettingsSection(header: "YouTube") {
-            inlineTextFieldRow(
-                title: "Youtube Language",
-                placeholder: "en",
-                text: $viewModel.retrievalConfig.web.youtubeLanguage
-            )
-
-            inlineTextFieldRow(
-                title: "Youtube Proxy URL",
-                placeholder: "http://...",
-                text: $viewModel.retrievalConfig.web.youtubeProxyURL,
-                showDivider: false
-            )
+            fieldRow(f("YOUTUBE_LOADER_LANGUAGE", "Youtube Language", "en", .list))
+            fieldRow(f("YOUTUBE_LOADER_PROXY_URL", "Youtube Proxy URL", "http://..."), showDivider: false)
         }
         .padding(.horizontal, Spacing.sm)
-    }
-
-    // MARK: - Search Engine Options
-
-    private var searchEngineOptions: [(value: String, label: String)] {
-        [
-            (value: "", label: "None"),
-            (value: "ollama_cloud", label: "Ollama Cloud"),
-            (value: "perplexity_search", label: "Perplexity Search"),
-            (value: "searxng", label: "SearXNG"),
-            (value: "yacy", label: "YaCy"),
-            (value: "google_pse", label: "Google PSE"),
-            (value: "brave", label: "Brave"),
-            (value: "kagi", label: "Kagi"),
-            (value: "mojeek", label: "Mojeek"),
-            (value: "bocha", label: "Bocha"),
-            (value: "serpstack", label: "Serpstack"),
-            (value: "serper", label: "Serper"),
-            (value: "serply", label: "Serply"),
-            (value: "searchapi", label: "SearchAPI"),
-            (value: "serpapi", label: "SerpAPI"),
-            (value: "DDGS", label: "DDGS"),
-            (value: "tavily", label: "Tavily"),
-            (value: "jina", label: "Jina"),
-            (value: "bing", label: "Bing"),
-            (value: "exa", label: "Exa"),
-            (value: "perplexity", label: "Perplexity"),
-            (value: "sougou", label: "Sougou"),
-            (value: "firecrawl", label: "Firecrawl"),
-            (value: "external", label: "External"),
-            (value: "yandex", label: "Yandex"),
-            (value: "youcom", label: "You.com"),
-            (value: "openserp", label: "OpenSERP"),
-        ]
     }
 
     // MARK: - Row Builders
