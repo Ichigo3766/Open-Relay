@@ -1,16 +1,5 @@
 # Changelog
 
-## 📦 NEXT BUILD
-
-### What's New
-
-### Improvements
-
-### Bug Fixes
-
-
-## Previous Builds
-
 ## v6.3.1 — October 7, 2026
 
 ### What's New
