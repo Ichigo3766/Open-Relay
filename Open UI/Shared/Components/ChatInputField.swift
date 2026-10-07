@@ -848,7 +848,7 @@ struct ChatInputField: View {
                             .foregroundStyle(theme.textTertiary)
                     )
             }
-            .buttonStyle(.plain)
+            .buttonStyle(.pressable)
             .composerHitTarget()
             .disabled(!isEnabled)
             .opacity(isEnabled ? 1.0 : 0.4)
@@ -859,84 +859,70 @@ struct ChatInputField: View {
 
     // MARK: - Trailing Button (Send / Stop / Voice)
 
+    private enum TrailingMode { case stop, send, voice, none }
+
+    private var trailingMode: TrailingMode {
+        if onStopGenerating != nil && !canSend { return .stop }
+        if canSend || onVoiceInput == nil { return .send }
+        if !hasQuickPills, onVoiceInput != nil { return .voice }
+        return .none
+    }
+
+    /// One persistent circle: its fill and icon morph between send, stop and voice
+    /// instead of three separate buttons popping in and out.
+    @ViewBuilder
     private var trailingButton: some View {
-        Group {
-            if onStopGenerating != nil && !canSend {
-                // Stop generating — only shown when there is no text to queue
-                Button {
-                    Haptics.play(.light)
-                    onStopGenerating?()
-                } label: {
-                    Circle()
-                        .fill(theme.error.opacity(0.15))
-                        .frame(width: 26 * uiScale, height: 26 * uiScale)
-                        .overlay(
-                            Image(systemName: "stop.fill")
-                                .scaledFont(size: 10 * uiScale, weight: .bold)
-                                .foregroundStyle(theme.error)
-                        )
+        let mode = trailingMode
+        if mode != .none {
+            Button {
+                Haptics.play(.light)
+                switch mode {
+                case .stop: onStopGenerating?()
+                case .send: collapseComposer(); onSend()
+                case .voice: onVoiceInput?()
+                case .none: break
                 }
-                .buttonStyle(.plain)
-                .composerHitTarget()
-                .accessibilityLabel("Stop Generating")
-                .transition(.scale.combined(with: .opacity))
-
-            } else if canSend || onVoiceInput == nil {
-                // Send message (or queue it when streaming + message queue is enabled).
-                // When voice mode is unavailable, a muted disabled send button holds the slot.
-                Button {
-                    Haptics.play(.light)
-                    collapseComposer()
-                    onSend()
-                } label: {
-                    Circle()
-                        .fill(canSend ? theme.brandPrimary : theme.textTertiary.opacity(0.15))
-                        .frame(width: 26 * uiScale, height: 26 * uiScale)
-                        .overlay(
-                            Image(systemName: "arrow.up")
-                                .scaledFont(size: 11 * uiScale, weight: .bold)
-                                .foregroundStyle(canSend ? theme.brandOnPrimary : theme.textTertiary)
-                        )
-                }
-                .buttonStyle(.plain)
-                .composerHitTarget()
-                .disabled(!canSend)
-                .accessibilityLabel("Send message")
-                .transition(.scale.combined(with: .opacity))
-
-            } else if !hasQuickPills, let onVoiceInput {
-                // Voice button — only in inline position when no pill row exists
-                Button {
-                    Haptics.play(.light)
-                    onVoiceInput()
-                } label: {
-                    Circle()
-                        .strokeBorder(
-                            LinearGradient(
-                                colors: [
-                                    theme.brandPrimary.opacity(0.5),
-                                    theme.brandPrimary.opacity(0.2)
-                                ],
-                                startPoint: .topLeading,
-                                endPoint: .bottomTrailing
-                            ),
-                            lineWidth: 1.5
-                        )
-                        .frame(width: 26 * uiScale, height: 26 * uiScale)
-                        .overlay(
-                            Image(systemName: "waveform")
-                                .scaledFont(size: 11 * uiScale, weight: .semibold)
-                                .foregroundStyle(theme.brandPrimary)
-                        )
-                }
-                .buttonStyle(.plain)
-                .composerHitTarget()
-                .accessibilityLabel("Voice call")
-                .transition(.scale.combined(with: .opacity))
+            } label: {
+                trailingCircle(for: mode)
             }
+            .buttonStyle(.pressable)
+            .composerHitTarget()
+            .disabled(mode == .send && !canSend)
+            .accessibilityLabel(mode == .stop ? "Stop Generating" : (mode == .send ? "Send message" : "Voice call"))
+            .animation(MicroAnimation.snappy, value: mode)
+            .animation(.easeInOut(duration: 0.15), value: canSend)
+            .animation(.easeInOut(duration: 0.15), value: isEnabled)
         }
-        .animation(.easeInOut(duration: 0.15), value: canSend)
-        .animation(.easeInOut(duration: 0.15), value: isEnabled)
+    }
+
+    private func trailingCircle(for mode: TrailingMode) -> some View {
+        let symbol: String = mode == .stop ? "stop.fill" : (mode == .send ? "arrow.up" : "waveform")
+        let tint: Color = mode == .stop ? theme.error
+            : (mode == .send ? (canSend ? theme.brandOnPrimary : theme.textTertiary) : theme.brandPrimary)
+        let fill: Color = mode == .stop ? theme.error.opacity(0.15)
+            : (mode == .send ? (canSend ? theme.brandPrimary : theme.textTertiary.opacity(0.15)) : Color.clear)
+        return Circle()
+            .fill(fill)
+            .overlay(
+                // The voice ring fades in/out as the circle morphs to or from voice.
+                Circle()
+                    .strokeBorder(
+                        LinearGradient(
+                            colors: [theme.brandPrimary.opacity(0.5), theme.brandPrimary.opacity(0.2)],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        ),
+                        lineWidth: 1.5
+                    )
+                    .opacity(mode == .voice ? 1 : 0)
+            )
+            .frame(width: 26 * uiScale, height: 26 * uiScale)
+            .overlay(
+                Image(systemName: symbol)
+                    .scaledFont(size: (mode == .stop ? 10 : 11) * uiScale, weight: mode == .voice ? .semibold : .bold)
+                    .foregroundStyle(tint)
+                    .contentTransition(.symbolEffect(.replace))
+            )
     }
 
     // MARK: - Pills Row

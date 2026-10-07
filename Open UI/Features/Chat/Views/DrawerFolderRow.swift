@@ -94,6 +94,8 @@ struct DrawerFolderRow: View {
                                 .frame(width: 16, height: 16)
                         } else {
                             Image(systemName: folder.isExpanded ? "folder.fill" : "folder")
+                            .contentTransition(.symbolEffect(.replace))
+                            .animation(MicroAnimation.quick, value: folder.isExpanded)
                                 .scaledFont(size: 12)
                                 .foregroundStyle(isActiveWorkspace ? theme.brandPrimary : theme.brandPrimary)
                         }
@@ -471,6 +473,8 @@ struct DrawerFolderRow: View {
                     HStack(spacing: Spacing.sm) {
                         // Checkbox
                         Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+                        .contentTransition(.symbolEffect(.replace))
+                        .animation(MicroAnimation.quick, value: isSelected)
                             .scaledFont(size: 16)
                             .foregroundStyle(isSelected ? theme.brandPrimary : theme.textTertiary)
                             .padding(.leading, 22 + CGFloat(depth) * 16)

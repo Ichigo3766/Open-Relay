@@ -321,14 +321,13 @@ struct AdminUsersListView: View {
                 serverBaseURL: dependencies.apiClient?.baseURL ?? "",
                 apiClient: dependencies.apiClient,
                 onClone: { clonedConversation in
-                    showChatsSheet = false
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-                        NotificationCenter.default.post(name: .conversationListNeedsRefresh, object: nil)
-                        NotificationCenter.default.post(
-                            name: .adminClonedChat,
-                            object: clonedConversation.id
-                        )
-                    }
+                    // One step: the list refreshes now, then the main view closes every sheet
+                    // (this one, the console, Settings) and opens the copy.
+                    NotificationCenter.default.post(name: .conversationListNeedsRefresh, object: nil)
+                    NotificationCenter.default.post(
+                        name: .adminClonedChat,
+                        object: clonedConversation.id
+                    )
                 }
             )
             .presentationDetents([.large])

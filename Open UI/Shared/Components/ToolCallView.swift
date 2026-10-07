@@ -152,6 +152,14 @@ struct ToolCallData: Identifiable {
     /// document to be rendered inline in the chat as an interactive webview.
     let embeds: [String]
     var terminalFile: TerminalFileAttachment? = nil
+    /// Web-style display label (e.g. `Sub-agent: "task"` for `delegate_task`).
+    var label: String? = nil
+    /// Image sources returned by the tool (`files` on the output item): either
+    /// `data:image/...` URIs or server paths/URLs.
+    var imageSources: [String] = []
+
+    /// Name shown in the card header.
+    var headerName: String { label ?? name }
 
     /// A display-friendly name (replaces underscores with spaces).
     var displayName: String {
@@ -555,6 +563,8 @@ enum ToolCallParser {
         // rendered once isDone == true, so parsing the 30KB+ HTML-entity-encoded
         // iframe blob on every streaming frame is pure wasted CPU on the main thread.
         let embeds = isDone ? parseEmbedsAttribute(attrs["embeds"]) : []
+        let label = attrs["label"].flatMap { $0.isEmpty ? nil : decodeHTMLEntities($0) }
+        let imageSources = isDone ? parseImageSources(attrs["files"]) : []
 
         return ToolCallData(
             id: id,
@@ -565,8 +575,25 @@ enum ToolCallParser {
             status: status,
             embeds: embeds,
             terminalFile: isDone && name == "display_file"
-                ? TerminalFileAttachment(result: decodeHTMLEntities(result), arguments: decodeHTMLEntities(arguments)) : nil
+                ? TerminalFileAttachment(result: decodeHTMLEntities(result), arguments: decodeHTMLEntities(arguments)) : nil,
+            label: label,
+            imageSources: imageSources
         )
+    }
+
+    /// Reads the `files` attribute (JSON array of strings or `{type,url,content_type}`
+    /// objects) and returns the image sources, matching the web tool-call display.
+    private nonisolated static func parseImageSources(_ raw: String?) -> [String] {
+        guard let raw, !raw.isEmpty,
+              let json = decodeHTMLEntities(raw),
+              let data = json.data(using: .utf8),
+              let array = try? JSONSerialization.jsonObject(with: data) as? [Any] else { return [] }
+        return array.compactMap { entry -> String? in
+            if let s = entry as? String { return s.hasPrefix("data:image/") ? s : nil }
+            guard let d = entry as? [String: Any], let url = d["url"] as? String, !url.isEmpty else { return nil }
+            let contentType = d["content_type"] as? String ?? ""
+            return (d["type"] as? String) == "image" || contentType.hasPrefix("image/") ? url : nil
+        }
     }
 
     /// Extracts and decodes the `embeds` attribute from a tool call block.
@@ -794,12 +821,12 @@ enum ToolCallParser {
         guard let string, string.utf8.contains(0x26) else { return string }
         return string
             .replacingOccurrences(of: "&quot;", with: "\"")
-            .replacingOccurrences(of: "&amp;", with: "&")
             .replacingOccurrences(of: "&lt;", with: "<")
             .replacingOccurrences(of: "&gt;", with: ">")
             .replacingOccurrences(of: "&apos;", with: "'")
             .replacingOccurrences(of: "&#x27;", with: "'")
             .replacingOccurrences(of: "&#39;", with: "'")
+            .replacingOccurrences(of: "&amp;", with: "&")  // last, so "&amp;lt;" stays "&lt;"
     }
 
     // MARK: - File ID Extraction from Tool Results
@@ -2043,7 +2070,7 @@ struct ToolCallView: View {
                         // "View Result from tool_name" — matches Open WebUI web UI pattern
                         (Text("View Result from ")
                             .foregroundStyle(theme.textTertiary)
-                         + Text(toolCall.name)
+                         + Text(toolCall.headerName)
                             .foregroundStyle(theme.textPrimary)
                             .fontWeight(.semibold))
                             .scaledFont(size: 13, weight: .medium)
@@ -2052,8 +2079,7 @@ struct ToolCallView: View {
 
                         Spacer()
 
-                        Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
-                            .scaledFont(size: 10, weight: .semibold)
+                        ExpandChevron(isExpanded: isExpanded)
                             .foregroundStyle(theme.textTertiary)
                     }
                     .padding(.vertical, 10)
@@ -2117,7 +2143,30 @@ struct ToolCallView: View {
                 .padding(.top, Spacing.xs)
                 .padding(.bottom, Spacing.sm)
             }
+
+            // Images returned by the tool (web shows these under the card once done).
+            if toolCall.isDone && !toolCall.imageSources.isEmpty {
+                VStack(alignment: .leading, spacing: Spacing.sm) {
+                    ForEach(Array(toolCall.imageSources.enumerated()), id: \.offset) { _, source in
+                        if let url = resolvedImageURL(source) {
+                            MarkdownInlineImageView(imageURL: url, altText: "Image", linkURL: nil)
+                        }
+                    }
+                }
+                .padding(.bottom, Spacing.sm)
+            }
         }
+    }
+
+    /// Absolute URL for a tool image: data URIs and absolute URLs pass through,
+    /// server-relative paths are resolved against the server base URL.
+    private func resolvedImageURL(_ source: String) -> URL? {
+        if source.hasPrefix("data:") || source.hasPrefix("http://") || source.hasPrefix("https://") {
+            return URL(string: source)
+        }
+        guard let base = serverBaseURL else { return nil }
+        let trimmedBase = base.hasSuffix("/") ? String(base.dropLast()) : base
+        return URL(string: source.hasPrefix("/") ? trimmedBase + source : trimmedBase + "/" + source)
     }
 }
 
@@ -2155,7 +2204,7 @@ private struct MixedToolCallGroup: View {
         var seen = Set<String>()
         var unique: [String] = []
         for tc in toolItems {
-            if seen.insert(tc.name).inserted { unique.append(tc.name) }
+            if seen.insert(tc.headerName).inserted { unique.append(tc.headerName) }
         }
         return unique.joined(separator: ", ")
     }
@@ -2199,8 +2248,7 @@ private struct MixedToolCallGroup: View {
 
                     Spacer()
 
-                    Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
-                        .scaledFont(size: 10, weight: .semibold)
+                    ExpandChevron(isExpanded: isExpanded)
                         .foregroundStyle(theme.textTertiary)
                 }
                 .padding(.vertical, 10)
@@ -2360,8 +2408,10 @@ struct ReasoningView: View {
                 }
             } label: {
                 HStack(spacing: Spacing.sm) {
-                    Image(systemName: isExpanded && hasContent ? "chevron.down" : "chevron.right")
+                    Image(systemName: "chevron.right")
                         .scaledFont(size: 9, weight: .bold)
+                        .rotationEffect(.degrees(isExpanded && hasContent ? 90 : 0))
+                        .animation(MicroAnimation.snappy, value: isExpanded)
                         .foregroundStyle(theme.textTertiary)
                         .frame(width: 12)
                         .opacity(hasContent ? 1 : 0.35)
@@ -2553,7 +2603,9 @@ struct AssistantMessageContent: View {
                                 isDone: tc.isDone,
                                 status: tc.status,
                                 embeds: messageEmbeds,
-                                terminalFile: tc.terminalFile
+                                terminalFile: tc.terminalFile,
+                                label: tc.label,
+                                imageSources: tc.imageSources
                             ))
                             mutableGroups[i] = .toolCalls(items)
                             return mutableGroups

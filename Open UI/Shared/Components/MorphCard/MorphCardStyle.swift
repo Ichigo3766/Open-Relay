@@ -15,10 +15,10 @@ enum ComposerMorph: Equatable {
 
 enum MorphCardMetrics {
     /// Spring used for growing the card and changing its size.
-    static let spring: Animation = .spring(response: 0.44, dampingFraction: 0.84)
+    static let spring: Animation = .spring(response: 0.4, dampingFraction: 0.88)
     /// Critically damped spring for shrinking back into the composer (no overshoot,
     /// so the hand-off to the real composer is seamless).
-    static let closeSpring: Animation = .spring(response: 0.34, dampingFraction: 1)
+    static let closeSpring: Animation = .spring(response: 0.3, dampingFraction: 1)
     /// Faster spring for small control changes inside the card.
     static let controlSpring: Animation = .spring(response: 0.3, dampingFraction: 0.78)
     static let cornerRadius: CGFloat = 30
@@ -96,7 +96,7 @@ struct MorphRowReveal: ViewModifier {
             .offset(y: isRevealed || reduceMotion ? 0 : 14)
             .animation(
                 isRevealed
-                    ? .spring(response: 0.4, dampingFraction: 0.86).delay(0.07 + Double(index) * 0.035)
+                    ? .spring(response: 0.4, dampingFraction: 0.86).delay(0.04 + Double(index) * 0.025)
                     : .easeOut(duration: 0.1),
                 value: isRevealed
             )

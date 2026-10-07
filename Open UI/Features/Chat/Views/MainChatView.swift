@@ -346,14 +346,8 @@ struct MainChatView: View {
                             }
                             .onEnded { value in
                                 guard isDraggingDrawer else { return }
-                                let horizontal = value.translation.width
-                                let velocity = value.velocity.width
                                 isDraggingDrawer = false
-                                if horizontal < -(drawerWidth * 0.15) || velocity < -300 {
-                                    closeDrawerAnimated()
-                                } else {
-                                    openDrawerAnimated()
-                                }
+                                settleDrawer(translation: value.translation.width, velocity: value.velocity.width)
                             }
                     )
             }
@@ -412,10 +406,10 @@ struct MainChatView: View {
             },
             onEnded: { horizontal, velocity, cancelled in
                 isDraggingDrawer = false
-                if !cancelled && (horizontal > drawerWidth * 0.2 || velocity > 300) {
-                    openDrawerAnimated()
-                } else {
+                if cancelled {
                     closeDrawerAnimated()
+                } else {
+                    settleDrawer(translation: horizontal, velocity: velocity)
                 }
             }
         )
@@ -431,12 +425,20 @@ struct MainChatView: View {
                     .navigationBarTitleDisplayMode(.inline)
                     .toolbarBackground(.hidden, for: .navigationBar)
             }
+            // The top bar fades, blurs and shrinks away as the sidebar opens.
+            .environment(\.sidebarOpenFraction, usesPageCardSidebar ? maxPanelFraction : 0)
             .gesture(sidebarOpeningGesture)
             // Include the window edges in the mask without moving safe-area content.
             .padding(.leading, usesPageCardSidebar ? containerSafeAreaInsets.leading : 0)
             .padding(.trailing, usesPageCardSidebar ? containerSafeAreaInsets.trailing : 0)
             .background((usesPageCardSidebar ? theme.background : .clear).ignoresSafeArea())
+            // Card reads lighter than the deeper sidebar behind it while it's open.
+            .cardLift(fraction: maxPanelFraction, isEnabled: usesPageCardSidebar, isDark: theme.isDark)
             .offset(x: usesPageCardSidebar ? 0 : combinedContentOffset)
+            // Soft blur of the card's content while the sidebar is open. Applied before the
+            // mask so the rounded edges, border and glow stay crisp. Not `opaque`: that mode
+            // renders the card into a solid layer that turned white in dark mode.
+            .blur(radius: usesPageCardSidebar ? maxPanelFraction * 4 : 0)
             .mask {
                 if #available(iOS 26.0, *) {
                     ConcentricRectangle(corners: .concentric, isUniform: true)
@@ -449,12 +451,13 @@ struct MainChatView: View {
             // Page-card style (iOS 26) leaves the page unblurred for both panels.
             .blur(radius: (usesPageCardSidebar ? 0 : maxPanelFraction) * 8 + contentTransitionBlur)
             // Shadow on the active edge: left when drawer open, right when file browser open
-            .shadow(color: .black.opacity(0.18 * drawerFraction), radius: 20, x: -4)
-            .shadow(color: .black.opacity(0.18 * fileBrowserFraction), radius: 20, x: 4)
+            // Dark mode: a black shadow can't show on the black sidebar, so use a faint glow.
+            .shadow(color: (theme.isDark ? Color.white.opacity(0.07) : Color.black.opacity(0.22)).opacity(drawerFraction), radius: theme.isDark ? 16 : 20, x: -4)
+            .shadow(color: (theme.isDark ? Color.white.opacity(0.07) : Color.black.opacity(0.22)).opacity(fileBrowserFraction), radius: theme.isDark ? 16 : 20, x: 4)
             .overlay {
                 if #available(iOS 26.0, *) {
                     ConcentricRectangle(corners: .concentric, isUniform: true)
-                        .stroke(theme.isDark ? Color.white.opacity(0.1) : Color.black.opacity(0.08), lineWidth: 1 / displayScale)
+                        .stroke(theme.isDark ? Color.white.opacity(0.2) : Color.black.opacity(0.1), lineWidth: 1)
                         .opacity(maxPanelFraction)
                         .ignoresSafeArea()
                         .allowsHitTesting(false)
@@ -487,6 +490,9 @@ struct MainChatView: View {
                         DragGesture(minimumDistance: 12, coordinateSpace: .global)
                             .onChanged { value in
                                 let h = value.translation.width
+                                // Only take over for mostly-horizontal drags so a
+                                // diagonal scroll never nudges the panel.
+                                guard abs(h) > abs(value.translation.height) || isDraggingDrawer || isDraggingFileBrowser else { return }
                                 if drawerFraction >= fileBrowserFraction {
                                     guard h < 0 else { return }
                                     isDraggingDrawer = true
@@ -502,18 +508,10 @@ struct MainChatView: View {
                                 let v = value.velocity.width
                                 if isDraggingDrawer {
                                     isDraggingDrawer = false
-                                    if h < -(drawerWidth * 0.15) || v < -300 {
-                                        closeDrawerAnimated()
-                                    } else {
-                                        openDrawerAnimated()
-                                    }
+                                    settleDrawer(translation: h, velocity: v)
                                 } else if isDraggingFileBrowser {
                                     isDraggingFileBrowser = false
-                                    if h > fileBrowserWidth * 0.15 || v > 300 {
-                                        closeFileBrowserAnimated()
-                                    } else {
-                                        openFileBrowserAnimated()
-                                    }
+                                    settleFileBrowser(translation: h, velocity: v)
                                 }
                             }
                     )
@@ -526,6 +524,8 @@ struct MainChatView: View {
             // MARK: Drawer
             drawerContent
                 .frame(width: drawerWidth)
+                // The sidebar recedes (shrinks, dims, slides left) as the card covers it.
+                .sidebarRecede(fraction: drawerFraction, width: drawerWidth, isEnabled: usesPageCardSidebar)
                 .offset(x: usesPageCardSidebar ? 0 : effectiveDrawerX)
                 .zIndex(usesPageCardSidebar ? -1 : 0)
                 // Page-card style: keep the sidebar out of the file browser's reveal.
@@ -542,14 +542,8 @@ struct MainChatView: View {
                         }
                         .onEnded { value in
                             guard isDraggingDrawer else { return }
-                            let horizontal = value.translation.width
-                            let velocity = value.velocity.width
                             isDraggingDrawer = false
-                            if horizontal < -(drawerWidth * 0.15) || velocity < -300 {
-                                closeDrawerAnimated()
-                            } else {
-                                openDrawerAnimated()
-                            }
+                            settleDrawer(translation: value.translation.width, velocity: value.velocity.width)
                         }
                 )
 
@@ -587,7 +581,7 @@ struct MainChatView: View {
             .offset(x: usesPageCardSidebar ? containerWidth - fileBrowserWidth : effectiveFileBrowserX)
             .zIndex(usesPageCardSidebar ? -1 : 0)
             // Behind the card it would otherwise overlap the sidebar's revealed area.
-            .opacity(usesPageCardSidebar && fileBrowserFraction == 0 ? 0 : 1)
+            .opacity(usesPageCardSidebar ? Double(fileBrowserFraction) : 1)
             .allowsHitTesting(!usesPageCardSidebar || fileBrowserFraction > 0.01)
             .accessibilityHidden(fileBrowserFraction < 0.01)
             .gesture(
@@ -600,14 +594,8 @@ struct MainChatView: View {
                     }
                     .onEnded { value in
                         guard isDraggingFileBrowser else { return }
-                        let horizontal = value.translation.width
-                        let velocity = value.velocity.width
                         isDraggingFileBrowser = false
-                        if horizontal > fileBrowserWidth * 0.15 || velocity > 300 {
-                            closeFileBrowserAnimated()
-                        } else {
-                            openFileBrowserAnimated()
-                        }
+                        settleFileBrowser(translation: value.translation.width, velocity: value.velocity.width)
                     }
             )
             } // end if isTerminalActiveInCurrentChat
@@ -636,14 +624,8 @@ struct MainChatView: View {
                             }
                             .onEnded { value in
                                 guard isDraggingFileBrowser else { return }
-                                let horizontal = abs(value.translation.width)
-                                let velocity = abs(value.velocity.width)
                                 isDraggingFileBrowser = false
-                                if horizontal > fileBrowserWidth * 0.3 || velocity > 500 {
-                                    openFileBrowserAnimated()
-                                } else {
-                                    closeFileBrowserAnimated()
-                                }
+                                settleFileBrowser(translation: value.translation.width, velocity: value.velocity.width)
                             }
                     )
                     .frame(maxWidth: .infinity, alignment: .trailing)
@@ -1194,17 +1176,28 @@ struct MainChatView: View {
                     // Reset any stale drag state so hit-testing is never blocked on foreground.
                     // If the user backgrounded mid-swipe, dragOffset could be non-zero which
                     // makes drawerFraction > 0 → allowsHitTesting(false) on the main content.
-                    dragOffset = 0
-                    isDraggingDrawer = false
-                    fileBrowserDragOffset = 0
-                    isDraggingFileBrowser = false
-                    // Close the drawer on foreground — if the user backgrounded with the drawer
-                    // open, the main card stays offset (shows black) until they tap.
-                    // The file browser is intentionally NOT closed here so that a terminal
-                    // session (e.g. a script that prompted to go to background) is still
-                    // visible when the user returns.
-                    if showDrawer { closeDrawerAnimated() }
-                    Task { await refreshAllDataOnForeground() }
+                    // Done without animation: the app should come back already in its final
+                    // state, not animate the drawer shut while it is still appearing.
+                    var instant = Transaction()
+                    instant.disablesAnimations = true
+                    withTransaction(instant) {
+                        dragOffset = 0
+                        isDraggingDrawer = false
+                        fileBrowserDragOffset = 0
+                        isDraggingFileBrowser = false
+                        // Close the drawer on foreground — if the user backgrounded with the drawer
+                        // open, the main card stays offset (shows black) until they tap.
+                        // The file browser is intentionally NOT closed here so that a terminal
+                        // session (e.g. a script that prompted to go to background) is still
+                        // visible when the user returns.
+                        if showDrawer { showDrawer = false }
+                    }
+                    // Refresh lists a beat after the first frames are on screen, so the
+                    // data work doesn't compete with the return itself.
+                    Task {
+                        try? await Task.sleep(nanoseconds: 300_000_000)
+                        await refreshAllDataOnForeground()
+                    }
                     // Reconnect terminal WebSocket if the panel is open and terminal is expanded
                     terminalBrowserVM.handleAppForeground()
                 } else if newPhase == .background || newPhase == .inactive {
@@ -1218,10 +1211,7 @@ struct MainChatView: View {
                 if showFileBrowser { closeFileBrowserAnimated() }
                 terminalBrowserVM.reset()
             }
-            .onChange(of: activeConversationId, initial: true) { oldId, newId in
-                // Web Chat.svelte: mark the chat being left and the one opened as read.
-                ChatReadState.shared.handleOpenChatChange(from: oldId == newId ? nil : oldId, to: newId)
-            }
+            // Open-chat tracking for unread dots now lives in ChatDetailView (real chat ID).
             // Model tool events: open displayed files in the panel and refresh
             // the listing when files are written or commands run.
             .onReceive(NotificationCenter.default.publisher(for: .terminalFileEvent)) { note in
@@ -1251,11 +1241,25 @@ struct MainChatView: View {
                 }
             }
             .onReceive(NotificationCenter.default.publisher(for: .adminClonedChat)) { notification in
+                // A chat was copied (Admin Console "Copy to My Chats", or a fork): close every
+                // sheet that could be covering the app in one step, then open the copy.
                 if let conversationId = notification.object as? String {
                     showSettings = false
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                    showAdminConsole = false
+                    if showDrawer { showDrawer = false }
+                    pendingNavigationId = conversationId
+                    withAnimation(.easeOut(duration: 0.15)) { contentTransitionBlur = 10 }
+                    Task { @MainActor in
+                        // Let the sheets finish dismissing so the switch is seen, not hidden.
+                        try? await Task.sleep(for: .seconds(0.35))
+                        guard pendingNavigationId == conversationId else { return }
+                        dependencies.activeChatStore.prewarm(conversationId: conversationId, using: dependencies)
                         activeConversationId = conversationId
+                        activeChannelId = nil
+                        activeFolderWorkspaceId = nil
                         SharedDataService.shared.saveLastActiveConversationId(conversationId)
+                        pendingNavigationId = nil
+                        withAnimation(.easeIn(duration: 0.22)) { contentTransitionBlur = 0 }
                     }
                 }
             }
@@ -1446,6 +1450,8 @@ struct MainChatView: View {
                     .transition(.opacity)
                 }
             }
+            .animation(MicroAnimation.fade, value: isExporting)
+            .animation(MicroAnimation.fade, value: listViewModel.isDeletingBulk)
     }
 
     // MARK: - Drawer Toggle
@@ -1463,11 +1469,15 @@ struct MainChatView: View {
     }
 
     /// Animates the drawer to fully open, resets drag offset, triggers haptic + refresh.
-    private func openDrawerAnimated() {
+    /// Pass the release `velocity` after a drag so the finger's speed carries into the settle.
+    private func openDrawerAnimated(velocity: CGFloat? = nil) {
         // Dismiss keyboard immediately so it doesn't overlap the drawer
         UIApplication.shared.sendAction(
             #selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
-        withAnimation(MicroAnimation.panelOpen) {
+        let animation: Animation = velocity.map {
+            MicroAnimation.release(velocity: $0, distance: drawerWidth * (1 - drawerFraction))
+        } ?? MicroAnimation.panelOpen
+        withAnimation(animation) {
             showDrawer = true
             dragOffset = 0
         }
@@ -1485,14 +1495,43 @@ struct MainChatView: View {
     }
 
     /// Animates the drawer to fully closed and resets drag offset.
-    private func closeDrawerAnimated() {
+    private func closeDrawerAnimated(velocity: CGFloat? = nil) {
         UIApplication.shared.sendAction(
             #selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
-        withAnimation(MicroAnimation.panelClose) {
+        let animation: Animation = velocity.map {
+            MicroAnimation.release(velocity: -$0, distance: drawerWidth * drawerFraction)
+        } ?? MicroAnimation.panelClose
+        withAnimation(animation) {
             showDrawer = false
             dragOffset = 0
         }
         Haptics.play(.soft)
+    }
+
+    /// Settles the drawer after a drag. Open or closed is decided by where the
+    /// finger was heading (position projected 0.2s ahead), not a fixed distance,
+    /// and the finger's speed carries into the spring.
+    private func settleDrawer(translation: CGFloat, velocity: CGFloat) {
+        let base: CGFloat = showDrawer ? 0 : -drawerWidth
+        let current = min(0, max(-drawerWidth, base + translation))
+        let projected = current + velocity * 0.2
+        if projected > -drawerWidth * 0.5 {
+            openDrawerAnimated(velocity: velocity)
+        } else {
+            closeDrawerAnimated(velocity: velocity)
+        }
+    }
+
+    /// Settles the file browser after a drag (mirror of `settleDrawer`).
+    private func settleFileBrowser(translation: CGFloat, velocity: CGFloat) {
+        let base: CGFloat = showFileBrowser ? (containerWidth - fileBrowserWidth) : containerWidth
+        let current = max(containerWidth - fileBrowserWidth, min(containerWidth, base + translation))
+        let projected = current + velocity * 0.2
+        if projected < containerWidth - fileBrowserWidth * 0.5 {
+            openFileBrowserAnimated(velocity: velocity)
+        } else {
+            closeFileBrowserAnimated(velocity: velocity)
+        }
     }
 
     // MARK: - File Browser Open/Close (right panel, mirrors drawer)
@@ -1507,9 +1546,12 @@ struct MainChatView: View {
     }
 
     /// Animates the file browser to fully open.
-    private func openFileBrowserAnimated() {
+    private func openFileBrowserAnimated(velocity: CGFloat? = nil) {
         configureTerminalBrowserIfNeeded()
-        withAnimation(MicroAnimation.panelOpen) {
+        let animation: Animation = velocity.map {
+            MicroAnimation.release(velocity: -$0, distance: fileBrowserWidth * (1 - fileBrowserFraction))
+        } ?? MicroAnimation.panelOpen
+        withAnimation(animation) {
             showFileBrowser = true
             fileBrowserDragOffset = 0
         }
@@ -1522,8 +1564,11 @@ struct MainChatView: View {
     }
 
     /// Animates the file browser to fully closed.
-    private func closeFileBrowserAnimated() {
-        withAnimation(MicroAnimation.panelClose) {
+    private func closeFileBrowserAnimated(velocity: CGFloat? = nil) {
+        let animation: Animation = velocity.map {
+            MicroAnimation.release(velocity: $0, distance: fileBrowserWidth * fileBrowserFraction)
+        } ?? MicroAnimation.panelClose
+        withAnimation(animation) {
             showFileBrowser = false
             fileBrowserDragOffset = 0
         }
@@ -1664,16 +1709,6 @@ struct MainChatView: View {
         }
     }
 
-    // MARK: - Model Selector
-
-    private var modelSelector: some View {
-        MainModelSelectorLabel(
-            conversationId: activeConversationId,
-            activeChatStore: dependencies.activeChatStore,
-            theme: theme
-        )
-    }
-
     // MARK: - Drawer Content
 
     private var drawerContent: some View {
@@ -1810,11 +1845,12 @@ struct MainChatView: View {
                             }
                             .buttonStyle(.plain)
                             // Web Sidebar: Chats header "More" menu → Mark all as read.
-                            .contextMenu {
-                                MarkAllReadMenuItem(
-                                    conversations: listViewModel.conversations + listViewModel.pinnedConversations
-                                        + listViewModel.folderViewModel.folders.flatMap(\.chats),
+                            .overlay(alignment: .trailing) {
+                                ChatsHeaderMoreMenu(
+                                    conversations: listViewModel.conversations + listViewModel.pinnedConversations,
+                                    folders: listViewModel.folderViewModel.folders,
                                     apiClient: dependencies.apiClient)
+                                    .padding(.trailing, Spacing.sm)
                             }
 
                             if chatsExpanded {
@@ -1832,6 +1868,7 @@ struct MainChatView: View {
                                             ForEach(pinnedChats) { conversation in
                                                 drawerConversationRow(conversation)
                                                     .frame(minHeight: 36)
+                                                    .transition(.opacity)
                                             }
                                         }
                                     }
@@ -1853,6 +1890,7 @@ struct MainChatView: View {
                                             ForEach(group.1) { conversation in
                                                 drawerConversationRow(conversation)
                                                     .frame(minHeight: 36)
+                                                    .transition(.opacity)
                                             }
                                         }
                                     }
@@ -1879,7 +1917,7 @@ struct MainChatView: View {
                                 ?? listViewModel.conversations.first(where: { $0.id == chatId })
                             guard let conversation else { return false }
 
-                            withAnimation {
+                            withAnimation(MicroAnimation.snappy) {
                                 drawerChatsDropActive = false
                                 folderVM.dragCompleted()
                             }
@@ -2819,7 +2857,7 @@ struct MainChatView: View {
                             )
                             .lineLimit(1)
                         Spacer()
-                        // Dedicated child view so @Observable tracks streamingConversationId reactively
+                        // Dedicated child view so @Observable tracks the replying set reactively
                         ConversationStreamingIndicator(
                             conversationId: conversation.id,
                             activeChatStore: dependencies.activeChatStore,
@@ -2836,7 +2874,7 @@ struct MainChatView: View {
                     .clipShape(RoundedRectangle(cornerRadius: CornerRadius.sm, style: .continuous))
                     .contentShape(Rectangle())
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(.sidebarRow)
                 // Make draggable into a folder
                 .draggable(DraggableChat(
                     conversationId: conversation.id,
@@ -3055,11 +3093,6 @@ struct MainChatView: View {
 
     private var drawerBottomBar: some View {
         VStack(spacing: 0) {
-            // Subtle top separator
-            Rectangle()
-                .fill(theme.textTertiary.opacity(0.12))
-                .frame(height: 0.5)
-
             HStack(spacing: Spacing.sm) {
                 // User avatar + full name — tap → Settings, long-press → Account Picker
                 HStack(spacing: 10) {
@@ -3322,6 +3355,7 @@ struct MainChatView: View {
         // in parallel with conversations/folders.
         await withTaskGroup(of: Void.self) { group in
             group.addTask { await listViewModel.refreshIfStale() }
+            group.addTask { await ChatReadState.shared.verifyGeneratingNow() }
             group.addTask { await listViewModel.folderViewModel.refreshFolders() }
             group.addTask { await dependencies.fetchTaskConfig() }
             group.addTask { await channelListVM.refreshChannels() }
@@ -3358,15 +3392,13 @@ struct MainChatView: View {
 
         dependencies.socketService?.onReconnect = { [self] in
             Task { @MainActor in
-                // Use syncWithServer() instead of loadConversation() —
-                // syncWithServer() does in-place updates via adoptServerMessages()
-                // and does NOT set isLoadingConversation=true, so the message list
-                // stays stable (no flash, no scroll jump).
+                // Catch up instead of a plain sync: it re-registers the live-event
+                // listener, applies anything missed, and joins a reply that another
+                // device is still generating. It updates in place (no
+                // isLoadingConversation), so the list stays stable — no flash.
                 if let activeId = activeConversationId {
                     let vm = dependencies.activeChatStore.viewModel(for: activeId)
-                    if !vm.isStreaming {
-                        await vm.syncWithServer()
-                    }
+                    await vm.catchUpWithServer(reason: .socketReconnect)
                 }
             }
         }
@@ -3376,6 +3408,7 @@ struct MainChatView: View {
                 // Refresh both conversations and folders in parallel
                 await withTaskGroup(of: Void.self) { group in
                     group.addTask { await listViewModel.refreshIfStale() }
+                    group.addTask { await ChatReadState.shared.verifyGeneratingNow() }
                     group.addTask { await listViewModel.folderViewModel.refreshFolders() }
                 }
             }
@@ -3394,7 +3427,9 @@ private struct ConversationStreamingIndicator: View {
     let tint: Color
 
     private var isStreaming: Bool {
-        activeChatStore.streamingConversationId == conversationId
+        // Replying on this device, or being generated by another device.
+        activeChatStore.isStreaming(conversationId)
+            || ChatReadState.shared.generatingElsewhere.contains(conversationId)
     }
 
     var body: some View {
@@ -3403,145 +3438,7 @@ private struct ConversationStreamingIndicator: View {
                 .controlSize(.mini)
                 .tint(tint)
                 .transition(.opacity.combined(with: .scale))
-                .animation(.easeInOut(duration: 0.2), value: isStreaming)
-        }
-    }
-}
-
-// MARK: - Model Selector Label (Extracted to avoid re-computing viewModel in MainChatView body)
-
-/// A lightweight view that reads the active chat's model info
-/// only when it actually needs to render. This avoids the parent
-/// `MainChatView` body from accessing `ActiveChatStore.viewModel(for:)`
-/// on every evaluation.
-private struct MainModelSelectorLabel: View {
-let conversationId: String?
-    let activeChatStore: ActiveChatStore
-    let theme: AppTheme
-
-    @Environment(AppDependencyContainer.self) private var dependencies
-
-    @State private var isShowingModelSelectorSheet = false
-    @State private var editingModelDetail: ModelDetail? = nil
-
-    private var vm: ChatViewModel {
-        activeChatStore.viewModel(for: conversationId)
-    }
-
-    var body: some View {
-        Group {
-            if vm.availableModels.isEmpty {
-                let fallbackName = activeChatStore.cachedModels.first(where: {
-                    $0.id == activeChatStore.cachedDefaultModelId
-                })?.shortName ?? "New Chat"
-                Text(fallbackName)
-                    .scaledFont(size: 14, weight: .medium)
-                    .foregroundStyle(theme.textPrimary)
-                    .lineLimit(1)
-                    .animation(nil, value: fallbackName)
-            } else {
-                Button {
-                    Haptics.play(.light)
-                    vm.refreshModelsInBackground()
-                    isShowingModelSelectorSheet = true
-                } label: {
-                    HStack(spacing: Spacing.xs) {
-                        if let model = vm.selectedModel {
-                            ModelAvatar(
-                                size: 22,
-                                imageURL: vm.resolvedImageURL(for: model),
-                                label: model.shortName,
-                                authToken: vm.serverAuthToken
-                            )
-                            .fixedSize()
-                            .id(model.id)
-                            .transition(.opacity)
-                        }
-                        Text(vm.selectedModel?.shortName ?? "Select Model")
-                            .scaledFont(size: 14, weight: .medium)
-                            .foregroundStyle(theme.textPrimary)
-                            .lineLimit(1)
-                            .truncationMode(.tail)
-                            .contentTransition(.opacity)
-                        Image(systemName: "chevron.down")
-                            .scaledFont(size: 10, weight: .semibold)
-                            .foregroundStyle(theme.textTertiary)
-                            .fixedSize()
-                            .layoutPriority(1)
-                    }
-                    .animation(MicroAnimation.gentle, value: vm.selectedModelId)
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 6)
-                    .background(
-                        RoundedRectangle(cornerRadius: 12, style: .continuous)
-                            .fill(theme.cardBackground.opacity(0.9))
-                    )
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 12, style: .continuous)
-                            .strokeBorder(theme.cardBorder.opacity(0.5), lineWidth: 0.5)
-                    )
-                    .frame(maxWidth: 220)
-                }
-                .buttonStyle(.plain)
-                .sheet(isPresented: $isShowingModelSelectorSheet) {
-                    ModelSelectorSheet(
-                        models: vm.availableModels,
-                        selectedModelId: vm.selectedModelId,
-                        serverBaseURL: vm.serverBaseURL,
-                        authToken: vm.serverAuthToken,
-                        isAdmin: dependencies.authViewModel.currentUser?.role == .admin,
-                        pinnedModelIds: vm.pinnedModelIds,
-                        onEdit: dependencies.authViewModel.currentUser?.role == .admin ? { model in
-                            isShowingModelSelectorSheet = false
-                            Task {
-                                try? await Task.sleep(nanoseconds: 600_000_000)
-                                await openModelEditor(for: model)
-                            }
-                        } : nil,
-                        onTogglePin: { modelId in
-                            vm.togglePinModel(modelId)
-                        },
-                        onSelect: { model in
-                            withAnimation(MicroAnimation.gentle) {
-                                vm.selectModel(model.id)
-                            }
-                        }
-                    )
-                    .environment(dependencies)
-                    .themed()
-                    .presentationBackgroundInteraction(.disabled)
-                    .onDisappear {
-                        Task { await ImageCacheService.shared.clearMemory() }
-                    }
-                }
-            }
-        }
-        .sheet(item: $editingModelDetail) { detail in
-            NavigationStack {
-                ModelEditorView(existingModel: detail) { _ in
-                    Task { vm.refreshModelsInBackground() }
-                    editingModelDetail = nil
-                }
-            }
-            .environment(dependencies)
-            .themed()
-        }
-    }
-
-    private func openModelEditor(for model: AIModel) async {
-        guard let apiClient = dependencies.apiClient else { return }
-        do {
-            let detail = try await apiClient.getWorkspaceModelDetail(id: model.id)
-            editingModelDetail = detail
-        } catch {
-            // Base models (not yet customized as workspace models) return 404.
-            // Construct a default ModelDetail so the editor opens in "create" mode.
-            editingModelDetail = ModelDetail(
-                id: model.id,
-                name: model.persistedName,
-                description: model.persistedDescription,
-                profileImageURL: model.profileImageURL
-            )
+                .animation(MicroAnimation.quick, value: isStreaming)
         }
     }
 }

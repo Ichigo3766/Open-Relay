@@ -389,6 +389,53 @@ nonisolated struct MessageHistory: Sendable {
         }
     }
 
+    /// Deletes a message exactly like the server's `delete_message_from_history`
+    /// (and the web client's `deleteMessage`): the message and its DIRECT children
+    /// are removed, grandchildren are re-attached to the deleted message's parent,
+    /// and `currentId` moves to the deepest leaf under that parent.
+    ///
+    /// Mirroring the server keeps the local tree identical to what the server
+    /// stores, so a later reload cannot resurrect or mis-link anything.
+    /// - Returns: The IDs that were removed (empty if the message was unknown).
+    @discardableResult
+    mutating func deleteMessage(id messageId: String) -> Set<String> {
+        guard let message = nodes[messageId] else { return [] }
+        let parentId = message.parentId
+        let childIds = message.childrenIds.filter { nodes[$0] != nil }
+        let grandchildIds = childIds.flatMap { childId in
+            (nodes[childId]?.childrenIds ?? []).filter { nodes[$0] != nil }
+        }
+
+        if let parentId, var parent = nodes[parentId] {
+            parent.childrenIds = parent.childrenIds.filter { $0 != messageId } + grandchildIds
+            nodes[parentId] = parent
+        }
+        for grandchildId in grandchildIds {
+            nodes[grandchildId]?.parentId = parentId
+        }
+
+        let deleted = Set([messageId] + childIds)
+        for id in deleted { nodes.removeValue(forKey: id) }
+
+        // Walk to the deepest last-child leaf, starting from the parent.
+        var current: String? = parentId
+        var candidates: [String] = parentId.flatMap { nodes[$0]?.childrenIds }
+            ?? nodes.values.filter { $0.parentId == nil }
+                .sorted { $0.timestamp < $1.timestamp }.map(\.id)
+        var visited = Set<String>()
+        while let last = candidates.last, !visited.contains(last) {
+            current = last
+            visited.insert(last)
+            candidates = nodes[last]?.childrenIds ?? []
+        }
+        if let resolved = current, nodes[resolved] != nil {
+            currentId = resolved
+        } else {
+            currentId = nil
+        }
+        return deleted
+    }
+
     /// Updates a specific node in-place. Useful for streaming content updates.
     mutating func updateNode(id: String, _ transform: (inout HistoryNode) -> Void) {
         guard var node = nodes[id] else { return }
@@ -458,6 +505,7 @@ nonisolated struct MessageHistory: Sendable {
         var outputByCallId: [String: String] = [:]   // keyed by call_id
         var outputById:     [String: String] = [:]   // keyed by id (fallback)
         var embedsByCallId: [String: [String]] = [:]
+        var filesByCallId: [String: String] = [:]    // JSON of the tool's `files`
 
         for item in outputArr {
             guard (item["type"] as? String) == "function_call_output" else { continue }
@@ -477,6 +525,14 @@ nonisolated struct MessageHistory: Sendable {
                 }
             }
 
+            // Files returned by the tool (e.g. images), shown inside the tool card.
+            if let files = item["files"], !callId.isEmpty,
+               JSONSerialization.isValidJSONObject(files),
+               let data = try? JSONSerialization.data(withJSONObject: files),
+               let json = String(data: data, encoding: .utf8), json != "[]" {
+                filesByCallId[callId] = json
+            }
+
             // Rich-UI HTML embeds stored on the output item
             if let embeds = item["embeds"] as? [String] {
                 let filtered = embeds.filter { !$0.isEmpty && !$0.contains("data-iv-build") }
@@ -488,18 +544,15 @@ nonisolated struct MessageHistory: Sendable {
 
         // ── Pass 2: build content string in output-array order ────────────────
         var parts: [String] = []
-        for item in outputArr {
+        for (index, item) in outputArr.enumerated() {
             guard let type = item["type"] as? String else { continue }
+            let isLast = index == outputArr.count - 1
 
             switch type {
             case "message":
                 guard let contentArr = item["content"] as? [[String: Any]] else { continue }
-                let textParts = contentArr.compactMap { piece -> String? in
-                    guard (piece["type"] as? String) == "output_text",
-                          let text = piece["text"] as? String, !text.isEmpty else { return nil }
-                    return text
-                }
-                let text = textParts.joined()
+                // Matches Open WebUI's getTextFromParts: any part carrying text counts.
+                let text = partsText(contentArr)
                 if !text.isEmpty { parts.append(text) }
 
             case "function_call":
@@ -512,7 +565,7 @@ nonisolated struct MessageHistory: Sendable {
                 let itemId = item["id"]      as? String ?? callId
                 let effectiveCallId = callId.isEmpty ? itemId : callId
 
-                let arguments = item["arguments"] as? String ?? ""
+                let arguments = stringifyValue(item["arguments"])
 
                 // Look up result with dual-index fallback.
                 // IMPORTANT: resultText must be resolved BEFORE isDone so we can use
@@ -559,21 +612,19 @@ nonisolated struct MessageHistory: Sendable {
                     return " embeds=\"\(encoded)\""
                 }()
 
-                let block: String
-                if resultText.isEmpty {
-                    block = """
-                    <details type="tool_calls" id="\(itemId)" name="\(name)" done="\(doneAttr)"\(statusAttr) arguments="\(encodedArgs)"\(embedsAttr)>
-                    <summary>Tool Executed</summary>
-                    </details>
-                    """
-                } else {
-                    block = """
-                    <details type="tool_calls" id="\(itemId)" name="\(name)" done="\(doneAttr)"\(statusAttr) arguments="\(encodedArgs)" result="\(encodedResult)"\(embedsAttr)>
-                    <summary>Tool Executed</summary>
-                    \(resultText)
-                    </details>
-                    """
-                }
+                // The result lives ONLY in the escaped `result` attribute. A raw copy in
+                // the body would let a literal `<details>` inside a tool result open a
+                // block that never closes and swallow the rest of the reply.
+                let resultAttr = resultText.isEmpty ? "" : " result=\"\(encodedResult)\""
+                let labelAttr = toolLabel(name: name, arguments: arguments)
+                    .map { " label=\"\(htmlEntityEncode($0))\"" } ?? ""
+                let filesAttr = filesByCallId[effectiveCallId]
+                    .map { " files=\"\(htmlEntityEncode($0))\"" } ?? ""
+                let block = """
+                <details type="tool_calls" id="\(htmlEntityEncode(itemId))" name="\(htmlEntityEncode(name))" done="\(doneAttr)"\(statusAttr) arguments="\(encodedArgs)"\(resultAttr)\(labelAttr)\(filesAttr)\(embedsAttr)>
+                <summary>Tool Executed</summary>
+                </details>
+                """
                 parts.append(block)
 
             case "reasoning":
@@ -582,37 +633,141 @@ nonisolated struct MessageHistory: Sendable {
                 // with done="false" so StreamingPipeline can freeze the drain cursor
                 // while they're still building — preventing partial HTML leaking to
                 // the renderer.
-                let status    = item["status"] as? String ?? "completed"
-                let isComplete = (status == "completed")
-
-                if let contentArr = item["content"] as? [[String: Any]] {
-                    let reasoningText = contentArr.compactMap { piece -> String? in
-                        guard (piece["type"] as? String) == "output_text",
-                              let text = piece["text"] as? String, !text.isEmpty else { return nil }
-                        return text
-                    }.joined()
-                    // Emit even for in-progress blocks (done="false") so the pipeline
-                    // can detect the unclosed block and freeze — matches existing behaviour
-                    // for tool_calls blocks.
-                    if !reasoningText.isEmpty || !isComplete {
-                        let doneVal = isComplete ? "true" : "false"
-                        let block = """
-                        <details type="reasoning" done="\(doneVal)">
-                        <summary>Thinking</summary>
-                        \(reasoningText)
-                        </details>
-                        """
-                        parts.append(block)
-                    }
+                // Matches structuredOutput.ts buildReasoningToken: summary first, then
+                // content; done when status is terminal, a duration is set, or it is
+                // no longer the last item. The text is escaped so tags inside the
+                // thinking can never open or close blocks.
+                let duration = durationString(item["duration"])
+                let isComplete = isTerminalStatus(item["status"] as? String)
+                    || duration != nil || !isLast
+                let summaryParts = item["summary"] as? [[String: Any]] ?? []
+                let reasoningText = partsText(summaryParts.isEmpty
+                    ? (item["content"] as? [[String: Any]] ?? []) : summaryParts)
+                if !reasoningText.isEmpty || !isComplete {
+                    let title = isComplete ? "Thought for \(duration ?? "0") seconds" : "Thinking..."
+                    let durAttr = duration.map { " duration=\"\($0)\"" } ?? ""
+                    parts.append("""
+                    <details type="reasoning" done="\(isComplete ? "true" : "false")"\(durAttr)>
+                    <summary>\(title)</summary>
+                    \(htmlEntityEncode(reasoningText))
+                    </details>
+                    """)
                 }
 
+            case "open_webui:code_interpreter":
+                let duration = durationString(item["duration"])
+                let isComplete = isTerminalStatus(item["status"] as? String)
+                    || duration != nil || !isLast
+                let code = item["code"] as? String ?? ""
+                let lang = item["lang"] as? String ?? "python"
+                var body = code.isEmpty ? "" : "```\(lang)\n\(code)\n```"
+                let out = stringifyValue(item["output"])
+                if !out.isEmpty { body += (body.isEmpty ? "" : "\n\n") + "Output:\n" + out }
+                let durAttr = duration.map { " duration=\"\($0)\"" } ?? ""
+                parts.append("""
+                <details type="code_interpreter" done="\(isComplete ? "true" : "false")"\(durAttr)>
+                <summary>\(isComplete ? "Analyzed" : "Analyzing...")</summary>
+                \(htmlEntityEncode(body))
+                </details>
+                """)
+
+            case "web_search_call", "file_search_call", "computer_call":
+                let isComplete = isTerminalStatus(item["status"] as? String) || !isLast
+                let names = ["web_search_call": "Web Search", "file_search_call": "File Search",
+                             "computer_call": "Computer Use"]
+                let summaryText = openAIToolSummary(item, type: type)
+                let resultAttr = summaryText.isEmpty ? "" : " result=\"\(htmlEntityEncode(summaryText))\""
+                parts.append("""
+                <details type="tool_calls" id="\(htmlEntityEncode(item["id"] as? String ?? ""))" name="\(names[type] ?? type)" done="\(isComplete ? "true" : "false")" arguments=""\(resultAttr)>
+                <summary>\(isComplete ? "Tool Executed" : "Executing...")</summary>
+                </details>
+                """)
+
             default:
-                break  // function_call_output consumed in pass 1; unknown types skipped
+                // Any other item that carries text parts is shown as plain text (web fallback).
+                if let contentArr = item["content"] as? [[String: Any]] {
+                    let text = partsText(contentArr)
+                    if !text.isEmpty { parts.append(text) }
+                }
+                // function_call_output is consumed in pass 1.
             }
         }
 
         guard !parts.isEmpty else { return nil }
         return parts.joined(separator: "\n\n")
+    }
+
+    // MARK: - Output Reconstruction Helpers
+
+    /// Concatenates the `text` of every part that has one (web `getTextFromParts`).
+    private static func partsText(_ parts: [[String: Any]]) -> String {
+        parts.compactMap { part -> String? in
+            if let s = part["text"] as? String { return s }
+            if let t = part["text"], !(t is NSNull) { return "\(t)" }
+            return nil
+        }.joined()
+    }
+
+    /// Strings pass through; objects/arrays become JSON; nil becomes "".
+    private static func stringifyValue(_ value: Any?) -> String {
+        guard let value, !(value is NSNull) else { return "" }
+        if let s = value as? String { return s }
+        if JSONSerialization.isValidJSONObject(value),
+           let data = try? JSONSerialization.data(withJSONObject: value, options: [.sortedKeys]),
+           let s = String(data: data, encoding: .utf8) { return s }
+        return "\(value)"
+    }
+
+    private static func isTerminalStatus(_ status: String?) -> Bool {
+        status == "completed" || status == "failed" || status == "incomplete"
+    }
+
+    private static func durationString(_ value: Any?) -> String? {
+        if let s = value as? String, !s.isEmpty { return s }
+        if let n = value as? NSNumber { return n.stringValue }
+        return nil
+    }
+
+    /// `delegate_task` is shown as `Sub-agent: "task…"` like the web client.
+    private static func toolLabel(name: String, arguments: String) -> String? {
+        guard name == "delegate_task" else { return nil }
+        guard let data = arguments.data(using: .utf8),
+              let args = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else {
+            return "Sub-agent"
+        }
+        let task = (args["task"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? "?"
+        let label = (args["background"] as? Bool == true) ? "Background sub-agent" : "Sub-agent"
+        let shown = task.count > 60 ? String(task.prefix(60)) + "..." : task
+        return "\(label): \"\(shown)\""
+    }
+
+    /// Short description of a built-in OpenAI tool call (web `getOpenAIToolSummary`).
+    private static func openAIToolSummary(_ item: [String: Any], type: String) -> String {
+        let action = item["action"] as? [String: Any] ?? [:]
+        switch type {
+        case "web_search_call":
+            switch action["type"] as? String {
+            case "search":
+                let queries = action["queries"] as? [String] ?? []
+                if !queries.isEmpty { return "Search: " + queries.joined(separator: ", ") }
+                if let q = action["query"] as? String, !q.isEmpty { return "Search: \(q)" }
+            case "open_page":
+                if let url = action["url"] as? String { return "Open page: \(url)" }
+            case "find_in_page":
+                if let p = action["pattern"] as? String { return "Find in page: \(p)" }
+            default: break
+            }
+        case "file_search_call":
+            let queries = item["queries"] as? [String] ?? []
+            if !queries.isEmpty { return "Queries: " + queries.joined(separator: ", ") }
+        case "computer_call":
+            if let t = action["type"] as? String { return "Action: \(t)" }
+            if let actions = item["actions"] as? [[String: Any]], !actions.isEmpty {
+                return "Actions: " + actions.map { $0["type"] as? String ?? "?" }.joined(separator: ", ")
+            }
+        default: break
+        }
+        return ""
     }
 
     // MARK: - Human-in-the-Loop: Pending Tool Action Scanning

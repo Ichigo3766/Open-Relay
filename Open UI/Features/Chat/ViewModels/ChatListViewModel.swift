@@ -1,4 +1,5 @@
 import Foundation
+import SwiftUI
 import os.log
 
 /// Manages the conversation list — grouping, search, and CRUD operations.
@@ -616,10 +617,12 @@ final class ChatListViewModel {
     func deleteConversation(id: String) async {
         guard let manager else { return }
 
-        // Remove locally first
+        // Remove locally first (animated so the row glides out instead of vanishing)
         let removed = conversations.first { $0.id == id }
-        conversations.removeAll(where: { $0.id == id })
-        pinnedConversations.removeAll { $0.id == id }
+        withAnimation(MicroAnimation.snappy) {
+            conversations.removeAll(where: { $0.id == id })
+            pinnedConversations.removeAll { $0.id == id }
+        }
 
         do {
             try await manager.deleteConversation(id: id)
@@ -627,7 +630,9 @@ final class ChatListViewModel {
             logger.error("Failed to delete: \(error.localizedDescription)")
             // Revert on failure
             if let removed {
-                conversations.insert(removed, at: 0)
+                withAnimation(MicroAnimation.snappy) {
+                    conversations.insert(removed, at: 0)
+                }
             }
         }
     }
@@ -644,13 +649,15 @@ final class ChatListViewModel {
 
         let newPinned = !conversation.pinned
 
-        // Optimistic update to pinnedConversations
-        if newPinned {
-            var pinned = conversation
-            pinned.pinned = true
-            pinnedConversations.insert(pinned, at: 0)
-        } else {
-            pinnedConversations.removeAll { $0.id == conversation.id }
+        // Optimistic update to pinnedConversations (animated so the row glides)
+        withAnimation(MicroAnimation.snappy) {
+            if newPinned {
+                var pinned = conversation
+                pinned.pinned = true
+                pinnedConversations.insert(pinned, at: 0)
+            } else {
+                pinnedConversations.removeAll { $0.id == conversation.id }
+            }
         }
 
         do {
@@ -666,12 +673,14 @@ final class ChatListViewModel {
         } catch {
             logger.error("Failed to toggle pin: \(error.localizedDescription)")
             // Revert optimistic update
-            if newPinned {
-                pinnedConversations.removeAll { $0.id == conversation.id }
-            } else {
-                var restored = conversation
-                restored.pinned = true
-                pinnedConversations.insert(restored, at: 0)
+            withAnimation(MicroAnimation.snappy) {
+                if newPinned {
+                    pinnedConversations.removeAll { $0.id == conversation.id }
+                } else {
+                    var restored = conversation
+                    restored.pinned = true
+                    pinnedConversations.insert(restored, at: 0)
+                }
             }
         }
     }
@@ -684,14 +693,16 @@ final class ChatListViewModel {
 
         let newArchived = !conversation.archived
 
-        // Update locally first
-        if let index = conversations.firstIndex(where: { $0.id == conversation.id }) {
-            conversations[index].archived = newArchived
-        }
+        // Update locally first (animated so the row glides out of the list)
+        withAnimation(MicroAnimation.snappy) {
+            if let index = conversations.firstIndex(where: { $0.id == conversation.id }) {
+                conversations[index].archived = newArchived
+            }
 
-        // If archiving, remove from pinned section immediately
-        if newArchived {
-            pinnedConversations.removeAll { $0.id == conversation.id }
+            // If archiving, remove from pinned section immediately
+            if newArchived {
+                pinnedConversations.removeAll { $0.id == conversation.id }
+            }
         }
 
         do {

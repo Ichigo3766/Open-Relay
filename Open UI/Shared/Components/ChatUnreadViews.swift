@@ -7,7 +7,7 @@ struct ChatUnreadDot: View {
     let activeChatStore: ActiveChatStore
 
     private var isUnread: Bool {
-        ChatReadState.shared.isUnread(conversation, generatingId: activeChatStore.streamingConversationId)
+        ChatReadState.shared.isUnread(conversation, isGenerating: activeChatStore.isStreaming(conversation.id))
     }
 
     var body: some View {
@@ -60,6 +60,35 @@ struct MarkAllReadMenuItem: View {
                 Label("Mark All as Read", systemImage: "checkmark.circle")
             }
         }
+    }
+}
+
+/// "…" button on the Chats section heading (web Sidebar: Chats "More" menu → Mark all as read).
+/// Shown over the heading's trailing edge, beside — not inside — the collapse button.
+struct ChatsHeaderMoreMenu: View {
+    let conversations: [Conversation]
+    let folders: [ChatFolder]
+    let apiClient: APIClient?
+    @Environment(\.theme) private var theme
+
+    private static func allChats(_ f: ChatFolder) -> [Conversation] {
+        f.chats + f.childFolders.flatMap { allChats($0) }
+    }
+
+    var body: some View {
+        Menu {
+            // Not gated on unread state: lists can be partial, and the server call is cheap.
+            MarkAllReadMenuItem(
+                conversations: conversations + folders.flatMap { Self.allChats($0) },
+                apiClient: apiClient)
+        } label: {
+            Image(systemName: "ellipsis")
+                .scaledFont(size: 12, weight: .semibold, context: .list)
+                .foregroundStyle(theme.textTertiary)
+                .frame(width: 32, height: 32)
+                .contentShape(Rectangle())
+        }
+        .accessibilityLabel("More")
     }
 }
 

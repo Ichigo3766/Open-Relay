@@ -161,8 +161,10 @@ struct ChatContextPanel: View {
                         .font(.body)
                         .foregroundStyle(.primary)
                     Spacer()
-                    Image(systemName: isFilesExpanded ? "chevron.up" : "chevron.down")
+                    Image(systemName: "chevron.down")
                         .font(.caption.weight(.medium))
+                        .rotationEffect(.degrees(isFilesExpanded ? 180 : 0))
+                        .animation(MicroAnimation.snappy, value: isFilesExpanded)
                         .foregroundStyle(.secondary)
                 }
                 .contentShape(Rectangle())
@@ -456,8 +458,10 @@ struct ChatContextPanel: View {
                         .font(.body)
                         .foregroundStyle(.primary)
                     Spacer()
-                    Image(systemName: isAdvancedExpanded ? "chevron.up" : "chevron.down")
+                    Image(systemName: "chevron.down")
                         .font(.caption.weight(.medium))
+                        .rotationEffect(.degrees(isAdvancedExpanded ? 180 : 0))
+                        .animation(MicroAnimation.snappy, value: isAdvancedExpanded)
                         .foregroundStyle(.secondary)
                 }
                 .contentShape(Rectangle())

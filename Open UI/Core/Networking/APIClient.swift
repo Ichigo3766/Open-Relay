@@ -990,6 +990,28 @@ final class APIClient: @unchecked Sendable {
         guard scope == network.conversationCacheScope else { throw APIError.cancelled }
     }
 
+    /// Deletes one message on the server (`DELETE /chats/{id}/messages/{messageId}`),
+    /// exactly like the web client. The server removes the message from the stored
+    /// history and repairs parent/children links; the updated chat is returned.
+    /// Older servers without this endpoint throw `httpError` with 404/405.
+    func deleteChatMessage(chatId: String, messageId: String) async throws -> Conversation {
+        let scope = network.conversationCacheScope
+        let (data, _) = try await network.requestRaw(
+            path: "/api/v1/chats/\(chatId)/messages/\(messageId)",
+            method: .delete,
+            deduplicate: false
+        )
+        // The stored chat changed — never serve an older cached copy.
+        if let scope { await ConversationCache.shared.invalidate(scope: scope, id: chatId) }
+        guard scope == network.conversationCacheScope else { throw APIError.cancelled }
+        return try await Task.detached(priority: .userInitiated) { [self] in
+            guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                throw APIError.responseDecoding(underlying: CocoaError(.coderReadCorrupt), data: nil)
+            }
+            return self.parseFullConversation(json)
+        }.value
+    }
+
     func deleteConversation(id: String) async throws {
         try await network.requestVoid(path: "/api/v1/chats/\(id)", method: .delete)
     }
@@ -4525,10 +4547,10 @@ final class APIClient: @unchecked Sendable {
 
         var content = msg["content"] as? String ?? ""
         if content.isEmpty,
-           let outputArr = msg["output"] as? [[String: Any]],
-           let firstOutput = outputArr.first,
-           let contentArr = firstOutput["content"] as? [[String: Any]] {
-            content = contentArr.compactMap { $0["text"] as? String }.joined()
+           let outputArr = msg["output"] as? [[String: Any]] {
+            // Same conversion as chat load/streaming, so tool calls, reasoning and
+            // every text item come through (not just the first output item).
+            content = MessageHistory.reconstructContentFromOutput(outputArr) ?? ""
         }
         // Extract any inline base64 image data URIs (called at parse time, always off main thread).
         // Replaces ![alt](data:image/...;base64,...) with ![alt](imgcache://TOKEN)

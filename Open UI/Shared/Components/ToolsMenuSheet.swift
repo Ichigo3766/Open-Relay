@@ -587,6 +587,8 @@ struct ToolsMenuSheet: View {
                         toggleQuickPill(pillId)
                     } label: {
                         Image(systemName: isPinned ? "star.fill" : "star")
+                        .contentTransition(.symbolEffect(.replace))
+                        .animation(MicroAnimation.quick, value: isPinned)
                             .scaledFont(size: 14, weight: .medium)
                             .foregroundStyle(isPinned ? theme.brandPrimary : theme.textTertiary)
                             .padding(.horizontal, 4)
@@ -758,8 +760,7 @@ struct ToolsMenuSheet: View {
 
                     Spacer()
 
-                    Image(systemName: toolsExpanded ? "chevron.up" : "chevron.down")
-                        .scaledFont(size: 12, weight: .semibold)
+                    ExpandChevron(isExpanded: toolsExpanded, size: 12)
                         .foregroundStyle(theme.textTertiary)
                 }
             }
@@ -841,6 +842,8 @@ struct ToolsMenuSheet: View {
                     } label: {
                         Image(systemName: isPinned ? "star.fill" : "star")
                             .scaledFont(size: 14, weight: .medium)
+                        .contentTransition(.symbolEffect(.replace))
+                        .animation(MicroAnimation.quick, value: isPinned)
                             .foregroundStyle(isPinned ? theme.brandPrimary : theme.textTertiary)
                             .padding(.horizontal, 4)
                             .padding(.vertical, 4)
@@ -1528,6 +1531,8 @@ struct InlineSkillsPickerView: View {
                 }
                 Spacer()
                 Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+                .contentTransition(.symbolEffect(.replace))
+                .animation(MicroAnimation.quick, value: isSelected)
                     .scaledFont(size: 22)
                     .foregroundStyle(isSelected ? theme.brandPrimary : theme.textTertiary)
             }

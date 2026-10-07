@@ -133,6 +133,10 @@ struct iPadMainChatView: View {
     @State private var isExporting = false
     @State private var exportError: String?
 
+    /// Softens the detail column for a moment when the open chat changes, so the
+    /// swap reads as a quick frosted reveal instead of a hard cut (mirrors iPhone).
+    @State private var contentTransitionBlur: CGFloat = 0
+
     // MARK: Photo picker (window-level)
     // Owned here so AnimatedPhotoPicker renders outside ChatDetailView's
     // safeAreaInset-shrunk ZStack and can truly cover the full screen.
@@ -336,10 +340,7 @@ struct iPadMainChatView: View {
                 router.presentVoiceCall(viewModel: voiceCallVM)
             }
         }
-        .onChange(of: activeConversationId, initial: true) { oldId, newId in
-            // Web Chat.svelte: mark the chat being left and the one opened as read.
-            ChatReadState.shared.handleOpenChatChange(from: oldId == newId ? nil : oldId, to: newId)
-        }
+        // Open-chat tracking for unread dots now lives in ChatDetailView (real chat ID).
         .onChange(of: activeChannelId) { _, newId in
             // When entering a channel, the server marks it as read via GET /channels/{id}.
             // Refresh the channel list after a short delay to clear the unread badge.
@@ -372,6 +373,11 @@ struct iPadMainChatView: View {
                 apiClient: dependencies.apiClient,
                 allUsers: channelListVM.allServerUsers
             )
+        }
+        // A chat was copied (Admin Console "Copy to My Chats", or a fork): close the sheets
+        // and open it. Lives here because this view owns the sheets that must close.
+        .onReceive(NotificationCenter.default.publisher(for: .adminClonedChat)) { note in
+            if let id = note.object as? String { openCopiedChat(id) }
         }
         // Admin Console sheet (admin-only)
         .sheet(isPresented: $showAdminConsole) {
@@ -452,6 +458,8 @@ struct iPadMainChatView: View {
                 deletingOverlay
             }
         }
+        .animation(MicroAnimation.fade, value: isExporting)
+        .animation(MicroAnimation.fade, value: listViewModel.isDeletingBulk)
     }
 
     // MARK: - Root Layout — native split view (both sidebar modes)
@@ -517,6 +525,7 @@ struct iPadMainChatView: View {
         .gesture(sidebarSwipeGesture)
         // Swipe left from the trailing edge → terminal file browser.
         .gesture(terminalSwipeGesture)
+        .blur(radius: contentTransitionBlur)
         .inspector(isPresented: terminalInspectorBinding) {
             TerminalBrowserView(
                 viewModel: terminalBrowserVM,
@@ -612,8 +621,35 @@ struct iPadMainChatView: View {
             onExport: { conv, format in Task { await exportChat(conv, format: format) } },
             onShowArchivedChats: { showArchivedChats = true },
             onShowSharedChats: { showSharedChats = true },
-            onCloseDrawer: sidebarAlwaysShown ? nil : { dismissSidebarIfOverlay() }
+            onCloseDrawer: sidebarAlwaysShown ? nil : { dismissSidebarIfOverlay() },
+            onChatSwitching: { softenChatSwitch() }
         )
+    }
+
+    /// Starts the new chat softly blurred, then clears the blur over a moment.
+    private func softenChatSwitch() {
+        var instant = Transaction()
+        instant.disablesAnimations = true
+        withTransaction(instant) { contentTransitionBlur = 8 }
+        withAnimation(.easeOut(duration: 0.28)) { contentTransitionBlur = 0 }
+    }
+
+    /// A chat was copied (Admin Console "Copy to My Chats", or a fork): close every sheet
+    /// that could be covering the app in one step, then open the copy with a soft blur.
+    private func openCopiedChat(_ conversationId: String) {
+        showSettings = false
+        showAdminConsole = false
+        withAnimation(.easeOut(duration: 0.15)) { contentTransitionBlur = 10 }
+        Task { @MainActor in
+            // Let the sheets finish dismissing so the switch is seen, not hidden.
+            try? await Task.sleep(for: .seconds(0.35))
+            dependencies.activeChatStore.prewarm(conversationId: conversationId, using: dependencies)
+            activeConversationId = conversationId
+            activeChannelId = nil
+            activeFolderWorkspaceId = nil
+            SharedDataService.shared.saveLastActiveConversationId(conversationId)
+            withAnimation(.easeIn(duration: 0.22)) { contentTransitionBlur = 0 }
+        }
     }
 
     private func openSearchChat(_ id: String) {
@@ -1017,7 +1053,7 @@ struct iPadMainChatView: View {
                 await dependencies.authViewModel.refreshBackendConfig()
                 if let activeId = activeConversationId {
                     let vm = dependencies.activeChatStore.viewModel(for: activeId)
-                    if !vm.isStreaming { await vm.syncWithServer() }
+                    await vm.catchUpWithServer(reason: .socketReconnect)
                 }
             }
         }
@@ -1026,6 +1062,7 @@ struct iPadMainChatView: View {
             Task { @MainActor in
                 await withTaskGroup(of: Void.self) { group in
                     group.addTask { await listViewModel.refreshIfStale() }
+                    group.addTask { await ChatReadState.shared.verifyGeneratingNow() }
                     group.addTask { await listViewModel.folderViewModel.refreshFolders() }
                     group.addTask { await channelListVM.refreshChannels() }
                 }
@@ -1070,6 +1107,8 @@ struct iPadSidebarContent: View {
     var onShowSharedChats: (() -> Void)? = nil
     /// Called when a conversation/channel is selected — closes the drawer on iPad.
     var onCloseDrawer: (() -> Void)? = nil
+    /// Called just before the open chat changes, so the detail pane can crossfade.
+    var onChatSwitching: (() -> Void)? = nil
 
     @Environment(\.theme) private var theme
     @State private var drawerChatsDropActive = false
@@ -1893,11 +1932,12 @@ struct iPadSidebarContent: View {
             }
             .buttonStyle(.plain)
             // Web Sidebar: Chats header "More" menu → Mark all as read.
-            .contextMenu {
-                MarkAllReadMenuItem(
-                    conversations: listViewModel.conversations + listViewModel.pinnedConversations
-                        + folderVM.folders.flatMap(\.chats),
+            .overlay(alignment: .trailing) {
+                ChatsHeaderMoreMenu(
+                    conversations: listViewModel.conversations + listViewModel.pinnedConversations,
+                    folders: folderVM.folders,
                     apiClient: dependencies.apiClient)
+                    .padding(.trailing, Spacing.sm)
             }
 
             if chatsExpanded {
@@ -1913,6 +1953,7 @@ struct iPadSidebarContent: View {
                             ForEach(listViewModel.pinnedConversations) { conversation in
                                 conversationRow(conversation)
                                     .frame(minHeight: 36)
+                                    .transition(.opacity)
                             }
                         }
                     }
@@ -1932,6 +1973,7 @@ struct iPadSidebarContent: View {
                             ForEach(group.1) { conversation in
                                 conversationRow(conversation)
                                     .frame(minHeight: 36)
+                                    .transition(.opacity)
                             }
                         }
                     }
@@ -1952,7 +1994,7 @@ struct iPadSidebarContent: View {
             let conversation = folderChats.first(where: { $0.id == chatId })
                 ?? listViewModel.conversations.first(where: { $0.id == chatId })
             guard let conversation else { return false }
-            withAnimation { drawerChatsDropActive = false; folderVM.dragCompleted() }
+            withAnimation(MicroAnimation.snappy) { drawerChatsDropActive = false; folderVM.dragCompleted() }
             if let idx = listViewModel.conversations.firstIndex(where: { $0.id == chatId }) {
                 listViewModel.conversations[idx].folderId = nil
             } else {
@@ -2048,6 +2090,7 @@ struct iPadSidebarContent: View {
                         return
                     }
                     dependencies.activeChatStore.prewarm(conversationId: targetId, using: dependencies)
+                    onChatSwitching?()
                     activeConversationId = targetId
                     activeChannelId = nil
                     activeFolderWorkspaceId = nil
@@ -2064,7 +2107,7 @@ struct iPadSidebarContent: View {
                             .foregroundStyle(isActive ? theme.textPrimary : theme.textSecondary)
                             .lineLimit(1)
                         Spacer()
-                        // Dedicated child view so @Observable tracks streamingConversationId reactively.
+                        // Dedicated child view so @Observable tracks the replying set reactively.
                         // Falls back to the active dot when not streaming.
                         iPadConversationTrailingIndicator(
                             conversationId: conversation.id,
@@ -2083,7 +2126,7 @@ struct iPadSidebarContent: View {
                     .clipShape(RoundedRectangle(cornerRadius: CornerRadius.sm, style: .continuous))
                     .contentShape(Rectangle())
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(.sidebarRow)
                 // Suppress implicit animations on selection state change to prevent sidebar bounce
                 .transaction { $0.animation = nil }
                 .draggable(DraggableChat(
@@ -2187,11 +2230,6 @@ struct iPadSidebarContent: View {
 
     private var sidebarBottomBar: some View {
         VStack(spacing: 0) {
-            // Subtle top separator
-            Rectangle()
-                .fill(theme.textTertiary.opacity(0.12))
-                .frame(height: 0.5)
-
             HStack(spacing: Spacing.sm) {
                 // Real user avatar + full name — tap → Settings, long-press → Account Picker
                 HStack(spacing: 10) {
@@ -2344,7 +2382,9 @@ private struct iPadConversationTrailingIndicator: View {
     let tint: Color
 
     private var isStreaming: Bool {
-        activeChatStore.streamingConversationId == conversationId
+        // Replying on this device, or being generated by another device.
+        activeChatStore.isStreaming(conversationId)
+            || ChatReadState.shared.generatingElsewhere.contains(conversationId)
     }
 
     var body: some View {
@@ -2355,7 +2395,7 @@ private struct iPadConversationTrailingIndicator: View {
                 .controlSize(.mini)
                 .tint(tint)
                 .transition(.opacity.combined(with: .scale))
-                .animation(.easeInOut(duration: 0.2), value: isStreaming)
+                .animation(MicroAnimation.quick, value: isStreaming)
         }
     }
 }
@@ -2832,8 +2872,11 @@ private extension View {
                     if deps.authViewModel.backendConfig == nil {
                         await deps.authViewModel.fetchBackendConfigIfNeeded()
                     }
+                    // Let the first frames of the return land before the list refresh.
+                    try? await Task.sleep(nanoseconds: 300_000_000)
                     await withTaskGroup(of: Void.self) { group in
                         group.addTask { await lvm.refreshIfStale() }
+                        group.addTask { await ChatReadState.shared.verifyGeneratingNow() }
                         group.addTask { await lvm.folderViewModel.refreshFolders() }
                         if let cvm { group.addTask { await cvm.refreshChannels() } }
                         group.addTask { await chatVM.fetchPinnedModels() }
@@ -2878,14 +2921,6 @@ private extension View {
                             folderVM.folders[idx].isExpanded = true
                             await folderVM.loadChatsIfNeeded(for: folderVM.folders[idx])
                         }
-                    }
-                }
-            }
-            .onReceive(NotificationCenter.default.publisher(for: .adminClonedChat)) { notification in
-                if let conversationId = notification.object as? String {
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-                        activeConversationId.wrappedValue = conversationId
-                        SharedDataService.shared.saveLastActiveConversationId(conversationId)
                     }
                 }
             }

@@ -58,8 +58,7 @@ struct TaskListView: View {
                             .frame(width: 60, height: 4)
 
                         // Expand chevron
-                        Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
-                            .scaledFont(size: 10, weight: .semibold)
+                        ExpandChevron(isExpanded: isExpanded)
                             .foregroundStyle(theme.textTertiary)
                     }
                     .padding(.horizontal, Spacing.screenPadding)

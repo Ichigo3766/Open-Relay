@@ -438,7 +438,7 @@ struct ChatListView: View {
                 ?? viewModel.conversations.first { $0.id == item.conversationId }
             guard let conversation else { return false }
 
-            withAnimation {
+            withAnimation(MicroAnimation.snappy) {
                 chatsDropTargetActive = false
                 folderVM.dragCompleted()
             }

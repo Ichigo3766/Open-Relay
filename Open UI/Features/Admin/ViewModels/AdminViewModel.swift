@@ -62,6 +62,13 @@ final class AdminViewModel {
     var isLoadingChats = false
     var chatSearchQuery = ""
     var chatError: String?
+    /// True while a search/refresh runs over an already-visible list (no full-screen loader).
+    var isRefreshingChats = false
+    /// True while the next page of chats is loading.
+    var isLoadingMoreChats = false
+    /// False once a page came back short, so scrolling stops asking for more.
+    var hasMoreChats = true
+    private var chatPage = 1
 
     // MARK: - Chat Detail State (view / clone / delete)
 
@@ -71,6 +78,8 @@ final class AdminViewModel {
 
     var isCloning = false
     var clonedConversation: Conversation?
+    /// Why the last copy failed. Shown as a banner; never replaces the chat being viewed.
+    var cloneError: String?
 
     var chatToDelete: AdminChatItem?
     var isDeletingChat = false
@@ -426,6 +435,8 @@ final class AdminViewModel {
         isLoadingChats = true
         chatError = nil
         userChats = []
+        chatPage = 1
+        hasMoreChats = true
 
         do {
             let chats = try await api.getAdminUserChats(
@@ -435,6 +446,7 @@ final class AdminViewModel {
                 direction: "desc"
             )
             userChats = chats
+            hasMoreChats = !chats.isEmpty
             logger.info("Loaded \(chats.count) chats for user \(user.email)")
         } catch {
             let apiError = APIError.from(error)
@@ -445,27 +457,62 @@ final class AdminViewModel {
         isLoadingChats = false
     }
 
-    /// Searches chats for the currently viewed user.
+    /// Searches (or refreshes) the chats of the currently viewed user. The list stays on
+    /// screen while it runs, so searching never flashes a full-screen loader.
     func searchUserChats() async {
         guard let user = viewingChatsForUser, let api = apiClient else { return }
 
-        isLoadingChats = true
+        isRefreshingChats = true
         chatError = nil
+        let query = chatSearchQuery
 
         do {
             let chats = try await api.getAdminUserChats(
                 userId: user.id,
                 page: 1,
-                query: chatSearchQuery.isEmpty ? nil : chatSearchQuery,
+                query: query.isEmpty ? nil : query,
                 orderBy: "updated_at",
                 direction: "desc"
             )
+            // Ignore a stale answer if the query changed while this was in flight.
+            guard query == chatSearchQuery else { return }
+            chatPage = 1
+            hasMoreChats = !chats.isEmpty
             userChats = chats
         } catch {
-            chatError = "Search failed."
+            if !Task.isCancelled { chatError = "Search failed." }
         }
 
-        isLoadingChats = false
+        isRefreshingChats = false
+    }
+
+    /// Loads the next page when the list scrolls near its end.
+    func loadMoreUserChatsIfNeeded(current chat: AdminChatItem) async {
+        guard hasMoreChats, !isLoadingMoreChats, !isRefreshingChats, !isLoadingChats,
+              let user = viewingChatsForUser, let api = apiClient,
+              userChats.suffix(5).contains(where: { $0.id == chat.id }) else { return }
+
+        isLoadingMoreChats = true
+        let query = chatSearchQuery
+        let next = chatPage + 1
+        do {
+            let chats = try await api.getAdminUserChats(
+                userId: user.id,
+                page: next,
+                query: query.isEmpty ? nil : query,
+                orderBy: "updated_at",
+                direction: "desc"
+            )
+            guard query == chatSearchQuery else { isLoadingMoreChats = false; return }
+            let known = Set(userChats.map(\.id))
+            let fresh = chats.filter { !known.contains($0.id) }
+            chatPage = next
+            hasMoreChats = !fresh.isEmpty
+            userChats.append(contentsOf: fresh)
+        } catch {
+            logger.error("Failed to load more chats: \(error.localizedDescription)")
+        }
+        isLoadingMoreChats = false
     }
 
     // MARK: - Chat Detail (View / Clone / Delete)
@@ -500,10 +547,11 @@ final class AdminViewModel {
     /// Clones a user's chat to the admin's own chat list.
     /// The server creates a copy owned by the requesting admin user.
     func cloneUserChat(chatId: String) async {
-        guard let api = apiClient else { return }
+        guard let api = apiClient, !isCloning else { return }
 
         isCloning = true
         clonedConversation = nil
+        cloneError = nil
 
         do {
             let cloned = try await api.cloneAdminChat(chatId: chatId)
@@ -512,9 +560,9 @@ final class AdminViewModel {
         } catch {
             let apiError = APIError.from(error)
             if case .tokenExpired = apiError {
-                chatDetailError = "Unable to clone this chat. Ensure admin chat access is enabled."
+                cloneError = "Unable to copy this chat. Ensure admin chat access is enabled."
             } else {
-                chatDetailError = apiError.errorDescription ?? "Failed to clone chat."
+                cloneError = apiError.errorDescription ?? "Failed to copy chat."
             }
             logger.error("Failed to clone chat \(chatId): \(error.localizedDescription)")
         }

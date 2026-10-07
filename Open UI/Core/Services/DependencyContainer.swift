@@ -40,6 +40,12 @@ final class ActiveChatStore {
     /// Updated by the first VM that loads models.
     var cachedModels: [AIModel] = []
 
+    /// Session cache of the terminal servers and tools last fetched by any chat.
+    /// New chats are seeded from these before their first frame, so the terminal
+    /// and + icons don't pop in or change after the screen appears.
+    /// Cleared by `clear()` on logout or server switch.
+    var cachedTerminalServers: [TerminalServer]?
+    var cachedTools: [ToolItem]?
     /// The server-configured default model ID (from `ui.models[0]`).
     /// Populated after the first model fetch; used for all new chats.
     var cachedDefaultModelId: String?
@@ -80,7 +86,29 @@ final class ActiveChatStore {
     /// Observed directly by ConversationStreamingIndicator / iPadConversationTrailingIndicator
     /// so the sidebar spinner reacts correctly — even for brand-new chats whose VM
     /// is stored under "__new__" and therefore can't be looked up by conversation ID.
-    var streamingConversationId: String? = nil
+    /// Every chat that is replying right now. A set (not one ID) so several chats can
+    /// stream at once without one clearing another's spinner.
+    private(set) var streamingConversationIds: Set<String> = []
+
+    func isStreaming(_ conversationId: String) -> Bool {
+        streamingConversationIds.contains(conversationId)
+    }
+
+    func markStreaming(_ conversationId: String, _ streaming: Bool) {
+        if streaming {
+            streamingConversationIds.insert(conversationId)
+        } else {
+            streamingConversationIds.remove(conversationId)
+        }
+    }
+
+    /// Safety net, called when the server says a chat finished (`chat:active` false).
+    /// If no live view model is still replying for it, drop its spinner.
+    func reconcileStreaming(chatId: String) {
+        guard streamingConversationIds.contains(chatId) else { return }
+        if let vm = viewModels[chatId], vm.isStreaming { return }
+        streamingConversationIds.remove(chatId)
+    }
 
     /// Whether the server admin has enabled tool-approval (human-in-the-loop) permissions.
     /// Populated from `BackendConfig.features.enableToolPermissions` after the first config fetch.
@@ -133,6 +161,11 @@ final class ActiveChatStore {
                 // Existing chat: restore the last-used model (overridden by loadConversation)
                 vm.selectedModelId = cachedSelectedModelId ?? cachedDefaultModelId ?? cachedModels.first?.id
             }
+        }
+        // New chat: also start with the terminal servers, tools and model feature
+        // defaults the session already knows, so the composer is final on frame 1.
+        if conversationId == nil {
+            vm.seedFromSessionCache(terminalServers: cachedTerminalServers, tools: cachedTools)
         }
         viewModels[key] = vm
         accessOrder.append(key)
@@ -205,7 +238,16 @@ final class ActiveChatStore {
 
     /// Removes the cached view model for a conversation that has finished.
     func remove(_ conversationId: String?) {
-        viewModels.removeValue(forKey: conversationId ?? "__new__")
+        let key = conversationId ?? "__new__"
+        // "New Chat" while the new chat is still replying: don't throw the live view
+        // model away (its spinner would never clear and reopening the chat would lose
+        // the reply). Keep it under its real chat ID so it finishes in the background.
+        if conversationId == nil, let vm = viewModels[key], vm.isStreaming,
+           let realId = vm.conversationId ?? vm.conversation?.id, !realId.hasPrefix("local:") {
+            promoteNewChat(to: realId)
+            return
+        }
+        viewModels.removeValue(forKey: key)
     }
 
     /// Replaces the new-chat placeholder key with the real conversation ID
@@ -232,6 +274,8 @@ final class ActiveChatStore {
         viewModels.removeAll()
         accessOrder.removeAll()
         cachedModels = []
+        cachedTerminalServers = nil
+        cachedTools = nil
         cachedSelectedModelId = nil
         cachedMemorySetting = nil
         cachedMessageQueueSetting = nil
@@ -608,7 +652,7 @@ final class AppDependencyContainer: ServiceContainer {
         // Notifications for channel posts / chats that didn't start on this device.
         ExternalActivityNotifier.shared.attach(to: socketService)
         // Live chat read/unread state (web Sidebar `chat:list` handling).
-        ChatReadState.shared.attach(to: socketService)
+        ChatReadState.shared.attach(to: socketService, store: activeChatStore, api: apiClient)
 
         // Wire socket state to the dependency container's observable property
         wireSocketStateTracking()

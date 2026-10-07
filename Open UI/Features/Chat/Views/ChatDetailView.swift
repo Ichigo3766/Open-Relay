@@ -232,7 +232,10 @@ struct ChatDetailView: View {
     @State private var viewModel: ChatViewModel
 
     // MARK: Model selector sheet
-    @State private var isShowingModelSelectorSheet = false
+    /// Whether the model picker card is open (it grows out of the nav-bar model button).
+    @State private var modelPickerOpen = false
+    /// Stage of the glass drop that carries the model button into the editor sheet.
+    @State private var modelDrop: ModelEditorDropState? = nil
     @State private var isShowingChatParams = false
     @State private var editingModelDetail: ModelDetail? = nil
     @State private var isLoadingModelDetail = false
@@ -250,6 +253,9 @@ struct ChatDetailView: View {
     /// from seeing skeleton → messages → scroll animation. Resets to false on
     /// every new ChatDetailView instance (each conversation has a unique .id).
     @State private var isContentReady = false
+    /// When this chat screen appeared. Messages created after this are "new" and
+    /// get a gentle entrance; history and rows scrolled back into view do not.
+    @State private var screenOpenedAt = Date()
     /// True when the scroll position is at or very near the top (offset.y < 50pt).
     /// Used to hide the ↑ FAB when already at the very top.
     @State private var isAtTop = false
@@ -319,6 +325,12 @@ struct ChatDetailView: View {
 
     // MARK: UI state
     @State private var showCopiedToast = false
+    /// Message whose action-bar copy icon is briefly showing a checkmark.
+    @State private var copiedActionMessageId: String?
+    /// Starter prompt card that was just tapped and is waiting for the message to go out.
+    @State private var sendingPromptId: String?
+    /// True while the follow-up chips fold away just before their message is sent.
+    @State private var followUpsCollapsing = false
     @State private var activeActionMessageId: String?
     @State private var activeVersionIndex: [String: Int] = [:]
     /// Holds the cleaned text of a message the user wants to share.
@@ -668,10 +680,10 @@ struct ChatDetailView: View {
         }
         // Keep the explicit backdrop unless this build supports native status-area blur.
         .statusBarGlassBackdrop(background: theme.background)
-        // + menu / camera card: drawn over the whole chat from the composer's frame,
-        // so it never changes the bottom bar's height or re-lays out the messages.
-        .overlayPreferenceValue(ComposerMorphKey.self) { state in
-            ComposerMorphOverlayHost(state: state)
+        // + menu / camera card and the model picker card / editor drop: drawn over the
+        // whole chat so they never change the bars' height or re-lay out the messages.
+        .chatMorphOverlays(isPickerOpen: modelPickerOpen, drop: modelDrop) { rect, size in
+            AnyView(modelPickerCard(buttonRect: rect, containerSize: size))
         }
         .navigationBarHidden(true)
         // Configure the view model synchronously on first appearance so that the
@@ -779,6 +791,17 @@ struct ChatDetailView: View {
             }
         }
         .onDisappear { handleDisappear() }
+        // Single source of truth for "which chat is open" (read/unread dots): the chat
+        // screen itself, using the real server ID — also for chats started from the
+        // new-chat screen, which the sidebar selection never sees.
+        .onChange(of: openChatReportId, initial: true) { old, new in
+            ChatReadState.shared.chatScreenClosed(old)
+            ChatReadState.shared.chatScreenOpened(new)
+        }
+        // A reply finishing while you're looking at it was seen — it stays read.
+        .onChange(of: viewModel.isStreaming) { was, now in
+            if was && !now { ChatReadState.shared.chatReplyFinished(openChatReportId) }
+        }
         // Stop TTS when app enters background to prevent Metal GPU crashes
         // and keep the speakingMessageId state in sync with actual playback.
         // NOTE: Server TTS (AVQueuePlayer) is intentionally NOT stopped here.
@@ -808,12 +831,15 @@ struct ChatDetailView: View {
         .overlay(alignment: .top) {
             if showCopiedToast { copiedToastView }
         }
+        .animation(MicroAnimation.gentle, value: showCopiedToast)
         .overlay(alignment: .bottom) {
             if let error = viewModel.errorMessage {
                 errorBannerView(error)
                     .padding(.bottom, keyboard.height + 80)
             }
         }
+        // Attached outside the overlay so the banner animates in as well as out.
+        .animation(MicroAnimation.gentle, value: viewModel.errorMessage != nil)
         // Sheets & alerts
         .modifier(ToolConnectionSheetModifier(
             tool: Binding(get: { viewModel.toolConnectionRequested }, set: { viewModel.toolConnectionRequested = $0 }),
@@ -1025,16 +1051,10 @@ struct ChatDetailView: View {
             .environment(dependencies)
             .themed()
         }
-        .sheet(item: $editingModelDetail) { detail in
-            NavigationStack {
-                ModelEditorView(existingModel: detail) { _ in
-                    Task { viewModel.refreshModelsInBackground() }
-                    editingModelDetail = nil
-                }
-            }
-            .environment(dependencies)
-            .themed()
-        }
+        .modelEditorSheet(
+            detail: $editingModelDetail,
+            onSaved: { Task { viewModel.refreshModelsInBackground() } }
+        )
         .applyWidgetAndPickerHandlers(
             isEnabled: isEnabled,
             acceptsQuickActions: viewModel.noteChatSession == nil,
@@ -1083,31 +1103,34 @@ struct ChatDetailView: View {
     @ViewBuilder
     private var readAloudPlayerBar: some View {
         let ttsPlayer = dependencies.textToSpeechService.readAloudPlayer
-        if showsReadAloudPlayer {
-            ReadAloudPlayerBar(
-                player: ttsPlayer.isVisible ? ttsPlayer : nil,
-                readFromHere: { text in
-                    guard let messageID = ttsPlayer.messageID else { return }
-                    dependencies.textToSpeechService.speakMessage(
-                        text, messageID: messageID,
-                        title: ttsPlayer.title,
-                        serverSplitOn: dependencies.authViewModel.backendConfig?.audio?.tts?.splitOn)
-                },
-                isGenerating: ttsGeneratingMessageId != nil && speakingMessageId == nil,
-                isPlaying: speakingMessageId != nil || ttsPlayer.isPlaying,
-                onStop: {
-                    dependencies.textToSpeechService.stop()
-                    speakingMessageId = nil
-                    ttsGeneratingMessageId = nil
-                },
-                isUserScrolling: isFingerDriving
-            )
-            .foregroundStyle(theme.textPrimary)
-            .padding(.horizontal, Spacing.sm)
-            .padding(.bottom, 8)
-            .transition(.opacity.combined(with: .scale(scale: 0.9, anchor: .top)))
-            .animation(.spring(response: 0.35, dampingFraction: 0.8), value: showsReadAloudPlayer)
+        Group {
+            if showsReadAloudPlayer {
+                ReadAloudPlayerBar(
+                    player: ttsPlayer.isVisible ? ttsPlayer : nil,
+                    readFromHere: { text in
+                        guard let messageID = ttsPlayer.messageID else { return }
+                        dependencies.textToSpeechService.speakMessage(
+                            text, messageID: messageID,
+                            title: ttsPlayer.title,
+                            serverSplitOn: dependencies.authViewModel.backendConfig?.audio?.tts?.splitOn)
+                    },
+                    isGenerating: ttsGeneratingMessageId != nil && speakingMessageId == nil,
+                    isPlaying: speakingMessageId != nil || ttsPlayer.isPlaying,
+                    onStop: {
+                        dependencies.textToSpeechService.stop()
+                        speakingMessageId = nil
+                        ttsGeneratingMessageId = nil
+                    },
+                    isUserScrolling: isFingerDriving
+                )
+                .foregroundStyle(theme.textPrimary)
+                .padding(.horizontal, Spacing.sm)
+                .padding(.bottom, 8)
+                .transition(.opacity.combined(with: .scale(scale: 0.9, anchor: .top)))
+            }
         }
+        // Outside the `if`, so the bar animates in as well as out.
+        .animation(MicroAnimation.gentle, value: showsReadAloudPlayer)
     }
 
     private var customTopBar: some View {
@@ -1237,9 +1260,82 @@ struct ChatDetailView: View {
                 .foregroundStyle(tint ?? theme.textSecondary)
                 .frame(width: 40, height: 40)
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.pressable)
         .contentShape(Rectangle())
         .accessibilityLabel(accessibilityLabel)
+    }
+
+    /// The model picker card, positioned over the nav-bar model button.
+    @ViewBuilder
+    private func modelPickerCard(buttonRect: CGRect, containerSize: CGSize) -> some View {
+        let isAdmin = dependencies.authViewModel.currentUser?.role == .admin
+        ModelPickerCard(
+            buttonRect: buttonRect,
+            containerSize: containerSize,
+            keyboardHeight: keyboard.height,
+            label: { degrees in
+                AnyView(modelButtonLabel(chevronDegrees: degrees))
+            },
+            models: viewModel.availableModels,
+            selectedModelId: viewModel.selectedModelId,
+            serverBaseURL: viewModel.serverBaseURL,
+            authToken: viewModel.serverAuthToken,
+            isAdmin: isAdmin,
+            pinnedModelIds: viewModel.pinnedModelIds,
+            onEdit: isAdmin ? { model in
+                Task { await openModelEditorFromPicker(model) }
+            } : nil,
+            onTogglePin: { modelId in viewModel.togglePinModel(modelId) },
+            onSelect: { model in
+                withAnimation(MicroAnimation.snappy) { viewModel.selectModel(model.id) }
+            },
+            onClosed: {
+                var instant = Transaction()
+                instant.disablesAnimations = true
+                withTransaction(instant) { modelPickerOpen = false }
+            }
+        )
+        .environment(dependencies)
+        .themed()
+    }
+
+    /// The model button's face. Drawn by the nav-bar button and, rotated, by the open
+    /// picker card, so the two always match exactly.
+    private func modelButtonLabel(chevronDegrees: Double) -> some View {
+        HStack(spacing: Spacing.xs) {
+            if let model = viewModel.selectedModel {
+                ModelAvatar(
+                    size: 22,
+                    imageURL: viewModel.resolvedImageURL(for: model),
+                    label: model.shortName,
+                    authToken: viewModel.serverAuthToken
+                )
+                .fixedSize()
+                .id(model.id)
+                .transition(.opacity)
+            }
+            Text(viewModel.selectedModel?.shortName ?? String(localized: "Select Model"))
+                .scaledFont(size: 14, weight: .medium)
+                .foregroundStyle(theme.textPrimary)
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .layoutPriority(0)
+                .contentTransition(.opacity)
+            Image(systemName: "chevron.down")
+                .scaledFont(size: 10, weight: .semibold)
+                .foregroundStyle(theme.textTertiary)
+                .rotationEffect(.degrees(chevronDegrees))
+                .fixedSize()
+                .layoutPriority(1)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+    }
+
+    /// The model button as it appears in the nav bar (glass pill).
+    private func modelButtonPill() -> some View {
+        modelButtonLabel(chevronDegrees: 0)
+            .chatControlGlass(in: RoundedRectangle(cornerRadius: 12, style: .continuous), fallback: .ultraThinMaterial)
     }
 
     private var modelSelectorButton: some View {
@@ -1253,70 +1349,17 @@ struct ChatDetailView: View {
             } else {
                 Button {
                     Haptics.play(.light)
-                    viewModel.refreshModelsInBackground()
-                    isShowingModelSelectorSheet = true
+                    Task { @MainActor in try? await Task.sleep(for: .seconds(0.7)); viewModel.refreshModelsInBackground() }
+                    withAnimation(nil) { modelPickerOpen = true }
                 } label: {
-                    HStack(spacing: Spacing.xs) {
-                        if let model = viewModel.selectedModel {
-                            ModelAvatar(
-                                size: 22,
-                                imageURL: viewModel.resolvedImageURL(for: model),
-                                label: model.shortName,
-                                authToken: viewModel.serverAuthToken
-                            )
-                            .fixedSize()
-                            .id(model.id)
-                            .transition(.opacity)
-                        }
-                        Text(viewModel.selectedModel?.shortName ?? String(localized: "Select Model"))
-                            .scaledFont(size: 14, weight: .medium)
-                            .foregroundStyle(theme.textPrimary)
-                            .lineLimit(1)
-                            .truncationMode(.tail)
-                            .layoutPriority(0)
-                            .contentTransition(.opacity)
-                        Image(systemName: "chevron.down")
-                            .scaledFont(size: 10, weight: .semibold)
-                            .foregroundStyle(theme.textTertiary)
-                            .fixedSize()
-                            .layoutPriority(1)
-                    }
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 6)
-                    .chatControlGlass(in: RoundedRectangle(cornerRadius: 12, style: .continuous), fallback: .ultraThinMaterial)
+                    modelButtonPill()
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(.pressable)
                 .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-                .sheet(isPresented: $isShowingModelSelectorSheet) {
-                    ModelSelectorSheet(
-                        models: viewModel.availableModels,
-                        selectedModelId: viewModel.selectedModelId,
-                        serverBaseURL: viewModel.serverBaseURL,
-                        authToken: viewModel.serverAuthToken,
-                        isAdmin: dependencies.authViewModel.currentUser?.role == .admin,
-                        pinnedModelIds: viewModel.pinnedModelIds,
-                        onEdit: dependencies.authViewModel.currentUser?.role == .admin ? { model in
-                            isShowingModelSelectorSheet = false
-                            Task {
-                                try? await Task.sleep(nanoseconds: 600_000_000)
-                                await openModelEditorFromPicker(model)
-                            }
-                        } : nil,
-                        onTogglePin: { modelId in
-                            viewModel.togglePinModel(modelId)
-                        },
-                        onSelect: { model in
-                            withAnimation(MicroAnimation.snappy) {
-                                viewModel.selectModel(model.id)
-                            }
-                        }
-                    )
-                    .themed()
-                    .presentationBackgroundInteraction(.disabled)
-                    .onDisappear {
-                        Task { await ImageCacheService.shared.clearMemory() }
-                    }
-                }
+                // Hidden while the picker card is open: the card draws the same label
+                // exactly over this spot, so the button appears to open into the card.
+                .opacity(modelPickerOpen ? 0 : 1)
+                .anchorPreference(key: ModelButtonAnchorKey.self, value: .bounds) { $0 }
             }
         }
         // Cap the model selector width so long names truncate
@@ -1382,7 +1425,7 @@ struct ChatDetailView: View {
                 isPresented: $showServerFilesPicker,
                 apiClient: dependencies.apiClient
             ) { selectedAttachments in
-                withAnimation { viewModel.attachments.append(contentsOf: selectedAttachments) }
+                withAnimation(MicroAnimation.snappy) { viewModel.attachments.append(contentsOf: selectedAttachments) }
             }
         }
         .sheet(isPresented: $showNotesPicker) {
@@ -1731,7 +1774,7 @@ struct ChatDetailView: View {
                 notesManager: dependencies.notesManager,
                 conversationManager: dependencies.conversationManager,
                 onFilesSelected: { selectedAttachments in
-                    withAnimation { viewModel.attachments.append(contentsOf: selectedAttachments) }
+                    withAnimation(MicroAnimation.snappy) { viewModel.attachments.append(contentsOf: selectedAttachments) }
                 },
                 skills: viewModel.availableSkills,
                 selectedSkillIds: $viewModel.selectedSkillIds,
@@ -1837,16 +1880,23 @@ struct ChatDetailView: View {
         ZStack {
             scrollContent
 
-            // Welcome screen — shown when no messages and not loading.
-            if !viewModel.isLoadingConversation && viewModel.messages.isEmpty {
-                if let folder = _folderWorkspace {
-                    folderWelcomeView(folder: folder)
-                        .transaction { $0.animation = nil }
-                } else {
-                    welcomeView
-                        .transaction { $0.animation = nil }
+            // Welcome screen — shown when no messages and not loading. It fades and
+            // lifts away when the first message is sent instead of cutting out. The
+            // animation is scoped to this group so the message list's own layout is
+            // never animated by it.
+            Group {
+                if !viewModel.isLoadingConversation && viewModel.messages.isEmpty {
+                    Group {
+                        if let folder = _folderWorkspace {
+                            folderWelcomeView(folder: folder)
+                        } else {
+                            welcomeView
+                        }
+                    }
+                    .transition(.opacity.combined(with: .offset(y: -12)))
                 }
             }
+            .animation(MicroAnimation.fade, value: viewModel.messages.isEmpty)
         }
         // ── Opacity curtain ──────────────────────────────────────────────────
         // Keep the entire message area invisible until:
@@ -2002,7 +2052,24 @@ struct ChatDetailView: View {
         // Regenerate: scroll to bottom only if the user was scrolled up.
         // If already at the bottom, .defaultScrollAnchor(.bottom) handles
         // content replacement silently — no explicit scroll needed.
-        .onChange(of: viewModel.regenerateScrollToken) { _, _ in
+        .onChange(of: viewModel.scrollSignal) { _, _ in
+            // Content arrived from another device (new messages, or a reply we just
+            // joined): glide to it if the reader was at the bottom; if they had scrolled
+            // up to read, leave them exactly where they are (the scroll-to-bottom button
+            // is already there). Folded into this handler on purpose — ChatDetailView
+            // cannot take another modifier in its chain.
+            if viewModel.remoteScrollPending {
+                viewModel.remoteScrollPending = false
+                guard !isScrolledUp, !isUserDriving else { return }
+                _pumpRef.programmaticScrollUntil = Date().addingTimeInterval(0.7)
+                Task { @MainActor in
+                    try? await Task.sleep(nanoseconds: 80_000_000) // let the new rows lay out
+                    withAnimation(MicroAnimation.glide) {
+                        scrollPosition.scrollTo(edge: .bottom)
+                    }
+                }
+                return
+            }
             let wasScrolledUp = isScrolledUp
             isScrolledUp = false
             isUserDriving = false
@@ -2502,7 +2569,7 @@ struct ChatDetailView: View {
                 } label: {
                     scrollFABLabel(chatScrollControls == .bottomOnly ? "arrow.down" : "chevron.down")
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(.pressable)
                 .contentShape(Rectangle())
                 .accessibilityLabel("Scroll to bottom")
             }
@@ -2655,6 +2722,9 @@ struct ChatDetailView: View {
             virtualizer.report(id: messageId, minY: frame.minY, height: frame.height, isDrawn: isDrawn)
         }
         .id(messageId)
+        // Fade rows in/out when the list changes inside an animation (delete version,
+        // regenerate). Outside an animation transaction this has no effect.
+        .transition(.opacity)
     }
 
     /// Coordinate space of the messages VStack (list coordinates for virtualization).
@@ -2848,6 +2918,12 @@ struct ChatDetailView: View {
             }
         }
         .clipped()
+        // A message you just sent rises in softly. Decided once per row from its
+        // creation time, so loaded history and re-drawn rows are never animated.
+        .entranceFade(isEnabled: message.role == .user
+                      && isContentReady
+                      && message.timestamp > screenOpenedAt
+                      && Date().timeIntervalSince(message.timestamp) < 2)
         .accessibilityElement(children: .combine)
         .accessibilityLabel(Text("\(message.role == .user ? "You" : "Assistant"): \(message.content.prefix(200))"))
         } // end else (not internal message)
@@ -3262,7 +3338,7 @@ struct ChatDetailView: View {
     }
 
     private var welcomeView: some View {
-        ScrollView {
+        WelcomeScrollContainer(fallbackHeight: viewState_containerHeight) {
             VStack(spacing: 0) {
                 Spacer(minLength: 60).layoutPriority(1)
 
@@ -3348,7 +3424,6 @@ struct ChatDetailView: View {
 
                 Spacer(minLength: 60).layoutPriority(1)
             }
-            .frame(minHeight: max(viewState_containerHeight, 0))
             .onTapGesture {
                 UIApplication.shared.sendAction(
                     #selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
@@ -3623,11 +3698,20 @@ struct ChatDetailView: View {
 
     @ViewBuilder
     private func promptCard(_ prompt: SuggestedPrompt) -> some View {
+        let isSending = sendingPromptId == prompt.id
+        let othersDimmed = sendingPromptId != nil && !isSending
         Button {
+            // Ignore taps while one prompt is already going out.
+            guard sendingPromptId == nil else { return }
+            Haptics.play(.light)
+            withAnimation(MicroAnimation.snappy) { sendingPromptId = prompt.id }
             // Send the prompt directly without populating the bound input field —
             // this avoids the text briefly flashing in the input box before send.
-            Haptics.play(.light)
-            Task { await viewModel.sendMessage(directText: prompt.fullText) }
+            Task { @MainActor in
+                _ = await viewModel.sendMessage(directText: prompt.fullText)
+                // If it didn't go out (blocked / failed) the card springs back.
+                withAnimation(MicroAnimation.snappy) { sendingPromptId = nil }
+            }
         } label: {
 
             VStack(alignment: .leading, spacing: 5) {
@@ -3656,12 +3740,26 @@ struct ChatDetailView: View {
             .overlay(
                 RoundedRectangle(cornerRadius: 16, style: .continuous)
                     .strokeBorder(
-                        theme.isDark ? Color.white.opacity(0.08) : Color.black.opacity(0.07),
-                        lineWidth: 0.75
+                        isSending
+                            ? theme.brandPrimary.opacity(0.55)
+                            : (theme.isDark ? Color.white.opacity(0.08) : Color.black.opacity(0.07)),
+                        lineWidth: isSending ? 1.25 : 0.75
                     )
             )
+            .overlay(alignment: .topTrailing) {
+                if isSending {
+                    ProgressView()
+                        .controlSize(.mini)
+                        .tint(theme.brandPrimary)
+                        .padding(10)
+                        .transition(.opacity.combined(with: .scale(scale: 0.6)))
+                }
+            }
         }
         .buttonStyle(PromptCardButtonStyle())
+        .scaleEffect(isSending ? 0.97 : 1)
+        .opacity(othersDimmed ? 0.45 : 1)
+        .animation(MicroAnimation.snappy, value: sendingPromptId)
     }
 
     // MARK: - Assistant Action Bar
@@ -3832,20 +3930,24 @@ struct ChatDetailView: View {
                     toggleSpeech(for: message)
                     Haptics.play(.light)
                 } label: {
-                    if ttsGeneratingMessageId == message.id {
-                        ProgressView()
-                            .progressViewStyle(.circular)
-                            .scaleEffect(0.65)
-                            .frame(width: 28, height: 28)
-                            .tint(theme.brandPrimary)
-                    } else {
-                        let player = dependencies.textToSpeechService.readAloudPlayer
-                        let isPlayerMessage = player.messageID == message.id
+                    // Fixed 28pt frame; icon and spinner crossfade so nothing jumps.
+                    let player = dependencies.textToSpeechService.readAloudPlayer
+                    let isPlayerMessage = player.messageID == message.id
+                    let isGenerating = ttsGeneratingMessageId == message.id
+                    ZStack {
                         compactActionIcon(
                             icon: isPlayerMessage ? (player.wantsPlayback ? "pause.fill" : "play.fill")
                                 : (speakingMessageId == message.id ? "stop.fill" : "speaker.wave.2"),
                             isActive: isPlayerMessage || speakingMessageId == message.id)
+                            .opacity(isGenerating ? 0 : 1)
+                        ProgressView()
+                            .progressViewStyle(.circular)
+                            .scaleEffect(0.65)
+                            .tint(theme.brandPrimary)
+                            .opacity(isGenerating ? 1 : 0)
                     }
+                    .frame(width: 28, height: 28)
+                    .animation(MicroAnimation.quick, value: isGenerating)
                 }
                 .buttonStyle(CompactActionButtonStyle())
                 .accessibilityLabel(dependencies.textToSpeechService.readAloudPlayer.messageID == message.id
@@ -3853,9 +3955,12 @@ struct ChatDetailView: View {
             }
 
         case .copy:
-            // Copy (always available — no permission gate in WebUI either)
-            Button { copyMessage(message) } label: {
-                compactActionIcon(icon: "doc.on.doc", isActive: false)
+            // Copy (always available — no permission gate in WebUI either).
+            // The icon morphs to a checkmark briefly instead of showing a toast.
+            Button { copyMessage(message, fromActionBar: true) } label: {
+                compactActionIcon(
+                    icon: copiedActionMessageId == message.id ? "checkmark" : "doc.on.doc",
+                    isActive: copiedActionMessageId == message.id)
             }
             .buttonStyle(CompactActionButtonStyle())
             .accessibilityLabel("Copy")
@@ -4057,6 +4162,8 @@ struct ChatDetailView: View {
         Image(systemName: icon)
             .scaledFont(size: size, weight: .medium)
             .foregroundStyle(isActive ? theme.brandPrimary : theme.textTertiary.opacity(0.7))
+            .contentTransition(.symbolEffect(.replace))
+            .animation(MicroAnimation.quick, value: icon)
             .frame(width: 28, height: 28)
             .contentShape(Circle())
     }
@@ -4068,7 +4175,7 @@ struct ChatDetailView: View {
             configuration.label
                 .scaleEffect(configuration.isPressed ? 0.88 : 1.0)
                 .opacity(configuration.isPressed ? 0.65 : 1.0)
-                .animation(.spring(response: 0.2, dampingFraction: 0.85), value: configuration.isPressed)
+                .animation(MicroAnimation.stiff, value: configuration.isPressed)
         }
     }
 
@@ -4591,14 +4698,7 @@ struct ChatDetailView: View {
             }
             ForEach(followUps, id: \.self) { suggestion in
                 Button {
-                    isScrolledUp = false
-                    isUserDriving = false
-                    _pumpRef.programmaticScrollUntil = Date().addingTimeInterval(0.4)
-                    // Send the suggestion directly: routing it through the composer
-                    // filled and resized the input field for a frame before sending.
-                    viewModel.inputText = ""
-                    Task { await viewModel.sendMessage(directText: suggestion) }
-                    Haptics.play(.light)
+                    sendFollowUp(suggestion)
                 } label: {
                     HStack(spacing: Spacing.sm) {
                         Image(systemName: "arrow.right")
@@ -4620,8 +4720,36 @@ struct ChatDetailView: View {
                             .strokeBorder(theme.brandPrimary.opacity(0.2), lineWidth: 0.5)
                     )
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(.pressable)
             }
+        }
+        // The whole group folds away (fade + shrink slightly) when one is tapped.
+        .opacity(followUpsCollapsing ? 0 : 1)
+        .scaleEffect(followUpsCollapsing ? 0.97 : 1, anchor: .top)
+        .animation(MicroAnimation.snappy, value: followUpsCollapsing)
+        .allowsHitTesting(!followUpsCollapsing)
+    }
+
+    /// Sends a follow-up in two calm steps: the chips fold away first, then the message
+    /// goes out. Sending first would remove the chips and add the new message in the
+    /// same frame, so the page height jumped right as the send glide began.
+    private func sendFollowUp(_ suggestion: String) {
+        guard !followUpsCollapsing else { return }
+        Haptics.play(.light)
+        withAnimation(MicroAnimation.snappy) { followUpsCollapsing = true }
+        Task { @MainActor in
+            // Let the chips fold (the spring is ~0.25s) before the layout changes.
+            try? await Task.sleep(nanoseconds: 170_000_000)
+            isScrolledUp = false
+            isUserDriving = false
+            _pumpRef.programmaticScrollUntil = Date().addingTimeInterval(0.6)
+            // Send the suggestion directly: routing it through the composer
+            // filled and resized the input field for a frame before sending.
+            viewModel.inputText = ""
+            let sent = await viewModel.sendMessage(directText: suggestion)
+            // If it didn't go out (blocked / failed) bring the chips back.
+            if !sent { withAnimation(MicroAnimation.snappy) { followUpsCollapsing = false } }
+            else { followUpsCollapsing = false }
         }
     }
 
@@ -4670,7 +4798,6 @@ struct ChatDetailView: View {
         .padding(.horizontal, Spacing.screenPadding)
         .padding(.bottom, Spacing.sm)
         .transition(.move(edge: .bottom).combined(with: .opacity))
-        .animation(MicroAnimation.gentle, value: viewModel.errorMessage != nil)
     }
 
     // MARK: - Copied Toast
@@ -4687,7 +4814,6 @@ struct ChatDetailView: View {
         .clipShape(Capsule())
         .padding(.top, Spacing.md)
         .transition(.toastTransition)
-        .animation(MicroAnimation.gentle, value: showCopiedToast)
     }
 
 
@@ -4695,24 +4821,60 @@ struct ChatDetailView: View {
 
     /// Fetches the full model detail and opens the ModelEditorView sheet.
     /// Called when an admin taps the edit button in the model selector sheet.
-    private func openModelEditorFromPicker(_ model: AIModel) async {
-        guard let apiClient = dependencies.apiClient else { return }
-        isLoadingModelDetail = true
+    /// Loads the editor's data. Base models that were never customised return 404, so
+    /// they open in "create" mode with a default detail.
+    private func fetchModelDetail(for model: AIModel) async -> ModelDetail? {
+        guard let apiClient = dependencies.apiClient else { return nil }
         do {
-            let detail = try await apiClient.getWorkspaceModelDetail(id: model.id)
-            isLoadingModelDetail = false
-            editingModelDetail = detail
+            return try await apiClient.getWorkspaceModelDetail(id: model.id)
         } catch {
-            // Base models (not yet customized as workspace models) return 404.
-            // Construct a default ModelDetail so the editor opens in "create" mode.
-            isLoadingModelDetail = false
-            editingModelDetail = ModelDetail(
+            return ModelDetail(
                 id: model.id,
                 name: model.persistedName,
                 description: model.persistedDescription,
                 profileImageURL: model.profileImageURL
             )
         }
+    }
+
+    /// Opens the model editor from the picker as one motion: a glass drop forms under the
+    /// model button, falls and lands while the details load, then becomes the editor sheet.
+    private func openModelEditorFromPicker(_ model: AIModel) async {
+        isLoadingModelDetail = true
+        defer { isLoadingModelDetail = false }
+
+        // Reduce Motion: no drop, just load and present.
+        guard !UIAccessibility.isReduceMotionEnabled else {
+            editingModelDetail = await fetchModelDetail(for: model)
+            return
+        }
+
+        // Load in parallel with the fall, so the animation hides the wait.
+        async let loaded = fetchModelDetail(for: model)
+
+        var instant = Transaction()
+        instant.disablesAnimations = true
+        withTransaction(instant) { modelDrop = ModelEditorDropState(progress: 0) }
+        try? await Task.sleep(nanoseconds: 20_000_000)
+
+        // One continuous motion: swell, pinch off, fall, splat (see `DropMotion`).
+        let fallDuration = 0.9
+        withAnimation(.linear(duration: fallDuration)) { modelDrop?.progress = 1 }
+        try? await Task.sleep(nanoseconds: UInt64(fallDuration * 0.34 * 1_000_000_000))
+        Haptics.play(.soft)                       // the neck breaks
+        try? await Task.sleep(nanoseconds: UInt64(fallDuration * 0.50 * 1_000_000_000))
+        Haptics.play(.light)                      // it lands
+        try? await Task.sleep(nanoseconds: UInt64(fallDuration * 0.16 * 1_000_000_000))
+
+        // Open the sheet the moment it has landed and the details are ready.
+        let detail = await loaded
+        editingModelDetail = detail
+
+        // The sheet rises through the landed bar: let the bar dissolve into it.
+        try? await Task.sleep(nanoseconds: 120_000_000)
+        withAnimation(.easeOut(duration: 0.25)) { modelDrop?.isHandedOff = true }
+        try? await Task.sleep(nanoseconds: 300_000_000)
+        withTransaction(instant) { modelDrop = nil }
     }
 
     /// Deletes the current conversation and either calls the parent-supplied
@@ -4908,7 +5070,14 @@ struct ChatDetailView: View {
         }
     }
 
+    /// Real server ID of the chat on screen (nil for a fresh draft or a not-yet-saved chat).
+    private var openChatReportId: String? {
+        let id = viewModel.conversationId ?? viewModel.conversation?.id
+        return (id?.hasPrefix("local:") == true || viewModel.isTemporaryChat) ? nil : id
+    }
+
     private func handleDisappear() {
+        ChatReadState.shared.chatScreenClosed(openChatReportId)
         viewModel.webSearchConsent.cancelPending()
         if dependencies.dictationService.context == dictationContext {
             dependencies.dictationService.unbind()
@@ -5449,7 +5618,7 @@ struct ChatDetailView: View {
         return .bool(true)
     }
 
-    private func copyMessage(_ message: ChatMessage) {
+    private func copyMessage(_ message: ChatMessage, fromActionBar: Bool = false) {
         var clean = message.content
         // Nesting-aware: nested <details> never leave a stray </details> behind.
         clean = DetailsBlockScanner.strip(clean)
@@ -5464,6 +5633,18 @@ struct ChatDetailView: View {
         }
         UIPasteboard.general.string = clean
         Haptics.notify(.success)
+        if fromActionBar {
+            // The action-bar icon morphs to a checkmark; no toast needed.
+            withAnimation(MicroAnimation.quick) { copiedActionMessageId = message.id }
+            let copiedId = message.id
+            Task {
+                try? await Task.sleep(for: .seconds(1.5))
+                if copiedActionMessageId == copiedId {
+                    withAnimation(MicroAnimation.quick) { copiedActionMessageId = nil }
+                }
+            }
+            return
+        }
         withAnimation(MicroAnimation.gentle) { showCopiedToast = true }
         Task {
             try? await Task.sleep(for: .seconds(2))
@@ -5616,15 +5797,15 @@ for item in items {
 
         // Not cached — download from server
         guard let apiClient = dependencies.apiClient else { return }
-        withAnimation { isDownloadingFile = true }
+        withAnimation(MicroAnimation.snappy) { isDownloadingFile = true }
 
         do {
             let (data, _) = try await apiClient.getFileContent(id: fileId)
             try data.write(to: cachedFile)
-            withAnimation { isDownloadingFile = false }
+            withAnimation(MicroAnimation.snappy) { isDownloadingFile = false }
             previewFileURL = cachedFile
         } catch {
-            withAnimation { isDownloadingFile = false }
+            withAnimation(MicroAnimation.snappy) { isDownloadingFile = false }
             downloadErrorMessage = "Failed to load file: \(error.localizedDescription)"
             showDownloadError = true
         }
@@ -5639,7 +5820,7 @@ for item in items {
             return
         }
 
-        withAnimation { isDownloadingFile = true }
+        withAnimation(MicroAnimation.snappy) { isDownloadingFile = true }
 
         do {
             let (data, contentType) = try await apiClient.getFileContent(id: fileId)
@@ -5678,13 +5859,13 @@ for item in items {
             let tempFile = tempDir.appendingPathComponent(fileName)
             try data.write(to: tempFile)
 
-            withAnimation { isDownloadingFile = false }
+            withAnimation(MicroAnimation.snappy) { isDownloadingFile = false }
 
             // Present share sheet
             downloadedFileURL = tempFile
 
         } catch {
-            withAnimation { isDownloadingFile = false }
+            withAnimation(MicroAnimation.snappy) { isDownloadingFile = false }
             downloadErrorMessage = "Failed to download: \(error.localizedDescription)"
             showDownloadError = true
         }
@@ -5699,7 +5880,7 @@ for item in items {
             showDownloadError = true
             return
         }
-        withAnimation { isDownloadingFile = true }
+        withAnimation(MicroAnimation.snappy) { isDownloadingFile = true }
         do {
             let (data, response) = try await apiClient.network.requestRawAbsoluteURL(url)
             var fileName = url.lastPathComponent.isEmpty ? "download" : url.lastPathComponent
@@ -5721,10 +5902,10 @@ for item in items {
             }
             let tempFile = FileManager.default.temporaryDirectory.appendingPathComponent(fileName)
             try data.write(to: tempFile)
-            withAnimation { isDownloadingFile = false }
+            withAnimation(MicroAnimation.snappy) { isDownloadingFile = false }
             downloadedFileURL = tempFile
         } catch {
-            withAnimation { isDownloadingFile = false }
+            withAnimation(MicroAnimation.snappy) { isDownloadingFile = false }
             downloadErrorMessage = "Failed to download: \(error.localizedDescription)"
             showDownloadError = true
         }

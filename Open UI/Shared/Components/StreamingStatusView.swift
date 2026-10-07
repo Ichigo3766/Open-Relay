@@ -39,10 +39,13 @@ struct StreamingStatusView: View {
                 // Header row with latest status
                 statusHeader
 
-                // Expanded list of all statuses
-                if isExpanded && visibleStatuses.count > 1 {
-                    statusList
-                        .transition(.opacity.combined(with: .move(edge: .top)))
+                // Expanded list of all statuses. AnimatedPresence glides the height
+                // so the reply underneath doesn't jump when the list opens or closes.
+                AnimatedPresence(visible: isExpanded && visibleStatuses.count > 1,
+                                 animation: MicroAnimation.snappy) {
+                    if visibleStatuses.count > 1 {
+                        statusList
+                    }
                 }
 
                 // Search queries section (shown for the latest status if it has queries)
@@ -115,8 +118,7 @@ struct StreamingStatusView: View {
                 Spacer()
 
                 if visibleStatuses.count > 1 {
-                    Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
-                        .scaledFont(size: 10, weight: .semibold)
+                    ExpandChevron(isExpanded: isExpanded)
                         .foregroundStyle(theme.textTertiary)
                 }
             }

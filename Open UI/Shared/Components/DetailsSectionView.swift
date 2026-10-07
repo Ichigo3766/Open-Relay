@@ -79,8 +79,10 @@ struct DetailsSectionView: View {
 
     private var header: some View {
         HStack(spacing: Spacing.sm) {
-            Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
+            Image(systemName: "chevron.right")
                 .scaledFont(size: 9, weight: .bold)
+                .rotationEffect(.degrees(isExpanded ? 90 : 0))
+                .animation(MicroAnimation.snappy, value: isExpanded)
                 .foregroundStyle(theme.textTertiary)
                 .frame(width: 12)
                 .opacity(hasBody ? 1 : 0.35)

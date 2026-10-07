@@ -346,6 +346,8 @@ private struct MermaidFullscreenView: View {
                         }
                     } label: {
                         Image(systemName: codeCopied ? "checkmark" : "doc.on.doc")
+                        .contentTransition(.symbolEffect(.replace))
+                        .animation(MicroAnimation.quick, value: codeCopied)
                             .scaledFont(size: 14, weight: .medium)
                     }
 

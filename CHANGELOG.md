@@ -1,5 +1,35 @@
 # Changelog
 
+## 📦 NEXT BUILD
+
+### What's New
+
+### Improvements
+
+### Bug Fixes
+
+
+## Previous Builds
+
+## v6.3.1 — October 7, 2026
+
+### What's New
+- Redesigned the model picker: a glass card that drops down from the model button, with a new long-press menu on each model.
+
+### Improvements
+- Improvements in smoothness throughout the app.
+
+### Bug Fixes
+- Fixed the new chat screen stuttering when dragging the keyboard down.
+- Fixed the new chat screen scrolling up and down while the keyboard is open, while keeping drag-to-close for the keyboard.
+- Fixed chats sometimes not updating live when you continue them on another device or the web. 
+- Fixed the screen flickering when returning to the app, and removed the line above the sidebar's bottom bar.
+- Fixed the sidebar spinner staying on after a reply finished, including chats started from another device while this one was in the background.
+- Fixed replies that use tools going blank or cutting off after the tool finished, so the full answer now shows while streaming and after reopening the chat.
+- Fixed thinking, code analysis, web search and sub-agent steps showing up wrongly or not at all in some replies, and images returned by tools not appearing.
+- Fixed replies continued from another device or the web missing tool steps and thinking while streaming.
+- Fixed deleted message versions coming back or getting mixed up after leaving and reopening a chat, and made deleting and regenerating animate smoothly.
+
 ## v6.3 — October 6, 2026
 
 ### What's New

@@ -187,6 +187,8 @@ struct FolderRow: View {
                         .frame(width: 20, height: 20)
                 } else {
                     Image(systemName: folder.isExpanded ? "folder.fill" : "folder")
+                    .contentTransition(.symbolEffect(.replace))
+                    .animation(MicroAnimation.quick, value: folder.isExpanded)
                         .scaledFont(size: 15)
                         .foregroundStyle(theme.brandPrimary)
                 }
@@ -305,6 +307,8 @@ private struct FolderChatRow: View {
         } label: {
             HStack(spacing: Spacing.sm) {
                 Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+                .contentTransition(.symbolEffect(.replace))
+                .animation(MicroAnimation.quick, value: isSelected)
                     .scaledFont(size: 18)
                     .foregroundStyle(isSelected ? theme.brandPrimary : theme.textTertiary)
 

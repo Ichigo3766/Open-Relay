@@ -60,7 +60,7 @@ extension ExternalActivityNotifier {
         guard Self.externalChatNotificationsEnabled,
               let key = stateKey,
               let api = dependencies?.apiClient,
-              dependencies?.activeChatStore.streamingConversationId != chatId,
+              dependencies?.activeChatStore.isStreaming(chatId) != true,
               loadState(key).seenChatIds[chatId] == nil,
               !inFlightChatIds.contains(chatId) else { return }
 

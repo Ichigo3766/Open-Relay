@@ -87,6 +87,8 @@ final class ServerConnectionMonitor: @unchecked Sendable {
     /// While true, transient HTTP failures are suppressed — only NWPathMonitor
     /// internet loss (reliable in the background) can change the state.
     @ObservationIgnored private var isAppInBackground: Bool = false
+    /// When the app last came back to the foreground (for a short offline grace period).
+    @ObservationIgnored private var lastForegroundAt: Date?
 
     /// The polling task that periodically checks /health.
     @ObservationIgnored private var healthPollTask: Task<Void, Never>?
@@ -209,6 +211,7 @@ final class ServerConnectionMonitor: @unchecked Sendable {
     func markAppForeground() {
         guard isAppInBackground else { return }
         isAppInBackground = false
+        lastForegroundAt = Date()
         consecutiveFailures = 0
         logger.debug("App foregrounded — triggering immediate health check + socket reconnect")
 
@@ -297,11 +300,23 @@ final class ServerConnectionMonitor: @unchecked Sendable {
             self.isNetworkAvailable = nowAvailable
 
             if !nowAvailable {
-                // Device truly lost all network interfaces — transition immediately
-                // even in background (NWPathMonitor is reliable; this is a real loss).
+                // The path often reports "no network" simply because the app was
+                // suspended. While backgrounded, don't flip the UI to offline (that is
+                // what flashed the overlay on return); the foreground health check will
+                // find out the truth. Outside the background it is a real loss.
                 Task { @MainActor [weak self] in
-                    self?.consecutiveFailures = self?.failureThreshold ?? 2 // mark as failed
-                    self?.transitionTo(.internetDown)
+                    guard let self else { return }
+                    if self.isAppInBackground {
+                        self.logger.debug("Path lost while backgrounded — deferring to foreground health check")
+                        return
+                    }
+                    // Brief grace after returning so a waking radio doesn't flash offline.
+                    if let back = self.lastForegroundAt, Date().timeIntervalSince(back) < 0.8 {
+                        try? await Task.sleep(nanoseconds: 800_000_000)
+                        guard !self.isNetworkAvailable, !self.isAppInBackground else { return }
+                    }
+                    self.consecutiveFailures = self.failureThreshold // mark as failed
+                    self.transitionTo(.internetDown)
                 }
             } else if !wasAvailable && nowAvailable {
                 // Network just came back

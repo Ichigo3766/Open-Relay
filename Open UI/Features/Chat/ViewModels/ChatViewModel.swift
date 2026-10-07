@@ -78,18 +78,26 @@ final class ChatViewModel {
     var isStreaming: Bool = false {
         didSet {
             if oldValue && !isStreaming { noteChatSession?.revision += 1 }
-            // Update the store's streamingConversationId so the sidebar spinner
+            // Update the store's replying set so the sidebar spinner
             // can react purely by observing one property on the @Observable store,
             // bypassing the @ObservationIgnored viewModels dictionary entirely.
             // conversationId reflects the real server ID once promoteNewChat fires.
             let chatId = conversationId ?? conversation?.id
             if isStreaming {
-                activeChatStore?.streamingConversationId = chatId
-            } else if activeChatStore?.streamingConversationId == chatId {
-                activeChatStore?.streamingConversationId = nil
+                if let chatId {
+                    registeredStreamingId = chatId
+                    activeChatStore?.markStreaming(chatId, true)
+                }
+            } else {
+                // Clear whatever ID we registered (a new chat's ID can change mid-reply).
+                if let registered = registeredStreamingId { activeChatStore?.markStreaming(registered, false) }
+                if let chatId { activeChatStore?.markStreaming(chatId, false) }
+                registeredStreamingId = nil
             }
         }
     }
+    /// The chat ID this view model last put in the store's replying set.
+    @ObservationIgnored private var registeredStreamingId: String?
     /// True while a fork (clone) request is in-flight. Drives the spinner in the action bar.
     var isForkingChat = false
 
@@ -466,7 +474,7 @@ final class ChatViewModel {
     /// Whether an external client (website, another app tab) is currently
     /// streaming a response to this chat. When `true`, the app is passively
     /// observing socket events it did not initiate.
-    private(set) var isExternallyStreaming: Bool = false
+    var isExternallyStreaming: Bool = false
 
     /// Set to `true` after the initial load completes so that new messages
     /// arriving during a session get an appear animation, while the full
@@ -478,8 +486,8 @@ final class ChatViewModel {
     let conversationId: String?
     var noteChatSession: NoteChatSession?
     private(set) var isCreatingNoteChat = false
-    private var manager: ConversationManager?
-    private var socketService: SocketIOService?
+    var manager: ConversationManager?
+    var socketService: SocketIOService?
     /// Weak reference to the shared ASR service, set via configure().
     private weak var asrService: OnDeviceASRService?
     private weak var notesManager: NotesManager?
@@ -505,26 +513,29 @@ final class ChatViewModel {
     /// Persistent passive socket listener that observes events for this chat
     /// regardless of who initiated the generation. Mirrors the website's
     /// `Chat.svelte` `socket.on("events", chatEventHandler)` pattern.
-    private var passiveSubscription: SocketSubscription?
+    var passiveSubscription: SocketSubscription?
     /// True when this VM initiated the current streaming session (sendMessage/regenerate).
     /// The passive listener skips processing when this is true to avoid conflicts.
-    private var selfInitiatedStream: Bool = false
+    var selfInitiatedStream: Bool = false
     /// The message ID of the most recently completed self-initiated stream.
     /// Used by handlePassiveEvent to block replayed socket events (from the server
     /// re-delivering events to a freshly re-subscribed passive listener) for a message
     /// this VM just finished streaming. Cleared when a new self-initiated stream begins.
-    private var lastCompletedSelfInitiatedMessageId: String?
+    var lastCompletedSelfInitiatedMessageId: String?
     /// Guards against flooding syncForExternalStream with duplicate fetch tasks
     /// when many socket tokens arrive before the first fetch completes.
-    private var isSyncingExternalStream: Bool = false
+    var isSyncingExternalStream: Bool = false
     /// Tracks the accumulated content for the currently externally-streaming message.
     /// Delta events are incremental, so we accumulate them here and feed the full
     /// cumulative string into streamingStore.updateContent() on each token — matching
     /// exactly what the self-initiated ContentAccumulator does.
-    private var externalStreamAccumulatedContent: String = ""
+    var externalStreamAccumulatedContent: String = ""
+    /// Structured buffer for passive (external) `response.*` socket events.
+    @ObservationIgnored var externalAccumulator: ContentAccumulator?
+    @ObservationIgnored var externalAccumulatorMessageId: String?
     private(set) var sessionId: String = UUID().uuidString
-    private let logger = Logger(subsystem: "com.openui", category: "ChatViewModel")
-    private var hasFinishedStreaming = false
+    let logger = Logger(subsystem: "com.openui", category: "ChatViewModel")
+    var hasFinishedStreaming = false
     /// IDs of nodes explicitly deleted by the user this session.
     /// Prevents `adoptServerMessages` from re-adding them if the server
     /// still returns them (e.g. in chatCompleted after a delete+regenerate).
@@ -577,7 +588,7 @@ final class ChatViewModel {
 
     /// Timestamp of the last successful server sync. Used to debounce
     /// redundant syncs when the app rapidly transitions foreground ↔ background.
-    private var lastSyncTime: Date = .distantPast
+    var lastSyncTime: Date = .distantPast
 
     /// Minimum interval (seconds) between server syncs to avoid redundant fetches.
     private let syncDebounceInterval: TimeInterval = 3.0
@@ -585,6 +596,14 @@ final class ChatViewModel {
     /// Timestamp of the last time the chat view appeared (navigation entry).
     /// Used by syncOnEntry() to debounce SwiftUI's double-appear during transitions.
     private var lastEntryTime: Date = .distantPast
+
+    /// Bumped whenever content arrived from another device (new messages, or a reply we
+    /// just attached to). The chat view watches `scrollSignal` to glide to the newest content.
+    var remoteUpdateToken: Int = 0
+    /// Set with `remoteUpdateToken`; the view clears it once it has handled the update.
+    var remoteScrollPending: Bool = false
+    /// One value for the view to observe: changes on regenerate AND on remote updates.
+    var scrollSignal: Int { regenerateScrollToken.hashValue ^ remoteUpdateToken }
 
     /// Timestamp when the app entered the background. Used to skip
     /// sync when the background duration was trivially short.
@@ -1318,14 +1337,15 @@ final class ChatViewModel {
     ///
     /// Uses debouncing to avoid redundant syncs when the app rapidly transitions
     /// between foreground and background states.
-    func syncWithServer() async {
+    func syncWithServer(force: Bool = false) async {
         guard !isStreaming || isExternallyStreaming else { return }
         guard let chatId = conversationId ?? conversation?.id, let manager else { return }
 
         // Debounce: skip if we synced very recently (e.g., foreground observer
-        // + .task both firing within the same second)
+        // + .task both firing within the same second). `force` is used by the
+        // catch-up routine for its deliberate follow-up syncs.
         let now = Date()
-        guard now.timeIntervalSince(lastSyncTime) >= syncDebounceInterval else {
+        guard force || now.timeIntervalSince(lastSyncTime) >= syncDebounceInterval else {
             logger.debug("Server sync debounced (last sync \(self.lastSyncTime.formatted()))")
             return
         }
@@ -1459,7 +1479,7 @@ final class ChatViewModel {
     /// This eliminates the flicker/jump and scroll-stuck issues that occurred
     /// when returning from background, because SwiftUI's identity tracking
     /// (via `.id(message.id)`) remains stable throughout the update.
-    private func adoptServerMessages(serverConversation: Conversation) {
+    func adoptServerMessages(serverConversation: Conversation) {
         if !isStreaming && !isSavingContext { chatFiles = serverConversation.files }
         guard conversation != nil else {
             // No local conversation yet — just assign directly
@@ -1753,22 +1773,24 @@ final class ChatViewModel {
                 }
                 self.backgroundEnteredAt = nil
 
-                if self.isStreaming {
-                    // App was backgrounded during streaming — socket events may
-                    // have been missed. Check server for actual completion state.
+                if self.isStreaming && !self.isExternallyStreaming {
+                    // This device's own reply was running when the app was backgrounded —
+                    // socket events may have been missed. Check the server's actual state.
                     await self.recoverFromBackgroundStreaming()
-                } else if !self.visibleViewIDs.isEmpty && bgDuration >= 10.0 {
-                    // Only sync if we were backgrounded long enough for
-                    // something to have changed on the server (10s threshold
-                    // avoids triggering on quick app-switcher glances which
-                    // would cause scroll position loss and a flicker).
-                    await self.syncWithServer()
+                } else if !self.visibleViewIDs.isEmpty {
+                    // Always catch up, however short the absence: the fast path makes an
+                    // unchanged chat a no-op, and a hop to another device and back is
+                    // often only a few seconds. It also joins a reply still being
+                    // generated elsewhere. Runs off the first frames so the return
+                    // itself stays smooth.
+                    try? await Task.sleep(nanoseconds: 250_000_000)
+                    await self.catchUpWithServer(reason: .foreground)
                     // Re-fetch user default params so any system prompt or inference
                     // param changes made on another device or the web UI are picked
                     // up immediately for the next chat request.
-                    await self.fetchUserDefaultParamsFromServer()
+                    if bgDuration >= 10.0 { await self.fetchUserDefaultParamsFromServer() }
                 } else {
-                    self.logger.debug("Foreground sync skipped — chat hidden or background duration \(bgDuration)s < 10s")
+                    self.logger.debug("Foreground sync skipped — chat hidden")
                 }
 
                 // Auto-resume any transcriptions that were paused when the app
@@ -2058,6 +2080,7 @@ final class ChatViewModel {
         guard let manager else { return }
         do {
             availableTerminalServers = try await manager.fetchTerminalServers()
+            activeChatStore?.cachedTerminalServers = availableTerminalServers
             // Auto-select first terminal if only one is available and nothing is selected yet.
             if selectedTerminalServer == nil, let first = availableTerminalServers.first {
                 selectedTerminalServer = first
@@ -2178,6 +2201,7 @@ final class ChatViewModel {
             if scope == manager.apiClient.network.conversationCacheScope {
                 availableTools = allItems
                 toolsHaveLoaded = true
+                activeChatStore?.cachedTools = allItems
                 // Prune selectedToolIds of orphaned IDs (tools that no longer exist on server)
                 // and tools that still need an OAuth connection. Mirrors IntegrationsMenu.svelte
                 // (`selectedToolIds.filter(id => id in tools)`) and Chat.svelte `setDefaults()`.
@@ -2632,7 +2656,7 @@ final class ChatViewModel {
     }
 
     // MARK: - Passive Socket Listener (Cross-Client Stream Observation)
-    private func startPassiveSocketListener() {
+    func startPassiveSocketListener() {
         // Only for existing conversations with a known ID
         guard let chatId = conversationId ?? conversation?.id else { return }
         guard let socket = socketService, socket.isConnected else { return }
@@ -2832,6 +2856,12 @@ final class ChatViewModel {
         if type == "chat:active" {
             let activePayload = data["data"] as? [String: Any]
             let isActive = activePayload?["active"] as? Bool ?? true
+            // Another device just started generating in this chat: join it now, instead
+            // of waiting for the first token to arrive. (Web: the `chat:active` handler.)
+            if isActive, !selfInitiatedStream, !isExternallyStreaming, !isSyncingExternalStream {
+                Task { await self.catchUpWithServer(reason: .chatActive) }
+                return
+            }
             if !isActive, let chatId, let manager {
                 // Do NOT clear isExternallyStreaming / isSyncingExternalStream /
                 // externalStreamAccumulatedContent here — those are managed by the
@@ -2840,6 +2870,13 @@ final class ChatViewModel {
                 Task {
                     if let serverConv = try? await manager.fetchConversation(id: chatId) {
                         self.adoptServerMessages(serverConversation: serverConv)
+                        // We were following a reply and the generation is over: finish it
+                        // with the final server content (the typewriter drains first).
+                        if self.isExternallyStreaming,
+                           let last = serverConv.messages.last(where: { $0.role == .assistant }),
+                           !last.isStreaming {
+                            self.finishExternalFollow(with: last)
+                        }
                     }
                     NotificationCenter.default.post(name: .conversationListNeedsRefresh, object: nil)
                 }
@@ -2896,14 +2933,23 @@ final class ChatViewModel {
             contentDelta = payload?["content"] as? String
             isReplace = true
         case "response:completion":
-            // New OWUI streaming architecture: per-token text deltas arrive as
-            // response:completion { data: { type: "response.output_text.delta", delta: "token" } }.
-            // These are TRUE incremental deltas — append, never replace.
-            if let innerType = payload?["type"] as? String,
-               innerType == "response.output_text.delta",
-               let delta = payload?["delta"] as? String, !delta.isEmpty {
-                contentDelta = delta
-                isReplace = false  // true delta — must append, NOT replace
+            // New OWUI streaming architecture: `response:completion { data: { type: "response.*" } }`.
+            // Feed every event through a structured accumulator (same as self-initiated
+            // streams) so reasoning, tool items and text keep their order and a
+            // `response.completed` snapshot wins. Plain text deltas stay incremental.
+            if let innerType = payload?["type"] as? String, innerType.hasPrefix("response.") {
+                if externalAccumulator == nil || externalAccumulatorMessageId != messageId {
+                    externalAccumulator = ContentAccumulator()
+                    externalAccumulatorMessageId = messageId
+                }
+                if let payload, let acc = externalAccumulator {
+                    acc.receiveResponse(payload)
+                    let structured = acc.content
+                    if !structured.isEmpty {
+                        contentDelta = structured
+                        isReplace = true
+                    }
+                }
             }
         case "chat:completion":
             // structured output: reconstruct full content string (text + tool call
@@ -2913,6 +2959,8 @@ final class ChatViewModel {
                let reconstructed = MessageHistory.reconstructContentFromOutput(outputArr) {
                 contentDelta = reconstructed
                 isReplace = true  // Server sends cumulative snapshots
+                // A server snapshot supersedes anything built from response.* events.
+                externalAccumulator = nil
             }
             // Legacy choices format
             if contentDelta == nil {
@@ -2995,6 +3043,7 @@ final class ChatViewModel {
             // can carry both content AND done:true in the same event)
             if type == "chat:completion", let payload, payload["done"] as? Bool == true {
                 let finalContent = externalStreamAccumulatedContent
+                externalAccumulator = nil
                 isExternallyStreaming = false
                 isSyncingExternalStream = false
                 externalStreamAccumulatedContent = ""
@@ -3042,6 +3091,7 @@ final class ChatViewModel {
             isExternallyStreaming = false
             isSyncingExternalStream = false
             externalStreamAccumulatedContent = ""
+            externalAccumulator = nil
             // Route through drain-deferral so typewriter finishes before UI resets.
             if let msgId {
                 updateAssistantMessage(id: msgId, content: finalContent, isStreaming: false)
@@ -3067,6 +3117,7 @@ final class ChatViewModel {
             isExternallyStreaming = false
             isSyncingExternalStream = false
             externalStreamAccumulatedContent = ""
+            externalAccumulator = nil
             // Abort the streaming store (no drain needed for errors)
             if let msgId = messageId ?? streamingStore.streamingMessageId,
                streamingStore.streamingMessageId == msgId {
@@ -3140,7 +3191,7 @@ final class ChatViewModel {
     }
 
     /// Task for the external stream polling loop.
-    private var externalStreamPollTask: Task<Void, Never>?
+    var externalStreamPollTask: Task<Void, Never>?
 
     // MARK: - Model-Switch Status Polling (issue #79)
 
@@ -4307,14 +4358,17 @@ final class ChatViewModel {
         // 5. Update currentId to the new assistant.
         conversation!.history.currentId = newAssistantId
 
-        // 6. Re-derive the flat messages list from the tree.
-        conversation!.rederiveMessages()
+        // 6. Re-derive the flat messages list from the tree. Animated so the old
+        //    response cross-fades into the new placeholder instead of snapping.
+        withAnimation(.easeInOut(duration: 0.38)) {
+            conversation!.rederiveMessages()
 
-        // Mark the new assistant message as streaming so the DRAIN-DEFERRAL
-        // system works correctly (rederiveMessages() rebuilds from HistoryNode
-        // which has no isStreaming field, so it defaults to false).
-        if let idx = conversation?.messages.firstIndex(where: { $0.id == newAssistantId }) {
-            conversation?.messages[idx].isStreaming = true
+            // Mark the new assistant message as streaming so the DRAIN-DEFERRAL
+            // system works correctly (rederiveMessages() rebuilds from HistoryNode
+            // which has no isStreaming field, so it defaults to false).
+            if let idx = conversation?.messages.firstIndex(where: { $0.id == newAssistantId }) {
+                conversation?.messages[idx].isStreaming = true
+            }
         }
 
         // Reset the task list — the new regen branch starts with no tasks.
@@ -4937,55 +4991,47 @@ final class ChatViewModel {
         }
 
         guard conversation!.history.nodes[id] != nil else { return }
-        let parentId = conversation!.history.nodes[id]!.parentId
 
-        // Collect all subtree IDs before removal so we can blacklist them.
-        // This prevents adoptServerMessages from re-adding them if the server
-        // still returns these nodes (e.g. in chatCompleted after delete+regenerate).
-        var subtreeIds: [String] = []
-        var queue = [id]
-        while !queue.isEmpty {
-            let current = queue.removeFirst()
-            subtreeIds.append(current)
-            if let children = conversation!.history.nodes[current]?.childrenIds {
-                queue.append(contentsOf: children)
+        let chatId = conversationId ?? conversation?.id
+
+        // Mirror the server's delete exactly (message + direct children removed,
+        // grandchildren re-attached to the parent). The removed IDs are blacklisted
+        // so adoptServerMessages can't re-add them from a stale server copy.
+        // Animated so the row fades out and the rest of the list glides into place.
+        var removedIds: Set<String> = []
+        withAnimation(.easeInOut(duration: 0.38)) {
+            removedIds = conversation!.history.deleteMessage(id: id)
+            deletedMessageIds.formUnion(removedIds)
+            conversation!.rederiveMessages()
+
+            // If all messages were deleted, reset to a true new-chat state so the
+            // next message starts a fresh conversation instead of becoming a
+            // sibling of the deleted node.
+            if conversation?.messages.isEmpty == true {
+                conversation = nil
             }
         }
-        deletedMessageIds.formUnion(subtreeIds)
 
-        // Remove the node and its entire subtree (also cleans up parent's childrenIds)
-        conversation!.history.removeSubtree(rootId: id)
-
-        // Recalculate the active branch pointer
-        if let parentId, conversation!.history.nodes[parentId] != nil {
-            // Navigate into parent's remaining children (if any), or stay on parent
-            conversation!.history.currentId = conversation!.history.deepestLeaf(from: parentId)
-        } else if let anyRoot = conversation!.history.nodes.values
-            .filter({ $0.parentId == nil })
-            .sorted(by: { $0.timestamp < $1.timestamp })
-            .first {
-            // No parent — find any remaining root node
-            conversation!.history.currentId = conversation!.history.deepestLeaf(from: anyRoot.id)
-        } else {
-            // Tree is now empty
-            conversation!.history.currentId = nil
+        // Temporary / local-only chats have nothing on the server.
+        guard let chatId, !chatId.hasPrefix("local:"), !isTemporaryChat, let manager else {
+            NotificationCenter.default.post(name: .conversationListNeedsRefresh, object: nil)
+            return
         }
 
-        // Re-derive the flat message list from the updated tree
-        conversation!.rederiveMessages()
-
-        // If all messages were deleted, reset to a true new-chat state.
-        // Without this, conversation is still non-nil (just with zero messages),
-        // and sendMessage() would append the next user message to the same old
-        // conversation object instead of creating a fresh chat — causing the new
-        // message to become a sibling/version of the deleted node rather than
-        // the start of a new conversation.
-        if conversation?.messages.isEmpty == true {
-            conversation = nil
+        // Delete on the server through the dedicated endpoint (like the web client).
+        // Saving the whole tree is NOT enough: the server merges saves and would
+        // keep the deleted version.
+        do {
+            _ = try await manager.apiClient.deleteChatMessage(chatId: chatId, messageId: id)
+        } catch APIError.httpError(let status, _, _) where status == 404 || status == 405 {
+            // Older server without the endpoint — fall back to the tree save.
+            await syncToServerViaTree()
+        } catch {
+            logger.error("deleteMessage failed: \(error.localizedDescription)")
+            deletedMessageIds.subtract(removedIds)
+            errorMessage = "Couldn't delete the message. Please try again."
+            await reloadConversation()
         }
-
-        // Sync tree to server
-        await syncToServerViaTree()
 
         NotificationCenter.default.post(name: .conversationListNeedsRefresh, object: nil)
     }
@@ -6632,6 +6678,30 @@ final class ChatViewModel {
     /// - Model switch (`selectModel`)
     /// - New conversation (`startNewConversation`)
     private func syncUIWithModelDefaults() {
+        guard selectedModel != nil else { return }
+        applyFeatureDefaults()
+
+        // Memory is an account-level preference stored server-side (ui.memory).
+        // Fetch it once for all models (not just memory-capable ones) so the
+        // value is cached for when a capable model is selected later.
+        Task { await fetchMemorySettingFromServer() }
+        Task { await fetchMessageQueueSettingFromServer() }
+        // Fetch HITL tool permissions flag (once per session, cached in ActiveChatStore)
+        Task { await fetchToolPermissionsEnabled() }
+        // Store the task so populateCommonRequestFields can await it before
+        // building a request — prevents the race where params are read before
+        // the fetch completes (which caused the system prompt to be ignored).
+        userDefaultParamsTask = Task { await fetchUserDefaultParamsFromServer() }
+
+        // Make sure the tool list is known so stale IDs get pruned.
+        Task { await ensureToolsLoaded() }
+    }
+
+    /// Synchronous half of `syncUIWithModelDefaults()`: sets the feature toggles,
+    /// default terminal and default tool selection from the selected model, with
+    /// no network work. Also used to give a new chat its final composer state
+    /// before its first frame (see `seedFromSessionCache`).
+    private func applyFeatureDefaults() {
         guard let model = selectedModel else { return }
         let defaults = model.defaultFeatureIds
         let caps = model.capabilities ?? [:]
@@ -6658,18 +6728,6 @@ final class ChatViewModel {
         pendingModelDefaultTerminalId = modelDefaultTerminalId(for: model)
         applyPendingModelDefaultTerminal()
 
-        // Memory is an account-level preference stored server-side (ui.memory).
-        // Fetch it once for all models (not just memory-capable ones) so the
-        // value is cached for when a capable model is selected later.
-        Task { await fetchMemorySettingFromServer() }
-        Task { await fetchMessageQueueSettingFromServer() }
-        // Fetch HITL tool permissions flag (once per session, cached in ActiveChatStore)
-        Task { await fetchToolPermissionsEnabled() }
-        // Store the task so populateCommonRequestFields can await it before
-        // building a request — prevents the race where params are read before
-        // the fetch completes (which caused the system prompt to be ignored).
-        userDefaultParamsTask = Task { await fetchUserDefaultParamsFromServer() }
-
         // Reset and re-populate tool selections for this model.
         // Clear first so tools from a previous model don't persist.
         suppressToolTracking = true
@@ -6683,8 +6741,22 @@ final class ChatViewModel {
             selectedToolIds.insert(tool.id)
         }
         suppressToolTracking = false
-        // Make sure the tool list is known so stale IDs get pruned.
-        Task { await ensureToolsLoaded() }
+    }
+
+    /// Gives a brand-new chat the terminal servers, tools and model defaults the
+    /// session has already fetched, so its composer is correct on the very first
+    /// frame instead of popping in once the network calls finish.
+    /// `load()` still refreshes everything in the background.
+    func seedFromSessionCache(terminalServers: [TerminalServer]?, tools: [ToolItem]?) {
+        if let terminalServers, !terminalServers.isEmpty {
+            availableTerminalServers = terminalServers
+            if selectedTerminalServer == nil { selectedTerminalServer = terminalServers.first }
+        }
+        if let tools {
+            availableTools = tools
+            toolsHaveLoaded = true
+        }
+        applyFeatureDefaults()
     }
 
     /// Fetches the user's memory preference from the server.
@@ -7402,7 +7474,7 @@ final class ChatViewModel {
         return "An unexpected error occurred"
     }
 
-    private func updateAssistantMessage(
+    func updateAssistantMessage(
         id: String, content: String, isStreaming: Bool,
         sources: [ChatSourceReference]? = nil,
         statusHistory: [ChatStatusUpdate]? = nil,
@@ -8278,35 +8350,54 @@ final class ContentAccumulator: @unchecked Sendable {
     /// text when a cumulative snapshot arrives midway through a response.
     nonisolated func receiveResponse(_ event: [String: Any]) {
         let type = event["type"] as? String ?? ""
-        let reasoning = type == "response.reasoning_text.delta"
+
+        // The final snapshot is authoritative (web: response.completed carries `output`).
+        if type == "response.completed",
+           let response = event["response"] as? [String: Any],
+           let finalOutput = response["output"] as? [[String: Any]], !finalOutput.isEmpty {
+            replaceOutput(finalOutput)
+            return
+        }
+
+        let summary = type == "response.reasoning_summary_text.delta"
+        let reasoning = summary || type == "response.reasoning_text.delta"
+        let textDone = type == "response.output_text.done" || type == "response.reasoning_text.done"
+            || type == "response.reasoning_summary_text.done"
         let textDelta = reasoning || type == "response.output_text.delta"
         let delta = event["delta"] as? String ?? ""
         let item = event["item"] as? [String: Any]
-        guard (textDelta && !delta.isEmpty) ||
+        let doneText = textDone ? (event["text"] as? String ?? "") : ""
+        guard (textDelta && !delta.isEmpty) || (textDone && !doneText.isEmpty) ||
                 ((type == "response.output_item.added" || type == "response.output_item.done") && item != nil) else { return }
+        let textDelta2 = textDelta || textDone
         let index = event["output_index"] as? Int
-        let partIndex = event["content_index"] as? Int ?? 0
+        let partIndex = event[summary || type.contains("summary") ? "summary_index" : "content_index"] as? Int ?? 0
         guard (index ?? 0) >= 0, partIndex >= 0 else { return }
-        let kind = reasoning ? "reasoning" : "message"
+        let isReasoningEvent = reasoning || type.hasPrefix("response.reasoning")
+        let kind = isReasoningEvent ? "reasoning" : "message"
+        let partsKey = type.contains("summary") ? "summary" : "content"
+        let partType = type.contains("summary") ? "summary_text" : "output_text"
+        let text = textDone ? doneText : delta
         let id = item?["id"] as? String ?? event["item_id"] as? String ?? "\(kind)-\(index ?? 0)"
         mutate {
             let existing = output?.firstIndex { ($0["id"] as? String) == id }
-            var parts = existing.flatMap { output?[$0]["content"] as? [[String: Any]] } ?? []
-            guard !textDelta || partIndex <= parts.count else { return }
+            var parts = existing.flatMap { output?[$0][partsKey] as? [[String: Any]] } ?? []
+            guard !textDelta2 || partIndex <= parts.count else { return }
             if output == nil {
                 outputPrefix = _content
                 output = []
             }
             let position = existing ?? min(index ?? output!.count, output!.count)
             if existing == nil {
-                output!.insert(item ?? ["id": id, "type": kind, "status": "in_progress", "content": []], at: position)
+                output!.insert(item ?? ["id": id, "type": kind, "status": "in_progress", partsKey: []], at: position)
             }
             if let item {
                 output![position] = item
             } else {
-                if partIndex == parts.count { parts.append(["type": "output_text", "text": ""]) }
-                parts[partIndex]["text"] = (parts[partIndex]["text"] as? String ?? "") + delta
-                output![position]["content"] = parts
+                if partIndex == parts.count { parts.append(["type": partType, "text": ""]) }
+                // `.done` events carry the full text and replace; deltas append.
+                parts[partIndex]["text"] = textDone ? text : (parts[partIndex]["text"] as? String ?? "") + text
+                output![position][partsKey] = parts
             }
             // Chat-completions providers may switch to the answer without
             // emitting an explicit reasoning item.done event.

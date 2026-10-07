@@ -64,6 +64,29 @@ enum MicroAnimation {
         blendDuration: 0
     )
 
+    /// Quick ease-out for small toggles, icon swaps and chrome fades.
+    static let quick: Animation = .easeOut(duration: 0.15)
+
+    /// The curve the chat uses when it glides to a new message. Use it for any
+    /// "move to a new place" animation so the whole app shares one feel.
+    static let glide: Animation = .spring(response: 0.5, dampingFraction: 0.85)
+
+    /// Standard crossfade for overlays, banners and screen hand-offs.
+    static let fade: Animation = .easeInOut(duration: 0.2)
+
+    /// Spring that continues a drag's speed after the finger lifts.
+    ///
+    /// - Parameters:
+    ///   - velocity: Finger velocity along the axis of travel, in points/second
+    ///     (positive = toward the destination).
+    ///   - distance: Remaining distance to the destination in points.
+    static func release(velocity: CGFloat, distance: CGFloat) -> Animation {
+        let travel = max(1, abs(distance))
+        // Normalised velocity, clamped so a wild flick can't overshoot visibly.
+        let initial = min(30, max(0, velocity / travel))
+        return .interpolatingSpring(mass: 1, stiffness: 260, damping: 28, initialVelocity: initial)
+    }
+
     // MARK: - Named Easing Curves
 
     /// Standard Material-style easing for most transitions.
@@ -283,9 +306,108 @@ private struct StaggeredAppearModifier: ViewModifier {
     }
 }
 
+// MARK: - Button Styles
+
+/// Native-feeling press feedback: a slight shrink and dim that follows the finger
+/// and springs back. Built on `ButtonStyle`, so it never interferes with scrolling.
+struct PressableButtonStyle: ButtonStyle {
+    var scale: CGFloat = 0.94
+    var dimsTo: Double = 0.75
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .scaleEffect(configuration.isPressed ? scale : 1)
+            .opacity(configuration.isPressed ? dimsTo : 1)
+            .animation(MicroAnimation.stiff, value: configuration.isPressed)
+    }
+}
+
+/// Press feedback for list rows: a soft highlight, no scaling (so lists don't wobble).
+struct SidebarRowButtonStyle: ButtonStyle {
+    @Environment(\.theme) private var theme
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .background(
+                RoundedRectangle(cornerRadius: CornerRadius.sm, style: .continuous)
+                    .fill(theme.textPrimary.opacity(configuration.isPressed ? 0.08 : 0))
+            )
+            .animation(.easeOut(duration: configuration.isPressed ? 0.05 : 0.2), value: configuration.isPressed)
+    }
+}
+
+extension ButtonStyle where Self == PressableButtonStyle {
+    /// Shrink-and-dim press feedback.
+    static var pressable: PressableButtonStyle { PressableButtonStyle() }
+}
+
+extension ButtonStyle where Self == SidebarRowButtonStyle {
+    /// Soft highlight press feedback for list rows.
+    static var sidebarRow: SidebarRowButtonStyle { SidebarRowButtonStyle() }
+}
+
+// MARK: - Entrance Fade
+
+/// Fades a view in and lifts it a few points the first time it appears.
+/// Uses only opacity and offset, so it never changes layout or fights scrolling.
+private struct EntranceFadeModifier: ViewModifier {
+    let rise: CGFloat
+    /// Decided once at creation, so the view structure never changes afterwards.
+    @State private var shown: Bool
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    init(isEnabled: Bool, rise: CGFloat) {
+        self.rise = rise
+        _shown = State(initialValue: !isEnabled)
+    }
+
+    func body(content: Content) -> some View {
+        content
+            .opacity(shown ? 1 : 0)
+            .offset(y: shown ? 0 : rise)
+            .onAppear {
+                guard !shown else { return }
+                if reduceMotion {
+                    shown = true
+                } else {
+                    withAnimation(MicroAnimation.gentle) { shown = true }
+                }
+            }
+    }
+}
+
+// MARK: - Expand Chevron
+
+/// One chevron that rotates between collapsed and expanded, instead of
+/// swapping between two different symbols.
+struct ExpandChevron: View {
+    let isExpanded: Bool
+    /// Rotation applied when expanded. Defaults to a down-pointing chevron that
+    /// turns to point up.
+    var expandedDegrees: Double = 180
+    var size: CGFloat = 10
+    var weight: Font.Weight = .semibold
+
+    var body: some View {
+        Image(systemName: "chevron.down")
+            .scaledFont(size: size, weight: weight)
+            .rotationEffect(.degrees(isExpanded ? expandedDegrees : 0))
+            .animation(MicroAnimation.snappy, value: isExpanded)
+    }
+}
+
 // MARK: - View Extensions
 
 extension View {
+
+    /// Fades the view in with a small upward lift the first time it appears.
+    ///
+    /// - Parameters:
+    ///   - isEnabled: Pass `false` to render with no animation at all.
+    ///   - rise: Starting vertical offset in points.
+    func entranceFade(isEnabled: Bool = true, rise: CGFloat = 6) -> some View {
+        modifier(EntranceFadeModifier(isEnabled: isEnabled, rise: rise))
+    }
 
     /// Applies a press-down scale effect for tactile feedback.
     ///

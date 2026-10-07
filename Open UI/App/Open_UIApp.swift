@@ -192,14 +192,19 @@ struct Open_UIApp: App {
                         // Re-check for app + server updates whenever the app returns
                         // to the foreground (handles the case where an update ships
                         // while the app is backgrounded). Fails silently on any error.
+                        // Staggered after the return animation so it doesn't compete.
                         Task {
+                            try? await Task.sleep(nanoseconds: 1_200_000_000)
                             async let appCheck: () = dependencies.updateChecker.checkForUpdates()
                             async let serverCheck: () = dependencies.serverUpdateChecker.checkForUpdates(using: dependencies.apiClient)
                             _ = await (appCheck, serverCheck)
                         }
 
-                        // Keep the Apple Watch app's chat list fresh.
-                        WatchRelayService.shared.refreshWatchIfNeeded()
+                        // Keep the Apple Watch app's chat list fresh (also staggered).
+                        Task {
+                            try? await Task.sleep(nanoseconds: 1_500_000_000)
+                            WatchRelayService.shared.refreshWatchIfNeeded()
+                        }
                         // Process pending actions after a short delay so that
                         // MainChatView / iPadMainChatView have time to mount
                         // their .onReceive handlers before we post notifications.
@@ -691,10 +696,9 @@ private struct AppLaunchView: View {
     @Environment(\.theme) private var theme
 
     // Entry animation state
-    @State private var logoScale: CGFloat = 0.82
-    @State private var logoOpacity: Double = 0
-    @State private var textOpacity: Double = 0
-    @State private var textOffset: CGFloat = 18
+    // The first frame shows the final layout so the hand-off from iOS's launch
+    // screen is invisible. Only ambient effects (arc, bloom, shimmer) animate;
+    // the dots appear only if loading actually takes a moment.
     @State private var dotsOpacity: Double = 0
 
     // Rotating arc
@@ -779,8 +783,6 @@ private struct AppLaunchView: View {
                         .frame(width: 64, height: 64)
                         .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
                 }
-                .scaleEffect(logoScale)
-                .opacity(logoOpacity)
 
                 // ── Wordmark ──
                 VStack(spacing: 8) {
@@ -820,8 +822,6 @@ private struct AppLaunchView: View {
                         .tracking(1.5)
                         .foregroundStyle(theme.textTertiary)
                 }
-                .opacity(textOpacity)
-                .offset(y: textOffset)
 
                 Spacer()
 
@@ -832,16 +832,8 @@ private struct AppLaunchView: View {
             }
         }
         .onAppear {
-            // Staggered entry
-            withAnimation(.spring(response: 0.65, dampingFraction: 0.72).delay(0.05)) {
-                logoScale = 1.0
-                logoOpacity = 1.0
-            }
-            withAnimation(.easeOut(duration: 0.55).delay(0.3)) {
-                textOpacity = 1.0
-                textOffset = 0
-            }
-            withAnimation(.easeIn(duration: 0.4).delay(0.55)) {
+            // Dots only appear if loading takes longer than a fast launch.
+            withAnimation(.easeOut(duration: 0.4).delay(0.9)) {
                 dotsOpacity = 1.0
             }
 
@@ -867,8 +859,9 @@ private struct AppLaunchView: View {
 
     @ViewBuilder
     private var launchBackground: some View {
-        // Deep base
-        Color.black.ignoresSafeArea()
+        // Base matches the system launch screen (light/dark aware) so there is
+        // no flash between iOS's launch screen and this one.
+        Color(uiColor: .systemBackground).ignoresSafeArea()
 
         // Layered radial glows for depth
         GeometryReader { geo in
@@ -930,9 +923,11 @@ private struct LaunchLoadingDots: View {
                     .animation(.easeInOut(duration: 0.35), value: phase)
             }
         }
-        .onAppear {
-            // Cycle through dots
-            Timer.scheduledTimer(withTimeInterval: 0.45, repeats: true) { _ in
+        // Structured task: cancelled automatically when the view disappears,
+        // unlike the repeating Timer it replaces, which never stopped.
+        .task {
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .milliseconds(450))
                 phase = (phase + 1) % 3
             }
         }
@@ -951,7 +946,7 @@ private struct AppLaunchErrorView: View {
     var body: some View {
         ZStack {
             // Same modern background
-            Color.black.ignoresSafeArea()
+            Color(uiColor: .systemBackground).ignoresSafeArea()
             GeometryReader { geo in
                 let w = geo.size.width
                 let h = geo.size.height
@@ -1075,13 +1070,17 @@ struct RootView: View {
     var body: some View {
         ZStack {
             // ── Background layer: the full phase-based content ──
+            // Settles in from a hair under full size while the launch overlay lifts,
+            // so the reveal feels like the app arriving rather than a cut.
             phaseContent
-                .animation(.spring(response: 0.4, dampingFraction: 0.85), value: viewModel.phase)
+                .animation(MicroAnimation.standardEasing, value: viewModel.phase)
+                .scaleEffect(launchOverlayVisible ? 0.985 + 0.015 * (1 - launchOverlayOpacity) : 1)
 
             // ── Foreground layer: launch overlay (fades out on top) ──
             if launchOverlayVisible {
                 launchOverlay
                     .opacity(launchOverlayOpacity)
+                    .scaleEffect(1 + 0.04 * (1 - launchOverlayOpacity))
                     .ignoresSafeArea()
                     // Disable interaction once fading so the chat underneath is tappable
                     .allowsHitTesting(launchOverlayOpacity > 0.05)
@@ -1136,11 +1135,11 @@ struct RootView: View {
 
     /// Fades the launch overlay out smoothly.
     private func dismissLaunchOverlay() {
-        withAnimation(.easeInOut(duration: 0.45)) {
+        withAnimation(.easeInOut(duration: 0.4)) {
             launchOverlayOpacity = 0.0
         }
         // Remove from hierarchy after the fade completes to avoid blocking touches.
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) {
             launchOverlayVisible = false
         }
     }

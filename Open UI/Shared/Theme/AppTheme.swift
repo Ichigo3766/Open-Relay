@@ -250,9 +250,13 @@ struct AppTheme: Equatable, Sendable {
 
     // MARK: - Sidebar
 
+    /// The layer behind the chat card. On iOS 26 the card is the main subject, so the
+    /// sidebar sits *behind* it and is the deeper surface: black in dark mode, a soft
+    /// grey in light mode. (Earlier iOS slides the drawer over the chat and keeps the
+    /// plain page background.)
     var sidebarBackground: Color {
-        if #available(iOS 26.0, *), isDark {
-            return surfaceContainer
+        if #available(iOS 26.0, *) {
+            return isDark ? Color(hex: 0x000000) : Color(hex: 0xF2F2F7)
         }
         return background
     }

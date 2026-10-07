@@ -692,7 +692,7 @@ struct ThreadDetailSheet: View {
                     .onChange(of: displayMessages.last?.id) { old, new in
                         // Only follow appended replies, not older pages prepended at the top.
                         guard new != old, new != nil else { return }
-                        withAnimation {
+                        withAnimation(MicroAnimation.snappy) {
                             proxy.scrollTo("threadBottom", anchor: .bottom)
                         }
                     }
@@ -729,15 +729,15 @@ struct ThreadDetailSheet: View {
         }
         
         guard let apiClient = dependencies.apiClient else { return }
-        withAnimation { isLoadingFile = true }
+        withAnimation(MicroAnimation.snappy) { isLoadingFile = true }
         
         do {
             let (data, _) = try await apiClient.getFileContent(id: fileId)
             try data.write(to: cachedFile)
-            withAnimation { isLoadingFile = false }
+            withAnimation(MicroAnimation.snappy) { isLoadingFile = false }
             quickLookURL = cachedFile
         } catch {
-            withAnimation { isLoadingFile = false }
+            withAnimation(MicroAnimation.snappy) { isLoadingFile = false }
             downloadErrorMessage = "Failed to load file: \(error.localizedDescription)"
             showDownloadError = true
         }
@@ -1141,11 +1141,11 @@ struct ThreadDetailSheet: View {
             onAttachmentTapped: { showThreadAttachmentPicker = true },
             onPasteAttachments: { pasted in
                 // BUG-011 fix: Paste into thread-specific attachments
-                withAnimation { viewModel.threadAttachments.append(contentsOf: pasted) }
+                withAnimation(MicroAnimation.snappy) { viewModel.threadAttachments.append(contentsOf: pasted) }
                 for att in pasted { viewModel.uploadAttachmentImmediately(attachmentId: att.id, isThread: true) }
             },
             onRemoveAttachment: { att in
-                withAnimation { viewModel.threadAttachments.removeAll { $0.id == att.id } }
+                withAnimation(MicroAnimation.snappy) { viewModel.threadAttachments.removeAll { $0.id == att.id } }
             },
             onTextChange: { viewModel.emitThreadTyping() },
             onAtTrigger: { query in

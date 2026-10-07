@@ -60,8 +60,11 @@ extension View {
 struct ChatChromeBarModifier<Bar: View>: ViewModifier {
     let edge: VerticalEdge
     let bar: Bar
+    /// 0 = sidebar closed, 1 = fully open (set by MainChatView). Only the top bar reacts.
+    @Environment(\.sidebarOpenFraction) private var sidebarFraction
 
     func body(content: Content) -> some View {
+        let bar = fadingBar
         if #available(iOS 27.0, *), hasNativeStatusBlur {
             if edge == .top {
                 // Reserve toolbar space without extending the status-area blur behind it.
@@ -79,6 +82,27 @@ struct ChatChromeBarModifier<Bar: View>: ViewModifier {
             content.safeAreaInset(edge: edge, spacing: 0) { bar }
         }
     }
+
+    /// The top bar fades, blurs and shrinks away as the sidebar opens (its space is kept,
+    /// so the messages never move). The bottom bar is untouched.
+    @ViewBuilder
+    private var fadingBar: some View {
+        if edge == .top {
+            let p = min(1, max(0, Double(sidebarFraction) / 0.6))
+            bar
+                .opacity(1 - p)
+                .scaleEffect(1 - 0.04 * p, anchor: .top)
+                .allowsHitTesting(p < 0.5)
+                .accessibilityHidden(p >= 1)
+        } else {
+            bar
+        }
+    }
+}
+
+extension EnvironmentValues {
+    /// How far the sidebar is open (0...1). Drives the chat's top bar fading away.
+    @Entry var sidebarOpenFraction: CGFloat = 0
 }
 
 /// Status-area blur used when the system navigation bar is hidden.

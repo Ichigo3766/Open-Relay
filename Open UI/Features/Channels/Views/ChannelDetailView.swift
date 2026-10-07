@@ -826,9 +826,9 @@ struct ChannelDetailView: View {
             let lastIsOwn = viewModel.messages.last?.userId == viewModel.currentUserId
             if lastIsOwn {
                 isScrolledUp = false
-                withAnimation { scrollPosition.scrollTo(edge: .bottom) }
+                withAnimation(MicroAnimation.glide) { scrollPosition.scrollTo(edge: .bottom) }
             } else if !isScrolledUp {
-                withAnimation { scrollPosition.scrollTo(edge: .bottom) }
+                withAnimation(MicroAnimation.glide) { scrollPosition.scrollTo(edge: .bottom) }
             }
         }
         .onChange(of: viewModel.messages.last?.id) { oldId, newId in
@@ -953,9 +953,9 @@ struct ChannelDetailView: View {
                 Task { await viewModel.openThread(for: parent) }
             } else {
                 reactionTooltipText = "That message is further back in the history"
-                withAnimation { showReactionTooltip = true }
+                withAnimation(MicroAnimation.snappy) { showReactionTooltip = true }
                 DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
-                    withAnimation { showReactionTooltip = false }
+                    withAnimation(MicroAnimation.snappy) { showReactionTooltip = false }
                 }
             }
             return
@@ -1924,15 +1924,15 @@ struct ChannelDetailView: View {
         }
         
         guard let apiClient = dependencies.apiClient else { return }
-        withAnimation { isLoadingFile = true }
+        withAnimation(MicroAnimation.snappy) { isLoadingFile = true }
         
         do {
             let (data, _) = try await apiClient.getFileContent(id: fileId)
             try data.write(to: cachedFile)
-            withAnimation { isLoadingFile = false }
+            withAnimation(MicroAnimation.snappy) { isLoadingFile = false }
             quickLookURL = cachedFile
         } catch {
-            withAnimation { isLoadingFile = false }
+            withAnimation(MicroAnimation.snappy) { isLoadingFile = false }
             downloadErrorMessage = "Failed to load file: \(error.localizedDescription)"
             showDownloadError = true
         }
