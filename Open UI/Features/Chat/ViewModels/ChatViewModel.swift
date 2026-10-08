@@ -545,7 +545,9 @@ final class ChatViewModel {
     /// so it can detect when a new stream has started (e.g., via queue drain) and
     /// skip cleanup that would otherwise tear down the new stream.
     private var streamingSessionId: Int = 0
-    private var activeTaskId: String?
+    /// Server task IDs for the reply being generated (one per model), read from the
+    /// `task_ids` field of the `/api/chat/completions` response.
+    private var activeTaskIds: [String] = []
     private var recoveryTimer: Timer?
     /// Cancellable delay task for the initial recovery timer delay.
     /// Replaces `DispatchQueue.main.asyncAfter` so it can be cancelled
@@ -3929,9 +3931,7 @@ final class ChatViewModel {
                         self.cleanupStreaming()
                         return
                     }
-                    if let taskId = json["task_id"] as? String {
-                        self.activeTaskId = taskId
-                    }
+                    self.activeTaskIds = self.parseTaskIdsFromCompletionResponse(json)
 
                     // Aggressive polling: start immediately, poll every 1.5s
                     // Content is being generated server-side and persisted to DB
@@ -4006,10 +4006,8 @@ final class ChatViewModel {
                         return
                     }
 
-                    // Capture the server's task_id for server-side stop
-                    if let taskId = json["task_id"] as? String {
-                        self.activeTaskId = taskId
-                    }
+                    // Capture the server's task IDs for server-side stop
+                    self.activeTaskIds = self.parseTaskIdsFromCompletionResponse(json)
 
                     self.logger.info("HTTP POST done – waiting for socket events")
                     self.startRecoveryTimer(assistantMessageId: assistantMessageId, chatId: effectiveChatId)
@@ -4046,6 +4044,15 @@ final class ChatViewModel {
         return false
     }
 
+    /// Reads task IDs from a `/api/chat/completions` (or tool-resolve) response. The server
+    /// returns `task_ids` (one per model); older servers returned a single `task_id`.
+    /// Deliberately ignores `id` — on non-background responses that is a `chatcmpl-…` id.
+    private func parseTaskIdsFromCompletionResponse(_ json: [String: Any]) -> [String] {
+        if let ids = json["task_ids"] as? [String], !ids.isEmpty { return ids }
+        if let id = json["task_id"] as? String, !id.isEmpty { return [id] }
+        return []
+    }
+
     /// Stops the current streaming response by cancelling the server-side task
     /// via `/api/tasks/stop/{taskId}` and cleaning up local state.
     ///
@@ -4059,22 +4066,41 @@ final class ChatViewModel {
         streamingTask = nil
 
         // Stop the server-side task.
-        // For self-initiated streams we already have the task_id from the HTTP POST response.
-        // For externally-initiated streams (another device/browser) activeTaskId is nil,
-        // so we query /api/tasks/chat/{chat_id} to discover and stop all active tasks.
+        // Default (like the web client): stop every task for the chat by chat ID. This works
+        // for all users, whereas `/api/tasks/stop/{id}` is admin-only on the server.
+        // Voice calls pass stopAllChatTasks == false and stop only this reply's own tasks.
         let chatId = conversationId ?? conversation?.id
-        if let taskId = activeTaskId, let apiClient = manager?.apiClient {
-            Task {
-                try? await apiClient.stopTask(taskId: taskId)
-                logger.info("Server task stopped: \(taskId)")
-            }
-        } else if stopAllChatTasks, let chatId, let apiClient = manager?.apiClient {
-            Task {
-                do {
-                    try await apiClient.stopTasksByChatId(chatId: chatId)
-                    logger.info("All external server tasks stopped for chat: \(chatId)")
-                } catch {
-                    logger.warning("Failed to stop tasks for chat \(chatId): \(error.localizedDescription)")
+        let taskIds = activeTaskIds
+        if let apiClient = manager?.apiClient {
+            if stopAllChatTasks, let chatId {
+                Task {
+                    do {
+                        try await apiClient.stopTasksByChatId(chatId: chatId)
+                        logger.info("Server tasks stopped for chat: \(chatId)")
+                    } catch {
+                        logger.warning("Failed to stop tasks for chat \(chatId): \(error.localizedDescription)")
+                    }
+                }
+            } else if !taskIds.isEmpty {
+                Task {
+                    var failed = false
+                    for taskId in taskIds {
+                        do {
+                            try await apiClient.stopTask(taskId: taskId)
+                            logger.info("Server task stopped: \(taskId)")
+                        } catch {
+                            failed = true
+                        }
+                    }
+                    // Task-ID stop is admin-only. For other users fall back to a chat-level
+                    // stop, but only when every running task is one of ours — so a newer
+                    // turn's task is never killed.
+                    if failed, let chatId,
+                       let running = try? await apiClient.getTasksForChat(chatId: chatId),
+                       !running.isEmpty, Set(running).isSubset(of: Set(taskIds)) {
+                        try? await apiClient.stopTasksByChatId(chatId: chatId)
+                        logger.info("Server tasks stopped via chat fallback: \(chatId)")
+                    }
                 }
             }
         }
@@ -4277,9 +4303,7 @@ final class ChatViewModel {
                     return
                 }
 
-                if let taskId = json["task_id"] as? String {
-                    self.activeTaskId = taskId
-                }
+                self.activeTaskIds = self.parseTaskIdsFromCompletionResponse(json)
 
                 self.logger.info("Continue HTTP POST done – waiting for socket events")
             } catch {
@@ -4481,10 +4505,8 @@ final class ChatViewModel {
                     return
                 }
 
-                // Capture the server's task_id for server-side stop
-                if let taskId = json["task_id"] as? String {
-                    self.activeTaskId = taskId
-                }
+                // Capture the server's task IDs for server-side stop
+                self.activeTaskIds = self.parseTaskIdsFromCompletionResponse(json)
 
                 self.logger.info("Regenerate HTTP POST done – waiting for socket events")
             } catch {
@@ -4957,7 +4979,7 @@ final class ChatViewModel {
                     self.cleanupStreaming()
                     return
                 }
-                if let taskId = json["task_id"] as? String { self.activeTaskId = taskId }
+                self.activeTaskIds = self.parseTaskIdsFromCompletionResponse(json)
                 self.logger.info("Edit-regen HTTP POST done – waiting for socket events")
             } catch {
                 if !Task.isCancelled {
@@ -6238,7 +6260,7 @@ final class ChatViewModel {
             lastCompletedSelfInitiatedMessageId = completedId
         }
         selfInitiatedStream = false
-        activeTaskId = nil
+        activeTaskIds = []
 
         // Always fire the notification — the UNUserNotificationCenterDelegate's
         // willPresent handler suppresses the banner when the user is actively
@@ -7871,10 +7893,11 @@ final class ChatViewModel {
         isResolvingToolCall = true
         defer { isResolvingToolCall = false }
         do {
-            _ = try await apiClient.resolveToolCall(
+            let resolved = try await apiClient.resolveToolCall(
                 chatId: chatId, messageId: pending.messageId,
                 callId: pending.callId, action: "approve"
             )
+            activeTaskIds += parseTaskIdsFromCompletionResponse(resolved)
             pendingToolApprovalCall = nil
         } catch {
             logger.error("[HITL] approveToolCall failed: \(error.localizedDescription)")
@@ -7946,10 +7969,11 @@ final class ChatViewModel {
         isResolvingAskUser = true
         defer { isResolvingAskUser = false }
         do {
-            _ = try await apiClient.resolveToolCall(
+            let resolved = try await apiClient.resolveToolCall(
                 chatId: chatId, messageId: prompt.messageId, callId: prompt.callId,
                 action: answers == nil ? "reject" : "answer", answers: payload
             )
+            activeTaskIds += parseTaskIdsFromCompletionResponse(resolved)
             resolvedAskUserCallIds.insert(prompt.callId)
             if pendingAskUserPrompt?.id == prompt.id { pendingAskUserPrompt = nil }
         } catch {
@@ -8054,10 +8078,11 @@ final class ChatViewModel {
                     messageId: message.id, in: node.output)
             else { continue }
             do {
-                _ = try await apiClient.resolveToolCall(
+                let resolved = try await apiClient.resolveToolCall(
                     chatId: chatId, messageId: info.messageId,
                     callId: info.callId, action: "approve"
                 )
+                activeTaskIds += parseTaskIdsFromCompletionResponse(resolved)
             } catch {
                 logger.warning("[HITL] auto-approve failed: \(error.localizedDescription)")
                 await reloadConversation()

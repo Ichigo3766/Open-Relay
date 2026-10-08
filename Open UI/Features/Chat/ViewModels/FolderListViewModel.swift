@@ -221,11 +221,11 @@ final class FolderListViewModel {
             if enabled {
                 // Preserve local expand states so UI doesn't flicker
                 let existingExpandState = Dictionary(
-                    uniqueKeysWithValues: folders.map { ($0.id, $0.isExpanded) }
+                    folders.map { ($0.id, $0.isExpanded) }, uniquingKeysWith: { first, _ in first }
                 )
                 // Preserve local chat lists so expanded folders don't go blank during refresh
                 let existingChats = Dictionary(
-                    uniqueKeysWithValues: folders.map { ($0.id, $0.chats) }
+                    folders.map { ($0.id, $0.chats) }, uniquingKeysWith: { first, _ in first }
                 )
                 folders = fetched.map { folder in
                     var f = folder
@@ -252,10 +252,10 @@ final class FolderListViewModel {
 
             // Merge shared folders, preserving existing expand/chat state
             let existingSharedExpandState = Dictionary(
-                uniqueKeysWithValues: sharedFolders.map { ($0.id, $0.isExpanded) }
+                sharedFolders.map { ($0.id, $0.isExpanded) }, uniquingKeysWith: { first, _ in first }
             )
             let existingSharedChats = Dictionary(
-                uniqueKeysWithValues: sharedFolders.map { ($0.id, $0.chats) }
+                sharedFolders.map { ($0.id, $0.chats) }, uniquingKeysWith: { first, _ in first }
             )
             sharedFolders = fetchedShared.map { folder in
                 var f = folder
@@ -759,10 +759,10 @@ final class FolderListViewModel {
 
             // Preserve local expand states and chats
             let existingExpandState = Dictionary(
-                uniqueKeysWithValues: folders.map { ($0.id, $0.isExpanded) }
+                folders.map { ($0.id, $0.isExpanded) }, uniquingKeysWith: { first, _ in first }
             )
             let existingChats = Dictionary(
-                uniqueKeysWithValues: folders.map { ($0.id, $0.chats) }
+                folders.map { ($0.id, $0.chats) }, uniquingKeysWith: { first, _ in first }
             )
             folders = fetched.map { folder in
                 var f = folder
@@ -804,10 +804,10 @@ final class FolderListViewModel {
         do {
             let fetched = try await manager.fetchSharedFolders()
             let existingExpandState = Dictionary(
-                uniqueKeysWithValues: sharedFolders.map { ($0.id, $0.isExpanded) }
+                sharedFolders.map { ($0.id, $0.isExpanded) }, uniquingKeysWith: { first, _ in first }
             )
             let existingChats = Dictionary(
-                uniqueKeysWithValues: sharedFolders.map { ($0.id, $0.chats) }
+                sharedFolders.map { ($0.id, $0.chats) }, uniquingKeysWith: { first, _ in first }
             )
             sharedFolders = fetched.map { folder in
                 var f = folder

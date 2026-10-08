@@ -274,7 +274,7 @@ final class FileAttachmentService {
             )
 
             // Map fileId → attachmentId for result routing
-            let fileIdToAttachId = Dictionary(uniqueKeysWithValues: idToFileId.map { ($1, $0) })
+            let fileIdToAttachId = Dictionary(idToFileId.map { ($1, $0) }, uniquingKeysWith: { first, _ in first })
 
             for fileId in result.successes {
                 if let attachId = fileIdToAttachId[fileId] {

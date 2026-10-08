@@ -1876,6 +1876,29 @@ struct ChatDetailView: View {
 
     // MARK: - Message List Area
 
+    /// Welcome / folder-welcome overlay. Returned as `AnyView` on purpose: the two
+    /// welcome views have very large opaque types, and nesting both inside
+    /// Group/if/transition/animation made SwiftUI's runtime type resolution overflow
+    /// the main-thread stack on first render (launch/login crash in 6.3.1).
+    /// Type-erasing here keeps the enclosing `messageListArea` type shallow.
+    @inline(never)
+    private var welcomeOverlay: AnyView {
+        let showWelcome = !viewModel.isLoadingConversation && viewModel.messages.isEmpty
+        let content: AnyView
+        if !showWelcome {
+            content = AnyView(EmptyView())
+        } else if let folder = _folderWorkspace {
+            content = AnyView(folderWelcomeView(folder: folder)
+                .transition(.opacity.combined(with: .offset(y: -12))))
+        } else {
+            content = AnyView(welcomeView
+                .transition(.opacity.combined(with: .offset(y: -12))))
+        }
+        return AnyView(
+            content.animation(MicroAnimation.fade, value: viewModel.messages.isEmpty)
+        )
+    }
+
     private var messageListArea: some View {
         ZStack {
             scrollContent
@@ -1884,19 +1907,7 @@ struct ChatDetailView: View {
             // lifts away when the first message is sent instead of cutting out. The
             // animation is scoped to this group so the message list's own layout is
             // never animated by it.
-            Group {
-                if !viewModel.isLoadingConversation && viewModel.messages.isEmpty {
-                    Group {
-                        if let folder = _folderWorkspace {
-                            folderWelcomeView(folder: folder)
-                        } else {
-                            welcomeView
-                        }
-                    }
-                    .transition(.opacity.combined(with: .offset(y: -12)))
-                }
-            }
-            .animation(MicroAnimation.fade, value: viewModel.messages.isEmpty)
+            welcomeOverlay
         }
         // ── Opacity curtain ──────────────────────────────────────────────────
         // Keep the entire message area invisible until:
@@ -3338,7 +3349,7 @@ struct ChatDetailView: View {
     }
 
     private var welcomeView: some View {
-        WelcomeScrollContainer(fallbackHeight: viewState_containerHeight) {
+        WelcomeScrollContainer(fallbackHeight: viewState_containerHeight, keyboardVisible: keyboard.isVisible) {
             VStack(spacing: 0) {
                 Spacer(minLength: 60).layoutPriority(1)
 

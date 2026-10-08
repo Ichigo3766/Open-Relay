@@ -150,7 +150,7 @@ final class AdminModelsSettingsViewModel {
         async let rawTask = api.listRawBaseModels()
         async let wsTask  = api.listBaseModels()
         let (rawModels, wsModels) = try await (rawTask, wsTask)
-        let wsMap = Dictionary(uniqueKeysWithValues: wsModels.map { ($0.id, $0) })
+        let wsMap = Dictionary(wsModels.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         return rawModels.map { raw in
             guard let ws = wsMap[raw.id] else { return raw }
             var merged = raw

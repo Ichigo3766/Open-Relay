@@ -3,19 +3,27 @@ import UIKit
 
 /// Scroll container for the new-chat welcome screen.
 ///
-/// The welcome content is centred inside a minimum height. That height used to be copied
-/// from the message list, which only updates in 30pt steps — so dragging the keyboard
-/// down made the greeting and cards jump in steps. This measures its own height instead
-/// and only ever grows it (the keyboard can only shrink the visible area), so the
-/// content stays perfectly still while the keyboard comes and goes and only the composer
-/// follows it. A width change (rotation, split view) resets the measurement.
+/// The page can never be scrolled by hand: the underlying scroll view is held at its
+/// resting offset at all times. It stays a scroll view only so its pan gesture can drive
+/// iOS's interactive keyboard dismissal (the keyboard follows the finger down).
+///
+/// The content is centred inside a minimum height equal to the visible area measured
+/// with the keyboard closed. While the keyboard is open the height is never reduced, so
+/// the greeting and cards stay perfectly still and only the composer follows the
+/// keyboard. Layout passes while the app is not active (iOS lays the screen out at other
+/// sizes for its snapshots) are ignored, and the height is re-measured when the app
+/// returns. A width change (rotation, split view) resets the measurement.
 struct WelcomeScrollContainer<Content: View>: View {
     /// Used until the first measurement lands.
     let fallbackHeight: CGFloat
+    /// Whether the keyboard is up (from the screen's `KeyboardTracker`).
+    let keyboardVisible: Bool
     @ViewBuilder let content: () -> Content
 
     @State private var measuredHeight: CGFloat = 0
     @State private var measuredWidth: CGFloat = 0
+    /// Latest size seen while the app was active.
+    @State private var lastSize: CGSize = .zero
 
     var body: some View {
         ScrollView {
@@ -24,22 +32,25 @@ struct WelcomeScrollContainer<Content: View>: View {
                 .background(WelcomeScrollPin())
         }
         .onGeometryChange(for: CGSize.self) { $0.size } action: { size in
+            guard UIApplication.shared.applicationState == .active else { return }
+            lastSize = size
             if abs(size.width - measuredWidth) > 1 {
                 measuredWidth = size.width
                 measuredHeight = size.height
+            } else if !keyboardVisible {
+                if abs(size.height - measuredHeight) > 0.5 { measuredHeight = size.height }
             } else if size.height > measuredHeight {
                 measuredHeight = size.height
             }
         }
+        .onReceive(NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)) { _ in
+            if !keyboardVisible, lastSize.height > 0 { measuredHeight = lastSize.height }
+        }
     }
+}
 
-/// Holds the enclosing `UIScrollView` still while the keyboard is up.
-///
-/// The content keeps its keyboard-down height, so with the keyboard open it is taller
-/// than the visible area and the whole page could be scrolled. The welcome screen is one
-/// fixed page: the pan gesture keeps running (dragging down still closes the keyboard
-/// interactively) but the offset is pinned. With the keyboard down it scrolls normally,
-/// so tall content (large text sizes, many cards) stays reachable.
+/// Finds the enclosing `UIScrollView` and holds it at its resting offset, so the page
+/// can't be scrolled or bounced while its pan gesture keeps driving keyboard dismissal.
 private struct WelcomeScrollPin: UIViewRepresentable {
     func makeCoordinator() -> Coordinator { Coordinator() }
 
@@ -63,9 +74,6 @@ private struct WelcomeScrollPin: UIViewRepresentable {
     final class Coordinator {
         weak var scrollView: UIScrollView?
         private var observation: NSKeyValueObservation?
-        private var tokens: [NSObjectProtocol] = []
-        private var keyboardUp = false
-        private var pinnedY: CGFloat = 0
 
         func attach(to view: UIView) {
             guard scrollView == nil else { return }
@@ -73,41 +81,23 @@ private struct WelcomeScrollPin: UIViewRepresentable {
             while let v = current, !(v is UIScrollView) { current = v.superview }
             guard let sv = current as? UIScrollView else { return }
             scrollView = sv
-
-            let nc = NotificationCenter.default
-            tokens.append(nc.addObserver(forName: UIResponder.keyboardWillShowNotification,
-                                         object: nil, queue: .main) { [weak self] _ in
-                guard let self, let sv = self.scrollView, !self.keyboardUp else { return }
-                let top = -sv.adjustedContentInset.top
-                self.pinnedY = min(max(sv.contentOffset.y, top), self.maxOffset(sv))
-                self.keyboardUp = true
-            })
-            tokens.append(nc.addObserver(forName: UIResponder.keyboardWillHideNotification,
-                                         object: nil, queue: .main) { [weak self] _ in
-                self?.keyboardUp = false
-            })
-
-            observation = sv.observe(\.contentOffset, options: [.new]) { [weak self] sv, change in
-                guard let self, self.keyboardUp, let offset = change.newValue else { return }
-                if abs(offset.y - self.pinnedY) > 0.5 {
-                    sv.contentOffset = CGPoint(x: offset.x, y: self.pinnedY)
+            // Keep the pan gesture alive even when the content fits, so a drag can
+            // always reach the keyboard.
+            sv.alwaysBounceVertical = true
+            sv.showsVerticalScrollIndicator = false
+            observation = sv.observe(\.contentOffset, options: [.new]) { sv, change in
+                guard let offset = change.newValue else { return }
+                let rest = -sv.adjustedContentInset.top
+                if abs(offset.y - rest) > 0.5 {
+                    sv.contentOffset = CGPoint(x: offset.x, y: rest)
                 }
             }
-        }
-
-        private func maxOffset(_ sv: UIScrollView) -> CGFloat {
-            max(-sv.adjustedContentInset.top,
-                sv.contentSize.height - sv.bounds.height + sv.adjustedContentInset.bottom)
         }
 
         func detach() {
             observation?.invalidate()
             observation = nil
-            tokens.forEach { NotificationCenter.default.removeObserver($0) }
-            tokens = []
             scrollView = nil
         }
     }
-}
-
 }

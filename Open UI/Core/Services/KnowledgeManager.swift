@@ -68,7 +68,7 @@ final class KnowledgeManager {
 
             // Merge counts back into the list by reconstructing each item with the fetched count.
             // (KnowledgeItem.fileCount is `let`, so we create a new value.)
-            let countMap = Dictionary(uniqueKeysWithValues: counts)
+            let countMap = Dictionary(counts, uniquingKeysWith: { first, _ in first })
             knowledgeBases = items.map { item in
                 KnowledgeItem(
                     id: item.id,

@@ -1,5 +1,13 @@
 # Changelog
 
+## v6.3.2 — October 8, 2026
+
+### Bug Fixes
+- Fixed interrupting the AI during a voice call not always stopping its response on the server.
+- Fixed Apple Watch app crashing when starting a voice or typed request on some older watches.
+- Fixed a possible crash after signing in when the server returns duplicate folders or knowledge bases.
+- Fixed the app crashing at launch or right after signing in on some iPhones.
+
 ## v6.3.1 — October 7, 2026
 
 ### What's New

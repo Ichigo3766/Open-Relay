@@ -27,7 +27,7 @@ nonisolated enum LocalChatOrigin {
             entries = entries.filter { $0.value >= cutoff }
             if entries.count > maxEntries {
                 let keep = entries.sorted { $0.value > $1.value }.prefix(maxEntries)
-                entries = Dictionary(uniqueKeysWithValues: keep.map { ($0.key, $0.value) })
+                entries = Dictionary(keep.map { ($0.key, $0.value) }, uniquingKeysWith: { first, _ in first })
             }
             UserDefaults.standard.set(entries, forKey: storageKey)
         }

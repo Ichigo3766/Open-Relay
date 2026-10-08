@@ -51,7 +51,7 @@ final class TurnController {
 
     /// Unique per turn, so the iPhone never mixes turns up.
     static func newTurnId() -> Int {
-        let base = Int(Date().timeIntervalSince1970 * 10) % 1_000_000_000
+        let base = Int(Int64(Date().timeIntervalSince1970 * 10) % 100_000_000)
         return base * 10 + Int.random(in: 0...9)
     }
 
