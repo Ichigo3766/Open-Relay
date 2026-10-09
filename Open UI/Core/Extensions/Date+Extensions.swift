@@ -73,6 +73,18 @@ extension Date {
         }
     }
     
+    /// Compact per-message timestamp, e.g. "Oct 9, 3:45 PM" (locale-aware).
+    /// Mirrors OpenWebUI's `formatMessageTimestamp`.
+    var messageTimestamp: String {
+        formatted(.dateTime.month(.abbreviated).day().hour().minute())
+    }
+
+    /// Full per-message timestamp, e.g. "Friday, October 9, 2026 at 3:45 PM".
+    /// Mirrors OpenWebUI's `formatMessageTimestampFull` (tooltip text).
+    var messageTimestampFull: String {
+        formatted(.dateTime.weekday(.wide).year().month(.wide).day().hour().minute())
+    }
+
     /// Time-only string for channel inline timestamps: "2:29 AM"
     var channelTime: String {
         Self._timeFormatter.string(from: self)

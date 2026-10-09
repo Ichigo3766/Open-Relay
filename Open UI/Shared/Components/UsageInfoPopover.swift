@@ -131,21 +131,18 @@ struct UsageInfoPopover: View {
 
     // MARK: - Data Flattening
 
-    private func flattenUsage(_ dict: [String: Any], indent: Int) -> [UsageRow] {
-        // Scalars first (sorted by key), nested dicts at the end
-        let sortedKeys = dict.keys.sorted { a, b in
-            let aIsNested = dict[a] is [String: Any]
-            let bIsNested = dict[b] is [String: Any]
-            if aIsNested != bIsNested { return !aIsNested }
-            return a < b
-        }
+    private func flattenUsage(_ dict: [String: Any], indent: Int, parentKey: String? = nil) -> [UsageRow] {
+        // Swift dictionaries lose the server's key order, so rebuild the
+        // order OpenWebUI's backend emits (see UsageKeyOrder). Nested groups
+        // stay in place, exactly like the web UI's JSON view.
+        let sortedKeys = UsageKeyOrder.sorted(Array(dict.keys), parentKey: parentKey, siblings: dict)
 
         var rows: [UsageRow] = []
         for key in sortedKeys {
             guard let value = dict[key] else { continue }
             if let nested = value as? [String: Any], !nested.isEmpty {
                 rows.append(UsageRow(label: humanize(key), formattedValue: "", indent: indent, isHeader: true))
-                rows += flattenUsage(nested, indent: indent + 1)
+                rows += flattenUsage(nested, indent: indent + 1, parentKey: key)
             } else {
                 if isNull(value) { continue }
                 rows.append(UsageRow(label: humanize(key), formattedValue: formatValue(value), indent: indent, isHeader: false))
@@ -195,6 +192,76 @@ struct UsageInfoPopover: View {
     }
 }
 
+// MARK: - Usage Key Order
+
+/// Reconstructs the field order OpenWebUI shows in its usage tooltip.
+///
+/// The web UI renders `JSON.stringify(message.usage)`, i.e. the insertion order
+/// produced by the backend (`backend/open_webui/utils/response.py`):
+/// - Ollama: `convert_ollama_usage_to_openai` builds a fixed key order.
+/// - OpenAI-compatible: the provider's order (`prompt_tokens, completion_tokens,
+///   total_tokens, *_details`) followed by `normalize_usage`'s appended
+///   `input_tokens, output_tokens`.
+/// `JSONSerialization` discards that order, so we re-apply it here. Unknown keys
+/// keep a stable alphabetical order after the known ones.
+private enum UsageKeyOrder {
+    static let ollama: [String] = [
+        "input_tokens", "output_tokens", "total_tokens",
+        "prompt_tokens", "completion_tokens",
+        "response_token/s", "prompt_token/s",
+        "total_duration", "load_duration",
+        "prompt_eval_count", "prompt_eval_duration",
+        "eval_count", "eval_duration",
+        "approximate_total",
+        "completion_tokens_details",
+    ]
+
+    static let openAI: [String] = [
+        "prompt_tokens", "completion_tokens", "total_tokens",
+        // Common provider extras (OpenRouter / Anthropic-compatible proxies)
+        "cost", "is_byok",
+        "cache_creation_input_tokens", "cache_read_input_tokens",
+        "prompt_tokens_details", "cost_details", "completion_tokens_details",
+        // Appended by OpenWebUI's normalize_usage()
+        "input_tokens", "output_tokens",
+    ]
+
+    static let nested: [String: [String]] = [
+        "prompt_tokens_details": ["cached_tokens", "audio_tokens"],
+        "input_tokens_details": ["cached_tokens", "audio_tokens"],
+        "completion_tokens_details": [
+            "reasoning_tokens", "audio_tokens",
+            "accepted_prediction_tokens", "rejected_prediction_tokens",
+        ],
+        "output_tokens_details": [
+            "reasoning_tokens", "audio_tokens",
+            "accepted_prediction_tokens", "rejected_prediction_tokens",
+        ],
+    ]
+
+    static func sorted(_ keys: [String], parentKey: String?, siblings: [String: Any]) -> [String] {
+        let reference: [String]
+        if let parentKey {
+            reference = nested[parentKey] ?? []
+        } else if siblings["eval_count"] != nil
+                    || siblings["response_token/s"] != nil
+                    || siblings["prompt_eval_count"] != nil {
+            reference = ollama
+        } else {
+            reference = openAI
+        }
+        let rank = Dictionary(uniqueKeysWithValues: reference.enumerated().map { ($1, $0) })
+        return keys.sorted { a, b in
+            switch (rank[a], rank[b]) {
+            case let (ra?, rb?): return ra < rb
+            case (.some, nil): return true
+            case (nil, .some): return false
+            case (nil, nil): return a < b
+            }
+        }
+    }
+}
+
 // MARK: - Usage Row Model
 
 private struct UsageRow {
@@ -211,6 +278,8 @@ private struct UsageRow {
         "completion_tokens": 72,
         "prompt_tokens": 3107,
         "total_tokens": 3179,
+        "input_tokens": 3107,
+        "output_tokens": 72,
         "completion_tokens_details": [
             "reasoning_tokens": 46
         ],

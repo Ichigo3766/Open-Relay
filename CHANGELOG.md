@@ -1,5 +1,14 @@
 # Changelog
 
+## v6.3.3 — October 9, 2026
+
+### What's New
+- Added date and time stamps to your messages and responses, matching Open WebUI.
+
+### Bug Fixes
+- Fixed response info details being listed alphabetically instead of in Open WebUI's order.
+- Fixed tool results and Rich UI embeds flashing and jumping when expanded or scrolled back into view.
+
 ## v6.3.2 — October 8, 2026
 
 ### Bug Fixes

@@ -919,6 +919,29 @@ enum ToolCallParser {
     }
 }
 
+// MARK: - Rich UI Height Cache
+
+/// Session-only cache of embed heights and instrumented HTML, keyed by a hash of
+/// the embed HTML. Lets a recreated embed start at its real size instead of
+/// collapsing to 1pt and growing back (which made the chat flash and jump).
+@MainActor
+enum RichUIHeightCache {
+    private static var heights: [Int: CGFloat] = [:]
+    static let htmlCache: NSCache<NSString, NSString> = {
+        let cache = NSCache<NSString, NSString>()
+        cache.countLimit = 40
+        return cache
+    }()
+
+    static func height(for html: String) -> CGFloat? {
+        heights[html.hashValue]
+    }
+
+    static func store(_ height: CGFloat, for html: String) {
+        heights[html.hashValue] = height
+    }
+}
+
 // MARK: - Rich UI Embed View
 
 /// Renders a Rich UI embed — a full HTML document returned by a tool call —
@@ -936,9 +959,13 @@ struct RichUIEmbedView: View {
     /// paths resolve correctly and localStorage is accessible (not null-origin).
     var serverBaseURL: String? = nil
 
-    /// Starts at 1 so the webview renders at minimal size until the embed
-    /// reports its own height via postMessage or the didFinish fallback fires.
-    @State private var webViewHeight: CGFloat = 1
+    /// Starts at the last known height for this embed (if it was shown before in
+    /// this session) so a recreated web view never collapses to a sliver and
+    /// regrows. Otherwise starts at 1 until the embed reports its own height.
+    @State private var webViewHeight: CGFloat
+    /// False until the first real height is known. The web view is invisible
+    /// until then, so the first measurement lands without a visible jump.
+    @State private var isMeasured: Bool
     /// Closure set by RichUIWebView once its coordinator is ready.
     /// Calling it triggers a WKWebView snapshot + share sheet.
     @State private var snapshotTrigger: (() -> Void)? = nil
@@ -947,6 +974,16 @@ struct RichUIEmbedView: View {
     /// Maximum height before the embed gets internal scroll.
     /// Tall embeds (weather dashboards, etc.) can scroll within this frame.
     private let maxHeight: CGFloat = 600
+
+    init(html: String, toolArgs: String?, authToken: String? = nil, serverBaseURL: String? = nil) {
+        self.html = html
+        self.toolArgs = toolArgs
+        self.authToken = authToken
+        self.serverBaseURL = serverBaseURL
+        let cached = RichUIHeightCache.height(for: html)
+        _webViewHeight = State(initialValue: cached ?? 1)
+        _isMeasured = State(initialValue: cached != nil)
+    }
 
     var body: some View {
         RichUIWebView(
@@ -957,7 +994,15 @@ struct RichUIEmbedView: View {
             serverBaseURL: serverBaseURL
         )
         .frame(height: min(max(webViewHeight, 1), maxHeight))
+        .opacity(isMeasured ? 1 : 0)
         .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .onChange(of: webViewHeight) { _, newHeight in
+            guard newHeight > 1 else { return }
+            RichUIHeightCache.store(newHeight, for: html)
+            if !isMeasured {
+                withAnimation(.easeOut(duration: 0.2)) { isMeasured = true }
+            }
+        }
         .overlay(alignment: .topTrailing) {
             // Share / save button — lets the user share the embed as an image
             // (useful for QR codes, charts, etc. that have no built-in download)
@@ -979,7 +1024,19 @@ struct RichUIEmbedView: View {
             RoundedRectangle(cornerRadius: 14, style: .continuous)
                 .strokeBorder(Color.primary.opacity(0.08), lineWidth: 0.5)
         )
-        .animation(.easeOut(duration: 0.2), value: webViewHeight)
+        // The very first measurement is applied instantly (the view is still
+        // invisible); later genuine size changes glide.
+        .animation(isMeasured ? MicroAnimation.snappy : nil, value: webViewHeight)
+    }
+
+    /// The HTML with the bridge injected. Built once per html/args pair and
+    /// cached — it is a 30KB+ string and `body` re-runs on every animation frame.
+    private var instrumentedHTML: String {
+        let key = "\(html.hashValue)|\(toolArgs?.hashValue ?? 0)" as NSString
+        if let hit = RichUIHeightCache.htmlCache.object(forKey: key) { return hit as String }
+        let built = buildInstrumentedHTML()
+        RichUIHeightCache.htmlCache.setObject(built as NSString, forKey: key)
+        return built
     }
 
     /// The HTML with our bridge script injected just before `</body>` (or appended).
@@ -990,7 +1047,7 @@ struct RichUIEmbedView: View {
     /// Also injects a `<meta name="viewport">` tag so WKWebView renders at device
     /// width (not the default 980px desktop viewport). Without this the embed content
     /// appears tiny because a 420px card is only ~43% of the 980px default viewport.
-    private var instrumentedHTML: String {
+    private func buildInstrumentedHTML() -> String {
         let argsJSON: String
         if let args = toolArgs, !args.isEmpty {
             // Escape backticks and backslashes for safe inline JS string literal
@@ -1327,6 +1384,7 @@ private struct RichUIWebView: UIViewRepresentable {
         context.coordinator.webView = webView
 
         richUILog.debug("makeUIView: loading HTML (\(html.count) bytes), baseURL=\(serverBaseURL ?? "nil")")
+        context.coordinator.loadedHTML = html
         webView.loadHTMLString(html, baseURL: resolvedBaseURL)
 
         // Expose the snapshot trigger to the parent SwiftUI view.
@@ -1394,7 +1452,10 @@ private struct RichUIWebView: UIViewRepresentable {
                 }()
                 if let h, h > 1 {
                     richUILog.debug("height update: \(h)pt")
-                    DispatchQueue.main.async { [weak self] in self?.height = h }
+                    DispatchQueue.main.async { [weak self] in
+                        guard let self, abs(self.height - h) >= 1 else { return }
+                        self.height = h
+                    }
                 }
 
             case "openUrl":
@@ -1829,6 +1890,21 @@ private struct ToolCallResultBlockView: View {
     /// Pretty-prints the content if it is JSON, otherwise returns the raw string.
     /// Also handles double-encoded JSON strings (e.g. `"\"{ ... }\""` ).
     private var formattedContent: String {
+        let key = content as NSString
+        if let hit = Self.formattedCache.object(forKey: key) { return hit as String }
+        let result = computeFormattedContent()
+        Self.formattedCache.setObject(result as NSString, forKey: key)
+        return result
+    }
+
+    /// Session cache so the expand animation doesn't re-parse JSON every frame.
+    private static let formattedCache: NSCache<NSString, NSString> = {
+        let cache = NSCache<NSString, NSString>()
+        cache.countLimit = 60
+        return cache
+    }()
+
+    private func computeFormattedContent() -> String {
         // Try direct JSON parse
         if let data = content.data(using: .utf8),
            let json = try? JSONSerialization.jsonObject(with: data),
@@ -2051,7 +2127,7 @@ struct ToolCallView: View {
                 .padding(.vertical, 10)
             } else {
                 Button {
-                    withAnimation(.easeInOut(duration: 0.2)) {
+                    withAnimation(MicroAnimation.snappy) {
                         isExpanded.toggle()
                     }
                 } label: {
@@ -2113,23 +2189,15 @@ struct ToolCallView: View {
                         }
                     }
 
-                    // Rich UI embeds — always visible when expanded
-                    if hasEmbeds && toolCall.isDone {
-                        ForEach(Array(toolCall.embeds.enumerated()), id: \.offset) { _, embedHTML in
-                            RichUIEmbedView(
-                                html: embedHTML,
-                                toolArgs: toolCall.arguments,
-                                authToken: authToken,
-                                serverBaseURL: serverBaseURL
-                            )
-                        }
-                    }
                 }
                 .padding(.bottom, Spacing.sm)
+                .transition(.opacity)
             }
 
-            if !isExpanded && hasEmbeds && toolCall.isDone {
-                // Rich UI embeds always visible even when collapsed
+            // Rich UI embeds — one fixed position in the tree whether the result
+            // is expanded or collapsed, so toggling never recreates (and reloads)
+            // the web view.
+            if hasEmbeds && toolCall.isDone {
                 VStack(alignment: .leading, spacing: Spacing.sm) {
                     ForEach(Array(toolCall.embeds.enumerated()), id: \.offset) { _, embedHTML in
                         RichUIEmbedView(
@@ -2140,7 +2208,7 @@ struct ToolCallView: View {
                         )
                     }
                 }
-                .padding(.top, Spacing.xs)
+                .padding(.top, isExpanded ? 0 : Spacing.xs)
                 .padding(.bottom, Spacing.sm)
             }
 
@@ -2213,7 +2281,7 @@ private struct MixedToolCallGroup: View {
         VStack(alignment: .leading, spacing: 0) {
             // Collapsed summary header
             Button {
-                withAnimation(.easeInOut(duration: 0.2)) { isExpanded.toggle() }
+                withAnimation(MicroAnimation.snappy) { isExpanded.toggle() }
             } label: {
                 HStack(spacing: 8) {
                     if allDone {

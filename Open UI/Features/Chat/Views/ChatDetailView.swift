@@ -331,7 +331,6 @@ struct ChatDetailView: View {
     @State private var sendingPromptId: String?
     /// True while the follow-up chips fold away just before their message is sent.
     @State private var followUpsCollapsing = false
-    @State private var activeActionMessageId: String?
     @State private var activeVersionIndex: [String: Int] = [:]
     /// Holds the cleaned text of a message the user wants to share.
     /// Set on Share button tap; cleared on sheet dismiss. Uses ShareableText wrapper so
@@ -2974,21 +2973,12 @@ struct ChatDetailView: View {
     private func messageBubble(for message: ChatMessage, isLastAssistant: Bool) -> some View {
         ChatMessageBubble(
             role: message.role,
-            showTimestamp: activeActionMessageId == message.id,
+            // User timestamps sit beneath the bubble; assistant timestamps
+            // live at the end of the action bar (OpenWebUI parity).
+            showTimestamp: message.role == .user,
             timestamp: message.timestamp
         ) {
             messageContent(for: message)
-        }
-        // Only apply tap gesture to user bubbles — assistant content contains
-        // interactive elements (links, text selection) that onTapGesture would block.
-        // Assistant action bar is always visible so no tap-reveal is needed.
-        .if(message.role == .user) { view in
-            view.simultaneousGesture(TapGesture().onEnded {
-                withAnimation(MicroAnimation.snappy) {
-                    activeActionMessageId = activeActionMessageId == message.id ? nil : message.id
-                }
-                Haptics.play(.light)
-            })
         }
         .if(message.role != .assistant) { view in
             view.contextMenu { messageContextMenu(for: message) }
@@ -3882,6 +3872,10 @@ struct ChatDetailView: View {
                         }
                     }
                 }
+
+                // Message date + time — last item in the row, like OpenWebUI.
+                MessageTimestampLabel(date: message.timestamp)
+                    .padding(.leading, 4)
             }
             // Padding lives inside the scroll content so scrolled buttons glide to
             // the screen edges while the resting position matches the message text.

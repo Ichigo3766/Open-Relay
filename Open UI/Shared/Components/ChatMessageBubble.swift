@@ -68,15 +68,10 @@ struct ChatMessageBubble<Content: View>: View {
                     .background(theme.chatBubbleUser)
                     .clipShape(UserBubbleShape())
 
-                // AnimatedPresence smoothly expands the ~18pt height when the
-                // timestamp toggles (user tap) instead of snapping.
-                AnimatedPresence(visible: showTimestamp && timestamp != nil) {
-                    if showTimestamp, let ts = timestamp {
-                        Text(ts, style: .time)
-                            .scaledFont(size: 11)
-                            .foregroundStyle(theme.textTertiary)
-                            .padding(.trailing, 4)
-                    }
+                // Date + time beneath the bubble, matching OpenWebUI.
+                if showTimestamp, let ts = timestamp {
+                    MessageTimestampLabel(date: ts)
+                        .padding(.trailing, 4)
                 }
             }
             .frame(maxWidth: maxBubbleWidth, alignment: .trailing)
@@ -99,12 +94,8 @@ struct ChatMessageBubble<Content: View>: View {
             content()
                 .foregroundStyle(theme.chatBubbleAssistantText)
                 .frame(maxWidth: .infinity, alignment: .leading)
-            AnimatedPresence(visible: showTimestamp && timestamp != nil) {
-                if showTimestamp, let ts = timestamp {
-                    Text(ts, style: .time)
-                        .scaledFont(size: 11)
-                        .foregroundStyle(theme.textTertiary)
-                }
+            if showTimestamp, let ts = timestamp {
+                MessageTimestampLabel(date: ts)
             }
         }
         .frame(maxWidth: maxContentWidth, alignment: .leading)
@@ -219,6 +210,33 @@ struct BlinkingCursorIndicator: View {
             .onDisappear {
                 withAnimation(nil) { opacity = 0.2 }
             }
+    }
+}
+
+// MARK: - Message Timestamp Label
+
+/// Small muted date + time label shown on each chat message
+/// ("Oct 9, 3:45 PM"). Tapping toggles the full form
+/// ("Friday, October 9, 2026 at 3:45 PM") — the iOS stand-in for
+/// OpenWebUI's hover tooltip.
+struct MessageTimestampLabel: View {
+    let date: Date
+
+    @State private var showFull = false
+    @Environment(\.theme) private var theme
+
+    var body: some View {
+        Text(showFull ? date.messageTimestampFull : date.messageTimestamp)
+            .scaledFont(size: 11)
+            .monospacedDigit()
+            .foregroundStyle(theme.textTertiary)
+            .lineLimit(1)
+            .fixedSize()
+            .contentShape(Rectangle())
+            .onTapGesture {
+                withAnimation(MicroAnimation.snappy) { showFull.toggle() }
+            }
+            .accessibilityLabel(Text(date.messageTimestampFull))
     }
 }
 
