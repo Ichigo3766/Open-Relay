@@ -121,6 +121,7 @@ struct MainChatView: View {
     @AppStorage("sidebar_shared_folders_expanded") private var sharedFoldersExpanded: Bool = true
     @AppStorage("sidebar_channels_expanded") private var channelsExpanded: Bool = true
     @AppStorage("sidebar_chats_expanded") private var chatsExpanded: Bool = true
+    @AppStorage("sidebarBorderEnabled") private var sidebarBorderEnabled = true
     /// Tracks which time-group sub-sections are collapsed (e.g. "Pinned", "Today").
     /// Persisted across launches as a comma-separated string in AppStorage.
     @AppStorage("sidebar_collapsed_sections") private var collapsedSectionsRaw: String = ""
@@ -457,8 +458,8 @@ struct MainChatView: View {
             .overlay {
                 if #available(iOS 26.0, *) {
                     ConcentricRectangle(corners: .concentric, isUniform: true)
-                        .stroke(theme.isDark ? Color.white.opacity(0.2) : Color.black.opacity(0.1), lineWidth: 1)
-                        .opacity(maxPanelFraction)
+                        .stroke(theme.isDark ? Color.white.opacity(0.1) : Color.black.opacity(0.08), lineWidth: 1)
+                        .opacity(sidebarBorderEnabled ? maxPanelFraction : 0)
                         .ignoresSafeArea()
                         .allowsHitTesting(false)
                 }
