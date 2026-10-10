@@ -538,7 +538,8 @@ final class NetworkManager: NSObject, Sendable {
         path: String,
         method: HTTPMethod = .post,
         body: [String: Any]? = nil,
-        authenticated: Bool = true
+        authenticated: Bool = true,
+        stallTimeout: TimeInterval = 60
     ) async throws -> SSEStream {
         let bodyData: Data?
         if let body {
@@ -569,7 +570,7 @@ final class NetworkManager: NSObject, Sendable {
             throw parseHTTPError(statusCode: httpResponse.statusCode, data: errorBody)
         }
 
-        return SSEStream(bytes: bytes)
+        return SSEStream(bytes: bytes, stallTimeout: stallTimeout)
     }
 
     /// Invalidates and clears the cached streaming session.

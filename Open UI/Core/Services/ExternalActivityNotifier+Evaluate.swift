@@ -32,7 +32,7 @@ extension ExternalActivityNotifier {
     /// The finished assistant reply of a chat, or `nil` while it's still generating.
     func chatReply(_ conversation: Conversation) -> String? {
         guard let reply = conversation.messages.last(where: { $0.role == .assistant }) else { return nil }
-        if let error = reply.error { return error.content ?? "Something went wrong" }
+        if let error = reply.error { return error.displayText ?? "Something went wrong" }
         return reply.isStreaming ? nil : reply.content
     }
 

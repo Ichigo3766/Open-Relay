@@ -110,6 +110,14 @@ final class ActiveChatStore {
         streamingConversationIds.remove(chatId)
     }
 
+    /// Socket reconnected: let every cached chat that is still streaming its own reply
+    /// fill in tokens missed during the drop (including chats not on screen).
+    func recoverStreamsAfterSocketReconnect() async {
+        for vm in viewModels.values where vm.isStreaming && !vm.isExternallyStreaming {
+            await vm.recoverAfterSocketReconnect()
+        }
+    }
+
     /// Whether the server admin has enabled tool-approval (human-in-the-loop) permissions.
     /// Populated from `BackendConfig.features.enableToolPermissions` after the first config fetch.
     /// Cleared on logout/server switch.

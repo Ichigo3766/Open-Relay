@@ -1,5 +1,19 @@
 # Changelog
 
+## v6.3.4 — October 10, 2026
+
+### What's New
+- Added an Appearance setting to hide the border around the chat when the sidebar is open.
+
+### Improvements
+- Made the border around the chat more subtle when opening the sidebar.
+
+### Bug Fixes
+- Fixed long replies that run tools or commands, such as with Open WebUI Computer, sometimes stopping without showing the final answer.
+- Fixed parts of a reply going missing after a brief connection drop while it was being written.
+- Fixed actions that take a long time to run being cut off after a minute without progress.
+- Made the error clearer when the server loses its connection to the model before a reply finishes.
+
 ## v6.3.3 — October 9, 2026
 
 ### What's New

@@ -29,7 +29,7 @@ extension ReadOnlyChatTranscript {
             }
 
             if let error = message.error {
-                ReadOnlyErrorLine(text: error.content ?? "An error occurred")
+                ReadOnlyErrorLine(text: error.displayText ?? "An error occurred")
                     .padding(.horizontal, Spacing.screenPadding)
             }
         }

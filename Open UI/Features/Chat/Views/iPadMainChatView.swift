@@ -1051,6 +1051,9 @@ struct iPadMainChatView: View {
         dependencies.socketService?.onReconnect = { [self] in
             Task { @MainActor in
                 await dependencies.authViewModel.refreshBackendConfig()
+                // Fill in anything this device's own in-progress replies missed while the
+                // socket was down (catch-up skips self-initiated streams).
+                await dependencies.activeChatStore.recoverStreamsAfterSocketReconnect()
                 if let activeId = activeConversationId {
                     let vm = dependencies.activeChatStore.viewModel(for: activeId)
                     await vm.catchUpWithServer(reason: .socketReconnect)

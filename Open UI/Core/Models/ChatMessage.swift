@@ -619,4 +619,22 @@ nonisolated struct ChatMessageVersion: Codable, Equatable, Hashable, Sendable {
 /// Error information for a chat message, matching OpenWebUI's error format.
 nonisolated struct ChatMessageError: Codable, Hashable, Sendable {
     var content: String?
+
+    /// Text to show the user. Raw upstream-stream failures (an aiohttp
+    /// `ClientPayloadError` / `TransferEncodingError` raised by the Open WebUI
+    /// server when its connection to the model provider closes mid-reply) are
+    /// replaced with a plain explanation. Other errors are shown unchanged.
+    var displayText: String? {
+        guard let content else { return nil }
+        if Self.isTruncatedUpstreamStream(content) {
+            return String(localized: "The server's connection to the model was cut off before the reply finished. This usually means a server or proxy timeout during a long tool run.")
+        }
+        return content
+    }
+
+    static func isTruncatedUpstreamStream(_ text: String) -> Bool {
+        text.contains("Response payload is not completed")
+            || text.contains("TransferEncodingError")
+            || text.contains("ClientPayloadError")
+    }
 }

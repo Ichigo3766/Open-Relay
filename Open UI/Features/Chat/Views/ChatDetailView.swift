@@ -2874,7 +2874,7 @@ struct ChatDetailView: View {
             // ── Inline error ──
             AnimatedPresence(visible: message.error != nil) {
                 if let error = message.error {
-                    messageErrorView(error.content ?? String(localized: "An error occurred"))
+                    messageErrorView(error.displayText ?? String(localized: "An error occurred"))
                         .padding(.horizontal, Spacing.screenPadding)
                 }
             }

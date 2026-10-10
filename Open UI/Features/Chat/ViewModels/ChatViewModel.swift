@@ -559,10 +559,17 @@ final class ChatViewModel {
     /// network failures we fall back to the legacy stale-content give-up logic
     /// so the timer still terminates if the task API becomes permanently unreachable.
     private var recoveryTaskCheckFailures = 0
-    /// Wall-clock time at which the recovery timer was started.  Used as a
-    /// hard backstop: if the chat has been nominally streaming for more than 10
-    /// minutes we give up regardless of what the task API reports.
+    /// Wall-clock time at which the recovery timer was started. Used as a
+    /// long backstop: once a reply has run for over an hour, the recovery timer stops
+    /// waiting and hands the reply over to the follow pipeline (it is never cut short
+    /// while the server still reports it running).
     private var recoveryTimerStartDate: Date = .distantPast
+    /// Accumulator of the reply this device is streaming, so a socket reconnect can
+    /// fill in tokens that were missed while the socket was down.
+    @ObservationIgnored private var activeStreamAccumulator: ContentAccumulator?
+    /// Set when the socket reconnected mid-stream; on completion we then re-sync once
+    /// with the server so nothing missed during the drop stays missing.
+    @ObservationIgnored private var socketDroppedDuringStream = false
     /// The server content length observed on the previous recovery poll.
     /// When the server content grows between polls the model is still generating,
     /// so `emptyPollCount` is reset to 0 — preventing premature give-up for slow
@@ -5071,6 +5078,8 @@ final class ChatViewModel {
         chatSubscription?.dispose()
         channelSubscription?.dispose()
         let acc = ContentAccumulator()
+        activeStreamAccumulator = acc
+        socketDroppedDuringStream = false
 
         // For continue responses: pre-seed the accumulator with the existing message
         // content so that delta tokens are appended to the correct base.
@@ -5762,6 +5771,14 @@ final class ChatViewModel {
                 try? await refreshConversationMetadata(
                     chatId: chatId, assistantMessageId: assistantMessageId)
 
+                // The socket dropped during this reply: tokens sent during the gap never
+                // reached us, so adopt the server's saved copy of the finished reply.
+                if self.socketDroppedDuringStream {
+                    self.socketDroppedDuringStream = false
+                    self.logger.info("Stream finished after a socket drop — full re-sync")
+                    await self.syncWithServer(force: true)
+                }
+
                 // Short delay re-fetch to catch server-side post-processing that happens
                 // AFTER chatCompleted (e.g. filter functions that append timing/performance
                 // stats like "⏱ 12.2s · ⚡ 77.7 t/s" to the message content).
@@ -6050,22 +6067,20 @@ final class ChatViewModel {
                 // an empty task_ids array means the generation coroutine has finished and we should
                 // do a final fetch-and-finalize instead of waiting another poll cycle.
 
-                // Hard absolute timeout (10 minutes) regardless of task status
+                // Long backstop (1 hour). Agent models (e.g. Open WebUI Computer) can run
+                // shell commands or tool chains for many minutes without new text, so the
+                // old 10-minute cut-off finalized replies that were still running and the
+                // real answer never appeared. Now we only stop *waiting here*: if the server
+                // still says the reply is unfinished, it is handed to the follow pipeline,
+                // which keeps listening and shows the final answer whenever it lands.
                 let elapsed = Date().timeIntervalSince(self.recoveryTimerStartDate)
-                if elapsed > 600 {
-                    // Guard: even on hard timeout, don't terminate while ask_user is active.
+                if elapsed > 3600 {
                     guard self.liveAskUserPrompt == nil else {
                         self.logger.debug("Recovery: ask_user pending — skipping hard timeout finalization")
                         return
                     }
-                    self.logger.warning("Recovery: hard timeout after \(Int(elapsed))s — giving up")
-                    let giveUpContent = self.conversation?.messages.last(where: { $0.role == .assistant })?.content ?? ""
-                    self.updateAssistantMessage(
-                        id: assistantMessageId,
-                        content: giveUpContent,
-                        isStreaming: false)
-                    Task { await self.sendCompletionNotificationIfNeeded(content: giveUpContent) }
-                    self.cleanupStreaming()
+                    self.logger.warning("Recovery: still running after \(Int(elapsed))s — switching to follow mode")
+                    await self.handOffToFollowOrFinish(assistantMessageId: assistantMessageId, chatId: chatId)
                     return
                 }
 
@@ -6141,13 +6156,7 @@ final class ChatViewModel {
                                 return
                             }
                             self.logger.warning("Recovery: giving up after \(self.emptyPollCount) static polls (task-check unreachable)")
-                            let giveUpContent = self.conversation?.messages.last(where: { $0.role == .assistant })?.content ?? ""
-                            self.updateAssistantMessage(
-                                id: assistantMessageId,
-                                content: giveUpContent,
-                                isStreaming: false)
-                            Task { await self.sendCompletionNotificationIfNeeded(content: giveUpContent) }
-                            self.cleanupStreaming()
+                            await self.handOffToFollowOrFinish(assistantMessageId: assistantMessageId, chatId: chatId)
                         }
                     }
                     // If fewer than 5 failures, assume still running and keep waiting
@@ -6155,6 +6164,92 @@ final class ChatViewModel {
             }
         }
     }
+    /// Called when the recovery timer stops waiting on a reply (long backstop, or the
+    /// task API is unreachable). Never throws the real ending away:
+    /// - If the server says the reply is finished, adopt its final content.
+    /// - If the server still says it is generating, end *this device's* stream and
+    ///   follow the reply like one from another device (`attachToLiveReply`), so the
+    ///   final answer still appears when it lands, instead of being blocked as a replay.
+    /// - If the server can't be reached, keep what we have.
+    private func handOffToFollowOrFinish(assistantMessageId: String, chatId: String) async {
+        let serverLast: ChatMessage? = await {
+            guard let manager else { return nil }
+            let refreshed = try? await manager.fetchConversation(id: chatId)
+            return refreshed?.messages.first(where: { $0.id == assistantMessageId })
+                ?? refreshed?.messages.last(where: { $0.role == .assistant })
+        }()
+
+        if let serverLast, serverLast.isStreaming, serverLast.id == assistantMessageId {
+            logger.info("Recovery: reply \(assistantMessageId) still generating on server — following it")
+            updateAssistantMessage(id: assistantMessageId, content: serverLast.content, isStreaming: false)
+            cleanupStreaming()
+            // cleanupStreaming() marks this message as "just completed" so replayed events
+            // are dropped; attachToLiveReply clears that so the live ending gets through.
+            attachToLiveReply(serverLast, reason: .socketReconnect)
+            return
+        }
+
+        let finalContent = serverLast?.content
+            ?? conversation?.messages.last(where: { $0.role == .assistant })?.content ?? ""
+        updateAssistantMessage(id: assistantMessageId, content: finalContent, isStreaming: false)
+        Task { await self.sendCompletionNotificationIfNeeded(content: finalContent) }
+        cleanupStreaming()
+    }
+
+    /// Socket reconnected while this device was streaming its own reply. Tokens sent
+    /// while the socket was down are gone for good on the socket (the server emits to
+    /// the `user:{id}` room and does not buffer), so read the server's live copy of the
+    /// reply right away and fill in whatever was missed. Finishes the reply if the
+    /// server says it already ended during the drop.
+    func recoverAfterSocketReconnect() async {
+        guard isStreaming, !isExternallyStreaming, selfInitiatedStream, !hasFinishedStreaming,
+              let msgId = streamingStore.streamingMessageId,
+              let chatId = conversationId ?? conversation?.id, !chatId.hasPrefix("local:"),
+              let manager else { return }
+        socketDroppedDuringStream = true
+
+        // Re-register the passive listener for the new connection.
+        startPassiveSocketListener()
+
+        guard let refreshed = try? await manager.fetchConversation(id: chatId),
+              let serverMsg = refreshed.messages.first(where: { $0.id == msgId }),
+              // The reply may have finished via the socket while we were fetching.
+              isStreaming, !hasFinishedStreaming, streamingStore.streamingMessageId == msgId
+        else { return }
+
+        let local = activeStreamAccumulator?.content ?? ""
+        if serverMsg.content.count > local.count {
+            logger.info("Socket reconnect: filling in \(serverMsg.content.count - local.count) missed chars")
+            activeStreamAccumulator?.replace(serverMsg.content)
+            updateAssistantMessage(id: msgId, content: serverMsg.content, isStreaming: true)
+        }
+
+        if !serverMsg.isStreaming, liveAskUserPrompt == nil {
+            if let err = serverMsg.error {
+                logger.info("Socket reconnect: reply ended with an error during the drop")
+                updateAssistantMessage(id: msgId, content: serverMsg.content, isStreaming: false, error: err)
+                cleanupStreaming()
+                return
+            }
+            let content = serverMsg.content.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !content.isEmpty else { return }
+            // Check the task registry so we don't finish a reply mid tool run.
+            if let tasks = try? await manager.apiClient.getTasksForChat(chatId: chatId), !tasks.isEmpty { return }
+            guard isStreaming, !hasFinishedStreaming else { return }
+            logger.info("Socket reconnect: reply finished during the drop — finalizing")
+            updateAssistantMessage(id: msgId, content: serverMsg.content, isStreaming: false)
+            let doneContent = serverMsg.content
+            Task { await self.sendCompletionNotificationIfNeeded(content: doneContent) }
+            cleanupStreaming()
+            NotificationCenter.default.post(name: .conversationListNeedsRefresh, object: nil)
+            Task { [weak self] in
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
+                await self?.syncWithServer(force: true)
+            }
+        }
+    }
+
+
 
     /// Returns `true` when the content string represents a structurally complete tool-call
     /// response — i.e. every `<details type="tool_calls">` opening tag has a matching
@@ -6313,6 +6408,8 @@ final class ChatViewModel {
         lastRecoveryPollContentLength = 0
         recoveryTaskCheckFailures = 0
         recoveryTimerStartDate = .distantPast
+        activeStreamAccumulator = nil
+        socketDroppedDuringStream = false
         // or remove them if they never produced meaningful output
         if let lastIdx = conversation?.messages.lastIndex(where: { $0.role == .assistant }) {
             let statuses = conversation?.messages[lastIdx].statusHistory ?? []

@@ -76,7 +76,10 @@ final class ActionEventService {
                 path: "/api/chat/actions/\(actionId)",
                 method: .post,
                 body: body,
-                authenticated: true
+                authenticated: true,
+                // Actions can run tools that stay silent for minutes (shell commands,
+                // agent gateways like Open WebUI Computer). Allow 5 minutes between lines.
+                stallTimeout: 300
             )
         } catch {
             logger.error("🔴 [ActionEvent] streamRequestBytes FAILED for actionId=\(actionId, privacy: .public): \(error.localizedDescription, privacy: .public)")

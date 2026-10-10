@@ -11,6 +11,7 @@ struct AppearanceSettingsView: View {
     @Namespace private var accentAnimation
     @AppStorage("streamingBlurAnimation") private var streamingBlurEnabled: Bool = true
     @AppStorage("transparentChatToolbar") private var transparentChatToolbar = false
+    @AppStorage("sidebarBorderEnabled") private var sidebarBorderEnabled = true
     /// iPad-only: whether the sidebar is pinned as a persistent left column.
     @AppStorage("ipad_sidebar_always_shown") private var iPadSidebarAlwaysShown: Bool = false
 
@@ -75,6 +76,22 @@ struct AppearanceSettingsView: View {
                             )
                         )
                         .accessibilityIdentifier("transparentChatToolbar")
+                    }
+                }
+
+                if #available(iOS 26.0, *), UIDevice.current.userInterfaceIdiom != .pad {
+                    SettingsSection(header: "Sidebar") {
+                        SettingsCell(
+                            icon: "sidebar.left",
+                            title: "Show Sidebar Border",
+                            subtitle: "Show an outline around the chat when the sidebar is open",
+                            showDivider: false,
+                            accessory: .toggle(
+                                isOn: sidebarBorderEnabled,
+                                onChange: { sidebarBorderEnabled = $0 }
+                            )
+                        )
+                        .accessibilityIdentifier("sidebarBorderEnabled")
                     }
                 }
 
