@@ -790,6 +790,7 @@ private struct PromptHistoryView: View {
     /// Versions deleted this session (the parent's list is immutable here).
     @State private var deletedIds: Set<String> = []
     @State private var deleteCandidate: PromptVersion?
+    @State private var showComparison = false
 
     private static let dateFormatter: DateFormatter = {
         let f = DateFormatter()
@@ -886,7 +887,18 @@ private struct PromptHistoryView: View {
             .background(theme.background)
             .navigationTitle("Version History")
             .navigationBarTitleDisplayMode(.inline)
+            .sheet(isPresented: $showComparison) {
+                if let promptId, let manager {
+                    PromptVersionDiffView(promptId: promptId,
+                                          versions: versions.filter { !deletedIds.contains($0.id) }, manager: manager)
+                }
+            }
             .toolbar {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    if promptId != nil && manager != nil && versions.filter({ !deletedIds.contains($0.id) }).count >= 2 {
+                        Button("Compare", systemImage: "arrow.left.arrow.right") { showComparison = true }
+                    }
+                }
                 ToolbarItem(placement: .navigationBarLeading) {
                     Button("Close", systemImage: "xmark") {
                         dismiss()

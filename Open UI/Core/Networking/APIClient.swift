@@ -2141,6 +2141,14 @@ final class APIClient: @unchecked Sendable {
         return all
     }
 
+    /// GET /api/v1/prompts/id/{id}/history/diff?from_id=...&to_id=...
+    func getPromptDiff(id: String, from: String, to: String) async throws -> PromptVersionDiff {
+        let (data, _) = try await network.requestRaw(
+            path: "/api/v1/prompts/id/\(id)/history/diff",
+            queryItems: [URLQueryItem(name: "from_id", value: from), URLQueryItem(name: "to_id", value: to)])
+        return try JSONDecoder().decode(PromptVersionDiff.self, from: data)
+    }
+
     /// DELETE /api/v1/prompts/id/{id}/history/{history_id}
     func deletePromptHistoryEntry(id: String, historyId: String) async throws {
         try await network.requestVoid(

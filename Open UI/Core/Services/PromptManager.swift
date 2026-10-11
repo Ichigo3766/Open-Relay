@@ -133,6 +133,10 @@ final class PromptManager {
 
     // MARK: - Version History
 
+    func getDiff(promptId: String, from: String, to: String) async throws -> PromptVersionDiff {
+        try await apiClient.getPromptDiff(id: promptId, from: from, to: to)
+    }
+
     /// Fetches version history for a prompt.
     func getHistory(promptId: String) async throws -> [PromptVersion] {
         let raw = try await apiClient.getPromptHistory(id: promptId)
