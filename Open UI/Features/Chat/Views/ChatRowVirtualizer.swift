@@ -123,9 +123,7 @@ final class ChatRowVirtualizer {
 
     private func rebuildLayoutIfNeeded(_ messages: [ChatMessage]) {
         if !layoutDirty,
-           layoutIds.count == messages.count,
-           layoutIds.first == messages.first?.id,
-           layoutIds.last == messages.last?.id {
+           layoutIds.elementsEqual(messages.lazy.map(\.id)) {
             return
         }
         layoutIds = messages.map(\.id)
