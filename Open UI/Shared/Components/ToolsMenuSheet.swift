@@ -792,6 +792,9 @@ struct ToolsMenuSheet: View {
                 } else {
                     ForEach(tools) { tool in
                         toolTile(tool: tool)
+                        if tool.id.hasPrefix("server:mcp:"), tool.isAuthenticated, let apiClient {
+                            MCPToolDetailsView(toolId: tool.id, apiClient: apiClient)
+                        }
                     }
                 }
             }
@@ -1026,6 +1029,73 @@ struct ToolsMenuSheet: View {
             return "magnifyingglass"
         }
         return "square.grid.2x2"
+    }
+}
+
+struct MCPToolSpec: Decodable, Identifiable {
+    let name: String
+    let description: String?
+    var id: String { name }
+}
+
+struct MCPToolSpecsResponse: Decodable {
+    let specs: [MCPToolSpec]
+}
+
+private struct MCPToolDetailsView: View {
+    @Environment(\.theme) private var theme
+    let toolId: String
+    let apiClient: APIClient
+    @State private var isExpanded = false
+    @State private var specs: [MCPToolSpec]?
+    @State private var isLoading = false
+    @State private var error: String?
+
+    var body: some View {
+        DisclosureGroup(isExpanded: $isExpanded) {
+            VStack(alignment: .leading, spacing: Spacing.sm) {
+                if isLoading {
+                    ProgressView("Loading tools…")
+                } else if let error {
+                    Text(error).foregroundStyle(theme.textSecondary)
+                    Button("Retry") { Task { await load() } }
+                } else if let specs {
+                    if specs.isEmpty { Text("No tools available") }
+                    ForEach(specs) { spec in
+                        VStack(alignment: .leading, spacing: Spacing.xs) {
+                            Text(spec.name).fontWeight(.semibold)
+                            if let description = spec.description, !description.isEmpty {
+                                Text(description).foregroundStyle(theme.textSecondary)
+                            }
+                        }
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                }
+            }
+            .scaledFont(size: 12)
+            .padding(.vertical, Spacing.sm)
+        } label: {
+            Text(specs.map { "\($0.count) tools" } ?? "View tools")
+                .scaledFont(size: 12, weight: .medium)
+        }
+        .tint(theme.brandPrimary)
+        .padding(.horizontal, Spacing.sm)
+        .task(id: isExpanded) {
+            if isExpanded && specs == nil { await load() }
+        }
+    }
+
+    private func load() async {
+        guard !isLoading else { return }
+        isLoading = true
+        error = nil
+        defer { isLoading = false }
+        do {
+            specs = try await apiClient.getMCPToolSpecs(id: toolId)
+        } catch {
+            if !Task.isCancelled { self.error = error.localizedDescription }
+        }
     }
 }
 

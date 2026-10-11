@@ -6420,6 +6420,12 @@ final class APIClient: @unchecked Sendable {
 
     // MARK: - Tool Servers Config
 
+    /// Discovers individual tools from an accessible MCP connection, using the user's session.
+    func getMCPToolSpecs(id: String) async throws -> [MCPToolSpec] {
+        let (data, _) = try await network.requestRaw(path: "/api/v1/tools/id/\(id)/specs", timeout: 25)
+        return try JSONDecoder().decode(MCPToolSpecsResponse.self, from: data).specs
+    }
+
     /// GET `/api/v1/configs/tool_servers`
     func getToolServersConfig() async throws -> ToolServersConfigForm {
         let (data, _) = try await network.requestRaw(path: "/api/v1/configs/tool_servers")
