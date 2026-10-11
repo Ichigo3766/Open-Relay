@@ -132,7 +132,11 @@ struct AdminWebSearchView: View {
             f("SERPHOUSE_API_KEY", "SERPHouse API Key", "Enter SERPHouse API Key", .secure),
             f("SERPHOUSE_DOMAIN", "SERPHouse Domain", "google.com")]
         case "serply": return [f("SERPLY_API_KEY", "Serply API Key", "Enter Serply API Key", .secure)]
-        case "tavily": return [f("TAVILY_API_KEY", "Tavily API Key", "Enter Tavily API Key", .secure)]
+        case "tavily": return [
+            f("TAVILY_API_KEY", "Tavily API Key", "Enter Tavily API Key", .secure),
+            f("TAVILY_SEARCH_DEPTH", "Search Depth", "", .picker([
+                ("basic", "Basic"), ("advanced", "Advanced"), ("fast", "Fast"), ("ultra-fast", "Ultra Fast")
+            ]))]
         case "staan": return [
             f("STAAN_API_KEY", "Staan API Key", "Enter Staan API Key", .secure),
             f("STAAN_MARKET", "Market", "e.g. en-us"),
