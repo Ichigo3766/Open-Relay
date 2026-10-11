@@ -38,6 +38,13 @@ struct AdminAnalyticsView: View {
                 // Summary stats
                 summaryStats
                     .padding(.horizontal, Spacing.screenPadding)
+                HStack(spacing: Spacing.sm) {
+                    statCard(title: "Input Tokens", value: AnalyticsViewModel.formatted(viewModel.tokenStats?.totalInputTokens ?? 0),
+                             icon: "arrow.down", color: .blue)
+                    statCard(title: "Output Tokens", value: AnalyticsViewModel.formatted(viewModel.tokenStats?.totalOutputTokens ?? 0),
+                             icon: "arrow.up", color: .orange)
+                }
+                .padding(.horizontal, Spacing.screenPadding)
 
                 // Daily Messages Chart
                 dailyChart
@@ -448,6 +455,10 @@ struct AdminAnalyticsView: View {
                                 .padding(.leading, Spacing.xs)
                             Text("MESSAGES")
                                 .frame(width: 88, alignment: .trailing)
+                            Text("INPUT TOKENS")
+                                .frame(width: 100, alignment: .trailing)
+                            Text("OUTPUT TOKENS")
+                                .frame(width: 100, alignment: .trailing)
                             Text("TOKENS")
                                 .frame(width: 88, alignment: .trailing)
                             Text("%")
@@ -520,12 +531,9 @@ struct AdminAnalyticsView: View {
                 .monospacedDigit()
                 .frame(width: 88, alignment: .trailing)
 
-            // Tokens
-            Text(AnalyticsViewModel.formatted(tokens))
-                .scaledFont(size: 13)
-                .foregroundStyle(theme.textSecondary)
-                .monospacedDigit()
-                .frame(width: 88, alignment: .trailing)
+            tokenColumn(tokenData?.inputTokens ?? 0, width: 100)
+            tokenColumn(tokenData?.outputTokens ?? 0, width: 100)
+            tokenColumn(tokens)
 
             // Percentage
             Text(String(format: "%.1f%%", pct))
@@ -558,6 +566,10 @@ struct AdminAnalyticsView: View {
                                 .padding(.leading, Spacing.xs)
                             Text("MESSAGES")
                                 .frame(width: 88, alignment: .trailing)
+                            Text("INPUT TOKENS")
+                                .frame(width: 100, alignment: .trailing)
+                            Text("OUTPUT TOKENS")
+                                .frame(width: 100, alignment: .trailing)
                             Text("TOKENS")
                                 .frame(width: 88, alignment: .trailing)
                         }
@@ -627,18 +639,23 @@ struct AdminAnalyticsView: View {
                 .monospacedDigit()
                 .frame(width: 88, alignment: .trailing)
 
-            // Tokens
-            Text(AnalyticsViewModel.formatted(user.totalTokens))
-                .scaledFont(size: 13)
-                .foregroundStyle(theme.textSecondary)
-                .monospacedDigit()
-                .frame(width: 88, alignment: .trailing)
+            tokenColumn(user.inputTokens, width: 100)
+            tokenColumn(user.outputTokens, width: 100)
+            tokenColumn(user.totalTokens)
         }
         .padding(.horizontal, Spacing.md)
         .padding(.vertical, 10)
     }
 
     // MARK: - Shared Table Components
+
+    private func tokenColumn(_ tokens: Int, width: CGFloat = 88) -> some View {
+        Text(AnalyticsViewModel.formatted(tokens))
+            .scaledFont(size: 13)
+            .foregroundStyle(theme.textSecondary)
+            .monospacedDigit()
+            .frame(width: width, alignment: .trailing)
+    }
 
     private func tableHeader(title: String, subtitle: String?) -> some View {
         HStack {
