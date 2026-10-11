@@ -4,8 +4,21 @@ import QuickLook
 /// Created only after a file result is tapped. The original stays on temporary disk,
 /// scoped to this presentation; search rows never fetch file contents or thumbnails.
 struct SearchFilePreview: View {
-    let file: LibrarySearchResult
+    let resourceID: String
+    let title: String
     let api: APIClient
+
+    init(file: LibrarySearchResult, api: APIClient) {
+        resourceID = file.resourceID
+        title = file.title
+        self.api = api
+    }
+
+    init(file: KnowledgeFileEntry, api: APIClient) {
+        resourceID = file.id
+        title = file.name
+        self.api = api
+    }
     @Environment(\.dismiss) private var dismiss
     @State private var url: URL?
     @State private var error: String?
@@ -31,7 +44,7 @@ struct SearchFilePreview: View {
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .navigationTitle(file.title)
+            .navigationTitle(title)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
@@ -49,11 +62,11 @@ struct SearchFilePreview: View {
         .task(id: attempt) {
             error = nil
             do {
-                let temporary = try await api.network.downloadFile(path: "/api/v1/files/\(file.resourceID)/content")
+                let temporary = try await api.network.downloadFile(path: "/api/v1/files/\(resourceID)/content")
                 defer { try? FileManager.default.removeItem(at: temporary) }
                 try Task.checkCancellation()
                 try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-                let name = (file.title as NSString).lastPathComponent
+                let name = (title as NSString).lastPathComponent
                 let destination = directory.appendingPathComponent(name.isEmpty || name == "." || name == ".." ? "file" : name)
                 try FileManager.default.moveItem(at: temporary, to: destination)
                 url = destination
