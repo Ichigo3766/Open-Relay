@@ -256,8 +256,10 @@ final class RealtimeCallSession {
     }
 
     private func delegate(_ request: String, callID: String, response: String) {
-        guard replyTask == nil, !chat.isStreaming, chat.selectedModelId == modelID else {
-            Task { try? await result(callID, response: response, status: "deferred", answer: "The chat is busy or its selected model changed. Open the chat before continuing.") }
+        guard replyTask == nil, !chat.isStreaming, chat.selectedModelId == modelID,
+              chat.mentionedModelId == nil || chat.mentionedModelId == modelID,
+              chat.pendingToolApprovalCall == nil, chat.pendingAskUserPrompt == nil, chat.liveAskUserPrompt == nil else {
+            Task { try? await result(callID, response: response, status: "deferred", answer: "The chat is busy, needs approval or input, or its model changed. Open the chat before continuing.") }
             return
         }
         replyTask = Task { [weak self] in
@@ -282,7 +284,7 @@ final class RealtimeCallSession {
             guard !Task.isCancelled, !stopped else { return }
             do {
                 try await sendContext()
-                try await result(callID, response: response, status: chat.pendingToolApprovalCall != nil ? "deferred" : (chat.errorMessage == nil && !answer.isEmpty ? "completed" : "failed"),
+                try await result(callID, response: response, status: (chat.pendingToolApprovalCall != nil || chat.pendingAskUserPrompt != nil || chat.liveAskUserPrompt != nil) ? "deferred" : (chat.errorMessage == nil && !answer.isEmpty ? "completed" : "failed"),
                                  answer: String((chat.errorMessage ?? answer).prefix(100000)))
             } catch { if !stopped { fail("Could not deliver the chat result to the call. The result remains in the chat.") } }
         }
