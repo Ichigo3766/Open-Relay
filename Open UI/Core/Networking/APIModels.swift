@@ -195,6 +195,13 @@ struct BackendConfig: Codable, Sendable {
     struct AudioConfig: Codable, Sendable {
         let tts: TTSConfig?
         let stt: STTConfig?
+        var realtime: RealtimeConfig? = nil
+
+        struct RealtimeConfig: Codable, Sendable {
+            let enabled: Bool?
+            let model: String?
+            let voice: String?
+        }
 
         struct TTSConfig: Codable, Sendable {
             let engine: String?

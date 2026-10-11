@@ -29,6 +29,11 @@ final class VoiceCallSettings {
     var revision = 0
     let defaults = UserDefaults.standard
 
+    var useRealtimeBridge: Bool {
+        get { bool("voiceCall.realtimeBridge", default: false) }
+        set { set(newValue, "voiceCall.realtimeBridge") }
+    }
+
     // MARK: - Listening
 
     /// Which speech-recognition engine to use during calls.

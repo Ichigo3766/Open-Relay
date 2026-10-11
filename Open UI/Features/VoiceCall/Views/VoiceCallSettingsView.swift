@@ -21,56 +21,69 @@ struct VoiceCallSettingsView: View {
         @Bindable var settings = dependencies.voiceCallSettings
         List {
             Section {
-                ForEach(sttOptions) { option in
-                    row(option, selected: settings.sttEngine == option.id) {
-                        settings.sttEngine = option.id
-                    }
+                Picker("Call Mode", selection: $settings.useRealtimeBridge) {
+                    Text("Standard").tag(false)
+                    Text("Realtime").tag(true)
+                        .disabled(dependencies.authViewModel.backendConfig?.audio?.realtime?.enabled != true)
                 }
-            } header: {
-                Text("Listening")
             } footer: {
-                Text("Apple Speech uses the newer iOS 26 recogniser when your language supports it. If the selected engine can't start, calls fall back to Apple Speech.")
+                Text("Realtime uses the server's voice and turn-taking, with your selected chat model and tools. Enable it in the server's Audio settings.")
             }
-
-            Section {
-                NavigationLink {
-                    TTSSettingsView()
-                } label: {
-                    LabeledContent("Voice", value: "Same as Assistant's Voice")
-                }
-            } footer: {
-                Text("Calls speak with the voice you choose in Assistant's Voice.")
-            }
-
-            Section {
-                Picker("Pause Before Replying", selection: $settings.turnPace) {
-                    ForEach(TurnPace.allCases, id: \.self) { pace in
-                        Text(pace.displayName).tag(pace)
+            if settings.useRealtimeBridge {
+                Section { Toggle("Start on Speaker", isOn: $settings.defaultSpeakerOn) }
+            } else {
+                Section {
+                    ForEach(sttOptions) { option in
+                        row(option, selected: settings.sttEngine == option.id) {
+                            settings.sttEngine = option.id
+                        }
                     }
+                } header: {
+                    Text("Listening")
+                } footer: {
+                    Text("Apple Speech uses the newer iOS 26 recogniser when your language supports it. If the selected engine can't start, calls fall back to Apple Speech.")
                 }
-                .disabled(settings.customPauseEnabled)
-                Picker("Sensitivity", selection: $settings.vadSensitivity) {
-                    ForEach(VADSensitivity.allCases, id: \.self) { level in
-                        Text(level.displayName).tag(level)
-                    }
-                }
-                Toggle("Interrupt by Speaking", isOn: $settings.bargeInEnabled)
-                    .disabled(!settings.vadEnabled)
-                Toggle("Start on Speaker", isOn: $settings.defaultSpeakerOn)
-            } header: {
-                Text("Conversation")
-            } footer: {
-                Text(conversationFooter(settings))
-            }
 
-            Section {
-                NavigationLink {
-                    VoiceCallAdvancedView()
-                } label: {
-                    LabeledContent("Advanced", value: settings.hasAdvancedChanges ? "Customised" : "Default")
+                Section {
+                    NavigationLink {
+                        TTSSettingsView()
+                    } label: {
+                        LabeledContent("Voice", value: "Same as Assistant's Voice")
+                    }
+                } footer: {
+                    Text("Calls speak with the voice you choose in Assistant's Voice.")
                 }
-            } footer: {
-                Text("Turn voice detection or Smart Turn off, set exact pause times, tune interruptions and show live diagnostics.")
+
+                Section {
+                    Picker("Pause Before Replying", selection: $settings.turnPace) {
+                        ForEach(TurnPace.allCases, id: \.self) { pace in
+                            Text(pace.displayName).tag(pace)
+                        }
+                    }
+                    .disabled(settings.customPauseEnabled)
+                    Picker("Sensitivity", selection: $settings.vadSensitivity) {
+                        ForEach(VADSensitivity.allCases, id: \.self) { level in
+                            Text(level.displayName).tag(level)
+                        }
+                    }
+                    Toggle("Interrupt by Speaking", isOn: $settings.bargeInEnabled)
+                        .disabled(!settings.vadEnabled)
+                    Toggle("Start on Speaker", isOn: $settings.defaultSpeakerOn)
+                } header: {
+                    Text("Conversation")
+                } footer: {
+                    Text(conversationFooter(settings))
+                }
+
+                Section {
+                    NavigationLink {
+                        VoiceCallAdvancedView()
+                    } label: {
+                        LabeledContent("Advanced", value: settings.hasAdvancedChanges ? "Customised" : "Default")
+                    }
+                } footer: {
+                    Text("Turn voice detection or Smart Turn off, set exact pause times, tune interruptions and show live diagnostics.")
+                }
             }
         }
         .navigationTitle("Voice Calls")
