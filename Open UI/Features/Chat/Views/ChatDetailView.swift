@@ -2216,7 +2216,7 @@ struct ChatDetailView: View {
                 // should NOT show the FAB. Use a computed distance from the cached sizes —
                 // not perfect but good enough for this phase-change callback.
                 if viewModel.isStreaming && !isScrolledUp {
-                    let distAtDecel = max(0, _pumpRef.contentHeight - viewState_containerHeight)
+                    let distAtDecel = max(0, _pumpRef.contentHeight - viewState_containerHeight - _pumpRef.currentScrollOffsetY)
                     // Only show FAB if the user is clearly away from the bottom (> 60pt).
                     // This prevents the FAB appearing when coasting after a manual scroll-to-bottom.
                     if distAtDecel > 60 {
