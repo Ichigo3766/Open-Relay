@@ -44,6 +44,7 @@ final class RealtimeCallSession {
         player.onStarted = { [weak self] in self?.onState?(.speaking) }
         player.onFinished = { [weak self] in
             guard let self, !self.stopped else { return }
+            self.playback = nil
             self.onState?(self.paused ? .paused : .listening)
         }
         audioEngine.onRebuilt = { [weak self] in Task { await self?.interrupt() } }
@@ -233,9 +234,16 @@ final class RealtimeCallSession {
                 try await send(["type": "bridge.animation.result", "call_id": callID, "status": "unavailable"])
                 animationResponses.insert(response)
                 if finished.contains(response) { try await finishAnimations(response) }
-            } else if item["name"] as? String == "generate_chat_completion",
-                      let arguments = item["arguments"] as? String, let request = RealtimeCallWire.request(arguments) {
-                delegate(request, callID: callID, response: response)
+            } else if item["name"] as? String == "generate_chat_completion" {
+                guard let arguments = item["arguments"] as? String, let request = RealtimeCallWire.request(arguments) else {
+                    try await result(callID, response: response, status: "failed", answer: "Could not read the delegated chat request.")
+                    return
+                }
+                if paused || interrupted.contains(response) {
+                    try await result(callID, response: response, status: "cancelled", answer: "The call was paused or interrupted.")
+                } else {
+                    delegate(request, callID: callID, response: response)
+                }
             }
         case "response.done":
             guard let response = (event["response"] as? [String: Any])?["id"] as? String else { return }
