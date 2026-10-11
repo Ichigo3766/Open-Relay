@@ -1879,8 +1879,7 @@ private struct RichUIWebView: UIViewRepresentable {
 // MARK: - Tool Call Result Block View
 
 /// Renders the OUTPUT section as a plain monospaced text block.
-/// JSON results are pretty-printed. Uses a simple ScrollView+Text instead of
-/// MarkdownView to avoid async WKWebView zero-height collapse on first render.
+/// JSON results are pretty-printed; the label draws only the visible viewport.
 private struct ToolCallResultBlockView: View {
     let content: String
 
@@ -1893,7 +1892,7 @@ private struct ToolCallResultBlockView: View {
         let key = content as NSString
         if let hit = Self.formattedCache.object(forKey: key) { return hit as String }
         let result = computeFormattedContent()
-        Self.formattedCache.setObject(result as NSString, forKey: key)
+        Self.formattedCache.setObject(result as NSString, forKey: key, cost: (content.utf16.count + result.utf16.count) * 2)
         return result
     }
 
@@ -1901,6 +1900,7 @@ private struct ToolCallResultBlockView: View {
     private static let formattedCache: NSCache<NSString, NSString> = {
         let cache = NSCache<NSString, NSString>()
         cache.countLimit = 60
+        cache.totalCostLimit = 8 * 1024 * 1024
         return cache
     }()
 
@@ -1932,13 +1932,8 @@ private struct ToolCallResultBlockView: View {
 
     var body: some View {
         ZStack(alignment: .topTrailing) {
-            ScrollView([.vertical, .horizontal], showsIndicators: false) {
-                Text(formattedContent)
-                    .font(.system(size: 12, design: .monospaced))
-                    .foregroundStyle(theme.textSecondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .multilineTextAlignment(.leading)
-                    .textSelection(.enabled)
+            ScrollView([.horizontal, .vertical], showsIndicators: false) {
+                ReasoningText(text: formattedContent, fontSize: 12, color: UIColor(theme.textSecondary), monospaced: true)
                     .padding(10)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
@@ -1979,10 +1974,7 @@ private struct ToolCallResultFullPreviewSheet: View {
     var body: some View {
         NavigationView {
             ScrollView {
-                Text(content)
-                    .font(.system(size: 13, design: .monospaced))
-                    .foregroundStyle(theme.textPrimary)
-                    .textSelection(.enabled)
+                ReasoningText(text: content, fontSize: 13, color: UIColor(theme.textPrimary), monospaced: true)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding()
             }

@@ -15,6 +15,7 @@ struct ReasoningText: UIViewRepresentable {
     let text: String
     var fontSize: CGFloat = 12
     var color: UIColor = .label
+    var monospaced = false
 
     func makeUIView(context _: Context) -> LTXLabel {
         let label = LTXLabel()
@@ -27,7 +28,7 @@ struct ReasoningText: UIViewRepresentable {
         let paragraph = NSMutableParagraphStyle()
         paragraph.lineSpacing = 3
         label.attributedText = NSAttributedString(string: text, attributes: [
-            .font: UIFont.systemFont(ofSize: fontSize),
+            .font: monospaced ? UIFont.monospacedSystemFont(ofSize: fontSize, weight: .regular) : UIFont.systemFont(ofSize: fontSize),
             .foregroundColor: color,
             .paragraphStyle: paragraph,
         ])
@@ -35,6 +36,10 @@ struct ReasoningText: UIViewRepresentable {
     }
 
     func sizeThatFits(_ proposal: ProposedViewSize, uiView: LTXLabel, context _: Context) -> CGSize? {
+        if proposal.width == nil {
+            uiView.preferredMaxLayoutWidth = .greatestFiniteMagnitude
+            return uiView.intrinsicContentSize
+        }
         guard let width = proposal.width, width > 0, width.isFinite else { return nil }
         // Resolve height before placement; a later intrinsic-size correction can
         // trigger the chat's bottom-follow logic while expanding reasoning.
