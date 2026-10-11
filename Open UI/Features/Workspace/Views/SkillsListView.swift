@@ -76,6 +76,7 @@ struct SkillsListView: View {
 
     // Import
     @State private var showImportPicker = false
+    @State private var showURLImport = false
     @State private var importedSkill: ImportedSkillData? = nil
     @State private var showImportEditor = false
     @State private var showBatchImportConfirm = false
@@ -162,6 +163,11 @@ struct SkillsListView: View {
             SkillShareSheet(items: shareItems)
         }
         // Document picker for import
+        .sheet(isPresented: $showURLImport) {
+            if let apiClient = dependencies.apiClient {
+                SkillURLImportView(apiClient: apiClient) { await manager.fetchAll() }
+            }
+        }
         .sheet(isPresented: $showImportPicker) {
             DocumentPicker(types: [.plainText, .json]) { url in
                 handleImportedFile(url: url, manager: manager)
@@ -213,9 +219,9 @@ struct SkillsListView: View {
                 let isAdmin = dependencies.authViewModel.currentUser?.role == .admin
                 // Import button (admin only — no dedicated skills_import permission in API)
                 if isAdmin {
-                    Button {
-                        Haptics.play(.light)
-                        showImportPicker = true
+                    Menu {
+                        Button("Import from File", systemImage: "doc") { showImportPicker = true }
+                        Button("Import from URL", systemImage: "link") { showURLImport = true }
                     } label: {
                         Image(systemName: "square.and.arrow.down")
                             .scaledFont(size: 15, weight: .medium)
