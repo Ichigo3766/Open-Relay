@@ -120,6 +120,7 @@ struct VoiceSettingsHubView: View {
     }
 
     private func callSummary(_ s: VoiceCallSettings) -> String {
+        if s.useRealtimeBridge { return "Realtime · Server voice and turn-taking" }
         let listening: String
         switch s.sttEngine {
         case "parakeet": listening = "Parakeet"
