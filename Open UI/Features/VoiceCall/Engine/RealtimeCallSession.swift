@@ -126,8 +126,8 @@ final class RealtimeCallSession {
             do {
                 if value { await interrupt() }
                 try await send(["type": "input_audio_buffer.clear"])
-                if !stopped { onState?(value ? .paused : .listening) }
-            } catch { fail("Could not update the Realtime call. Start a new call to reconnect.") }
+                if !stopped { onState?(paused ? .paused : .listening) }
+            } catch { if !stopped { fail("Could not update the Realtime call. Start a new call to reconnect.") } }
         }
     }
 
