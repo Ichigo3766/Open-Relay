@@ -81,7 +81,7 @@ final class ChatViewModel {
             // Update the store's replying set so the sidebar spinner
             // can react purely by observing one property on the @Observable store,
             // bypassing the @ObservationIgnored viewModels dictionary entirely.
-            // conversationId reflects the real server ID once promoteNewChat fires.
+            // conversationId reflects the real server ID once creation finishes.
             let chatId = conversationId ?? conversation?.id
             if isStreaming {
                 if let chatId {
@@ -290,6 +290,7 @@ final class ChatViewModel {
 
     /// Messages queued to send after the current stream completes.
     var messageQueue: [QueuedMessage] = []
+    private var pendingQueueDrains = 0
     /// Pinned model IDs synced with server `ui.pinnedModels`.
     var pinnedModelIds: [String] = []
     var isTemporaryChat: Bool = false
@@ -494,8 +495,7 @@ final class ChatViewModel {
     private weak var notesManager: NotesManager?
     private var streamingTask: Task<Void, Never>?
     /// Active transcription tasks keyed by attachment ID.
-    /// Stored here so they survive navigation — the VM lives in ActiveChatStore
-    /// and is never destroyed when the user switches chats.
+    /// ActiveChatStore retains the VM while transcription continues offscreen.
     private var transcriptionTasks: [UUID: Task<Void, Never>] = [:]
     /// The post-streaming completion task (chatCompleted + file polling + metadata refresh).
     /// Cancelled when a new message is sent so it doesn't overwrite newer messages.
@@ -732,6 +732,21 @@ final class ChatViewModel {
     /// Used by ActiveChatStore to prevent evicting a VM that is still working.
     var hasActiveTranscriptions: Bool {
         !transcriptionTasks.isEmpty
+    }
+
+    /// Hidden saved chats can be released; ongoing work and unsaved history cannot.
+    var needsBackgroundRetention: Bool {
+        hasOngoingWork || (isTemporaryChat && conversation != nil)
+    }
+
+    var hasOngoingWork: Bool {
+        isStreaming || hasActiveTranscriptions || hasUploadingAttachments
+            || attachments.contains { $0.isTranscribing }
+            || pendingTextAfterUpload != nil || !messageQueue.isEmpty || pendingQueueDrains > 0
+            || isCreatingConversation || isCreatingNoteChat || isSavingContext
+            || isCompactingContext || isSavingChatVariables || isSavingTemporaryChat
+            || isResolvingToolCall || isResolvingAskUser || isCheckingToolConnections
+            || isVoiceMode || liveAskUserPrompt != nil || !toolEventPrompts.requests.isEmpty
     }
 
     /// Whether any attachment is still uploading or being processed.
@@ -5765,14 +5780,7 @@ final class ChatViewModel {
         // Use directText so the text never flashes in the input box.
         // A short delay lets the UI settle (action bar, animations) before the
         // next message fires.
-        if !messageQueue.isEmpty {
-            let combined = messageQueue.map(\.text).joined(separator: "\n\n")
-            messageQueue.removeAll()
-            Task {
-                try? await Task.sleep(nanoseconds: 1_200_000_000)
-                await sendMessage(directText: combined)
-            }
-        }
+        drainMessageQueue(after: 1_200_000_000)
 
         recoveryTimer?.invalidate()
         recoveryTimer = nil
@@ -5946,14 +5954,7 @@ final class ChatViewModel {
         // authoritative state; pushing our local copy would corrupt tool results.
 
         // Drain the message queue (same as in finishStreamingSuccessfully).
-        if !messageQueue.isEmpty {
-            let combined = messageQueue.map(\.text).joined(separator: "\n\n")
-            messageQueue.removeAll()
-            Task {
-                try? await Task.sleep(nanoseconds: 1_200_000_000)
-                await sendMessage(directText: combined)
-            }
-        }
+        drainMessageQueue(after: 1_200_000_000)
 
         cleanupStreaming()
     }
@@ -6489,14 +6490,7 @@ final class ChatViewModel {
         // already have their own drain. The `streamingSessionId` guard in the
         // onDrained callback ensures a queue-fired sendMessage() doesn't get
         // torn down by the OLD session's deferred cleanup.
-        if !messageQueue.isEmpty {
-            let combined = messageQueue.map(\.text).joined(separator: "\n\n")
-            messageQueue.removeAll()
-            Task { [weak self] in
-                try? await Task.sleep(nanoseconds: 800_000_000)
-                await self?.sendMessage(directText: combined)
-            }
-        }
+        drainMessageQueue(after: 800_000_000)
 
         // CRITICAL: Re-register the passive socket listener after each stream completes.
         //
@@ -6509,6 +6503,20 @@ final class ChatViewModel {
         // the VM was created for a new chat or an existing one.
         startPassiveSocketListener()
 
+    }
+
+    // The delay is still ongoing work even after the visible queue has been emptied.
+    private func drainMessageQueue(after delay: UInt64) {
+        guard !messageQueue.isEmpty else { return }
+        let combined = messageQueue.map(\.text).joined(separator: "\n\n")
+        pendingQueueDrains += 1
+        messageQueue.removeAll()
+        Task { [weak self] in
+            try? await Task.sleep(nanoseconds: delay)
+            guard let self else { return }
+            defer { self.pendingQueueDrains -= 1 }
+            await self.sendMessage(directText: combined)
+        }
     }
 
     // MARK: - Message Queue Actions

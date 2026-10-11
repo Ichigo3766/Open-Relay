@@ -1,4 +1,5 @@
 import Foundation
+import Observation
 import UIKit
 import SwiftUI
 
@@ -18,21 +19,20 @@ protocol ServiceContainer {
 /// the view model persists here and continues processing.
 @MainActor @Observable
 final class ActiveChatStore {
-    /// Cached view models keyed by conversation ID (or `__new__` for new chats).
-    /// @ObservationIgnored because this is internal storage — SwiftUI views
-    /// don't directly observe this dictionary; they observe the returned VMs.
-    /// Without this, inserting a new VM during body evaluation triggers an
-    /// AttributeGraph cycle (mutation during render → re-render → mutation…).
-    @ObservationIgnored private var viewModels: [String: ChatViewModel] = [:]
-
-    /// Max cached VMs to prevent unbounded memory growth. Each VM holds a full Conversation.
-    private let maxCachedViewModels = 5
-
-    /// Access order tracking for LRU eviction.
-    /// Marked @ObservationIgnored because this is internal bookkeeping —
-    /// mutating it during viewModel(for:) must NOT trigger SwiftUI re-renders
-    /// or it causes an AttributeGraph cycle (mutation during body evaluation).
-    @ObservationIgnored private var accessOrder: [String] = []
+    private final class Reference {
+        weak var value: ChatViewModel?
+        init(_ value: ChatViewModel) { self.value = value }
+    }
+    private struct Draft {
+        let text: String
+        let attachments: [ChatAttachment]
+    }
+    // Views own visible chats; ongoing work and unsaved history survive offscreen.
+    @ObservationIgnored private var viewModels: [String: Reference] = [:]
+    @ObservationIgnored private var working: [ObjectIdentifier: ChatViewModel] = [:]
+    @ObservationIgnored private var drafts: [String: Draft] = [:]
+    @ObservationIgnored private var navigation: ChatViewModel?
+    @ObservationIgnored private var generation = UUID()
 
     // MARK: - Shared Model/Tools Cache
 
@@ -106,14 +106,14 @@ final class ActiveChatStore {
     /// If no live view model is still replying for it, drop its spinner.
     func reconcileStreaming(chatId: String) {
         guard streamingConversationIds.contains(chatId) else { return }
-        if let vm = viewModels[chatId], vm.isStreaming { return }
+        if let vm = viewModels[chatId]?.value, vm.isStreaming { return }
         streamingConversationIds.remove(chatId)
     }
 
     /// Socket reconnected: let every cached chat that is still streaming its own reply
     /// fill in tokens missed during the drop (including chats not on screen).
     func recoverStreamsAfterSocketReconnect() async {
-        for vm in viewModels.values where vm.isStreaming && !vm.isExternallyStreaming {
+        for vm in viewModels.values.compactMap(\.value) where vm.isStreaming && !vm.isExternallyStreaming {
             await vm.recoverAfterSocketReconnect()
         }
     }
@@ -148,11 +148,8 @@ final class ActiveChatStore {
     /// so the model selector is instant — no network fetch needed.
     func viewModel(for conversationId: String?) -> ChatViewModel {
         let key = conversationId ?? "__new__"
-        if let existing = viewModels[key] {
-            accessOrder.removeAll { $0 == key }
-            accessOrder.append(key)
-            return existing
-        }
+        if let existing = viewModels[key]?.value { return existing }
+        viewModels = viewModels.filter { $0.value.value != nil }
         let vm: ChatViewModel
         if let conversationId {
             vm = ChatViewModel(conversationId: conversationId)
@@ -175,30 +172,46 @@ final class ActiveChatStore {
         if conversationId == nil {
             vm.seedFromSessionCache(terminalServers: cachedTerminalServers, tools: cachedTools)
         }
-        viewModels[key] = vm
-        accessOrder.append(key)
-
-        evictIfNeeded()
+        if let draft = drafts.removeValue(forKey: key) {
+            vm.inputText = draft.text
+            vm.attachments = draft.attachments
+        }
+        viewModels[key] = Reference(vm)
+        observeWork(vm, generation: generation)
 
         return vm
     }
 
-    /// Evicts least-recently-used VMs when over the limit.
-    /// Never evicts a VM that is streaming or has active transcriptions.
-    /// Guarded against infinite loops.
-    private func evictIfNeeded() {
-        var iterations = 0
-        let maxIterations = accessOrder.count + 1
-        while viewModels.count > maxCachedViewModels && !accessOrder.isEmpty && iterations < maxIterations {
-            iterations += 1
-            let oldest = accessOrder.removeFirst()
-            // Don't evict VMs that are actively streaming or transcribing
-            if let vm = viewModels[oldest], vm.isStreaming || vm.hasActiveTranscriptions {
-                accessOrder.append(oldest) // Move to end, try next
-                continue
-            }
-            viewModels.removeValue(forKey: oldest)
+    private func observeWork(_ vm: ChatViewModel, generation revision: UUID) {
+        guard revision == generation else { return }
+        guard viewModels.values.contains(where: { $0.value === vm }) else {
+            working[ObjectIdentifier(vm)] = nil
+            return
         }
+        let retain = withObservationTracking { vm.needsBackgroundRetention } onChange: { [weak self, weak vm] in
+            guard let vm else { return }
+            Task { @MainActor [weak self] in self?.observeWork(vm, generation: revision) }
+        }
+        if retain { working[ObjectIdentifier(vm)] = vm }
+        else {
+            saveDraft(vm)
+            working[ObjectIdentifier(vm)] = nil
+        }
+    }
+
+    private func saveDraft(_ vm: ChatViewModel) {
+        guard let key = viewModels.first(where: { $0.value.value === vm })?.key else { return }
+        drafts[key] = vm.inputText.isEmpty && vm.attachments.isEmpty ? nil
+            : Draft(text: vm.inputText, attachments: vm.attachments)
+    }
+
+    func appeared(_ vm: ChatViewModel) {
+        if navigation === vm { navigation = nil }
+    }
+
+    func disappeared(_ vm: ChatViewModel) {
+        saveDraft(vm)
+        if navigation === vm { navigation = nil }
     }
 
     /// Updates the shared cache. Called by VMs after a successful model fetch.
@@ -216,6 +229,7 @@ final class ActiveChatStore {
     /// redundant work.
     func prewarm(conversationId: String?, using dependencies: AppDependencyContainer) {
         let vm = viewModel(for: conversationId)
+        navigation = vm // Preserve prewarming until the destination takes ownership.
         guard !vm.isConfigured, let manager = dependencies.conversationManager else { return }
         vm.configure(
             with: manager,
@@ -244,43 +258,39 @@ final class ActiveChatStore {
         }
     }
 
-    /// Removes the cached view model for a conversation that has finished.
+    /// Explicitly discard a draft without interrupting its ongoing work.
     func remove(_ conversationId: String?) {
         let key = conversationId ?? "__new__"
-        // "New Chat" while the new chat is still replying: don't throw the live view
-        // model away (its spinner would never clear and reopening the chat would lose
-        // the reply). Keep it under its real chat ID so it finishes in the background.
-        if conversationId == nil, let vm = viewModels[key], vm.isStreaming,
-           let realId = vm.conversationId ?? vm.conversation?.id, !realId.hasPrefix("local:") {
-            promoteNewChat(to: realId)
-            return
-        }
-        viewModels.removeValue(forKey: key)
+        guard let vm = viewModels.removeValue(forKey: key)?.value else { drafts[key] = nil; return }
+        drafts[key] = nil
+        if navigation === vm { navigation = nil }
+        if vm.hasOngoingWork {
+            let id = vm.conversationId ?? vm.conversation?.id ?? "background:" + UUID().uuidString
+            viewModels[id] = Reference(vm)
+            working[ObjectIdentifier(vm)] = vm
+        } else { working[ObjectIdentifier(vm)] = nil }
     }
 
-    /// Replaces the new-chat placeholder key with the real conversation ID
-    /// once the server assigns one.
-    func promoteNewChat(to conversationId: String) {
-        guard let vm = viewModels.removeValue(forKey: "__new__") else { return }
-        viewModels[conversationId] = vm
-        accessOrder.removeAll { $0 == "__new__" || $0 == conversationId }
-        accessOrder.append(conversationId)
-    }
-
-    /// Embedded chats must not replace the ordinary new-chat draft.
     func retain(_ viewModel: ChatViewModel, for conversationId: String) {
-        viewModels[conversationId] = viewModel
-        accessOrder.removeAll { $0 == conversationId }
-        accessOrder.append(conversationId)
-        evictIfNeeded()
+        let existing = viewModels.values.first { $0.value === viewModel }
+        for key in Array(viewModels.keys) where viewModels[key]?.value === viewModel {
+            if let draft = drafts.removeValue(forKey: key) { drafts[conversationId] = draft }
+            viewModels[key] = nil
+        }
+        viewModels[conversationId] = existing ?? Reference(viewModel)
+        if existing == nil { observeWork(viewModel, generation: generation) }
     }
 
     /// Removes all cached view models and model cache (e.g. on server switch or logout).
     func clear() {
         // Account/server change: web search consent must not carry over.
-        viewModels.values.forEach { $0.webSearchConsent.reset() }
+        viewModels.values.compactMap(\.value).forEach { $0.webSearchConsent.reset() }
+        generation = UUID()
         viewModels.removeAll()
-        accessOrder.removeAll()
+        working.removeAll()
+        drafts.removeAll()
+        navigation = nil
+        streamingConversationIds.removeAll()
         cachedModels = []
         cachedTerminalServers = nil
         cachedTools = nil

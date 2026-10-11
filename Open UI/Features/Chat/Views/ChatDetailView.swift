@@ -690,6 +690,7 @@ struct ChatDetailView: View {
         // very first render.  The `isConfigured` guard prevents a second call if
         // `ActiveChatStore.prewarm()` already ran before navigation.
         .onAppear {
+            dependencies.activeChatStore.appeared(viewModel)
             guard !viewModel.isConfigured, let manager = dependencies.conversationManager else { return }
             viewModel.configure(
                 with: manager,
@@ -5083,6 +5084,7 @@ struct ChatDetailView: View {
     }
 
     private func handleDisappear() {
+        dependencies.activeChatStore.disappeared(viewModel)
         ChatReadState.shared.chatScreenClosed(openChatReportId)
         viewModel.webSearchConsent.cancelPending()
         if dependencies.dictationService.context == dictationContext {
