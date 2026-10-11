@@ -26,6 +26,7 @@ nonisolated struct Conversation: Identifiable, Hashable, Sendable {
     var updatedAt: Date
     var model: String?
     var systemPrompt: String?
+    var hasDeferredDetails = false
     /// Native chat-level variables, separate from prompt substitution variables.
     /// Raw JSON values — not truly `Sendable`, matching the `ChatMessage.usage` pattern.
     nonisolated(unsafe) var chatVariables: [String: Any] = [:]

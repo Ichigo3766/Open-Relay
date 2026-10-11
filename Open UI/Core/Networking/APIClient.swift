@@ -811,14 +811,14 @@ final class APIClient: @unchecked Sendable {
         }
     }
 
-    func cachedConversation(id: String) async -> (conversation: Conversation, isRecent: Bool, validatedAt: Date)? {
+    func cachedConversation(id: String) async -> (conversation: Conversation, isRecent: Bool, validatedAt: Date, allowsStale: Bool?)? {
         let revision = await ConversationCache.shared.currentRevision()
         let scope = network.conversationCacheScope
         guard let cached = await ConversationCache.shared.cached(scope: scope, id: id) else { return nil }
         let conversation = await decodeConversation(cached.response)
         guard scope == network.conversationCacheScope,
               revision == (await ConversationCache.shared.currentRevision()) else { return nil }
-        return (conversation, cached.entry.isRecent(), cached.entry.validatedAt)
+        return (conversation, cached.entry.isRecent(), cached.entry.validatedAt, cached.entry.allowsStale)
     }
 
     func getConversation(id: String, preferRecent: Bool = false) async throws -> Conversation {
@@ -857,6 +857,9 @@ final class APIClient: @unchecked Sendable {
         chatFiles: [ChatMessageFile] = [],
         variables: [String: Any] = [:]
     ) async throws -> Conversation {
+        guard !history.nodes.values.contains(where: { $0.role == .assistant && CachedConversationSnapshot.hasDeferredContent($0.content) }) else {
+            throw APIError.requestEncoding(underlying: CocoaError(.coderInvalidValue))
+        }
         // Build flat messages array
         let flatMessages = history.createMessagesList()
         let messagesArray: [[String: Any]] = flatMessages.map { msg in
@@ -933,6 +936,9 @@ final class APIClient: @unchecked Sendable {
         folderId: String? = nil,
         variables: [String: Any] = [:]
     ) async throws -> Conversation {
+        guard !messages.contains(where: { $0.role == .assistant && CachedConversationSnapshot.hasDeferredContent($0.content) }) else {
+            throw APIError.requestEncoding(underlying: CocoaError(.coderInvalidValue))
+        }
         let chatData = buildChatPayload(
             title: title,
             messages: messages,
@@ -1167,6 +1173,9 @@ final class APIClient: @unchecked Sendable {
         title: String? = nil,
         chatFiles: [ChatMessageFile] = []
     ) async throws {
+        guard !messages.contains(where: { $0.role == .assistant && CachedConversationSnapshot.hasDeferredContent($0.content) }) else {
+            throw APIError.requestEncoding(underlying: CocoaError(.coderInvalidValue))
+        }
         let chatData = buildChatPayload(
             title: title ?? "",
             messages: messages,
@@ -1197,6 +1206,9 @@ final class APIClient: @unchecked Sendable {
         title: String? = nil,
         chatFiles: [ChatMessageFile] = []
     ) async throws {
+        guard !history.nodes.values.contains(where: { $0.role == .assistant && CachedConversationSnapshot.hasDeferredContent($0.content) }) else {
+            throw APIError.requestEncoding(underlying: CocoaError(.coderInvalidValue))
+        }
         // Build the flat messages array from the current branch (for server compat)
         let flatMessages = history.createMessagesList()
         let messagesArray: [[String: Any]] = flatMessages.map { msg in
@@ -4276,6 +4288,7 @@ final class APIClient: @unchecked Sendable {
             tasks: tasks,
             files: chatFiles
         )
+        conv.hasDeferredDetails = (json["chat"] as? [String: Any])?[CachedConversationSnapshot.marker] as? Bool == true
         conv.chatParams = chatParams
         conv.contextUsage = ChatContextUsage.parse(json["context_usage"])
         conv.chatVariables = json["variables"] as? [String: Any] ?? [:]

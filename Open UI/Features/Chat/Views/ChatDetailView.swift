@@ -860,6 +860,7 @@ struct ChatDetailView: View {
                 }
             }
         }
+        .environment(\.loadCachedDetails, { try await viewModel.loadCachedDetails() })
         .modifier(WebSearchConsentAlert(consent: viewModel.isVoiceMode ? nil : viewModel.webSearchConsent))
         .alert("Add Web Link", isPresented: $showWebURLAlert) {
             TextField("https://example.com", text: $webURLInput)

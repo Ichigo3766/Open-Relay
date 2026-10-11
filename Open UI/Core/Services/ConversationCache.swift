@@ -15,6 +15,15 @@ actor ConversationCache {
         let etag: String?
         let validatedAt: Date
         let freshFor: TimeInterval
+        let allowsStale: Bool?
+
+        init(data: Data, etag: String?, validatedAt: Date, freshFor: TimeInterval, allowsStale: Bool? = nil) {
+            self.data = data
+            self.etag = etag
+            self.validatedAt = validatedAt
+            self.freshFor = freshFor
+            self.allowsStale = allowsStale
+        }
 
         func isRecent(at date: Date = .now) -> Bool {
             let age = date.timeIntervalSince(validatedAt)
@@ -47,6 +56,8 @@ actor ConversationCache {
     private let defaults: UserDefaults
     private var generation = UUID()
     private var inFlight: [String: Task<Response, Error>] = [:]
+    private var staged: [String: (token: UUID, response: CachedResponse)] = [:]
+    private var pendingStores: [String: Task<Void, Never>] = [:]
     private var lastPrunedAt = Date.distantPast
 
     init(directory: URL = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
@@ -72,13 +83,18 @@ actor ConversationCache {
         return min(250, max(0, mb)) * 1024 * 1024
     }
 
-    private func file(scope: String, id: String) -> URL {
-        directory.appendingPathComponent(scope + "-" + Self.digest(Data(id.utf8)) + ".plist")
+    private func file(scope: String, id: String, details: Bool = false) -> URL {
+        directory.appendingPathComponent(scope + "-" + Self.digest(Data(id.utf8)) + (details ? ".full" : ".plist"))
     }
 
     func cached(scope: String?, id: String, now: Date = .now) -> CachedResponse? {
-        guard let entry = read(scope: scope, id: id, now: now),
+        if limit > 0, let scope, let pending = staged[scope + ":" + id],
+           now.timeIntervalSince(pending.response.entry.validatedAt) <= Self.retention {
+            return pending.response
+        }
+        guard let entry = read(scope: scope, id: id, details: true, now: now) ?? read(scope: scope, id: id, now: now),
               let response = try? Response(data: entry.data, id: id) else { return nil }
+        if let scope { try? FileManager.default.setAttributes([.modificationDate: now], ofItemAtPath: file(scope: scope, id: id).path) }
         return CachedResponse(entry: entry, response: response)
     }
 
@@ -95,16 +111,16 @@ actor ConversationCache {
         store(Entry(data: data, etag: nil, validatedAt: .now, freshFor: 0), scope: scope, id: "index:sidebar")
     }
 
-    private func read(scope: String?, id: String, now: Date = .now) -> Entry? {
+    private func read(scope: String?, id: String, details: Bool = false, now: Date = .now) -> Entry? {
         // Writes still enforce the budget immediately; reads need only periodic cleanup.
         if now.timeIntervalSince(lastPrunedAt) >= 600 || now < lastPrunedAt || limit == 0 {
             prune(now: now)
         }
         guard let scope, !id.hasPrefix("local:"), limit > 0 else { return nil }
-        let url = file(scope: scope, id: id)
+        let url = file(scope: scope, id: id, details: details)
         guard let size = try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize,
               size <= limit, let data = try? Data(contentsOf: url),
-              let entry = try? PropertyListDecoder().decode(Entry.self, from: data),
+              let entry = Self.decodeEntry(data),
               now.timeIntervalSince(entry.validatedAt) <= Self.retention else {
             try? FileManager.default.removeItem(at: url)
             return nil
@@ -119,17 +135,26 @@ actor ConversationCache {
         guard let scope, !id.hasPrefix("local:") else { return try await Response(data: fetch(nil).0, id: id) }
         let cached = cached(scope: scope, id: id)
         let entry = cached?.entry
+        let compact = cached?.response.chat[CachedConversationSnapshot.marker] as? Bool == true
         if preferRecent, let cached, cached.entry.isRecent() { return cached.response }
         let revision = generation
-        let key = scope + ":" + id + ":" + revision.uuidString
+        let key = scope + ":" + id + ":" + revision.uuidString + (compact && preferRecent ? ":snapshot" : ":full")
         if let pending = inFlight[key] { return try await pending.value }
         let task = Task<Response, Error> {
             defer { self.inFlight[key] = nil }
             do {
-                var (data, response) = try await fetch(entry?.etag)
+                var (data, response) = try await fetch(compact && !preferRecent ? nil : entry?.etag)
                 // A mutation/clear while validating makes the old representation unusable for a 304.
-                if response.statusCode == 304 && revision != self.generation {
+                if response.statusCode == 304 && (revision != self.generation || (compact && !preferRecent)) {
                     (data, response) = try await fetch(nil)
+                }
+                if [200, 304].contains(response.statusCode), compact, preferRecent, revision == self.generation,
+                   let latest = self.cached(scope: scope, id: id), latest.entry.validatedAt > (entry?.validatedAt ?? .distantPast),
+                   latest.response.chat[CachedConversationSnapshot.marker] as? Bool != true {
+                    let control = (response.value(forHTTPHeaderField: "Cache-Control") ?? "").lowercased()
+                    if control.contains("no-store") || control.contains("no-cache") || control.contains("must-revalidate")
+                        || response.value(forHTTPHeaderField: "Vary") == "*" { self.invalidate(scope: scope, id: id) }
+                    return latest.response
                 }
                 if response.statusCode == 304, revision == self.generation, let entry {
                     data = entry.data
@@ -156,9 +181,9 @@ actor ConversationCache {
                             }
                         }
                         freshFor = max(0, freshFor - max(0, Double(response.value(forHTTPHeaderField: "Age") ?? "0") ?? 0))
-                        self.store(Entry(data: data,
+                        self.storeLater(Entry(data: data,
                             etag: response.value(forHTTPHeaderField: "ETag") ?? (response.statusCode == 304 ? entry?.etag : nil),
-                            validatedAt: .now, freshFor: freshFor), scope: scope, id: id)
+                            validatedAt: .now, freshFor: freshFor, allowsStale: response.statusCode == 304 && control.isEmpty ? entry?.allowsStale : !control.contains("no-cache") && !control.contains("must-revalidate")), response: decoded, scope: scope, id: id, revision: revision)
                     }
                 }
                 return decoded
@@ -180,15 +205,64 @@ actor ConversationCache {
             || (chat["messages"] as? [[String: Any]])?.contains { $0["done"] as? Bool == false } == true
     }
 
-    private func store(_ entry: Entry, scope: String, id: String) {
-        guard limit > 0, !id.hasPrefix("local:") else { return }
-        let encoder = PropertyListEncoder()
-        encoder.outputFormat = .binary
-        guard let data = try? encoder.encode(entry), data.count <= limit else {
-            invalidate(scope: scope, id: id)
-            return
+    // Versioned lossless envelope; legacy uncompressed property lists remain readable.
+    private nonisolated static let magic = Data("ORC2".utf8)
+
+    private nonisolated static func decodeEntry(_ data: Data) -> Entry? {
+        let payload: Data
+        if data.starts(with: magic) {
+            guard let decoded = try? (Data(data.dropFirst(magic.count)) as NSData).decompressed(using: .lzfse) else { return nil }
+            payload = decoded as Data
+        } else { payload = data }
+        return try? PropertyListDecoder().decode(Entry.self, from: payload)
+    }
+
+    nonisolated private struct Prepared: Sendable {
+        let base: Data
+        let full: Data?
+    }
+
+    // One utility encoder keeps expensive parsing/compression away from cache reads and first paint.
+    private actor Encoder {
+        func prepare(_ entry: Entry, id: String, limit: Int) throws -> Prepared {
+            try Task.checkCancellation()
+            return try ConversationCache.prepare(entry, id: id, limit: limit)
         }
+    }
+    private static let encoder = Encoder()
+
+    nonisolated private static func prepare(_ entry: Entry, id: String, limit: Int) throws -> Prepared {
+        func encode(_ entry: Entry) throws -> Data {
+            let encoder = PropertyListEncoder()
+            encoder.outputFormat = .binary
+            let data = try encoder.encode(entry)
+            return magic + ((try (data as NSData).compressed(using: .lzfse)) as Data)
+        }
+        let compact = id == "index:sidebar" ? nil : CachedConversationSnapshot.compact(entry.data)
+        let base = compact.map { Entry(data: $0, etag: entry.etag, validatedAt: entry.validatedAt, freshFor: entry.freshFor, allowsStale: entry.allowsStale) } ?? entry
+        let full = compact == nil ? nil : try encode(entry)
+        return try Prepared(base: encode(base), full: full.flatMap { $0.count <= limit / 2 ? $0 : nil })
+    }
+
+    private func storeLater(_ entry: Entry, response: Response, scope: String, id: String, revision: UUID) {
+        guard limit > 0 else { return }
+        let key = scope + ":" + id, token = UUID(), budget = limit
+        pendingStores[key]?.cancel()
+        staged[key] = (token, CachedResponse(entry: entry, response: response))
+        pendingStores[key] = Task(priority: .utility) {
+            let prepared = try? await Self.encoder.prepare(entry, id: id, limit: budget)
+            guard !Task.isCancelled, revision == generation, staged[key]?.token == token else { return }
+            defer { staged[key] = nil; pendingStores[key] = nil }
+            if let prepared { store(entry, scope: scope, id: id, prepared: prepared) }
+            else { invalidate(scope: scope, id: id) }
+        }
+    }
+
+    private func store(_ entry: Entry, scope: String, id: String, prepared: Prepared? = nil) {
+        guard limit > 0, !id.hasPrefix("local:") else { return }
         do {
+            let prepared = try prepared ?? Self.prepare(entry, id: id, limit: limit)
+            guard prepared.base.count <= limit else { invalidate(scope: scope, id: id); return }
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
             var root = directory
             var values = URLResourceValues()
@@ -198,18 +272,30 @@ actor ConversationCache {
             #if os(iOS)
             options.insert(.completeFileProtectionUntilFirstUserAuthentication)
             #endif
-            try data.write(to: file(scope: scope, id: id), options: options)
+            // Never pair a new compact snapshot with an older full representation.
+            try? FileManager.default.removeItem(at: file(scope: scope, id: id, details: true))
+            try prepared.base.write(to: file(scope: scope, id: id), options: options)
+            if let full = prepared.full, full.count <= limit / 2 {
+                try full.write(to: file(scope: scope, id: id, details: true), options: options)
+            }
             prune()
         } catch {
-            // Do not leave an older copy marked fresh after a replacement fails.
-            try? FileManager.default.removeItem(at: file(scope: scope, id: id))
+            invalidate(scope: scope, id: id)
         }
+    }
+
+    private func cancelPendingStores() {
+        for task in pendingStores.values { task.cancel() }
+        pendingStores.removeAll()
+        staged.removeAll()
     }
 
     func invalidate(scope: String, id: String? = nil) {
         generation = UUID()
+        cancelPendingStores()
         if let id {
             try? FileManager.default.removeItem(at: file(scope: scope, id: id))
+            try? FileManager.default.removeItem(at: file(scope: scope, id: id, details: true))
         } else {
             for url in files() where url.lastPathComponent.hasPrefix(scope + "-") {
                 try? FileManager.default.removeItem(at: url)
@@ -245,6 +331,7 @@ actor ConversationCache {
 
     func clear() {
         generation = UUID() // Requests already in flight cannot repopulate a cleared cache.
+        cancelPendingStores()
         lastPrunedAt = .distantPast
         try? FileManager.default.removeItem(at: directory)
     }
@@ -260,15 +347,31 @@ actor ConversationCache {
             return (url, values.fileSize ?? 0, values.contentModificationDate ?? .distantPast, values.creationDate ?? .distantPast)
         }.sorted { $0.2 < $1.2 }
         var total = entries.reduce(0) { $0 + $1.1 }
-        for (url, size, _, created) in entries where total > limit || now.timeIntervalSince(created) > Self.retention {
-            try? FileManager.default.removeItem(at: url)
-            total -= size
+        var detailsTotal = entries.filter { $0.0.pathExtension == "full" }.reduce(0) { $0 + $1.1 }
+        // Demote oldest full chats first; keep answers and expandable headers.
+        for (url, size, _, created) in entries where url.pathExtension == "full" {
+            if detailsTotal > limit / 2 || total > limit || now.timeIntervalSince(created) > Self.retention {
+                try? FileManager.default.removeItem(at: url)
+                total -= size
+                detailsTotal -= size
+            }
+        }
+        for (url, size, _, created) in entries where url.pathExtension == "plist" {
+            if total > limit || now.timeIntervalSince(created) > Self.retention {
+                try? FileManager.default.removeItem(at: url)
+                total -= size
+                let full = url.deletingPathExtension().appendingPathExtension("full")
+                if let fullSize = try? full.resourceValues(forKeys: [.fileSizeKey]).fileSize {
+                    try? FileManager.default.removeItem(at: full)
+                    total -= fullSize
+                }
+            }
         }
     }
 
     private func files() -> [URL] {
         ((try? FileManager.default.contentsOfDirectory(at: directory,
             includingPropertiesForKeys: [.fileSizeKey, .contentModificationDateKey])) ?? [])
-            .filter { $0.pathExtension == "plist" }
+            .filter { ["plist", "full"].contains($0.pathExtension) }
     }
 }
