@@ -5686,7 +5686,7 @@ private func processSelectedPhotos(_ items: [PhotosPickerItem]) async {
 for item in items {
             do {
                 if let data = try await item.loadTransferable(type: Data.self),
-                   let attachment = FileAttachmentService.makeImageAttachment(data: data) {
+                   let attachment = await FileAttachmentService.prepareImageAttachment(data: data) {
                     viewModel.attachments.append(attachment)
                     // Start uploading immediately so it's ready by send time
                     viewModel.uploadAttachmentImmediately(attachmentId: attachment.id)
@@ -5712,8 +5712,8 @@ for item in items {
                     for: asset, options: opts
                 ) { data, _, _, _ in
                     guard let data else { cont.resume(); return }
-                    DispatchQueue.main.async {
-                        if let attachment = FileAttachmentService.makeImageAttachment(data: data) {
+                    Task { @MainActor in
+                        if let attachment = await FileAttachmentService.prepareImageAttachment(data: data) {
                             withAnimation(.spring(response: 0.35, dampingFraction: 0.78)) {
                                 viewModel.attachments.append(attachment)
                             }
@@ -5734,7 +5734,9 @@ for item in items {
             return
         }
         let isImage = FileAttachmentService.isImageFile(name: url.lastPathComponent)
-        if isImage, let attachment = FileAttachmentService.makeImageAttachment(data: data, name: url.lastPathComponent) {
+        let imageAttachment = isImage ? await FileAttachmentService.prepareImageAttachment(data: data, name: url.lastPathComponent) : nil
+        guard !Task.isCancelled else { return }
+        if let attachment = imageAttachment {
             viewModel.attachments.append(attachment)
             viewModel.uploadAttachmentImmediately(attachmentId: attachment.id)
         } else {
