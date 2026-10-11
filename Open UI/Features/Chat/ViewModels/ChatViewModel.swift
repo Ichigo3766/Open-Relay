@@ -1308,44 +1308,47 @@ final class ChatViewModel {
                 return
             }
         }
-        if cached != nil {
-            // Let the view finish its layout before a slow validation request completes.
-            Task { await self.validateLoadedConversation(id: conversationId, manager: manager, scope: scope, hasCached: true) }
-        } else {
-            await validateLoadedConversation(id: conversationId, manager: manager, scope: scope, hasCached: false,
-                offlineFallback: snapshot?.allowsStale == nil ? snapshot?.conversation : nil)
-        }
-    }
-
-    private func validateLoadedConversation(id: String, manager: ConversationManager, scope: String?, hasCached: Bool, offlineFallback: Conversation? = nil) async {
         let revision = cacheValidation
-        do {
-            let fetched = try await manager.fetchConversation(id: id, preferRecent: true)
-            guard scope == manager.apiClient.network.conversationCacheScope,
-                  revision == cacheValidation, !isStreaming else { isLoadingConversation = false; return }
-            if hasCached {
-                adoptServerMessages(serverConversation: fetched)
-            } else {
-                prepareLoadedConversation(fetched)
+        let hasCached = cached != nil
+        let offlineFallback = hasCached ? nil : (snapshot?.allowsStale == nil ? snapshot?.conversation : nil)
+        let validation = Task { [weak self] in
+            do {
+                let fetched = try await manager.fetchConversation(id: conversationId, preferRecent: true)
+                guard let self else { return }
+                guard scope == manager.apiClient.network.conversationCacheScope,
+                      revision == self.cacheValidation, !self.isStreaming else { self.isLoadingConversation = false; return }
+                if hasCached {
+                    self.adoptServerMessages(serverConversation: fetched)
+                } else {
+                    self.prepareLoadedConversation(fetched)
+                }
+                self.lastSyncTime = .now
+            } catch {
+                guard let self else { return }
+                guard scope == manager.apiClient.network.conversationCacheScope,
+                      revision == self.cacheValidation, !self.isStreaming else { self.isLoadingConversation = false; return }
+                let apiError = APIError.from(error)
+                if apiError.requiresReauth || self.isDeniedOrDeleted(apiError) {
+                    self.conversation = nil
+                    self.tasks = []
+                    self.chatFiles = []
+                    self.errorMessage = error.localizedDescription
+                } else if apiError.isConnectivityError, !hasCached, let offlineFallback {
+                    // Legacy records lack HTTP policy metadata; retain their previous offline fallback.
+                    self.prepareLoadedConversation(offlineFallback, allowSync: false)
+                } else if !hasCached || !apiError.isConnectivityError {
+                    self.errorMessage = error.localizedDescription
+                }
             }
-            lastSyncTime = .now
-        } catch {
-            guard scope == manager.apiClient.network.conversationCacheScope,
-                  revision == cacheValidation, !isStreaming else { isLoadingConversation = false; return }
-            let apiError = APIError.from(error)
-            if apiError.requiresReauth || isDeniedOrDeleted(apiError) {
-                conversation = nil
-                tasks = []
-                chatFiles = []
-                errorMessage = error.localizedDescription
-            } else if apiError.isConnectivityError, !hasCached, let offlineFallback {
-                // Legacy records lack HTTP policy metadata; retain their previous offline fallback.
-                prepareLoadedConversation(offlineFallback, allowSync: false)
-            } else if !hasCached || !apiError.isConnectivityError {
-                errorMessage = error.localizedDescription
+            self?.isLoadingConversation = false
+        }
+        if !hasCached {
+            await withTaskCancellationHandler {
+                await validation.value
+            } onCancel: {
+                validation.cancel()
             }
         }
-        isLoadingConversation = false
     }
 
     private func isDeniedOrDeleted(_ error: APIError) -> Bool {
