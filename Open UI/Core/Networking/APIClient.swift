@@ -466,16 +466,16 @@ final class APIClient: @unchecked Sendable {
         guard let payload = try JSONSerialization.jsonObject(with: data) as? [String: Any]
         else {
             if let array = try JSONSerialization.jsonObject(with: data) as? [[String: Any]] {
-                return parseModelArray(array)
+                return parseModelArray(array, controls: NamedModelControl.decode(data, locales: LocalizedContent.deviceLocaleCandidates()))
             }
             return []
         }
 
         if let modelsArray = payload["data"] as? [[String: Any]] {
-            return parseModelArray(modelsArray)
+            return parseModelArray(modelsArray, controls: NamedModelControl.decode(data, locales: LocalizedContent.deviceLocaleCandidates()))
         }
         if let modelsArray = payload["models"] as? [[String: Any]] {
-            return parseModelArray(modelsArray)
+            return parseModelArray(modelsArray, controls: NamedModelControl.decode(data, locales: LocalizedContent.deviceLocaleCandidates()))
         }
 
         return []
@@ -491,16 +491,16 @@ final class APIClient: @unchecked Sendable {
         guard let payload = try JSONSerialization.jsonObject(with: data) as? [String: Any]
         else {
             if let array = try JSONSerialization.jsonObject(with: data) as? [[String: Any]] {
-                return parseModelArray(array, includeHidden: true)
+                return parseModelArray(array, includeHidden: true, controls: NamedModelControl.decode(data, locales: LocalizedContent.deviceLocaleCandidates()))
             }
             return []
         }
 
         if let modelsArray = payload["data"] as? [[String: Any]] {
-            return parseModelArray(modelsArray, includeHidden: true)
+            return parseModelArray(modelsArray, includeHidden: true, controls: NamedModelControl.decode(data, locales: LocalizedContent.deviceLocaleCandidates()))
         }
         if let modelsArray = payload["models"] as? [[String: Any]] {
-            return parseModelArray(modelsArray, includeHidden: true)
+            return parseModelArray(modelsArray, includeHidden: true, controls: NamedModelControl.decode(data, locales: LocalizedContent.deviceLocaleCandidates()))
         }
 
         return []
@@ -537,8 +537,12 @@ final class APIClient: @unchecked Sendable {
     ///
     /// Called when a model is selected to get authoritative config for that model.
     func fetchModelConfig(modelId: String) async throws -> AIModel? {
-        let raw = try await getModelDetails(modelId: modelId)
-        return parseModelConfig(raw)
+        let (data, _) = try await network.requestRaw(
+            path: "/api/v1/models/model", queryItems: [URLQueryItem(name: "id", value: modelId)])
+        guard let raw = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              var model = parseModelConfig(raw) else { return nil }
+        model.namedControls = NamedModelControl.decode(data, locales: LocalizedContent.deviceLocaleCandidates())[modelId]
+        return model
     }
 
     /// Parses a full model config response from `/api/v1/models/model`.
@@ -1419,6 +1423,12 @@ final class APIClient: @unchecked Sendable {
         let settings = try await getUserSettings()
         let ui = settings["ui"] as? [String: Any] ?? [:]
         return UserDefaultParams(from: ui)
+    }
+
+    func saveModelControlSelections(modelID: String, controlIDs: [String], selections: [String: String]) async throws {
+        let current = try await getUserSettings()
+        let ui = NamedModelControl.settingsUI(current, modelID: modelID, controlIDs: controlIDs, selections: selections)
+        try await updateUserSettings(["ui": ui])
     }
 
     /// Saves user-level default params to `POST /api/v1/users/user/settings/update`.
@@ -3984,7 +3994,7 @@ final class APIClient: @unchecked Sendable {
     /// - Parameter includeHidden: When `true`, models with `info.meta.hidden == true` are
     ///   included in the result. Use this for the workspace model editor base model picker,
     ///   where admins need to see all enabled models. Defaults to `false` (chat picker behaviour).
-    private func parseModelArray(_ models: [[String: Any]], includeHidden: Bool = false) -> [AIModel] {
+    private func parseModelArray(_ models: [[String: Any]], includeHidden: Bool = false, controls: [String: [NamedModelControl]] = [:]) -> [AIModel] {
         return models.compactMap { raw -> AIModel? in
             guard let id = raw["id"] as? String else { return nil }
             let name = raw["name"] as? String ?? id
@@ -4133,7 +4143,8 @@ final class APIClient: @unchecked Sendable {
                 actionIds: actionIds,
                 actions: actions,
                 suggestionPrompts: suggestionPrompts,
-                rawModelItem: raw
+                rawModelItem: raw,
+                namedControls: raw["direct"] as? Bool == true ? nil : controls[id]
             )
         }
     }
