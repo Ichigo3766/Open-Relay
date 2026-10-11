@@ -16,6 +16,8 @@ struct RealtimeCallWireTests {
         precondition(context.count == 100 && context.first?["content"] == "Kite 10" && context.last?["content"] == "Kite 109")
         let large = RealtimeCallWire.context([(role: "system", content: "Excluded"), (role: "user", content: String(repeating: "🪁", count: 40000)), (role: "assistant", content: String(repeating: "a", count: 40000))])
         precondition(large.count == 2 && large.reduce(0) { $0 + $1["content"]!.unicodeScalars.count } == 64000)
+        let answer = RealtimeCallWire.answer(String(repeating: "e\u{301}", count: 60000))
+        precondition(answer.unicodeScalars.count == 100000)
         let position = RealtimePlaybackPosition(itemID: "sample-audio", contentIndex: 0, startSample: 1000, receivedSamples: 24000)
         precondition(position.heardMilliseconds(currentSample: 25000, outputRate: 48000) == 500)
         precondition(position.heardMilliseconds(currentSample: 100000, outputRate: 48000) == 1000)

@@ -7,7 +7,8 @@ import MLXAudioCore
 #endif
 
 /// One mic tap buffer: the native buffer (Apple STT), the same audio
-/// converted to 16 kHz mono (VAD + utterance STT), its RMS level, and when it
+/// converted to mono at the requested rate (16 kHz VAD/STT or 24 kHz Realtime),
+/// its RMS level, and when it
 /// was captured on the call's wall clock (start of the buffer).
 nonisolated struct MicFrame: @unchecked Sendable {
     let native: AVAudioPCMBuffer

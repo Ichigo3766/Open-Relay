@@ -285,7 +285,7 @@ final class RealtimeCallSession {
             do {
                 try await sendContext()
                 try await result(callID, response: response, status: (chat.pendingToolApprovalCall != nil || chat.pendingAskUserPrompt != nil || chat.liveAskUserPrompt != nil) ? "deferred" : (chat.errorMessage == nil && !answer.isEmpty ? "completed" : "failed"),
-                                 answer: String((chat.errorMessage ?? answer).prefix(100000)))
+                                 answer: RealtimeCallWire.answer(chat.errorMessage ?? answer))
             } catch { if !stopped { fail("Could not deliver the chat result to the call. The result remains in the chat.") } }
         }
     }

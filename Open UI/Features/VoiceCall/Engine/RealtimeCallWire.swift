@@ -31,6 +31,10 @@ enum RealtimeCallWire {
         return text
     }
 
+    static func answer(_ text: String) -> String {
+        String(String.UnicodeScalarView(text.unicodeScalars.prefix(100000)))
+    }
+
     static func context(_ messages: [(role: String, content: String)]) -> [[String: String]] {
         var result: [[String: String]] = []
         var remaining = 64000
