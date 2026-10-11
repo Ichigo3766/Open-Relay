@@ -14,7 +14,13 @@ out.mkdir(parents=True, exist_ok=True)
 service = root / "Open UI/Core/Services"
 sources = ["ConversationCache.swift", "CachedConversationSnapshot.swift", "DetailsBlockScanner.swift", "DetailsBlockScanner+Bytes.swift", "DetailsBlockScanner+Scan.swift", "DetailsBlockScanner+Code.swift"]
 for name in sources:
-    (out / name).write_text((service / name).read_text())
+    source = (service / name).read_text()
+    if name == "ConversationCache.swift":
+        # Pause the private encoder before preparation to test cancellation races deterministically.
+        signature = "        func prepare(_ entry: Entry, id: String, limit: Int) throws -> Prepared {"
+        assert source.count(signature) == 1
+        source = source.replace(signature, signature.replace(" throws", " async throws") + "\n            await PreparationGateForTesting.shared.wait()")
+    (out / name).write_text(source)
 with (out / "ConversationCache.swift").open("a") as cache:
     cache.write("\nextension ConversationCache { func flushForTesting() async { for task in Array(pendingStores.values) { await task.value } } }\n")
 tool = (root / "Open UI/Shared/Components/ToolCallView.swift").read_text()
@@ -31,6 +37,21 @@ for name in ["reconstructContentFromOutput", "partsText", "stringifyValue", "isT
     methods.append(history[start:end])
 (out / "Output.swift").write_text("import Foundation\nnonisolated enum MessageHistory {\n" + "\n".join(methods) + "\n}\n")
 (out / "Stubs.swift").write_text("""import Foundation
+actor PreparationGateForTesting {
+    static let shared = PreparationGateForTesting()
+    private var held = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+    func hold() { held = true }
+    func wait() async {
+        if held { await withCheckedContinuation { waiters.append($0) } }
+    }
+    func release() {
+        held = false
+        let pending = waiters
+        waiters.removeAll()
+        for waiter in pending { waiter.resume() }
+    }
+}
 nonisolated struct ConversationIndex: Codable, Sendable { var conversations: [String] = [] }
 enum APIError: Error {
     case responseDecoding(underlying: Error, data: Data?)

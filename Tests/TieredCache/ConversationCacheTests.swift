@@ -230,6 +230,37 @@ actor Fetches {
             try await group.waitForAll()
         }
         expect(await fetched.count == 1, "overlapping full-chat hydration shares one request")
+        await races.flushForTesting()
+        let gate = PreparationGateForTesting.shared
+        await gate.hold()
+        _ = try await races.load(scope: "synthetic", id: "retained") { _ in (payload("retained", content: original), response()) }
+        await races.invalidate(scope: "synthetic", id: "unrelated")
+        await gate.release()
+        await races.flushForTesting()
+        expect(await races.cached(scope: "synthetic", id: "retained") != nil, "unrelated chat mutations preserve already validated pending writes")
+
+        await gate.hold()
+        for id in ["targeted", "neighbor"] {
+            _ = try await races.load(scope: "synthetic", id: id) { _ in (payload(id, content: original), response()) }
+        }
+        await races.invalidate(scope: "synthetic", id: "targeted")
+        await gate.release()
+        await races.flushForTesting()
+        let target = await races.cached(scope: "synthetic", id: "targeted")
+        let neighbor = await races.cached(scope: "synthetic", id: "neighbor")
+        expect(target == nil && neighbor != nil, "targeted invalidation cancels only its pending representation")
+
+        await gate.hold()
+        for scope in ["synthetic", "other-session"] {
+            _ = try await races.load(scope: scope, id: "session-write") { _ in (payload("session-write", content: original), response()) }
+        }
+        await races.invalidate(scope: "synthetic")
+        await gate.release()
+        await races.flushForTesting()
+        let clearedScope = await races.cached(scope: "synthetic", id: "session-write")
+        let otherScope = await races.cached(scope: "other-session", id: "session-write")
+        expect(clearedScope == nil && otherScope != nil, "scope invalidation preserves pending writes from other sessions")
+
         let pending = Task { try await races.load(scope: "synthetic", id: "cleared") { _ in try await Task.sleep(for: .milliseconds(80)); return (payload("cleared", content: original), response()) } }
         try await Task.sleep(for: .milliseconds(20))
         await races.clear()

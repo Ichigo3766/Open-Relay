@@ -183,7 +183,7 @@ actor ConversationCache {
                         freshFor = max(0, freshFor - max(0, Double(response.value(forHTTPHeaderField: "Age") ?? "0") ?? 0))
                         self.storeLater(Entry(data: data,
                             etag: response.value(forHTTPHeaderField: "ETag") ?? (response.statusCode == 304 ? entry?.etag : nil),
-                            validatedAt: .now, freshFor: freshFor, allowsStale: response.statusCode == 304 && control.isEmpty ? entry?.allowsStale : !control.contains("no-cache") && !control.contains("must-revalidate")), response: decoded, scope: scope, id: id, revision: revision)
+                            validatedAt: .now, freshFor: freshFor, allowsStale: response.statusCode == 304 && control.isEmpty ? entry?.allowsStale : !control.contains("no-cache") && !control.contains("must-revalidate")), response: decoded, scope: scope, id: id)
                     }
                 }
                 return decoded
@@ -244,14 +244,14 @@ actor ConversationCache {
         return try Prepared(base: encode(base), full: full.flatMap { $0.count <= limit / 2 ? $0 : nil })
     }
 
-    private func storeLater(_ entry: Entry, response: Response, scope: String, id: String, revision: UUID) {
+    private func storeLater(_ entry: Entry, response: Response, scope: String, id: String) {
         guard limit > 0 else { return }
         let key = scope + ":" + id, token = UUID(), budget = limit
         pendingStores[key]?.cancel()
         staged[key] = (token, CachedResponse(entry: entry, response: response))
         pendingStores[key] = Task(priority: .utility) {
             let prepared = try? await Self.encoder.prepare(entry, id: id, limit: budget)
-            guard !Task.isCancelled, revision == generation, staged[key]?.token == token else { return }
+            guard !Task.isCancelled, staged[key]?.token == token else { return }
             defer { staged[key] = nil; pendingStores[key] = nil }
             if let prepared { store(entry, scope: scope, id: id, prepared: prepared) }
             else { invalidate(scope: scope, id: id) }
@@ -284,15 +284,21 @@ actor ConversationCache {
         }
     }
 
-    private func cancelPendingStores() {
-        for task in pendingStores.values { task.cancel() }
-        pendingStores.removeAll()
-        staged.removeAll()
+    private func cancelPendingStores(scope: String? = nil, id: String? = nil) {
+        for key in Array(pendingStores.keys) {
+            if let scope {
+                let prefix = scope + ":"
+                if let id { guard key == prefix + id else { continue } }
+                else { guard key.hasPrefix(prefix) else { continue } }
+            }
+            pendingStores.removeValue(forKey: key)?.cancel()
+            staged[key] = nil
+        }
     }
 
     func invalidate(scope: String, id: String? = nil) {
         generation = UUID()
-        cancelPendingStores()
+        cancelPendingStores(scope: scope, id: id)
         if let id {
             try? FileManager.default.removeItem(at: file(scope: scope, id: id))
             try? FileManager.default.removeItem(at: file(scope: scope, id: id, details: true))
