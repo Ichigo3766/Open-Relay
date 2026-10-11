@@ -231,6 +231,7 @@ private extension CallAudioEngine {
     /// Reverse of `buildGraphAndStart`. VP is disabled only after the engine
     /// has stopped — toggling it on a running engine is unsupported.
     func teardownGraph() {
+        guard playerNode.engine != nil else { return }
         let input = engine.inputNode
         input.removeTap(onBus: 0)
         playerNode.stop()
