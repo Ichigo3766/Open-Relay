@@ -112,6 +112,7 @@ struct AdminAudioView: View {
                         ("", "Web API"),
                         ("transformers", "Transformers (Local)"),
                         ("openai", "OpenAI"),
+                        ("openai-realtime", "OpenAI Realtime"),
                         ("elevenlabs", "ElevenLabs"),
                         ("azure", "Azure AI Speech"),
                         ("mistral", "MistralAI")
@@ -120,7 +121,7 @@ struct AdminAudioView: View {
 
                 // Engine-specific fields
                 switch viewModel.config.tts.engine {
-                case "openai":
+                case "openai", "openai-realtime":
                     ttsOpenAIFields
                 case "elevenlabs":
                     ttsElevenLabsFields
@@ -140,6 +141,25 @@ struct AdminAudioView: View {
                     )
                 default:
                     EmptyView()
+                }
+
+                if viewModel.config.tts.engine == "openai-realtime" {
+                    Divider().padding(.leading, Spacing.md)
+                    VStack(alignment: .leading, spacing: Spacing.xs) {
+                        Text("Reading Prompt Template")
+                            .scaledFont(size: 14, weight: .medium)
+                        TextEditor(text: Binding(
+                            get: { viewModel.config.tts.realtimeTTSPromptTemplate ?? "" },
+                            set: { viewModel.config.tts.realtimeTTSPromptTemplate = $0.isEmpty ? nil : $0 }
+                        ))
+                        .frame(minHeight: 100)
+                        .scrollContentBackground(.hidden)
+                        Text("Instructions for reading the supplied text aloud. Leave empty to use the server default.")
+                            .scaledFont(size: 11)
+                            .foregroundStyle(theme.textTertiary)
+                    }
+                    .padding(.horizontal, Spacing.md)
+                    .padding(.vertical, Spacing.sm)
                 }
 
                 // TTS Model

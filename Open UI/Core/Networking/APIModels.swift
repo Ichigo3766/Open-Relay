@@ -1755,6 +1755,7 @@ struct AdminTTSConfig: Codable, Sendable {
     var azureSpeechOutputFormat: String
     var mistralAPIKey: String
     var mistralAPIBaseURL: String
+    var realtimeTTSPromptTemplate: String?
 
     enum CodingKeys: String, CodingKey {
         case openAIAPIBaseURL        = "OPENAI_API_BASE_URL"
@@ -1770,6 +1771,7 @@ struct AdminTTSConfig: Codable, Sendable {
         case azureSpeechOutputFormat = "AZURE_SPEECH_OUTPUT_FORMAT"
         case mistralAPIKey           = "MISTRAL_API_KEY"
         case mistralAPIBaseURL       = "MISTRAL_API_BASE_URL"
+        case realtimeTTSPromptTemplate = "REALTIME_TTS_PROMPT_TEMPLATE"
     }
 
     init(from decoder: Decoder) throws {
@@ -1794,6 +1796,7 @@ struct AdminTTSConfig: Codable, Sendable {
         azureSpeechOutputFormat = (try? c.decode(String.self, forKey: .azureSpeechOutputFormat)) ?? "audio-24khz-160kbitrate-mono-mp3"
         mistralAPIKey           = (try? c.decode(String.self, forKey: .mistralAPIKey))           ?? ""
         mistralAPIBaseURL       = (try? c.decode(String.self, forKey: .mistralAPIBaseURL))       ?? "https://api.mistral.ai/v1"
+        realtimeTTSPromptTemplate = try c.decodeIfPresent(String.self, forKey: .realtimeTTSPromptTemplate)
     }
 
     func encode(to encoder: Encoder) throws {
@@ -1817,6 +1820,7 @@ struct AdminTTSConfig: Codable, Sendable {
         try c.encode(azureSpeechOutputFormat, forKey: .azureSpeechOutputFormat)
         try c.encode(mistralAPIKey, forKey: .mistralAPIKey)
         try c.encode(mistralAPIBaseURL, forKey: .mistralAPIBaseURL)
+        try c.encodeIfPresent(realtimeTTSPromptTemplate, forKey: .realtimeTTSPromptTemplate)
     }
 
     init(
@@ -1824,7 +1828,8 @@ struct AdminTTSConfig: Codable, Sendable {
         apiKey: String = "", engine: String = "", model: String = "", voice: String = "",
         splitOn: String = "punctuation", azureSpeechRegion: String = "",
         azureSpeechBaseURL: String = "", azureSpeechOutputFormat: String = "audio-24khz-160kbitrate-mono-mp3",
-        mistralAPIKey: String = "", mistralAPIBaseURL: String = "https://api.mistral.ai/v1"
+        mistralAPIKey: String = "", mistralAPIBaseURL: String = "https://api.mistral.ai/v1",
+        realtimeTTSPromptTemplate: String? = nil
     ) {
         self.openAIAPIBaseURL = openAIAPIBaseURL; self.openAIAPIKey = openAIAPIKey
         self.openAIParamsJSON = openAIParamsJSON; self.apiKey = apiKey; self.engine = engine
@@ -1832,6 +1837,7 @@ struct AdminTTSConfig: Codable, Sendable {
         self.azureSpeechRegion = azureSpeechRegion; self.azureSpeechBaseURL = azureSpeechBaseURL
         self.azureSpeechOutputFormat = azureSpeechOutputFormat
         self.mistralAPIKey = mistralAPIKey; self.mistralAPIBaseURL = mistralAPIBaseURL
+        self.realtimeTTSPromptTemplate = realtimeTTSPromptTemplate
     }
 }
 
