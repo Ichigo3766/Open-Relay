@@ -384,9 +384,6 @@ struct ChatDetailView: View {
     /// When set, the assistant displays this overridden content instead.
     @State private var assistantContentOverride: [String: String] = [:]
 
-    // Bug 10: cached indexMap rebuilt only when message count changes.
-    @State private var cachedIndexMap: [String: Int] = [:]
-
     // MARK: Chat menu actions
     @State private var showDeleteChatConfirm = false
 
@@ -2647,40 +2644,23 @@ struct ChatDetailView: View {
         }()
         let streamingId = viewModel.streamingStore.isActive ? viewModel.streamingStore.streamingMessageId : nil
 
-        // Bug 10: indexMap was rebuilt (O(n) allocation) on every messagesList evaluation.
-        // Cache it as a @State dictionary, only rebuilt when the message count changes
-        // (messages are append-only so indices are stable until a deletion).
-        // Avoid mutating @State directly during view update — compute locally and
-        // schedule the cache update for after the current render pass.
-        //
-        let lastMsgId = allMessages.last?.id ?? ""
-        let indexMap: [String: Int]
-        if cachedIndexMap.count == total && !cachedIndexMap.isEmpty && cachedIndexMap[lastMsgId] != nil {
-            indexMap = cachedIndexMap
-        } else {
-            let freshMap = Dictionary(allMessages.enumerated().map { ($1.id, $0) },
-                                      uniquingKeysWith: { first, _ in first })
-            indexMap = freshMap
-            Task { @MainActor in cachedIndexMap = freshMap }
-        }
-
         // Group the messages into turns: each user message starts a turn that holds it
         // and the replies after it. A turn is keyed by its first message, so when a
         // new message is sent the previous turn stays the SAME view — only its
         // reserved height changes. (Splitting "older rows" from "last turn" into two
         // containers moved the previous reply between them on every send, which
         // rebuilt its Markdown views mid-glide.)
-        var turns: [(id: String, messages: [ChatMessage])] = []
-        for message in allMessages {
+        var turns: [(id: String, messages: [(index: Int, message: ChatMessage)])] = []
+        for (index, message) in allMessages.enumerated() {
             if message.role == .user || turns.isEmpty {
-                turns.append((message.id, [message]))
+                turns.append((message.id, [(index, message)]))
             } else {
-                turns[turns.count - 1].messages.append(message)
+                turns[turns.count - 1].messages.append((index, message))
             }
         }
         let lastTurnId = turns.last?.id
         // Only a turn that starts with a user message is a real "last turn".
-        let lastTurnIsUserTurn = turns.last?.messages.first?.role == .user
+        let lastTurnIsUserTurn = turns.last?.messages.first?.message.role == .user
         // The last turn is always drawn: it holds the live reply and the message
         // just sent, and must never flash as a spacer during the send glide.
         let lastTurnStart = total - (turns.last?.messages.count ?? 0)
@@ -2693,8 +2673,9 @@ struct ChatDetailView: View {
 
         return ForEach(turns, id: \.id) { turn in
             VStack(spacing: 0) {
-                ForEach(turn.messages) { message in
-                    let index = indexMap[message.id] ?? 0
+                ForEach(turn.messages, id: \.message.id) { row in
+                    let message = row.message
+                    let index = row.index
                     let isDrawn = index >= lastTurnStart
                         || (drawn?.contains(index) ?? true)
                         || message.id == streamingId
