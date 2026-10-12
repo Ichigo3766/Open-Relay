@@ -1246,8 +1246,9 @@ final class ChatViewModel {
         // the UI. The socket will be ready by the time the user sends a
         // message; if not, sendMessage() can await it at that point.
         if let socket = socketService, !socket.isConnected {
-            Task {
+            Task { [weak self] in
                 let connected = await socket.ensureConnected(timeout: 5.0)
+                guard let self else { return }
                 self.logger.info("Socket connect on load: \(connected)")
                 // Start passive listener once socket is actually connected
                 // (only meaningful for existing conversations).
@@ -1265,7 +1266,7 @@ final class ChatViewModel {
 
         // Fetch terminal servers in the background (fire-and-forget).
         // This is lightweight and determines whether to show the terminal pill.
-        Task { await loadTerminalServers() }
+        loadTerminalServers()
 
         // Now that all initial data is loaded, enable message appear animations.
         // New messages sent/received during this session will animate in smoothly.
@@ -2160,31 +2161,35 @@ final class ChatViewModel {
     ///
     /// Called once at chat load time. If any terminals are available, the
     /// user can toggle them on via the terminal pill in the input field.
-    func loadTerminalServers() async {
+    func loadTerminalServers() {
         guard let manager else { return }
-        do {
-            availableTerminalServers = try await manager.fetchTerminalServers()
-            activeChatStore?.cachedTerminalServers = availableTerminalServers
-            // Auto-select first terminal if only one is available and nothing is selected yet.
-            if selectedTerminalServer == nil, let first = availableTerminalServers.first {
-                selectedTerminalServer = first
-            }
-            // If the previously selected server was removed or disabled server-side,
-            // clear the selection so the user isn't silently routed to a dead server.
-            if let current = selectedTerminalServer,
-               !availableTerminalServers.contains(current) {
-                selectedTerminalServer = availableTerminalServers.first
-                // If terminal was enabled and we had to change/clear the server, disable
-                // terminal so the user makes an explicit choice rather than silently
-                // switching servers mid-session.
-                if terminalEnabled && selectedTerminalServer == nil {
-                    terminalEnabled = false
+        Task { [weak self] in
+            do {
+                let servers = try await manager.fetchTerminalServers()
+                guard let self else { return }
+                availableTerminalServers = servers
+                activeChatStore?.cachedTerminalServers = availableTerminalServers
+                // Auto-select first terminal if only one is available and nothing is selected yet.
+                if selectedTerminalServer == nil, let first = availableTerminalServers.first {
+                    selectedTerminalServer = first
                 }
+                // If the previously selected server was removed or disabled server-side,
+                // clear the selection so the user isn't silently routed to a dead server.
+                if let current = selectedTerminalServer,
+                   !availableTerminalServers.contains(current) {
+                    selectedTerminalServer = availableTerminalServers.first
+                    // If terminal was enabled and we had to change/clear the server, disable
+                    // terminal so the user makes an explicit choice rather than silently
+                    // switching servers mid-session.
+                    if terminalEnabled && selectedTerminalServer == nil {
+                        terminalEnabled = false
+                    }
+                }
+            } catch {
+                self?.logger.debug("Terminal servers fetch failed: \(error.localizedDescription)")
             }
-        } catch {
-            logger.debug("Terminal servers fetch failed: \(error.localizedDescription)")
+            self?.applyPendingModelDefaultTerminal()
         }
-        applyPendingModelDefaultTerminal()
     }
 
     /// Model-configured default terminal (`info.meta.terminalId`), if the model's
@@ -6902,7 +6907,7 @@ final class ChatViewModel {
         // Store the task so populateCommonRequestFields can await it before
         // building a request — prevents the race where params are read before
         // the fetch completes (which caused the system prompt to be ignored).
-        userDefaultParamsTask = Task { await fetchUserDefaultParamsFromServer() }
+        userDefaultParamsTask = makeUserDefaultParamsTask()
 
         // Make sure the tool list is known so stale IDs get pruned.
         Task { await ensureToolsLoaded() }
@@ -7075,23 +7080,31 @@ final class ChatViewModel {
     /// The result is stored in `activeChatStore?.cachedUserDefaultParams` for use
     /// by the current request; previous value is replaced on each successful fetch.
     func fetchUserDefaultParamsFromServer() async {
-        guard let apiClient = manager?.apiClient else { return }
-        do {
-            let params = try await apiClient.fetchUserDefaultParams()
-            activeChatStore?.cachedUserDefaultParams = params
-            for index in attachments.indices where attachments[index].uploadContext == nil {
-                attachments[index].uploadContext = params.defaultUploadContext
+        guard let task = makeUserDefaultParamsTask() else { return }
+        await withTaskCancellationHandler(operation: { await task.value }, onCancel: { task.cancel() })
+    }
+
+    private func makeUserDefaultParamsTask() -> Task<Void, Never>? {
+        guard let apiClient = manager?.apiClient else { return nil }
+        return Task { [weak self] in
+            do {
+                let params = try await apiClient.fetchUserDefaultParams()
+                guard let self else { return }
+                activeChatStore?.cachedUserDefaultParams = params
+                for index in attachments.indices where attachments[index].uploadContext == nil {
+                    attachments[index].uploadContext = params.defaultUploadContext
+                }
+                for index in selectedKnowledgeItems.indices where selectedKnowledgeItems[index].context == nil {
+                    selectedKnowledgeItems[index].context = params.defaultUploadContext
+                }
+                logger.debug("User default params fetched from server (hasOverride=\(params.hasAnyOverride))")
+                // Re-run restoreToolApprovalMode so the server-stored tool_approval_mode
+                // takes effect immediately if no per-conversation override is set.
+                // This ensures changing the setting on the web syncs to the app on next load.
+                restoreToolApprovalMode()
+            } catch {
+                self?.logger.debug("Failed to fetch user default params: \(error.localizedDescription)")
             }
-            for index in selectedKnowledgeItems.indices where selectedKnowledgeItems[index].context == nil {
-                selectedKnowledgeItems[index].context = params.defaultUploadContext
-            }
-            logger.debug("User default params fetched from server (hasOverride=\(params.hasAnyOverride))")
-            // Re-run restoreToolApprovalMode so the server-stored tool_approval_mode
-            // takes effect immediately if no per-conversation override is set.
-            // This ensures changing the setting on the web syncs to the app on next load.
-            restoreToolApprovalMode()
-        } catch {
-            logger.debug("Failed to fetch user default params: \(error.localizedDescription)")
         }
     }
 
