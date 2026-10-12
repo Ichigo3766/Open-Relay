@@ -16,6 +16,9 @@ struct ChatMessageBubble<Content: View>: View {
     let role: MessageRole
     let showTimestamp: Bool
     let timestamp: Date?
+    /// Shared chats: name of another person who sent this user message.
+    /// When set, the bubble sits on the left with the name above it.
+    var otherAuthorName: String? = nil
     @ViewBuilder let content: () -> Content
 
     @Environment(\.theme) private var theme
@@ -25,11 +28,13 @@ struct ChatMessageBubble<Content: View>: View {
         role: MessageRole,
         showTimestamp: Bool = false,
         timestamp: Date? = nil,
+        otherAuthorName: String? = nil,
         @ViewBuilder content: @escaping () -> Content
     ) {
         self.role = role
         self.showTimestamp = showTimestamp
         self.timestamp = timestamp
+        self.otherAuthorName = otherAuthorName
         self.content = content
     }
 
@@ -37,13 +42,45 @@ struct ChatMessageBubble<Content: View>: View {
         Group {
             switch role {
             case .user:
-                userBubble
+                if let otherAuthorName {
+                    otherUserBubble(name: otherAuthorName)
+                } else {
+                    userBubble
+                }
             case .assistant:
                 assistantContent
             case .system:
                 systemContent
             }
         }
+    }
+
+    // MARK: - Other Person's Bubble (shared chats)
+
+    private func otherUserBubble(name: String) -> some View {
+        let maxBubbleWidth = UIScreen.main.bounds.width * 0.80
+        return HStack(alignment: .bottom, spacing: 0) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(name)
+                    .scaledFont(size: 12, weight: .medium)
+                    .foregroundStyle(theme.textSecondary)
+                    .padding(.leading, 4)
+                content()
+                    .foregroundStyle(theme.textPrimary)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 10)
+                    .background(theme.surfaceContainer)
+                    .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+                if showTimestamp, let ts = timestamp {
+                    MessageTimestampLabel(date: ts)
+                        .padding(.leading, 4)
+                }
+            }
+            .frame(maxWidth: maxBubbleWidth, alignment: .leading)
+            Spacer()
+        }
+        .padding(.horizontal, Spacing.screenPadding)
+        .padding(.vertical, 2)
     }
 
     // MARK: - User Bubble
@@ -191,7 +228,7 @@ private struct UserBubbleShape: Shape {
 /// Replaces the old bouncing-dots TypingIndicator with a clean, non-bouncing
 /// vertical bar that fades in and out — like a text cursor about to type.
 struct BlinkingCursorIndicator: View {
-    @State private var opacity: Double = 0.2
+    @State private var opacity: Double = 0.1
     @Environment(\.theme) private var theme
 
     var body: some View {
@@ -200,15 +237,17 @@ struct BlinkingCursorIndicator: View {
             .frame(width: 2, height: 16)
             .opacity(opacity)
             .onAppear {
+                // Faster pulse with a deeper fade so an ongoing
+                // reply is easier to spot.
                 withAnimation(
-                    .easeInOut(duration: 0.9)
+                    .easeInOut(duration: 0.55)
                         .repeatForever(autoreverses: true)
                 ) {
-                    opacity = 0.9
+                    opacity = 1.0
                 }
             }
             .onDisappear {
-                withAnimation(nil) { opacity = 0.2 }
+                withAnimation(nil) { opacity = 0.1 }
             }
     }
 }

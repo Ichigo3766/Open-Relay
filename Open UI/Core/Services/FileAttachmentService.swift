@@ -506,15 +506,15 @@ final class FileAttachmentService {
     /// This fills GPT-4o's max tile budget (2048px), Claude's and Gemini's
     /// high-resolution paths, giving vision models the most detail possible
     /// while keeping JPEG output well under 5 MB for typical photos.
-    private static let maxPixels: CGFloat = 4_000_000
+    nonisolated private static let maxPixels: CGFloat = 4_000_000
 
     /// Upload size ceiling enforced by the /files API.
-    private static let uploadSizeLimit = 5 * 1_024 * 1_024   // 5 MB
+    nonisolated private static let uploadSizeLimit = 5 * 1_024 * 1_024   // 5 MB
 
     /// Downsamples an image to ≤ 4 MP and returns JPEG data.
     /// If the image is already within the pixel budget, it is only re-encoded.
     /// Returns the original data unchanged if decoding fails.
-    static func downsampleForUpload(data: Data, image: UIImage? = nil, logger: Logger? = nil) -> Data {
+    nonisolated static func downsampleForUpload(data: Data, image: UIImage? = nil, logger: Logger? = nil) -> Data {
         guard let img = image ?? UIImage(data: data) else { return data }
         return downsampleForUpload(image: img, logger: logger)
     }
@@ -528,7 +528,7 @@ final class FileAttachmentService {
     ///   detail that vision models need to correctly interpret photos.
     /// - `CILanczosScaleTransform` uses a Lanczos3 (sinc-windowed) kernel, which is
     ///   the gold standard for photo downsampling: sharp edges, minimal aliasing.
-    static func downsampleForUpload(image: UIImage, logger: Logger? = nil) -> Data {
+    nonisolated static func downsampleForUpload(image: UIImage, logger: Logger? = nil) -> Data {
         let w = image.size.width
         let h = image.size.height
         let totalPixels = w * h

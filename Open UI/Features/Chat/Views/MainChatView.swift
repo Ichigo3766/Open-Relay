@@ -416,6 +416,33 @@ struct MainChatView: View {
         )
     }
 
+    /// Swipe left anywhere (that isn't a control, message, or scrollable code) →
+    /// terminal file browser. Mirrors `sidebarOpeningGesture`: the panel follows
+    /// the finger and settles with the release velocity.
+    private var fileBrowserOpeningGesture: SidebarOpeningGesture {
+        SidebarOpeningGesture(
+            isEnabled: isTerminalActiveInCurrentChat && !showFileBrowser && !showDrawer && !isDraggingDrawer,
+            direction: .leftward,
+            onChanged: { horizontal in
+                if !isDraggingFileBrowser {
+                    configureTerminalBrowserIfNeeded()
+                    UIApplication.shared.sendAction(
+                        #selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
+                }
+                isDraggingFileBrowser = true
+                fileBrowserDragOffset = min(0, horizontal)
+            },
+            onEnded: { horizontal, velocity, cancelled in
+                isDraggingFileBrowser = false
+                if cancelled {
+                    closeFileBrowserAnimated()
+                } else {
+                    settleFileBrowser(translation: horizontal, velocity: velocity)
+                }
+            }
+        )
+    }
+
     @ViewBuilder
     private func portraitOverlayLayout(voiceCallBinding: Binding<Bool>) -> some View {
         ZStack(alignment: .leading) {
@@ -429,6 +456,7 @@ struct MainChatView: View {
             // The top bar fades, blurs and shrinks away as the sidebar opens.
             .environment(\.sidebarOpenFraction, usesPageCardSidebar ? maxPanelFraction : 0)
             .gesture(sidebarOpeningGesture)
+            .gesture(fileBrowserOpeningGesture)
             // Include the window edges in the mask without moving safe-area content.
             .padding(.leading, usesPageCardSidebar ? containerSafeAreaInsets.leading : 0)
             .padding(.trailing, usesPageCardSidebar ? containerSafeAreaInsets.trailing : 0)
@@ -600,37 +628,6 @@ struct MainChatView: View {
                     }
             )
             } // end if isTerminalActiveInCurrentChat
-
-
-            // MARK: Right edge overlay — exclusively captures right-edge swipe to open file browser.
-            // Only shown when terminal is active and file browser is closed.
-            if isTerminalActiveInCurrentChat && !showFileBrowser && !showDrawer {
-                Color.clear
-                    .frame(width: 40)
-                    .frame(maxHeight: .infinity)
-                    .contentShape(Rectangle())
-                    .gesture(
-                        DragGesture(minimumDistance: 12, coordinateSpace: .local)
-                            .onChanged { value in
-                                let horizontal = value.translation.width
-                                let vertical = abs(value.translation.height)
-                                guard abs(horizontal) > vertical, horizontal < 0 else { return }
-                                if !isDraggingFileBrowser {
-                                    configureTerminalBrowserIfNeeded()
-                                    UIApplication.shared.sendAction(
-                                        #selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
-                                }
-                                isDraggingFileBrowser = true
-                                fileBrowserDragOffset = horizontal
-                            }
-                            .onEnded { value in
-                                guard isDraggingFileBrowser else { return }
-                                isDraggingFileBrowser = false
-                                settleFileBrowser(translation: value.translation.width, velocity: value.velocity.width)
-                            }
-                    )
-                    .frame(maxWidth: .infinity, alignment: .trailing)
-            }
 
             // ── Layer 4: AnimatedPhotoPicker at window level ──────────────────
             // Rendered here — outside the NavigationStack and its safeAreaInset

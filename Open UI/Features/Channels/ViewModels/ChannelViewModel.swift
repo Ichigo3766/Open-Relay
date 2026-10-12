@@ -653,8 +653,88 @@ var threadAttachments: [ChatAttachment] = []
     }
     
     // MARK: - Send Message
-    
+
+    /// Messages sent while an earlier one is still sending (or a file is
+    /// still uploading) wait here and go out in order. Each can be sent now, edited
+    /// or removed from the queue view above the input.
+    var messageQueue: [QueuedMessage] = []
+    private var isSendingMessage = false
+    /// Attachments + reply/model context captured with each queued text.
+    private var queuedContext: [UUID: (attachments: [ChatAttachment], replyTo: ChannelMessage?, modelId: String?, modelName: String?)] = [:]
+
     func sendMessage() async {
+        let text = inputText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty || !attachments.isEmpty else { return }
+        if isSendingMessage || !messageQueue.isEmpty {
+            let item = QueuedMessage(id: UUID(), text: text)
+            queuedContext[item.id] = (attachments, replyToMessage, mentionedModelId, mentionedModelName)
+            messageQueue.append(item)
+            inputText = ""
+            attachments = []
+            replyToMessage = nil
+            mentionedModelId = nil
+            mentionedModelName = nil
+            Task { await drainQueueWhenReady() }
+            return
+        }
+        await performSend()
+        await drainQueueWhenReady()
+    }
+
+    /// Sends one queued message immediately (skipping its place in line).
+    func sendQueuedNow(_ id: UUID) async {
+        guard let item = messageQueue.first(where: { $0.id == id }) else { return }
+        messageQueue.removeAll { $0.id == id }
+        await sendQueued(item)
+    }
+
+    /// Puts a queued message back in the input for editing.
+    func editQueued(_ id: UUID) {
+        guard let item = messageQueue.first(where: { $0.id == id }) else { return }
+        messageQueue.removeAll { $0.id == id }
+        let context = queuedContext.removeValue(forKey: id)
+        inputText = item.text
+        attachments = context?.attachments ?? []
+        replyToMessage = context?.replyTo
+        mentionedModelId = context?.modelId
+        mentionedModelName = context?.modelName
+    }
+
+    func removeQueued(_ id: UUID) {
+        messageQueue.removeAll { $0.id == id }
+        queuedContext.removeValue(forKey: id)
+    }
+
+    private func sendQueued(_ item: QueuedMessage) async {
+        let context = queuedContext.removeValue(forKey: item.id)
+        // Swap the queued context into the composer state, send, then restore drafts.
+        let draft = (inputText, attachments, replyToMessage, mentionedModelId, mentionedModelName)
+        inputText = item.text
+        attachments = context?.attachments ?? []
+        replyToMessage = context?.replyTo
+        mentionedModelId = context?.modelId
+        mentionedModelName = context?.modelName
+        await performSend()
+        inputText = draft.0
+        attachments = draft.1
+        replyToMessage = draft.2
+        mentionedModelId = draft.3
+        mentionedModelName = draft.4
+    }
+
+    /// Sends queued messages in order once nothing is sending. Queued attachments
+    /// that hadn't finished uploading are uploaded by `performSend` itself.
+    private func drainQueueWhenReady() async {
+        while !messageQueue.isEmpty {
+            if isSendingMessage { return }
+            let next = messageQueue.removeFirst()
+            await sendQueued(next)
+        }
+    }
+
+    private func performSend() async {
+        isSendingMessage = true
+        defer { isSendingMessage = false }
         let text = inputText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty || !attachments.isEmpty else { return }
         guard let apiClient else { return }

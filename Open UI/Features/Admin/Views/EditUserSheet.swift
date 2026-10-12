@@ -8,6 +8,28 @@ struct EditUserSheet: View {
     @Environment(\.theme) private var theme
     @Environment(AppDependencyContainer.self) private var dependencies
     @State private var showPassword = false
+    @State private var showRevokeConfirm = false
+    @State private var isRevokingSessions = false
+    @State private var sessionsRevoked = false
+
+    private func revokeSessions(userId: String) async {
+        guard let api = dependencies.apiClient else { return }
+        isRevokingSessions = true
+        viewModel.saveError = nil
+        do {
+            try await api.revokeUserSessions(userId: userId)
+            sessionsRevoked = true
+            Haptics.notify(.success)
+            // Revoking your own sessions signs this device out too.
+            if userId == dependencies.authViewModel.currentUser?.id {
+                dismiss()
+                await dependencies.authViewModel.signOut()
+            }
+        } catch {
+            viewModel.saveError = APIError.from(error).errorDescription
+        }
+        isRevokingSessions = false
+    }
 
     var body: some View {
         NavigationStack {
@@ -90,6 +112,30 @@ struct EditUserSheet: View {
                                         .scaledFont(size: 15)
                                         .foregroundStyle(theme.textTertiary)
                                 }
+                            }
+                        }
+                    }
+
+                    // Sign this user out of every device (API keys keep working).
+                    if let user = viewModel.editingUser {
+                        SettingsSection(footer: "Ends every session for this user. Their API keys keep working.") {
+                            SettingsCell(
+                                icon: "rectangle.portrait.and.arrow.right",
+                                title: "Sign Out All Devices",
+                                iconColor: theme.error,
+                                showDivider: false,
+                                accessory: isRevokingSessions ? .loading : (sessionsRevoked ? .text(String(localized: "Done")) : .none)
+                            ) {
+                                showRevokeConfirm = true
+                            }
+                        }
+                        .confirmationDialog(
+                            "Sign \(user.name) out of every device?",
+                            isPresented: $showRevokeConfirm,
+                            titleVisibility: .visible
+                        ) {
+                            Button("Sign Out All Devices", role: .destructive) {
+                                Task { await revokeSessions(userId: user.id) }
                             }
                         }
                     }

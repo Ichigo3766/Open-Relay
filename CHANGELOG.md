@@ -1,5 +1,56 @@
 # Changelog
 
+## v6.4 — October 11, 2026
+
+### What's New
+- Added Realtime voice calls that use the server's voice and turn-taking with your selected chat model and tools.
+- Added Model Controls in Chat Controls for models that offer named choices, remembered per model on your account.
+- Added comparing two prompt versions side by side in Version History.
+- Added importing skills from a URL (GitHub, ZIP, JSON or Markdown) or a file, with a preview first.
+- Added two-factor sign-in: set up an authenticator from a QR code, sign in with a code or recovery code, and manage it in Privacy & Security.
+- Added a Two-Factor Sign-In policy to admin Authentication settings.
+- Added replying in chats shared with you when the owner allows it, with names on messages and a "typing…" indicator.
+- Added a Sharing mode (Clone only or Allow replies) when sharing a chat or a folder with people.
+- Added a Clone Chat button to chats shared with you that you can only view.
+- Added version history for models, tools, functions and skills: compare versions, make one live again, or delete it.
+- Added a file list to multi-file skills in the skill editor.
+- Added parent groups and default models per group to the admin group editor.
+- Added Sign Out All Devices for a user in the admin user editor.
+- Added the experimental Tool Search option to admin Interface settings.
+- Added an Access option to the menu of models, knowledge, prompts, skills, tools and notes.
+- Added a message queue in channels so messages sent while one is still sending go out in order.
+- Added local time and last seen to profile cards.
+- Added a Skills switch to a model's builtin tools.
+- Added an Available / Unavailable filter to the admin model list.
+- Added Working Directory Context and User Shell Tools options to terminal connections.
+- Added suggestions for common custom parameter names and values in the model editor.
+- Added loading model IDs from the server when adding or editing a connection.
+- Added a Copy JSON button to the model editor.
+- Added a list of the individual tools and descriptions for MCP connections in the tools menu.
+- Added viewing the original file alongside its search text in knowledge base previews.
+- Added input and output token totals and columns to admin analytics.
+- Added OpenAI Realtime as a text-to-speech engine in admin audio settings, with a reading prompt template.
+- Added Tavily search depth selection and the Exa webpage loader to admin web search settings.
+
+### Improvements
+- Kept the message box responsive while large photos are being prepared.
+- Previously opened chats now appear instantly while they refresh in the background, and older ones take up less storage.
+- Reduced memory use when switching between many chats, while keeping your unsent drafts.
+- Swipe left from anywhere in a chat to slide open the terminal file browser, just like swiping right opens the sidebar.
+- Made the typing cursor in replies pulse faster so an ongoing reply is easier to spot.
+
+### Bug Fixes
+- Fixed signing in failing on servers that require two-factor sign-in.
+- Fixed changing your password leaving the app with an expired session; it now returns you to sign in and keeps Face ID working.
+- Fixed the Tools tab and Functions screen showing when the server has them turned off.
+- Fixed large tool results sometimes showing a blank output panel.
+- Fixed inline images in replies sometimes showing the wrong picture.
+- Fixed the chat scroll position going wrong, or a message showing as blank space, after a message in the middle of a chat changed.
+- Fixed auto-scroll sometimes stopping while a reply was being written, after flicking the chat at the bottom.
+- Fixed starter prompt suggestions not appearing on new chats, and admin changes to them not showing up until the app was restarted.
+- Fixed admin model defaults not saving correctly, the model order being overwritten, and the Models tab sometimes going blank.
+- Fixed admin Interface settings showing "Saved" even when the chat settings failed to save.
+
 ## v6.3.4 — October 10, 2026
 
 ### What's New

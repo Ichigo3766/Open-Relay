@@ -49,6 +49,10 @@ nonisolated struct HistoryNode: Sendable {
     nonisolated(unsafe) var output: [[String: Any]]
     /// Server-created checkpoint used to compact the context of later turns.
     var contextSummary: String?
+    /// `user_id` of the sender. Round-tripped.
+    var authorId: String? = nil
+    /// `user.name` of the sender — display only, never re-sent.
+    var authorName: String? = nil
 
     init(
         id: String = UUID().uuidString,
@@ -203,6 +207,7 @@ nonisolated struct HistoryNode: Sendable {
             dict["output"] = output
         }
         if let contextSummary { dict["contextSummary"] = contextSummary }
+        if let authorId { dict["user_id"] = authorId }
 
         return dict
     }
@@ -304,7 +309,7 @@ nonisolated struct MessageHistory: Sendable {
                 feedbackId: node.feedbackId,
                 isInternalMessage: node.isInternalMessage,
                 subagentDelegationId: node.subagentDelegationId
-            )
+            ).withAuthor(id: node.authorId, name: node.authorName)
         }
     }
 
@@ -1067,6 +1072,29 @@ nonisolated struct MessageHistory: Sendable {
             output: rawOutput,
             originalContent: originalContent,
             contextSummary: msg["contextSummary"] as? String ?? msg["context_summary"] as? String
+        ).withAuthor(
+            id: msg["user_id"] as? String ?? (msg["user"] as? [String: Any])?["id"] as? String,
+            name: (msg["user"] as? [String: Any])?["name"] as? String
         )
+    }
+}
+
+extension HistoryNode {
+    /// Copy with the sender attached (shared chats with replies).
+    func withAuthor(id: String?, name: String?) -> HistoryNode {
+        var copy = self
+        copy.authorId = id
+        copy.authorName = name
+        return copy
+    }
+}
+
+extension ChatMessage {
+    /// Copy with the sender attached (shared chats with replies).
+    func withAuthor(id: String?, name: String?) -> ChatMessage {
+        var copy = self
+        copy.authorId = id
+        copy.authorName = name
+        return copy
     }
 }

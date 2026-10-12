@@ -63,6 +63,7 @@ struct SkillEditorView: View {
     @State private var isContentExpanded = false
     @State private var isAutoSettingSlug = false   // guard: prevents slug onChange from firing when programmatically setting slug
     @State private var showDiscardConfirm = false
+    @State private var showVersionHistory = false
     @State private var initialIsActive = true
     @State private var isTogglingActive = false
 
@@ -97,6 +98,9 @@ struct SkillEditorView: View {
                 VStack(alignment: .leading, spacing: Spacing.lg) {
                     basicInfoSection
                     contentSection
+                    if let existing = existingSkill {
+                        SkillFilesSection(skillId: existing.id)
+                    }
                     settingsSection
                 }
                 .padding(.horizontal, Spacing.md)
@@ -106,6 +110,12 @@ struct SkillEditorView: View {
             .navigationTitle(isEditing ? "Edit Skill" : "New Skill")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { toolbarContent }
+            .versionHistorySheet(
+                isPresented: $showVersionHistory,
+                resource: existingSkill.map { .skill(id: $0.id) },
+                liveVersionId: existingSkill?.versionId,
+                onRestoredDismiss: { dismiss() }
+            )
             .confirmationDialog(
                 "Discard Changes?",
                 isPresented: $showDiscardConfirm,
@@ -367,6 +377,11 @@ struct SkillEditorView: View {
                 .foregroundStyle(theme.brandPrimary)
                 .disabled(name.trimmingCharacters(in: .whitespaces).isEmpty
                           || slug.trimmingCharacters(in: .whitespaces).isEmpty)
+            }
+        }
+        if isEditing {
+            ToolbarItem(placement: .topBarTrailing) {
+                VersionHistoryToolbarButton { showVersionHistory = true }
             }
         }
     }

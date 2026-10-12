@@ -93,6 +93,10 @@ final class AdminIntegrationsViewModel {
     // Web AddTerminalServerModal parity (stored in the connection / its `config` dict).
     var editTermForwardCookies = false
     var editTermChatUploads = "default"          // "default" | "filesystem"
+    /// Include the current folder in the tool instructions (off = more cache hits).
+    var editTermWorkingDirectoryContext = true
+    /// "auto" (only while your shell is connected) | "always".
+    var editTermUserShellTools = "auto"
     var editTermChatContext = "default"          // "default" | "chat_id" | "off"   (orchestrator)
     var editTermAutomationContext = "default"    // "default" | "automation_id" | "off"
     var editTermServerType: String?              // "orchestrator" | "terminal" (from Verify)
@@ -454,6 +458,9 @@ final class AdminIntegrationsViewModel {
         editTermForwardCookies = conn.forward_cookies ?? false
         let cfgExtra = conn.config?.extra ?? [:]
         if case .string(let v)? = cfgExtra["chat_uploads"], v == "filesystem" { editTermChatUploads = "filesystem" } else { editTermChatUploads = "default" }
+        // Prompt-cache friendly terminal settings.
+        if case .bool(let v)? = cfgExtra["working_directory_context"] { editTermWorkingDirectoryContext = v } else { editTermWorkingDirectoryContext = true }
+        if case .string(let v)? = cfgExtra["user_shell_tools"], v == "always" { editTermUserShellTools = "always" } else { editTermUserShellTools = "auto" }
         if case .string(let t)? = conn.extra["server_type"] { editTermServerType = t } else { editTermServerType = nil }
         if case .string(let p)? = conn.extra["policy_id"] { editTermPolicyId = p } else { editTermPolicyId = "" }
         func mode(_ key: String, _ custom: String) -> String {
@@ -491,6 +498,8 @@ final class AdminIntegrationsViewModel {
         var cfg = conn.config ?? TerminalServerConnectionConfig()
         if editTermChatUploads == "filesystem" { cfg.extra["chat_uploads"] = .string("filesystem") }
         else { cfg.extra.removeValue(forKey: "chat_uploads") }
+        cfg.extra["working_directory_context"] = .bool(editTermWorkingDirectoryContext)
+        cfg.extra["user_shell_tools"] = .string(editTermUserShellTools)
         var contexts: [String: AnyJSON] = [:]
         if editTermChatContext == "off" { contexts["chat"] = .bool(false) }
         else if editTermChatContext == "chat_id" { contexts["chat"] = .object(["context_id": .string("chat_id")]) }

@@ -64,6 +64,10 @@ struct AdminAuthenticationView: View {
         }
         .task {
             viewModel.configure(apiClient: dependencies.apiClient)
+            let auth = dependencies.authViewModel
+            viewModel.onSessionsRevoked = {
+                Task { await auth.signOut() }
+            }
             await viewModel.loadAll()
         }
     }
@@ -262,6 +266,50 @@ struct AdminAuthenticationView: View {
                         showDivider: false
                     )
                 }
+
+                // Two-factor sign-in
+                if viewModel.authConfig.supportsMFA {
+                    mfaPolicySection
+                }
+            }
+        }
+    }
+
+    // MARK: - Two-Factor Policy
+
+    private var mfaPolicySection: some View {
+        SettingsSection(
+            header: "Two-Factor Sign-In",
+            footer: viewModel.hasPendingMFAPolicyChange
+                ? "Saving this change signs everyone out, including you. Each user sets up an authenticator app on their next sign-in."
+                : "Require an authenticator app for every user. Users set one up from a QR code on their next sign-in."
+        ) {
+            inlineToggleRow(
+                title: "Require Two-Factor Sign-In",
+                isOn: Binding(
+                    get: { viewModel.authConfig.enableMFA },
+                    set: { viewModel.authConfig.enableMFA = $0 }
+                ),
+                showDivider: viewModel.authConfig.enableMFA
+            )
+            if viewModel.authConfig.enableMFA {
+                inlineToggleRow(
+                    title: "Allow OAuth Without Authenticator",
+                    subtitle: "OAuth sign-ins skip the authenticator step.",
+                    isOn: Binding(
+                        get: { viewModel.authConfig.mfaAllowOAuthBypass },
+                        set: { viewModel.authConfig.mfaAllowOAuthBypass = $0 }
+                    )
+                )
+                inlineToggleRow(
+                    title: "Allow Trusted Header Without Authenticator",
+                    subtitle: "Trusted-header sign-ins skip the authenticator step.",
+                    isOn: Binding(
+                        get: { viewModel.authConfig.mfaAllowTrustedHeaderBypass },
+                        set: { viewModel.authConfig.mfaAllowTrustedHeaderBypass = $0 }
+                    ),
+                    showDivider: false
+                )
             }
         }
     }

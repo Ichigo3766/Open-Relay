@@ -606,6 +606,34 @@ struct EditOpenAIConnectionSheet: View {
                         .buttonStyle(.plain)
                         .disabled(viewModel.editOpenAINewModelId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                     }
+
+                    // Suggest the models the server reports.
+                    Button {
+                        Task { await viewModel.loadSuggestedModelIds() }
+                    } label: {
+                        HStack {
+                            Label("Load Models from Server", systemImage: "arrow.down.circle")
+                            if viewModel.isLoadingSuggestedModelIds {
+                                Spacer()
+                                ProgressView().controlSize(.small)
+                            }
+                        }
+                    }
+                    .disabled(viewModel.editOpenAIURL.isEmpty || viewModel.isLoadingSuggestedModelIds)
+                    if let err = viewModel.suggestedModelIdsError {
+                        Text(err).font(.caption).foregroundStyle(.secondary)
+                    }
+                    ForEach(viewModel.filteredSuggestedModelIds.prefix(30), id: \.self) { suggestion in
+                        Button {
+                            viewModel.addSuggestedModelId(suggestion)
+                        } label: {
+                            HStack {
+                                Text(suggestion).scaledFont(size: 14).foregroundStyle(theme.textPrimary)
+                                Spacer()
+                                Image(systemName: "plus.circle").foregroundStyle(theme.brandPrimary)
+                            }
+                        }
+                    }
                 }
 
                 // MARK: Tags

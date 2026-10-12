@@ -437,6 +437,16 @@ struct ChannelProfileSheet: View {
                 Text(shown?.isOnline == true ? "Active" : "Away")
                     .scaledFont(size: 13)
                     .foregroundStyle(theme.textSecondary)
+                if shown?.isOnline != true, let seen = shown?.lastSeenText {
+                    Text("· Last seen \(seen)")
+                        .scaledFont(size: 13)
+                        .foregroundStyle(theme.textTertiary)
+                }
+            }
+            if let local = shown?.localTimeText {
+                Label("\(local) local time", systemImage: "clock")
+                    .scaledFont(size: 12)
+                    .foregroundStyle(theme.textTertiary)
             }
         }
         .frame(maxWidth: .infinity)

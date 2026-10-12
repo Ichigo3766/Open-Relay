@@ -1,3 +1,4 @@
+import CryptoKit
 import UIKit
 import SwiftUI
 import MarkdownView
@@ -653,16 +654,20 @@ struct MarkdownInlineImageView: View {
     @State private var base64DecodeError = false
 
     /// Process-lifetime cache for decoded base64 UIImages.
-    /// Keyed by a cheap surrogate (total length + first 80 chars) so the full
-    /// multi-MB absoluteString is never copied just to form a cache key.
+    /// Hash the complete URI so equal-size images with a common header remain distinct.
     /// On a cache hit the image appears synchronously on the first render —
     /// no placeholder flash when scrolling back through a chat.
-    private static let base64ImageCache = NSCache<NSString, UIImage>()
+    private static let base64ImageCache: NSCache<NSString, UIImage> = {
+        let cache = NSCache<NSString, UIImage>()
+        cache.totalCostLimit = 32 * 1024 * 1024
+        cache.countLimit = 40
+        return cache
+    }()
 
-    /// Cheap cache key derived from the URI without copying the full payload.
+    /// Full-content identity, including the image payload.
     private static func base64CacheKey(for url: URL) -> NSString {
         let s = url.absoluteString
-        return "\(s.count)_\(s.prefix(80))" as NSString
+        return SHA256.hash(data: Data(s.utf8)).map { String(format: "%02x", $0) }.joined() as NSString
     }
 
     /// Attempts to decode a `data:image/...;base64,<payload>` URI into a UIImage.
@@ -745,7 +750,7 @@ struct MarkdownInlineImageView: View {
                             }.value
                         }
                         if let image = decoded {
-                            Self.base64ImageCache.setObject(image, forKey: key)
+                            Self.base64ImageCache.setObject(image, forKey: key, cost: (image.cgImage?.bytesPerRow ?? Int(image.size.width * image.scale) * 4) * (image.cgImage?.height ?? Int(image.size.height * image.scale)))
                             // Suppress implicit animation so the layout change from
                             // placeholder → image does not cause a scroll jump.
                             withAnimation(.none) { decodedBase64Image = image }

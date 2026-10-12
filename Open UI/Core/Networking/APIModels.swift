@@ -20,6 +20,97 @@ struct AuthResponse: Codable, Sendable {
     }
 }
 
+// MARK: - Two-Factor Sign-In (MFA)
+
+/// `MfaChallengeResponse` — returned by signin / ldap / signup / token exchange
+/// instead of a session when the server requires an authenticator.
+nonisolated struct MfaChallenge: Codable, Sendable, Equatable {
+    /// `"enroll"`, `"verify"` or `"recover"`.
+    let nextStep: String
+    let challengeToken: String
+    let expiresIn: Int?
+
+    enum CodingKeys: String, CodingKey {
+        case nextStep = "next_step"
+        case challengeToken = "challenge_token"
+        case expiresIn = "expires_in"
+    }
+
+    var isEnroll: Bool { nextStep == "enroll" }
+    var isRecover: Bool { nextStep == "recover" }
+}
+
+/// `MfaSetupResponse` — secret for a new authenticator.
+struct MfaSetup: Codable, Sendable, Equatable {
+    let manualKey: String
+    /// SVG data URL. The app renders its own QR from `otpauthURI` instead.
+    let qrCode: String?
+
+    enum CodingKeys: String, CodingKey {
+        case manualKey = "manual_key"
+        case qrCode = "qr_code"
+    }
+
+    /// Same provisioning URI the server encodes (`pyotp` with issuer "Open WebUI").
+    func otpauthURI(account: String) -> URL? {
+        var components = URLComponents()
+        components.scheme = "otpauth"
+        components.host = "totp"
+        components.path = "/Open WebUI:\(account)"
+        components.queryItems = [
+            URLQueryItem(name: "secret", value: manualKey),
+            URLQueryItem(name: "issuer", value: "Open WebUI"),
+        ]
+        return components.url
+    }
+}
+
+/// `GET /api/v1/auths/mfa/status`.
+struct MfaStatus: Codable, Sendable, Equatable {
+    let enabled: Bool
+    let required: Bool
+    let recoveryCodesRemaining: Int
+
+    enum CodingKeys: String, CodingKey {
+        case enabled, required
+        case recoveryCodesRemaining = "recovery_codes_remaining"
+    }
+}
+
+/// Result of a password / LDAP / sign-up / token-exchange request.
+enum SigninOutcome: Sendable {
+    /// Session issued — the token is already stored.
+    case authenticated(User)
+    /// The server wants an authenticator step before issuing a session.
+    case mfa(MfaChallenge)
+    /// MFA servers answer pending accounts without a session.
+    case pending
+}
+
+/// Parses a sign-in response body into a token, an MFA challenge or a pending marker.
+enum SigninResponseParser {
+    enum Parsed {
+        case session(AuthResponse)
+        case mfa(MfaChallenge)
+        case pending
+    }
+
+    static func parse(_ data: Data) throws -> Parsed {
+        let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] ?? [:]
+        if json["challenge_token"] is String {
+            return .mfa(try JSONDecoder().decode(MfaChallenge.self, from: data))
+        }
+        if json["next_step"] as? String == "pending" {
+            return .pending
+        }
+        do {
+            return .session(try JSONDecoder().decode(AuthResponse.self, from: data))
+        } catch {
+            throw APIError.responseDecoding(underlying: error, data: data)
+        }
+    }
+}
+
 // MARK: - OAuth Providers
 
 /// Represents the available OAuth providers configured on the server.
@@ -125,6 +216,11 @@ struct BackendConfig: Codable, Sendable {
         let enableUserStatus: Bool?
         /// Whether non-admins may see the active-users count (`/api/usage`).
         let enablePublicActiveUsersCount: Bool?
+        /// Server-wide switches (`ENABLE_TOOLS`, `ENABLE_FUNCTIONS`,
+        /// `ENABLE_TOOL_SERVERS`; all off when `ENABLE_PLUGINS=false`). nil = on.
+        let enableTools: Bool?
+        let enableFunctions: Bool?
+        let enableToolServers: Bool?
 
         // Backward compat aliases
         var authTrustedHeaderAuth: Bool? { authTrustedHeader }
@@ -156,6 +252,9 @@ struct BackendConfig: Codable, Sendable {
             case enableToolPermissions = "enable_tool_permissions"
             case enableUserStatus = "enable_user_status"
             case enablePublicActiveUsersCount = "enable_public_active_users_count"
+            case enableTools = "enable_tools"
+            case enableFunctions = "enable_functions"
+            case enableToolServers = "enable_tool_servers"
         }
 
         init(from decoder: Decoder) throws {
@@ -184,17 +283,57 @@ struct BackendConfig: Codable, Sendable {
             enableToolPermissions = try container.decodeIfPresent(Bool.self, forKey: .enableToolPermissions)
             enableUserStatus = try? container.decodeIfPresent(Bool.self, forKey: .enableUserStatus)
             enablePublicActiveUsersCount = try? container.decodeIfPresent(Bool.self, forKey: .enablePublicActiveUsersCount)
+            enableTools = try? container.decodeIfPresent(Bool.self, forKey: .enableTools)
+            enableFunctions = try? container.decodeIfPresent(Bool.self, forKey: .enableFunctions)
+            enableToolServers = try? container.decodeIfPresent(Bool.self, forKey: .enableToolServers)
         }
     }
 
-    struct PromptSuggestion: Codable, Sendable {
+    struct PromptSuggestion: Codable, Sendable, Hashable {
         let title: [String]?
         let content: String?
     }
 
+    /// Open WebUI's built-in starter prompts, shown when the admin has never set
+    /// custom ones (`default_prompt_suggestions == null`). Mirrors the web fallback
+    /// in `resolveLocalizedPromptSuggestions` (src/lib/utils/localizedContent.ts).
+    static let builtInPromptSuggestions: [PromptSuggestion] = [
+        PromptSuggestion(
+            title: ["Help me study", "vocabulary for a college entrance exam"],
+            content: "Help me study vocabulary: write a sentence for me to fill in the blank, and I'll try to pick the correct option."
+        ),
+        PromptSuggestion(
+            title: ["Give me ideas", "for what to do with my kids' art"],
+            content: "What are 5 creative things I could do with my kids' art? I don't want to throw them away, but it's also so much clutter."
+        ),
+        PromptSuggestion(
+            title: ["Tell me a fun fact", "about the Roman Empire"],
+            content: "Tell me a random fun fact about the Roman Empire"
+        ),
+        PromptSuggestion(
+            title: ["Show me a code snippet", "of a website's sticky header"],
+            content: "Show me a code snippet of a website's sticky header in CSS and JavaScript."
+        ),
+        PromptSuggestion(
+            title: ["Explain options trading", "if I'm familiar with buying and selling stocks"],
+            content: "Explain options trading in simple terms if I'm familiar with buying and selling stocks."
+        ),
+        PromptSuggestion(
+            title: ["Overcome procrastination", "give me tips"],
+            content: "Could you start by asking me about instances when I procrastinate the most and then give me some suggestions to overcome it?"
+        )
+    ]
+
     struct AudioConfig: Codable, Sendable {
         let tts: TTSConfig?
         let stt: STTConfig?
+        var realtime: RealtimeConfig? = nil
+
+        struct RealtimeConfig: Codable, Sendable {
+            let enabled: Bool?
+            let model: String?
+            let voice: String?
+        }
 
         struct TTSConfig: Codable, Sendable {
             let engine: String?
@@ -216,6 +355,7 @@ struct BackendConfig: Codable, Sendable {
         case status, version, name, features, audio, oauth, code
         case defaultModels = "default_models"
         case defaultPromptSuggestions = "default_prompt_suggestions"
+        case defaultPromptSuggestionsI18n = "default_prompt_suggestions_i18n"
     }
 
     /// `code.engine` — "pyodide" (run in the app) or "jupyter" (run on the server).
@@ -223,6 +363,16 @@ struct BackendConfig: Codable, Sendable {
         let engine: String?
     }
     var code: CodeConfig? = nil
+
+    /// Per-locale admin prompt suggestions (`default_prompt_suggestions_i18n`),
+    /// flattened to `locale → prompts`. The server stores either
+    /// `{locale: {suggestion_prompts: [...]}}` or `{locale: [...]}`.
+    var defaultPromptSuggestionsI18n: [String: [PromptSuggestion]]? = nil
+
+    /// Whether the response carried the `default_prompt_suggestions` key at all.
+    /// Authenticated `/api/config` responses always include it (possibly `null`);
+    /// pre-auth responses omit it. Only a missing key means "unknown — keep what we have".
+    var hasPromptSuggestionsKey: Bool = false
 
     /// Custom decoder that gracefully handles missing/malformed nested objects.
     /// If `features`, `audio`, `oauth`, or `defaultPromptSuggestions` fail to
@@ -234,16 +384,50 @@ struct BackendConfig: Codable, Sendable {
         version = try container.decodeIfPresent(String.self, forKey: .version)
         name = try container.decodeIfPresent(String.self, forKey: .name)
         features = try? container.decodeIfPresent(BackendFeatures.self, forKey: .features)
-        defaultModels = try? container.decodeIfPresent([String].self, forKey: .defaultModels)
+        // The server stores DEFAULT_MODELS as a comma-separated string.
+        if let list = try? container.decodeIfPresent([String].self, forKey: .defaultModels) {
+            defaultModels = list
+        } else if let csv = try? container.decodeIfPresent(String.self, forKey: .defaultModels) {
+            defaultModels = csv.split(separator: ",")
+                .map { $0.trimmingCharacters(in: .whitespaces) }
+                .filter { !$0.isEmpty }
+        } else {
+            defaultModels = nil
+        }
+        hasPromptSuggestionsKey = container.contains(.defaultPromptSuggestions)
         defaultPromptSuggestions = try? container.decodeIfPresent([PromptSuggestion].self, forKey: .defaultPromptSuggestions)
+        defaultPromptSuggestionsI18n = Self.decodeSuggestionsI18n(container)
         audio = try? container.decodeIfPresent(AudioConfig.self, forKey: .audio)
         oauth = try? container.decodeIfPresent(OAuthConfig.self, forKey: .oauth)
         code = try? container.decodeIfPresent(CodeConfig.self, forKey: .code)
     }
 
-    /// Merge initializer: copies all fields from `updated`, but if `updated` has
-    /// no `defaultPromptSuggestions` and `previous` does, the previous suggestions
-    /// are carried over so the welcome-screen cards never disappear during a refresh.
+    private static func decodeSuggestionsI18n(
+        _ container: KeyedDecodingContainer<CodingKeys>
+    ) -> [String: [PromptSuggestion]]? {
+        struct Entry: Decodable {
+            let prompts: [PromptSuggestion]?
+            private enum Keys: String, CodingKey { case suggestionPrompts = "suggestion_prompts" }
+            init(from decoder: Decoder) throws {
+                if let list = try? decoder.singleValueContainer().decode([PromptSuggestion].self) {
+                    prompts = list
+                } else {
+                    let c = try decoder.container(keyedBy: Keys.self)
+                    prompts = try? c.decodeIfPresent([PromptSuggestion].self, forKey: .suggestionPrompts)
+                }
+            }
+        }
+        guard let raw = try? container.decodeIfPresent([String: Entry].self, forKey: .defaultPromptSuggestionsI18n) else {
+            return nil
+        }
+        let map = raw.compactMapValues { $0.prompts }
+        return map.isEmpty ? nil : map
+    }
+
+    /// Merge initializer: copies all fields from `updated`. When `updated` didn't
+    /// carry the suggestions key at all (e.g. an unauthenticated response), the
+    /// previous suggestions are kept so the welcome-screen cards don't vanish.
+    /// An explicit `null` or `[]` from the server is respected.
     init(preservingSuggestionsFrom previous: BackendConfig?, updatedWith updated: BackendConfig) {
         status = updated.status
         version = updated.version
@@ -253,11 +437,29 @@ struct BackendConfig: Codable, Sendable {
         audio = updated.audio
         oauth = updated.oauth
         code = updated.code
-        if let fresh = updated.defaultPromptSuggestions, !fresh.isEmpty {
-            defaultPromptSuggestions = fresh
+        if updated.hasPromptSuggestionsKey || previous == nil {
+            defaultPromptSuggestions = updated.defaultPromptSuggestions
+            defaultPromptSuggestionsI18n = updated.defaultPromptSuggestionsI18n
+            hasPromptSuggestionsKey = updated.hasPromptSuggestionsKey
         } else {
             defaultPromptSuggestions = previous?.defaultPromptSuggestions
+            defaultPromptSuggestionsI18n = previous?.defaultPromptSuggestionsI18n
+            hasPromptSuggestionsKey = previous?.hasPromptSuggestionsKey ?? false
         }
+    }
+
+    /// Admin-level welcome-screen prompts, resolved like the web's
+    /// `resolveLocalizedPromptSuggestions`: a translation for the device language
+    /// wins; otherwise the admin list; `null` (never configured) → built-in starters.
+    /// An explicit empty list means the admin turned suggestions off.
+    var resolvedAdminPromptSuggestions: [PromptSuggestion] {
+        if let i18n = defaultPromptSuggestionsI18n {
+            for locale in LocalizedContent.deviceLocaleCandidates() {
+                if let prompts = i18n[locale] { return prompts }
+            }
+        }
+        if let admin = defaultPromptSuggestions { return admin }
+        return hasPromptSuggestionsKey ? Self.builtInPromptSuggestions : []
     }
 
     /// Whether this response looks like a valid OpenWebUI server.
@@ -807,6 +1009,32 @@ struct AdminAuthConfig: Codable, @unchecked Sendable {
         set { raw["ENABLE_LOGIN_FORM"] = newValue }
     }
 
+    /// `ENABLE_MFA` — require an authenticator app for every user.
+    /// Kept in `raw` so older servers never receive it.
+    var enableMFA: Bool {
+        get { raw["ENABLE_MFA"] as? Bool ?? false }
+        set { raw["ENABLE_MFA"] = newValue }
+    }
+
+    /// `MFA_ALLOW_OAUTH_BYPASS` — let OAuth sign-ins skip the authenticator.
+    var mfaAllowOAuthBypass: Bool {
+        get { raw["MFA_ALLOW_OAUTH_BYPASS"] as? Bool ?? false }
+        set { raw["MFA_ALLOW_OAUTH_BYPASS"] = newValue }
+    }
+
+    /// `MFA_ALLOW_TRUSTED_HEADER_BYPASS` — let trusted-header sign-ins skip it.
+    var mfaAllowTrustedHeaderBypass: Bool {
+        get { raw["MFA_ALLOW_TRUSTED_HEADER_BYPASS"] as? Bool ?? false }
+        set { raw["MFA_ALLOW_TRUSTED_HEADER_BYPASS"] = newValue }
+    }
+
+    /// True when the server knows about MFA (it returns `ENABLE_MFA`).
+    var supportsMFA: Bool { raw["ENABLE_MFA"] != nil }
+
+    /// Set by the Authentication screen only when the MFA policy was edited.
+    /// Other screens that save this config never resend (or reset) it.
+    var includeMFAPolicy = false
+
     /// `DEFAULT_INTERFACE_SETTINGS` — the default UI settings for new users.
     var defaultInterfaceSettings: [String: Any] {
         get { raw["DEFAULT_INTERFACE_SETTINGS"] as? [String: Any] ?? [:] }
@@ -888,6 +1116,13 @@ struct AdminAuthConfig: Codable, @unchecked Sendable {
 
     func encode(to encoder: Encoder) throws {
         var merged = raw
+        // MFA policy keys require a human session and revoke every session when
+        // changed — only send them when the admin actually edited them.
+        if !includeMFAPolicy {
+            for key in ["ENABLE_MFA", "MFA_ALLOW_OAUTH_BYPASS", "MFA_ALLOW_TRUSTED_HEADER_BYPASS"] {
+                merged.removeValue(forKey: key)
+            }
+        }
         let known: [CodingKeys: Any] = [
             .showAdminDetails: showAdminDetails, .adminEmail: adminEmail, .webuiURL: webuiURL,
             .enableSignup: enableSignup, .enableAPIKeys: enableAPIKeys,
@@ -1115,6 +1350,15 @@ struct AdminChatConfig: Codable, Sendable {
     /// Enables the Tool Permissions (human-in-the-loop) feature for all users.
     /// Maps to `chat.tool_permissions.enable` on the server.
     var enableToolPermissions: Bool
+    /// Tool Search (experimental): long tool definitions are left out of the
+    /// request and only listed by name; the model loads them on demand.
+    var enableToolSearch: Bool = false
+    /// Tools whose definition is longer than this many tokens are deferred.
+    var toolSearchDeferThreshold: Int = 400
+    /// Tool ids that are always loaded in full.
+    var toolSearchAlwaysLoaded: [String] = []
+    /// Also defer the builtin tools.
+    var toolSearchDeferBuiltinTools: Bool = true
 
     enum CodingKeys: String, CodingKey {
         case enableContextCompaction           = "ENABLE_CONTEXT_COMPACTION"
@@ -1124,6 +1368,10 @@ struct AdminChatConfig: Codable, Sendable {
         case contextCompactionRetentionPercentage = "CONTEXT_COMPACTION_RETENTION_PERCENTAGE"
         case contextCompactionPromptTemplate   = "CONTEXT_COMPACTION_PROMPT_TEMPLATE"
         case enableToolPermissions             = "ENABLE_TOOL_PERMISSIONS"
+        case enableToolSearch                  = "ENABLE_TOOL_SEARCH"
+        case toolSearchDeferThreshold          = "TOOL_SEARCH_DEFER_THRESHOLD"
+        case toolSearchAlwaysLoaded            = "TOOL_SEARCH_ALWAYS_LOADED"
+        case toolSearchDeferBuiltinTools       = "TOOL_SEARCH_DEFER_BUILTIN_TOOLS"
     }
 
     init(from decoder: Decoder) throws {
@@ -1135,6 +1383,10 @@ struct AdminChatConfig: Codable, Sendable {
         contextCompactionRetentionPercentage = (try? c.decode(Int.self, forKey: .contextCompactionRetentionPercentage)) ?? 40
         contextCompactionPromptTemplate   = (try? c.decode(String.self, forKey: .contextCompactionPromptTemplate))   ?? ""
         enableToolPermissions             = (try? c.decode(Bool.self,   forKey: .enableToolPermissions))             ?? false
+        enableToolSearch                  = (try? c.decode(Bool.self,   forKey: .enableToolSearch))                  ?? false
+        toolSearchDeferThreshold          = (try? c.decode(Int.self,    forKey: .toolSearchDeferThreshold))          ?? 400
+        toolSearchAlwaysLoaded            = (try? c.decode([String].self, forKey: .toolSearchAlwaysLoaded))          ?? []
+        toolSearchDeferBuiltinTools       = (try? c.decode(Bool.self,   forKey: .toolSearchDeferBuiltinTools))       ?? true
     }
 
     init(
@@ -1755,6 +2007,7 @@ struct AdminTTSConfig: Codable, Sendable {
     var azureSpeechOutputFormat: String
     var mistralAPIKey: String
     var mistralAPIBaseURL: String
+    var realtimeTTSPromptTemplate: String?
 
     enum CodingKeys: String, CodingKey {
         case openAIAPIBaseURL        = "OPENAI_API_BASE_URL"
@@ -1770,6 +2023,7 @@ struct AdminTTSConfig: Codable, Sendable {
         case azureSpeechOutputFormat = "AZURE_SPEECH_OUTPUT_FORMAT"
         case mistralAPIKey           = "MISTRAL_API_KEY"
         case mistralAPIBaseURL       = "MISTRAL_API_BASE_URL"
+        case realtimeTTSPromptTemplate = "REALTIME_TTS_PROMPT_TEMPLATE"
     }
 
     init(from decoder: Decoder) throws {
@@ -1794,6 +2048,7 @@ struct AdminTTSConfig: Codable, Sendable {
         azureSpeechOutputFormat = (try? c.decode(String.self, forKey: .azureSpeechOutputFormat)) ?? "audio-24khz-160kbitrate-mono-mp3"
         mistralAPIKey           = (try? c.decode(String.self, forKey: .mistralAPIKey))           ?? ""
         mistralAPIBaseURL       = (try? c.decode(String.self, forKey: .mistralAPIBaseURL))       ?? "https://api.mistral.ai/v1"
+        realtimeTTSPromptTemplate = try c.decodeIfPresent(String.self, forKey: .realtimeTTSPromptTemplate)
     }
 
     func encode(to encoder: Encoder) throws {
@@ -1817,6 +2072,7 @@ struct AdminTTSConfig: Codable, Sendable {
         try c.encode(azureSpeechOutputFormat, forKey: .azureSpeechOutputFormat)
         try c.encode(mistralAPIKey, forKey: .mistralAPIKey)
         try c.encode(mistralAPIBaseURL, forKey: .mistralAPIBaseURL)
+        try c.encodeIfPresent(realtimeTTSPromptTemplate, forKey: .realtimeTTSPromptTemplate)
     }
 
     init(
@@ -1824,7 +2080,8 @@ struct AdminTTSConfig: Codable, Sendable {
         apiKey: String = "", engine: String = "", model: String = "", voice: String = "",
         splitOn: String = "punctuation", azureSpeechRegion: String = "",
         azureSpeechBaseURL: String = "", azureSpeechOutputFormat: String = "audio-24khz-160kbitrate-mono-mp3",
-        mistralAPIKey: String = "", mistralAPIBaseURL: String = "https://api.mistral.ai/v1"
+        mistralAPIKey: String = "", mistralAPIBaseURL: String = "https://api.mistral.ai/v1",
+        realtimeTTSPromptTemplate: String? = nil
     ) {
         self.openAIAPIBaseURL = openAIAPIBaseURL; self.openAIAPIKey = openAIAPIKey
         self.openAIParamsJSON = openAIParamsJSON; self.apiKey = apiKey; self.engine = engine
@@ -1832,6 +2089,7 @@ struct AdminTTSConfig: Codable, Sendable {
         self.azureSpeechRegion = azureSpeechRegion; self.azureSpeechBaseURL = azureSpeechBaseURL
         self.azureSpeechOutputFormat = azureSpeechOutputFormat
         self.mistralAPIKey = mistralAPIKey; self.mistralAPIBaseURL = mistralAPIBaseURL
+        self.realtimeTTSPromptTemplate = realtimeTTSPromptTemplate
     }
 }
 
@@ -2489,7 +2747,7 @@ struct RetrievalConfig: Codable, Sendable {
 
     // Tika
     var tikaServerURL: String
-    /// Which version of the Tika server to use ("3" or "4"). New in OpenWebUI v0.12+.
+    /// Which version of the Tika server to use ("3" or "4").
     var tikaServerVersion: String
 
     // Docling
@@ -3542,6 +3800,14 @@ struct GroupData: Codable, @unchecked Sendable {
 
 struct GroupDataConfig: Codable, @unchecked Sendable {
     var share: String?
+    /// Default models for new chats of members (most deeply nested group wins).
+    var defaultModels: [String]? {
+        get { extra["default_models"] as? [String] }
+        set {
+            if let newValue, !newValue.isEmpty { extra["default_models"] = newValue }
+            else { extra.removeValue(forKey: "default_models") }
+        }
+    }
     /// Other keys in `group.data.config` — preserved on save.
     var extra: [String: Any] = [:]
 
@@ -3582,6 +3848,8 @@ struct GroupDetail: Codable, Identifiable, Sendable {
     let createdAt: Int
     let updatedAt: Int
     var memberCount: Int?
+    /// Nested groups: members also get everything shared with the parent chain.
+    var parentGroupId: String?
 
     enum CodingKeys: String, CodingKey {
         case id, name, description, data, permissions
@@ -3589,6 +3857,7 @@ struct GroupDetail: Codable, Identifiable, Sendable {
         case createdAt = "created_at"
         case updatedAt = "updated_at"
         case memberCount = "member_count"
+        case parentGroupId = "parent_group_id"
     }
 
     init(from decoder: Decoder) throws {
@@ -3599,6 +3868,7 @@ struct GroupDetail: Codable, Identifiable, Sendable {
         description = (try? c.decode(String.self, forKey: .description)) ?? ""
         data = try? c.decodeIfPresent(GroupData.self, forKey: .data)
         permissions = try? c.decodeIfPresent(GroupPermissions.self, forKey: .permissions)
+        parentGroupId = try? c.decodeIfPresent(String.self, forKey: .parentGroupId)
         if let ts = try? c.decode(Int.self, forKey: .createdAt) { createdAt = ts }
         else if let ts = try? c.decode(Double.self, forKey: .createdAt) { createdAt = Int(ts) }
         else { createdAt = 0 }
@@ -3615,10 +3885,40 @@ struct GroupForm: Codable, Sendable {
     var description: String
     var permissions: GroupPermissions?
     var data: GroupData?
+    /// Parent group. Only sent when `sendsParent` is true (the server applies
+    /// it only when present; null clears it). Older servers ignore the key.
+    var parentGroupId: String?
+    var sendsParent = false
 
     init(name: String, description: String, permissions: GroupPermissions? = nil, data: GroupData? = nil) {
         self.name = name; self.description = description
         self.permissions = permissions; self.data = data
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case name, description, permissions, data
+        case parentGroupId = "parent_group_id"
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        name = try c.decode(String.self, forKey: .name)
+        description = try c.decode(String.self, forKey: .description)
+        permissions = try c.decodeIfPresent(GroupPermissions.self, forKey: .permissions)
+        data = try c.decodeIfPresent(GroupData.self, forKey: .data)
+        parentGroupId = try c.decodeIfPresent(String.self, forKey: .parentGroupId)
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(name, forKey: .name)
+        try c.encode(description, forKey: .description)
+        try c.encodeIfPresent(permissions, forKey: .permissions)
+        try c.encodeIfPresent(data, forKey: .data)
+        if sendsParent {
+            if let parentGroupId { try c.encode(parentGroupId, forKey: .parentGroupId) }
+            else { try c.encodeNil(forKey: .parentGroupId) }
+        }
     }
 }
 

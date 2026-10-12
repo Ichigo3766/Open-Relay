@@ -106,12 +106,20 @@ final class AdminInterfaceViewModel {
         success = false
         do {
             async let taskSave = api.updateTaskConfig(config)
-            async let chatSave: AdminChatConfig = { @MainActor in
-                do { return try await api.updateAdminChatConfig(self.chatConfig) }
-                catch { return self.chatConfig }
+            // Chat config (context compaction, tool permissions) failing must be
+            // reported — previously it was swallowed and "Saved" was shown anyway.
+            async let chatSave: Result<AdminChatConfig, Error> = { @MainActor in
+                do { return .success(try await api.updateAdminChatConfig(self.chatConfig)) }
+                catch { return .failure(error) }
             }()
             config = try await taskSave
-            chatConfig = await chatSave
+            var chatError: String?
+            switch await chatSave {
+            case .success(let saved): chatConfig = saved
+            case .failure(let err):
+                chatError = APIError.from(err).errorDescription ?? err.localizedDescription
+                logger.error("Failed to save chat config: \(err.localizedDescription)")
+            }
 
             // Propagate tool permissions flag to the active chat store immediately
             // so the HITL Auto/Ask toggle becomes live in open chats without restart.
@@ -120,6 +128,11 @@ final class AdminInterfaceViewModel {
             // Also save default interface settings if changed
             await saveDefaultInterfaceSettings(api: api)
 
+            if let chatError {
+                self.error = "Chat settings weren't saved: \(chatError)"
+                isSaving = false
+                return
+            }
             success = true
             logger.info("Saved task config + chat config")
             Task {

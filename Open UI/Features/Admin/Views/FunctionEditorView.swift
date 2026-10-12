@@ -41,6 +41,7 @@ struct FunctionEditorView: View {
     @State private var isAutoSettingId = false
     @State private var showDiscardConfirm = false
     @State private var showManifestSection = false
+    @State private var showVersionHistory = false
 
     @FocusState private var focusedField: Field?
     private enum Field { case name, functionId, description, content }
@@ -82,6 +83,12 @@ struct FunctionEditorView: View {
             .navigationTitle(isEditing ? "Edit Function" : "New Function")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { toolbarContent }
+            .versionHistorySheet(
+                isPresented: $showVersionHistory,
+                resource: existingFunction.map { .function(id: $0.id) },
+                liveVersionId: existingFunction?.versionId,
+                onRestoredDismiss: { dismiss() }
+            )
             .confirmationDialog(
                 "Discard Changes?",
                 isPresented: $showDiscardConfirm,
@@ -337,6 +344,11 @@ struct FunctionEditorView: View {
         // Web FunctionEditor: Black-format the Python code (server-side, admin).
         ToolbarItem(placement: .topBarTrailing) {
             FormatPythonButton(code: $content)
+        }
+        if isEditing {
+            ToolbarItem(placement: .topBarTrailing) {
+                VersionHistoryToolbarButton { showVersionHistory = true }
+            }
         }
     }
 

@@ -641,6 +641,51 @@ final class AdminConnectionsViewModel {
         editOpenAIModelIds.remove(atOffsets: offsets)
     }
 
+    // MARK: - Model ID suggestions
+
+    /// Model IDs the server reports for the connection being edited (via
+    /// `POST /openai/verify`), minus ones already added.
+    var editOpenAISuggestedModelIds: [String] = []
+    var isLoadingSuggestedModelIds = false
+    var suggestedModelIdsError: String?
+
+    var filteredSuggestedModelIds: [String] {
+        let added = Set(editOpenAIModelIds)
+        let query = editOpenAINewModelId.trimmingCharacters(in: .whitespaces).lowercased()
+        return editOpenAISuggestedModelIds.filter {
+            !added.contains($0) && (query.isEmpty || $0.lowercased().contains(query))
+        }
+    }
+
+    func loadSuggestedModelIds() async {
+        guard let api = apiClient, !editOpenAIURL.isEmpty else { return }
+        isLoadingSuggestedModelIds = true
+        suggestedModelIdsError = nil
+        defer { isLoadingSuggestedModelIds = false }
+        var config: [String: Any] = ["auth_type": editOpenAIAuthType]
+        if editOpenAIProviderType == "azure" { config["azure"] = true; config["provider"] = "azure" }
+        do {
+            let json = try await api.network.requestJSON(
+                path: "/openai/verify",
+                method: .post,
+                body: ["url": editOpenAIURL, "key": editOpenAIKey, "config": config],
+                timeout: 30
+            )
+            let rows = json["data"] as? [[String: Any]] ?? json["models"] as? [[String: Any]] ?? []
+            editOpenAISuggestedModelIds = rows.compactMap { $0["id"] as? String ?? $0["name"] as? String }.sorted()
+            if editOpenAISuggestedModelIds.isEmpty {
+                suggestedModelIdsError = String(localized: "The server didn't report any models.")
+            }
+        } catch {
+            suggestedModelIdsError = APIError.from(error).errorDescription
+        }
+    }
+
+    func addSuggestedModelId(_ id: String) {
+        guard !editOpenAIModelIds.contains(id) else { return }
+        editOpenAIModelIds.append(id)
+    }
+
     func addEditTag() {
         let trimmed = editOpenAINewTag.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty, !editOpenAITags.contains(trimmed) else { return }

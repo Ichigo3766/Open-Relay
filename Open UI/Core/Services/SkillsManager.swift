@@ -86,6 +86,12 @@ final class SkillsManager {
     @discardableResult
     func cloneSkill(id: String) async throws -> SkillDetail {
         let source = try await getDetail(id: id)
+        // Server-side clone keeps every supporting file.
+        if (try? await apiClient.cloneSkillOnServer(skillId: id, newId: source.slug + "-clone", newName: source.name + " (Clone)")) != nil,
+           let copied = try? await getDetail(id: source.slug + "-clone") {
+            await fetchAll()
+            return copied
+        }
         let cloneDetail = SkillDetail(
             name: source.name + " (Clone)",
             slug: source.slug + "-clone",
@@ -101,7 +107,13 @@ final class SkillsManager {
     // MARK: - Export All
 
     /// Calls GET /api/v1/skills/export and returns JSON data ready for sharing.
+    /// On the packages already include every file and re-import as-is.
     func exportAll() async throws -> Data {
+        let (raw, _) = try await apiClient.network.requestRaw(path: "/api/v1/skills/export")
+        if let array = try? JSONSerialization.jsonObject(with: raw) as? [[String: Any]],
+           array.contains(where: { $0["files"] != nil }) {
+            return try JSONSerialization.data(withJSONObject: array, options: .prettyPrinted)
+        }
         let details = try await apiClient.exportSkills()
         let payload = details.map { $0.toCreatePayload() }
         return try JSONSerialization.data(withJSONObject: payload, options: .prettyPrinted)

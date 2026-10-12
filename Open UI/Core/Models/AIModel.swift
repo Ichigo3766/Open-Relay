@@ -94,6 +94,7 @@ struct AIModel: Codable, Identifiable, Hashable, Sendable {
     var rawModelItem: [String: Any]?
     /// Kept in the model cache too, so cached models retain their required inputs.
     var chatVariablesSchema: Data?
+    var namedControls: [NamedModelControl]?
 
     init(
         id: String,
@@ -118,7 +119,8 @@ struct AIModel: Codable, Identifiable, Hashable, Sendable {
         actionIds: [String] = [],
         actions: [AIModelAction] = [],
         suggestionPrompts: [BackendConfig.PromptSuggestion] = [],
-        rawModelItem: [String: Any]? = nil
+        rawModelItem: [String: Any]? = nil,
+        namedControls: [NamedModelControl]? = nil
     ) {
         self.id = id
         self.name = name
@@ -143,6 +145,7 @@ struct AIModel: Codable, Identifiable, Hashable, Sendable {
         self.actions = actions
         self.suggestionPrompts = suggestionPrompts
         self.rawModelItem = rawModelItem
+        self.namedControls = namedControls
         let info = rawModelItem?["info"] as? [String: Any]
         let meta = (info?["meta"] ?? rawModelItem?["meta"]) as? [String: Any]
         self.chatVariablesSchema = (meta?["chat_variables_schema"] as? [String: Any])
@@ -202,6 +205,7 @@ struct AIModel: Codable, Identifiable, Hashable, Sendable {
             && lhs.tags == rhs.tags
             && lhs.actions == rhs.actions
             && lhs.chatVariablesSchema == rhs.chatVariablesSchema
+            && lhs.namedControls == rhs.namedControls
     }
 
     func hash(into hasher: inout Hasher) {
@@ -217,7 +221,7 @@ struct AIModel: Codable, Identifiable, Hashable, Sendable {
         case id, name, description, isMultimodal, supportsStreaming, supportsRAG
         case contextLength, capabilities, profileImageURL, toolIds, defaultFeatureIds
         case functionCallingMode, builtinTools, tags, connectionType, isPipeModel, filterIds, actionIds, actions, suggestionPrompts
-        case chatVariablesSchema
+        case chatVariablesSchema, namedControls
         // rawModelItem is intentionally excluded from Codable — it contains
         // [String: Any] which cannot be synthesised. It is populated at runtime
         // from the live model fetch and does not need persistence.

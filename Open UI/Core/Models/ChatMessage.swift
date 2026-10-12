@@ -311,6 +311,10 @@ nonisolated struct ChatMessage: Identifiable, Hashable, Sendable {
     var isInternalMessage: Bool
     /// The delegation ID of the sub-agent that produced this internal message (if any).
     var subagentDelegationId: String?
+    /// `user_id` of the person who sent / started this message.
+    var authorId: String? = nil
+    /// Name of that person (server `message.user.name`).
+    var authorName: String? = nil
 
     init(
         id: String = UUID().uuidString,

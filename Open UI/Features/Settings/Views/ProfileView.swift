@@ -1005,11 +1005,20 @@ struct ProfileView: View {
         passwordChangeSuccess = false
 
         do {
+            let changedPassword = newPassword
             try await api.changePassword(currentPassword: currentPassword, newPassword: newPassword)
             passwordChangeSuccess = true
             currentPassword = ""
             newPassword = ""
             confirmPassword = ""
+            // The server ends every session when the password changes; sign in again
+            // with the new password instead of failing later with an expired session.
+            let auth = dependencies.authViewModel
+            if auth.serverIsAtLeast("0.12.0") {
+                isChangingPassword = false
+                await auth.handlePasswordChanged(to: changedPassword)
+                return
+            }
         } catch {
             let apiError = APIError.from(error)
             if case .httpError(let code, let msg, _) = apiError, code == 400 || code == 401 {

@@ -3,6 +3,7 @@ import SwiftUI
 /// A unified "Controls" sheet that mirrors Open WebUI's Controls panel.
 /// Shows attached Files/Knowledge/Chats (with per-item removal), System Prompt, and Advanced Params.
 struct ChatContextPanel: View {
+    @Environment(AppDependencyContainer.self) private var dependencies
     @Environment(\.dismiss) private var dismiss
     @Environment(\.theme) private var theme
 
@@ -15,6 +16,7 @@ struct ChatContextPanel: View {
     @State private var isAdvancedExpanded: Bool = false
     @State private var confirmCompaction = false
     @State private var variableForm: ChatVariableForm?
+    @State private var showModelControls = false
 
     init(viewModel: ChatViewModel, params: Binding<ChatAdvancedParams>) {
         self.viewModel = viewModel
@@ -54,6 +56,17 @@ struct ChatContextPanel: View {
                 contextUsageSection
                 filesSection
                 valvesSection
+                if let model = viewModel.selectedModel,
+                   model.namedControls?.isEmpty == false, !model.isPipeModel,
+                   model.rawModelItem?["direct"] as? Bool != true,
+                   dependencies.authViewModel.chatPermissions.controls,
+                   dependencies.authViewModel.chatPermissions.params {
+                    Section {
+                        Button { showModelControls = true } label: {
+                            Label("Model Controls", systemImage: "slider.horizontal.3")
+                        }.disabled(viewModel.isStreaming)
+                    }
+                }
                 if let form = viewModel.makeChatVariableForm() {
                     Section {
                         Button { variableForm = form } label: {
@@ -76,6 +89,13 @@ struct ChatContextPanel: View {
             }
             .sheet(item: $variableForm) { form in
                 ChatVariablesSheet(viewModel: viewModel, form: form).themed()
+            }
+            .sheet(isPresented: $showModelControls) {
+                if let model = viewModel.selectedModel, let apiClient = viewModel.manager?.apiClient {
+                    NamedModelControlsSheet(model: model, apiClient: apiClient) {
+                        await viewModel.fetchUserDefaultParamsFromServer()
+                    }.themed()
+                }
             }
             .task {
                 // Load tools + functions so the Valves section can show them.

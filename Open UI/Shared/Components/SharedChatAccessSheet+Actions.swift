@@ -22,6 +22,10 @@ extension SharedChatAccessSheet {
             let specific = rows.filter { $0["principal_id"] as? String != "*" }
             grants = AccessGrant.mergedByUser(specific.compactMap { AccessGrant.fromJSON($0) })
         } catch { self.error = error.localizedDescription }
+        if let shareId, !shareId.isEmpty,
+           let shared = try? await api.getSharedConversation(shareId: shareId) {
+            shareMode = shared.shareMode
+        }
         users = (try? await api.searchAllUsers()) ?? []
         if let list = try? await api.getGroups() { for g in list { groups[g.id] = g } }
         isLoading = false
@@ -40,7 +44,7 @@ extension SharedChatAccessSheet {
         case .open: rows.append(["principal_type": "anyone", "principal_id": "*", "permission": "read"])
         }
         do {
-            try await api.updateSharedChatAccess(chatId: chatId, grants: rows)
+            try await api.updateSharedChatAccess(chatId: chatId, grants: rows, shareMode: shareMode)
             error = nil
         } catch {
             self.error = error.localizedDescription

@@ -24,6 +24,8 @@ struct ShareFolderSheet: View {
     @State private var isUpdating: Bool = false
     @State private var allUsers: [ChannelMember] = []
     @State private var resolvedGroups: [String: GroupResponse] = [:]
+    /// Sharing mode: nil = Clone only, "continue" = Allow replies.
+    @State private var shareMode: String?
 
     // MARK: - Init
 
@@ -39,6 +41,7 @@ struct ShareFolderSheet: View {
         self.onUpdate = onUpdate
         _localAccessGrants = State(initialValue: folder.accessGrants)
         _isPublic = State(initialValue: folder.isPublic)
+        _shareMode = State(initialValue: folder.data?.shareMode)
     }
 
     // MARK: - Body
@@ -93,6 +96,33 @@ struct ShareFolderSheet: View {
                             await saveAccess()
                         }
                     )
+
+                    // Let people the folder is shared with reply in its chats.
+                    if !localAccessGrants.isEmpty || isPublic {
+                        Divider().background(theme.inputBorder.opacity(0.4))
+                        VStack(alignment: .leading, spacing: Spacing.xs) {
+                            HStack {
+                                Text("Sharing mode")
+                                    .scaledFont(size: 15)
+                                    .foregroundStyle(theme.textPrimary)
+                                Spacer()
+                                Picker("Sharing mode", selection: $shareMode) {
+                                    Text("Clone only").tag(String?.none)
+                                    Text("Allow replies").tag(String?.some("continue"))
+                                }
+                                .labelsHidden()
+                                .tint(theme.brandPrimary)
+                                .onChange(of: shareMode) { _, _ in Task { await saveAccess(includeShareMode: true) } }
+                            }
+                            Text(shareMode == "continue"
+                                 ? "People with access can keep writing in this folder's chats."
+                                 : "People with access can view this folder's chats and make their own copy.")
+                                .scaledFont(size: 12)
+                                .foregroundStyle(theme.textTertiary)
+                        }
+                        .padding(.horizontal, Spacing.md)
+                        .padding(.vertical, 12)
+                    }
                 }
             }
             .navigationTitle("Share Folder")
@@ -164,7 +194,7 @@ struct ShareFolderSheet: View {
         }
     }
 
-    private func saveAccess() async {
+    private func saveAccess(includeShareMode: Bool = false) async {
         guard let api = apiClient else { return }
         isUpdating = true
         // Build payload from current local state
@@ -174,7 +204,10 @@ struct ShareFolderSheet: View {
         let payload = tempFolder.buildGrantsPayload()
 
         do {
-            let raw = try await api.updateFolderAccessGrants(id: folder.id, grants: payload)
+            let raw = try await api.updateFolderAccessGrants(
+                id: folder.id, grants: payload,
+                shareMode: includeShareMode ? .some(shareMode) : .none
+            )
             if let updated = ChatFolder(json: raw) {
                 onUpdate?(updated)
             }

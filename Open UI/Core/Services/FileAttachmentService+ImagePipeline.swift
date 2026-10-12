@@ -33,9 +33,21 @@ extension FileAttachmentService {
         return makeImageAttachment(image: image, name: name)
     }
 
+    /// Prepares picked image bytes away from the UI thread; attachment state stays on MainActor.
+    static func prepareImageAttachment(data: Data, name: String? = nil) async -> ChatAttachment? {
+        let jpeg = await Task.detached(priority: .userInitiated) {
+            decodeImage(data).map { downsampleForUpload(image: $0) }
+        }.value
+        guard !Task.isCancelled, let jpeg else { return nil }
+        return imageAttachment(jpeg: jpeg, name: name)
+    }
+
     /// Builds an upload-ready image attachment from a decoded image.
     static func makeImageAttachment(image: UIImage, name: String? = nil) -> ChatAttachment? {
-        let jpeg = downsampleForUpload(image: image)
+        imageAttachment(jpeg: downsampleForUpload(image: image), name: name)
+    }
+
+    private static func imageAttachment(jpeg: Data, name: String?) -> ChatAttachment? {
         guard !jpeg.isEmpty else { return nil }
         let baseName = name.map { ($0 as NSString).deletingPathExtension }.flatMap { $0.isEmpty ? nil : $0 }
             ?? "Photo_\(Int(Date.now.timeIntervalSince1970))"
@@ -46,7 +58,7 @@ extension FileAttachmentService {
     /// Decodes image data in any ImageIO-supported format (HEIC, RAW, WebP…) with
     /// EXIF orientation applied. Large images are decoded straight at ≤ 4096 px on
     /// the long side, so a 48 MP photo never needs to be fully decoded in memory.
-    static func decodeImage(_ data: Data) -> UIImage? {
+    nonisolated static func decodeImage(_ data: Data) -> UIImage? {
         guard let source = CGImageSourceCreateWithData(data as CFData, nil) else {
             return UIImage(data: data)
         }

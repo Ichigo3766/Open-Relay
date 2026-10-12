@@ -511,6 +511,7 @@ struct ToolEditorView: View {
     @State private var isAutoSettingId = false
     @State private var showDiscardConfirm = false
     @State private var showManifestSection = false
+    @State private var showVersionHistory = false
 
     @FocusState private var focusedField: Field?
     private enum Field { case name, toolId, description, content }
@@ -554,6 +555,12 @@ struct ToolEditorView: View {
             .navigationTitle(isEditing ? "Edit Tool" : "New Tool")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { toolbarContent }
+            .versionHistorySheet(
+                isPresented: $showVersionHistory,
+                resource: existingTool.map { .tool(id: $0.id) },
+                liveVersionId: existingTool?.versionId,
+                onRestoredDismiss: { dismiss() }
+            )
             .confirmationDialog(
                 "Discard Changes?",
                 isPresented: $showDiscardConfirm,
@@ -822,6 +829,11 @@ struct ToolEditorView: View {
         // Web ToolkitEditor: Black-format the Python code (server-side; admins only).
         ToolbarItem(placement: .topBarTrailing) {
             FormatPythonButton(code: $content)
+        }
+        if isEditing {
+            ToolbarItem(placement: .topBarTrailing) {
+                VersionHistoryToolbarButton { showVersionHistory = true }
+            }
         }
     }
 

@@ -1213,6 +1213,11 @@ struct RootView: View {
                 SSOAuthView(viewModel: viewModel)
             }
 
+        case .mfaChallenge:
+            NavigationStack {
+                MFAChallengeView(viewModel: viewModel)
+            }
+
         case .authenticated:
             authenticatedContent
 

@@ -1563,6 +1563,18 @@ struct ChannelDetailView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .transition(.move(edge: .bottom).combined(with: .opacity))
             }
+            // Queued messages wait above the input and go out in order.
+            if !viewModel.messageQueue.isEmpty {
+                MessageQueueView(
+                    queue: viewModel.messageQueue,
+                    onSendNow: { id in Task { await viewModel.sendQueuedNow(id) } },
+                    onEdit: { id in viewModel.editQueued(id) },
+                    onDelete: { id in viewModel.removeQueued(id) }
+                )
+                .padding(.horizontal, Spacing.screenPadding)
+                .padding(.bottom, 6)
+                .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
             // MF-005: Only show input if user has write access
             if viewModel.hasWriteAccess {
                 channelInputField
@@ -1571,6 +1583,7 @@ struct ChannelDetailView: View {
             }
         }
         .animation(.spring(response: 0.3, dampingFraction: 0.85), value: viewModel.typingUsers.map(\.id))
+        .animation(.spring(response: 0.3, dampingFraction: 0.85), value: viewModel.messageQueue.map(\.id))
     }
 
     /// Context chips for the composer (reply target, @model, bot-reply hint).

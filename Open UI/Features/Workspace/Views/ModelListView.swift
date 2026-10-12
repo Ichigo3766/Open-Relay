@@ -50,6 +50,7 @@ struct ModelListView: View {
     @State private var editingModel: ModelDetail? = nil
     @State private var cloningFromModel: ModelDetail? = nil
     @State private var deletingModel: ModelItem? = nil
+    @State private var accessModel: ModelItem? = nil
     @State private var errorMessage: String? = nil
 
     // Export
@@ -139,6 +140,15 @@ struct ModelListView: View {
             Text("Applies to every model matching the current search and filters.")
         }
         // Create sheet
+        .sheet(item: $accessModel) { model in
+            WorkspaceItemAccessSheet(
+                title: model.name,
+                loadGrants: { try await manager.getDetail(id: model.id).accessGrants },
+                save: { grants, isPublic in
+                    try await manager.updateAccessGrants(modelId: model.id, modelName: model.name, grants: grants, isPublic: isPublic)
+                }
+            )
+        }
         .sheet(isPresented: $showCreateSheet) {
             ModelEditorView(
                 existingModel: nil,
@@ -408,6 +418,11 @@ struct ModelListView: View {
                 } label: {
                     Label(model.isHidden ? "Show Model" : "Hide Model",
                           systemImage: model.isHidden ? "eye" : "eye.slash")
+                }
+                Button {
+                    accessModel = model
+                } label: {
+                    Label("Access", systemImage: "person.2.badge.key")
                 }
             }
             Button {

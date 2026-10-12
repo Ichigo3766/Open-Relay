@@ -12,6 +12,7 @@ struct KnowledgeListView: View {
     @State private var showEditor = false
     @State private var editingKnowledge: KnowledgeDetail?
     @State private var deletingKnowledge: KnowledgeItem?
+    @State private var accessKnowledge: KnowledgeItem?
     @State private var resettingKnowledge: KnowledgeItem?
     @State private var errorMessage: String?
 
@@ -54,6 +55,15 @@ struct KnowledgeListView: View {
             }
         }
         .task { await manager.fetchAll() }
+        .sheet(item: $accessKnowledge) { kb in
+            WorkspaceItemAccessSheet(
+                title: kb.name,
+                loadGrants: { try await manager.getDetail(id: kb.id).accessGrants },
+                save: { grants, isPublic in
+                    try await manager.updateAccessGrants(knowledgeId: kb.id, grants: grants, isPublic: isPublic)
+                }
+            )
+        }
         .sheet(isPresented: $showEditor) {
             KnowledgeEditorView(
                 existing: nil,
@@ -279,6 +289,11 @@ struct KnowledgeListView: View {
                 resettingKnowledge = kb
             } label: {
                 Label("Reset Files", systemImage: "arrow.counterclockwise")
+            }
+            Button {
+                accessKnowledge = kb
+            } label: {
+                Label("Access", systemImage: "person.2.badge.key")
             }
             Divider()
             Button(role: .destructive) {

@@ -523,7 +523,7 @@ struct iPadMainChatView: View {
         // pushed the top bar down.
         // Swipe right anywhere (that isn't a control, message, or scrollable code) → sidebar.
         .gesture(sidebarSwipeGesture)
-        // Swipe left from the trailing edge → terminal file browser.
+        // Swipe left anywhere (same rules as the sidebar swipe) → terminal file browser.
         .gesture(terminalSwipeGesture)
         .blur(radius: contentTransitionBlur)
         .inspector(isPresented: terminalInspectorBinding) {
@@ -564,12 +564,11 @@ struct iPadMainChatView: View {
         )
     }
 
-    /// Trailing-edge pan that opens the terminal panel (only when the terminal is on).
+    /// Leftward pan anywhere that opens the terminal panel (only when the terminal is on).
     private var terminalSwipeGesture: SidebarOpeningGesture {
         SidebarOpeningGesture(
             isEnabled: isTerminalActiveInCurrentChat && !showTerminalBrowser,
             direction: .leftward,
-            edgeWidth: 32,
             onChanged: { horizontal in
                 guard !terminalSwipeTriggered, horizontal < -panelSwipeThreshold else { return }
                 terminalSwipeTriggered = true

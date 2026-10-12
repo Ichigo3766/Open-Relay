@@ -26,6 +26,8 @@ enum AuthPhase: Equatable {
     case authenticated
     /// Shows the list of saved server profiles for quick switching.
     case serverSwitcher
+    /// Two-factor step: enroll, verify or recover an authenticator.
+    case mfaChallenge
 }
 
 /// Describes the type of authentication used.
@@ -79,6 +81,23 @@ final class AuthViewModel {
     /// Set before navigating to `.ssoLogin` so SSOAuthView can load the provider URL directly.
     var selectedSSOProvider: String?
 
+    // MARK: - Two-Factor (MFA) State
+
+    /// The pending authenticator step returned by sign-in, if any.
+    var mfaChallenge: MfaChallenge?
+    /// How the pending MFA sign-in started — used once the session is issued.
+    var mfaAuthType: AuthType = .credentials
+    /// Phase to return to when the MFA step is cancelled.
+    var mfaReturnPhase: AuthPhase = .authMethodSelection
+    /// Account label used in the authenticator entry (email / username).
+    var mfaAccountLabel: String = ""
+    /// Password sign-ins keep the credentials so Face ID can be offered after MFA.
+    private var mfaPendingCredentials: (email: String, password: String)?
+    /// Native-SSO refresh token held until the MFA step issues a session.
+    private var mfaPendingNativeRefreshToken: String?
+    /// True when this sign-in came from sign-up (show onboarding afterwards).
+    private var mfaFromSignUp = false
+
     // MARK: - Sign Up State
 
     var signUpName: String = ""
@@ -116,6 +135,19 @@ final class AuthViewModel {
 
     var serverVersion: String? {
         backendConfig?.version
+    }
+
+    /// True when the connected server is at least `minimum` (e.g. "0.12.0").
+    /// Unknown versions count as current, so new features stay available.
+    func serverIsAtLeast(_ minimum: String) -> Bool {
+        guard let version = serverVersion?.split(separator: "-").first.map(String.init), !version.isEmpty else { return true }
+        let lhs = version.split(separator: ".").map { Int($0) ?? 0 }
+        let rhs = minimum.split(separator: ".").map { Int($0) ?? 0 }
+        for i in 0..<max(lhs.count, rhs.count) {
+            let a = i < lhs.count ? lhs[i] : 0, b = i < rhs.count ? rhs[i] : 0
+            if a != b { return a > b }
+        }
+        return true
     }
 
     /// OAuth providers available on the server.
@@ -533,7 +565,27 @@ final class AuthViewModel {
             let capturedEmail = email
             let capturedPassword = password
 
-            let user = try await client.login(email: capturedEmail, password: capturedPassword)
+            let outcome = try await client.login(email: capturedEmail, password: capturedPassword)
+            let user: User
+            switch outcome {
+            case .mfa(let challenge):
+                beginMFA(
+                    challenge,
+                    authType: .credentials,
+                    accountLabel: capturedEmail,
+                    returnPhase: .credentialLogin,
+                    credentials: (capturedEmail, capturedPassword)
+                )
+                password = ""
+                isLoggingIn = false
+                return
+            case .pending:
+                phase = .pendingApproval
+                isLoggingIn = false
+                return
+            case .authenticated(let signedIn):
+                user = signedIn
+            }
             currentUser = user
             // Check if user is in pending state — needs admin approval
             if user.role == .pending {
@@ -597,6 +649,92 @@ final class AuthViewModel {
         startTokenRefreshTimer()
     }
 
+    // MARK: - Two-Factor Sign-In
+
+    /// Shows the authenticator step returned by a sign-in request.
+    func beginMFA(
+        _ challenge: MfaChallenge,
+        authType: AuthType,
+        accountLabel: String,
+        returnPhase: AuthPhase,
+        credentials: (email: String, password: String)? = nil
+    ) {
+        mfaChallenge = challenge
+        mfaAuthType = authType
+        mfaAccountLabel = accountLabel
+        mfaReturnPhase = returnPhase
+        mfaPendingCredentials = credentials
+        errorMessage = nil
+        phase = .mfaChallenge
+        logger.info("Sign-in needs an authenticator step: \(challenge.nextStep, privacy: .public)")
+    }
+
+    /// Replaces the challenge (e.g. after an operator recovery token was redeemed).
+    func updateMFAChallenge(_ challenge: MfaChallenge) {
+        mfaChallenge = challenge
+    }
+
+    /// Leaves the authenticator step without signing in.
+    func cancelMFA() {
+        clearMFAState()
+        errorMessage = nil
+        phase = serverConfigStore.activeServer == nil ? .serverConnection : mfaReturnPhase
+    }
+
+    private func clearMFAState() {
+        mfaChallenge = nil
+        mfaPendingCredentials = nil
+        mfaPendingNativeRefreshToken = nil
+        mfaFromSignUp = false
+    }
+
+    /// Finishes sign-in once the MFA step issued a session (token already stored).
+    func completeMFASignIn(user: User) async {
+        let credentials = mfaPendingCredentials
+        let nativeRefreshToken = mfaPendingNativeRefreshToken
+        let fromSignUp = mfaFromSignUp
+        let authType = mfaAuthType
+        clearMFAState()
+
+        currentUser = user
+        guard user.role != .pending else {
+            phase = .pendingApproval
+            return
+        }
+        dependencies?.activeChatStore.clear()
+        connectSocketWithToken()
+        cacheCurrentUser()
+        saveCurrentUserAsAccount(authType: authType)
+        backendConfig = try? await dependencies?.apiClient?.getBackendConfig()
+
+        if authType == .sso, let server = serverConfigStore.activeServer, server.nativeSSO != nil {
+            let key = NativeSSOSettings.refreshTokenKey(serverURL: server.url, userId: user.id)
+            if let nativeRefreshToken {
+                KeychainService.shared.saveToken(nativeRefreshToken, forServer: key)
+            } else {
+                KeychainService.shared.deleteToken(forServer: key)
+            }
+        }
+
+        if fromSignUp {
+            hasShownOnboarding = false
+            UserDefaults.standard.set(false, forKey: Self.onboardingKey)
+        }
+
+        // Same Face ID offer as a plain password sign-in.
+        let keychain = KeychainService.shared
+        if let credentials,
+           keychain.isBiometricsAvailable,
+           !biometricLoginEnabled,
+           let serverURL = serverConfigStore.activeServer?.url,
+           !keychain.hasBiometricCredentials(forServer: serverURL) {
+            pendingBiometricSaveCredentials = credentials
+            return
+        }
+        proceedToAuthenticated()
+        logger.info("Sign-in completed after authenticator step")
+    }
+
     // MARK: - Sign Up
 
     /// Creates a new account with name, email, and password.
@@ -626,11 +764,27 @@ final class AuthViewModel {
             let trimmedName = signUpName.trimmingCharacters(in: .whitespaces)
             let trimmedEmail = signUpEmail.trimmingCharacters(in: .whitespaces).lowercased()
 
-            let user = try await client.signup(
+            let outcome = try await client.signup(
                 name: trimmedName,
                 email: trimmedEmail,
                 password: signUpPassword
             )
+            let user: User
+            switch outcome {
+            case .mfa(let challenge):
+                mfaFromSignUp = true
+                beginMFA(challenge, authType: .credentials, accountLabel: trimmedEmail, returnPhase: .signUp)
+                signUpPassword = ""
+                signUpConfirmPassword = ""
+                isSigningUp = false
+                return
+            case .pending:
+                phase = .pendingApproval
+                isSigningUp = false
+                return
+            case .authenticated(let signedIn):
+                user = signedIn
+            }
             currentUser = user
             // Check if user is pending admin approval
             if user.role == .pending {
@@ -687,12 +841,24 @@ final class AuthViewModel {
         errorMessage = nil
 
         do {
-            currentUser = try await client.ldapLogin(
+            let outcome = try await client.ldapLogin(
                 username: ldapUsername,
                 password: ldapPassword
             )
-            // SECURITY FIX: Clear LDAP password from memory immediately after successful auth
+            // SECURITY FIX: Clear LDAP password from memory immediately after auth
             ldapPassword = ""
+            switch outcome {
+            case .mfa(let challenge):
+                beginMFA(challenge, authType: .ldap, accountLabel: ldapUsername, returnPhase: .ldapLogin)
+                isLoggingIn = false
+                return
+            case .pending:
+                phase = .pendingApproval
+                isLoggingIn = false
+                return
+            case .authenticated(let user):
+                currentUser = user
+            }
             // Clear cached chat VMs so models are re-fetched for the new account
             dependencies?.activeChatStore.clear()
             connectSocketWithToken()
@@ -829,6 +995,11 @@ final class AuthViewModel {
             isLoggingIn = false
             if case NativeOIDCAuthError.cancelled = error {
                 logger.info("Native SSO: cancelled by user")
+            } else if case NativeOIDCAuthError.mfaRequired(let challenge, let refreshToken) = error {
+                mfaPendingNativeRefreshToken = refreshToken
+                beginMFA(challenge, authType: .sso, accountLabel: "", returnPhase: .authMethodSelection)
+            } else if case NativeOIDCAuthError.pendingApproval = error {
+                phase = .pendingApproval
             } else {
                 logger.error("Native SSO: sign-in failed: \(error.localizedDescription)")
                 nativeSSOError = error.localizedDescription
@@ -1624,18 +1795,10 @@ final class AuthViewModel {
         guard let client = dependencies?.apiClient else { return }
         do {
             let fresh = try await client.getBackendConfig()
-            // If the new config has no suggestions but we already have some,
-            // keep the existing ones so the welcome-screen cards don't disappear.
-            if fresh.defaultPromptSuggestions == nil || (fresh.defaultPromptSuggestions?.isEmpty == true),
-               let existing = backendConfig?.defaultPromptSuggestions, !existing.isEmpty {
-                // Merge: adopt all new fields but restore the known-good suggestions.
-                backendConfig = BackendConfig(
-                    preservingSuggestionsFrom: backendConfig,
-                    updatedWith: fresh
-                )
-            } else {
-                backendConfig = fresh
-            }
+            // Merge: adopt all new fields; previous suggestions are only kept when
+            // the fresh response didn't include the key at all (e.g. token edge-case).
+            // An explicit null/[] from the server is respected (reset / turned off).
+            backendConfig = BackendConfig(preservingSuggestionsFrom: backendConfig, updatedWith: fresh)
         } catch {
             logger.warning("Failed to refresh backend config: \(error.localizedDescription)")
         }
@@ -2268,7 +2431,20 @@ final class AuthViewModel {
                 return
             }
 
-            let user = try await client.login(email: credentials.email, password: credentials.password)
+            let outcome = try await client.login(email: credentials.email, password: credentials.password)
+            let user: User
+            switch outcome {
+            case .mfa(let challenge):
+                beginMFA(challenge, authType: .credentials, accountLabel: credentials.email, returnPhase: .credentialLogin)
+                isLoggingIn = false
+                return
+            case .pending:
+                phase = .pendingApproval
+                isLoggingIn = false
+                return
+            case .authenticated(let signedIn):
+                user = signedIn
+            }
             currentUser = user
             if user.role == .pending {
                 phase = .pendingApproval
@@ -2332,6 +2508,19 @@ final class AuthViewModel {
         logger.info("Biometric credentials cleared for \(serverURL)")
     }
 
+    /// The server signs every device out after a password change. Keeps Face ID
+    /// working with the new password, then returns to the sign-in form.
+    func handlePasswordChanged(to newPassword: String) async {
+        let savedEmail = currentUser?.email ?? ""
+        if biometricLoginEnabled, !savedEmail.isEmpty {
+            saveBiometricCredentials(email: savedEmail, password: newPassword)
+        }
+        await signOut()
+        email = savedEmail
+        if serverConfigStore.activeServer != nil { phase = .credentialLogin }
+        errorMessage = String(localized: "Your password was changed. Please sign in with your new password.")
+    }
+
     /// Validates the current session in the background after an optimistic launch.
     /// If the token is genuinely invalid (401/403), kicks back to login.
     /// For transient errors (network, 5xx), silently retries — the user keeps
@@ -2365,12 +2554,7 @@ final class AuthViewModel {
             // Apply the fresh config, preserving any existing suggestions if the
             // new response is missing them (e.g. token edge-case at request time).
             if let fresh = freshConfig {
-                if fresh.defaultPromptSuggestions == nil || (fresh.defaultPromptSuggestions?.isEmpty == true),
-                   let existing = backendConfig?.defaultPromptSuggestions, !existing.isEmpty {
-                    backendConfig = BackendConfig(preservingSuggestionsFrom: backendConfig, updatedWith: fresh)
-                } else {
-                    backendConfig = fresh
-                }
+                backendConfig = BackendConfig(preservingSuggestionsFrom: backendConfig, updatedWith: fresh)
             } else if backendConfig == nil {
                 // Config call failed but we don't have anything yet — try once more.
                 backendConfig = try? await client.getBackendConfig()

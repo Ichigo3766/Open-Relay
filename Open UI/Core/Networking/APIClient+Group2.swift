@@ -11,6 +11,17 @@ extension APIClient {
 
     // MARK: Status
 
+    /// POST /api/v1/users/{id}/sessions/revoke — signs a user out of every
+    /// device; API keys keep working.
+    func revokeUserSessions(userId: String) async throws {
+        _ = try await network.requestRaw(
+            path: "/api/v1/users/\(userId.encodedPathSegment)/sessions/revoke",
+            method: .post,
+            body: Data("{}".utf8),
+            pathIsEncoded: true
+        )
+    }
+
     /// POST /api/v1/users/user/status/update. Empty strings clear the status (web "Clear status").
     func updateMyStatus(emoji: String, message: String, expiresAt: Int? = nil) async throws {
         var body: [String: Any] = ["status_emoji": emoji, "status_message": message]
@@ -36,10 +47,11 @@ extension APIClient {
     }
 
     /// POST /api/v1/chats/shared/{chat_id}/access/update — replaces the grant list.
-    func updateSharedChatAccess(chatId: String, grants: [[String: Any]]) async throws {
+    /// `shareMode`: nil = Clone only, "continue" = Allow replies.
+    func updateSharedChatAccess(chatId: String, grants: [[String: Any]], shareMode: String? = nil) async throws {
         _ = try await network.requestJSON(
             path: "/api/v1/chats/shared/\(chatId)/access/update", method: .post,
-            body: ["access_grants": grants])
+            body: ["access_grants": grants, "share_mode": shareMode.map { $0 as Any } ?? NSNull()])
     }
 
     // MARK: Archived chats

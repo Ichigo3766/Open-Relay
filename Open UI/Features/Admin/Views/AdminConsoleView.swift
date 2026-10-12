@@ -134,7 +134,10 @@ struct AdminConsoleView: View {
     private var tabBar: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 6) {
-                ForEach(AdminConsoleTab.allCases, id: \.self) { tab in
+                ForEach(AdminConsoleTab.allCases.filter { tab in
+                    // Functions disappear when the admin turned them off server-wide.
+                    tab != .functions || dependencies.authViewModel.backendConfig?.features?.enableFunctions != false
+                }, id: \.self) { tab in
                     Button {
                         withAnimation(.easeInOut(duration: 0.18)) {
                             selectedTab = tab

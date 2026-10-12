@@ -51,6 +51,26 @@ struct TerminalServerSetupSection: View {
                 Text("Default").tag("default")
                 Text("Save to terminal filesystem").tag("filesystem")
             }
+            // Prompt-cache friendly settings.
+            Toggle(isOn: $viewModel.editTermWorkingDirectoryContext) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Working Directory Context")
+                    Text("Include the current folder in the tool instructions. Turn off for better prompt caching.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            }
+            Picker(selection: $viewModel.editTermUserShellTools) {
+                Text("Auto").tag("auto")
+                Text("Always Include").tag("always")
+            } label: {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("User Shell Tools")
+                    Text(viewModel.editTermUserShellTools == "always"
+                         ? "Keep tools listed even while your shell is closed."
+                         : "Include tools only while your shell is connected.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            }
             if isOrchestrator {
                 Picker("Chat Terminal", selection: $viewModel.editTermChatContext) {
                     Text("One per user").tag("default")

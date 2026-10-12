@@ -40,6 +40,13 @@ final class AdminGroupsViewModel {
     var editDescription = ""
     var editSharePermission: GroupSharePermission = .members
     var editPermissions = GroupPermissions()
+    /// Nested groups: parent group id ("" = none).
+    var editParentGroupId = ""
+    /// Default models for members' new chats.
+    var editDefaultModels: [String] = []
+    /// True when the server returns `parent_group_id`.
+    var supportsNestedGroups: Bool { groups.contains { $0.parentGroupId != nil } || serverSupportsNesting }
+    var serverSupportsNesting = false
 
     // Edit target (nil = creating new)
     var editingGroup: GroupDetail?
@@ -79,7 +86,9 @@ final class AdminGroupsViewModel {
         isLoading = true
         errorMessage = nil
         do {
-            groups = try await api.getGroupDetails()
+            let result = try await api.getGroupDetailsWithCapabilities()
+            groups = result.groups
+            serverSupportsNesting = result.supportsNesting
             logger.info("Loaded \(self.groups.count) groups")
         } catch {
             errorMessage = error.localizedDescription
@@ -145,6 +154,8 @@ final class AdminGroupsViewModel {
         editDescription = ""
         editSharePermission = .members
         editPermissions = GroupPermissions()
+        editParentGroupId = ""
+        editDefaultModels = []
         saveError = nil
         saveSuccess = false
     }
@@ -157,8 +168,45 @@ final class AdminGroupsViewModel {
         editDescription = group.description
         editSharePermission = GroupSharePermission(rawValue: group.data?.config?.share ?? "members") ?? .members
         editPermissions = group.permissions ?? GroupPermissions()
+        editParentGroupId = group.parentGroupId ?? ""
+        editDefaultModels = group.data?.config?.defaultModels ?? []
         saveError = nil
         saveSuccess = false
+    }
+
+    /// Groups that can be this group's parent — never itself or one of its descendants.
+    func parentCandidates(for groupId: String?) -> [GroupDetail] {
+        guard let groupId else { return groups }
+        var excluded: Set<String> = [groupId]
+        var changed = true
+        while changed {
+            changed = false
+            for g in groups where !excluded.contains(g.id) {
+                if let parent = g.parentGroupId, excluded.contains(parent) {
+                    excluded.insert(g.id)
+                    changed = true
+                }
+            }
+        }
+        return groups.filter { !excluded.contains($0.id) }
+    }
+
+    /// Ancestors of a group, nearest first (for inherited permissions display).
+    func ancestors(ofParent parentId: String) -> [GroupDetail] {
+        var chain: [GroupDetail] = []
+        var cursor: String? = parentId
+        var seen = Set<String>()
+        while let id = cursor, !seen.contains(id), let g = groups.first(where: { $0.id == id }) {
+            seen.insert(id)
+            chain.append(g)
+            cursor = g.parentGroupId
+        }
+        return chain
+    }
+
+    private func applyNestedFields(to form: inout GroupForm) {
+        form.parentGroupId = editParentGroupId.isEmpty ? nil : editParentGroupId
+        form.sendsParent = serverSupportsNesting || editingGroup?.parentGroupId != nil || !editParentGroupId.isEmpty
     }
 
     // MARK: - Create Group
@@ -172,13 +220,16 @@ final class AdminGroupsViewModel {
         isCreating = true
         saveError = nil
         do {
-            let data = GroupData(config: GroupDataConfig(share: editSharePermission.rawValue))
-            let form = GroupForm(
+            var config = GroupDataConfig(share: editSharePermission.rawValue)
+            config.defaultModels = editDefaultModels
+            let data = GroupData(config: config)
+            var form = GroupForm(
                 name: editName.trimmingCharacters(in: .whitespaces),
                 description: editDescription,
                 permissions: editPermissions,
                 data: data
             )
+            applyNestedFields(to: &form)
             let created = try await api.createGroup(form)
             groups.append(created)
             saveSuccess = true
@@ -202,13 +253,15 @@ final class AdminGroupsViewModel {
             var data = group.data ?? GroupData()
             var config = data.config ?? GroupDataConfig(share: nil)
             config.share = editSharePermission.rawValue
+            config.defaultModels = editDefaultModels
             data.config = config
-            let form = GroupForm(
+            var form = GroupForm(
                 name: editName.trimmingCharacters(in: .whitespaces),
                 description: editDescription,
                 permissions: editPermissions,
                 data: data
             )
+            applyNestedFields(to: &form)
             let updated = try await api.updateGroup(id: group.id, form: form)
             if let idx = groups.firstIndex(where: { $0.id == group.id }) {
                 groups[idx] = updated

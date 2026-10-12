@@ -89,9 +89,18 @@ nonisolated enum NativeOIDCAuthError: LocalizedError, Sendable {
     /// IdP returned a proper OAuth error body.
     case tokenRequestFailed(statusCode: Int, oauthError: String?, detail: String?)
     case exchangeFailed(statusCode: Int, detail: String?)
+    /// Requires an authenticator step before issuing a session.
+    /// Carries the IdP refresh token so it can be stored once MFA completes.
+    case mfaRequired(MfaChallenge, refreshToken: String?)
+    /// The account exists but awaits admin approval (MFA servers issue no session).
+    case pendingApproval
 
     var errorDescription: String? {
         switch self {
+        case .mfaRequired:
+            return "Verify your sign-in with your authenticator app."
+        case .pendingApproval:
+            return "Your account is awaiting approval from an administrator."
         case .issuerNotFound:
             return "Couldn't find your identity provider automatically. Enter its issuer URL in the server's Advanced settings."
         case .invalidIssuer:
@@ -279,7 +288,7 @@ final class NativeOIDCAuthenticator {
             ("code_verifier", verifier),
         ])
 
-        let exchanged = try await exchange(accessToken: tokens.accessToken)
+        let exchanged = try await exchange(accessToken: tokens.accessToken, refreshToken: tokens.refreshToken)
         logger.info("Native SSO: sign-in exchange succeeded (refresh token \(tokens.refreshToken != nil ? "issued" : "absent", privacy: .public))")
         return NativeSSOSession(jwt: exchanged.token, userId: exchanged.userId, refreshToken: tokens.refreshToken)
     }
@@ -569,6 +578,10 @@ final class NativeOIDCAuthenticator {
         let token: String?
         let id: String?
         let detail: String?
+        /// `"enroll" | "verify" | "recover" | "pending"` when no session was issued.
+        let nextStep: String?
+        let challengeToken: String?
+        let expiresIn: Int?
 
         init(from decoder: Decoder) throws {
             let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -576,12 +589,20 @@ final class NativeOIDCAuthenticator {
             id = try? c.decode(String.self, forKey: .id)
             // FastAPI validation errors return `detail` as an array — ignore those.
             detail = try? c.decode(String.self, forKey: .detail)
+            nextStep = try? c.decode(String.self, forKey: .nextStep)
+            challengeToken = try? c.decode(String.self, forKey: .challengeToken)
+            expiresIn = try? c.decode(Int.self, forKey: .expiresIn)
         }
 
-        enum CodingKeys: String, CodingKey { case token, id, detail }
+        enum CodingKeys: String, CodingKey {
+            case token, id, detail
+            case nextStep = "next_step"
+            case challengeToken = "challenge_token"
+            case expiresIn = "expires_in"
+        }
     }
 
-    private func exchange(accessToken: String) async throws -> (token: String, userId: String?) {
+    private func exchange(accessToken: String, refreshToken: String? = nil) async throws -> (token: String, userId: String?) {
         let body = try JSONSerialization.data(withJSONObject: ["token": accessToken])
         let request = try client.network.buildRequest(
             path: "/api/v1/auths/oauth/\(NativeSSOSettings.providerKey)/token/exchange",
@@ -602,6 +623,18 @@ final class NativeOIDCAuthenticator {
         }
         let status = (response as? HTTPURLResponse)?.statusCode ?? -1
         let wire = try? JSONDecoder().decode(ExchangeWire.self, from: data)
+        if status == 200, let wire, wire.token == nil {
+            if let challengeToken = wire.challengeToken, let step = wire.nextStep {
+                logger.info("Native SSO: server requires an authenticator step (\(step, privacy: .public))")
+                throw NativeOIDCAuthError.mfaRequired(
+                    MfaChallenge(nextStep: step, challengeToken: challengeToken, expiresIn: wire.expiresIn),
+                    refreshToken: refreshToken
+                )
+            }
+            if wire.nextStep == "pending" {
+                throw NativeOIDCAuthError.pendingApproval
+            }
+        }
         guard status == 200, let token = wire?.token, !token.isEmpty else {
             logger.warning("Native SSO: token exchange returned HTTP \(status, privacy: .public)")
             throw NativeOIDCAuthError.exchangeFailed(statusCode: status, detail: wire?.detail)

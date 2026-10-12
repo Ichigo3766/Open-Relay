@@ -271,6 +271,11 @@ struct GroupEditSheet: View {
                 .padding(.horizontal, Spacing.screenPadding)
             }
 
+            // Parent group + default models for members
+            if viewModel.supportsNestedGroups {
+                GroupHierarchySection(viewModel: viewModel)
+            }
+
             // Error Banner
             if let err = viewModel.saveError {
                 HStack(spacing: Spacing.sm) {

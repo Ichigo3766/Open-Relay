@@ -45,6 +45,9 @@ struct PrivacySecurityView: View {
                     locationRow
                 }
 
+                // Two-factor sign-in
+                TwoFactorSettingsSection()
+
                 // API Key Management
                 SettingsSection(header: "API Key") {
                     apiKeySection

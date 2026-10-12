@@ -23,7 +23,7 @@ struct AdminModelsSettingsView: View {
     @State private var isLoadingEditId: String? = nil
     // Web `viewOption` / search (Models.svelte): base | workspace | enabled | disabled |
     // visible | hidden | public | private | selected | pinned | "" (all).
-    @State private var viewOption = ""
+    @State private var viewOption = "available"
     @State private var searchValue = ""
     @State private var showResetConfirm = false
     @State private var pendingBulk: AdminModelBulk?
@@ -269,6 +269,8 @@ struct AdminModelsSettingsView: View {
         return viewModel.models.filter { m in
             if !q.isEmpty, !m.name.lowercased().contains(q) { return false }
             switch viewOption {
+            case "available": return !viewModel.unavailableModelIds.contains(m.id)
+            case "unavailable": return viewModel.unavailableModelIds.contains(m.id)
             case "base": return m.baseModelId == nil
             case "workspace": return m.baseModelId != nil
             case "enabled": return m.isActive
@@ -277,7 +279,7 @@ struct AdminModelsSettingsView: View {
             case "hidden": return m.isHidden
             case "public": return m.isPublic
             case "private": return !m.isPublic
-            case "selected": return viewModel.defaultModelId.split(separator: ",").map(String.init).contains(m.id)
+            case "selected": return viewModel.defaultModelIds.contains(m.id)
             case "pinned": return viewModel.defaultPinnedModelIds.contains(m.id)
             default: return true
             }
@@ -285,6 +287,7 @@ struct AdminModelsSettingsView: View {
     }
 
     private static let viewOptions: [(String, String)] = [
+        ("available", "Available"), ("unavailable", "Unavailable"),
         ("", "All"), ("base", "Base Models"), ("workspace", "Workspace Models"),
         ("enabled", "Enabled"), ("disabled", "Disabled"), ("visible", "Visible"), ("hidden", "Hidden"),
         ("public", "Public"), ("private", "Private"), ("selected", "Selected"), ("pinned", "Pinned")
@@ -306,8 +309,8 @@ struct AdminModelsSettingsView: View {
                         }
                     }
                 } label: {
-                    Image(systemName: viewOption.isEmpty ? "line.3.horizontal.decrease.circle" : "line.3.horizontal.decrease.circle.fill")
-                        .foregroundStyle(viewOption.isEmpty ? theme.textTertiary : theme.brandPrimary)
+                    Image(systemName: viewOption.isEmpty || viewOption == "available" ? "line.3.horizontal.decrease.circle" : "line.3.horizontal.decrease.circle.fill")
+                        .foregroundStyle(viewOption.isEmpty || viewOption == "available" ? theme.textTertiary : theme.brandPrimary)
                 }
                 Menu {
                     Button("Enable All", systemImage: "checkmark.circle") { pendingBulk = .enableAll }
@@ -716,6 +719,7 @@ struct AdminModelsManageSheet: View {
 struct AdminModelsGlobalSettingsSheet: View {
     @Environment(\.theme) private var theme
     @Environment(\.dismiss) private var dismiss
+    @Environment(AppDependencyContainer.self) private var dependencies
 
     @Bindable var viewModel: AdminModelsSettingsViewModel
 
@@ -768,6 +772,9 @@ struct AdminModelsGlobalSettingsSheet: View {
                             Task {
                                 await viewModel.save()
                                 if viewModel.errorMessage == nil {
+                                    // Pull the fresh /api/config so new-chat starter
+                                    // prompts and defaults update immediately.
+                                    await dependencies.authViewModel.refreshBackendConfig()
                                     dismiss()
                                 }
                             }
@@ -813,6 +820,7 @@ struct AdminModelsGlobalSettingsSheet: View {
         let imported = rawArray.compactMap { SuggestionPrompt(json: $0) }
         if !imported.isEmpty {
             viewModel.suggestions = imported
+            viewModel.useDefaultSuggestions = false
         }
     }
 
@@ -850,16 +858,16 @@ struct AdminModelsGlobalSettingsSheet: View {
     }
 
     private func resetAll() {
-        viewModel.defaultModelId = ""
+        viewModel.defaultModelIds = []
         viewModel.defaultPinnedModelIds = []
-        viewModel.suggestions = []
+        viewModel.resetSuggestionsToDefaults()
         viewModel.capVision = true; viewModel.capFileUpload = true
         viewModel.capFileContext = true; viewModel.capWebSearch = true
         viewModel.capImageGeneration = true; viewModel.capCodeInterpreter = true
         viewModel.capTerminal = true; viewModel.capUsage = false
         viewModel.capCitations = true; viewModel.capStatusUpdates = true
         viewModel.capMemory = true; viewModel.capBuiltinTools = true
-        viewModel.defWebSearch = true; viewModel.defImageGeneration = true
+        viewModel.defWebSearch = false; viewModel.defImageGeneration = false
         viewModel.defCodeInterpreter = false
         viewModel.btTime = true; viewModel.btUserInput = true
         viewModel.btMemory = true; viewModel.btChats = true
@@ -888,15 +896,37 @@ struct AdminModelsGlobalSettingsSheet: View {
         VStack(alignment: .leading, spacing: Spacing.sm) {
             sectionHeader("Selected Models")
 
-            AdminSettingsRow(title: "Default Model") {
-                Picker("", selection: $viewModel.defaultModelId) {
-                    Text("Select a model").tag("")
-                    ForEach(viewModel.models, id: \.id) { m in
-                        Text(m.name).tag(m.id)
+            // DEFAULT_MODELS is a list on the server (web lets admins pick several).
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Default Models")
+                    .scaledFont(size: 14)
+                    .foregroundStyle(theme.textSecondary)
+                    .padding(.horizontal, Spacing.screenPadding)
+                    .padding(.top, 2)
+
+                ForEach(viewModel.models, id: \.id) { model in
+                    let isDefault = viewModel.defaultModelIds.contains(model.id)
+                    Button {
+                        if isDefault {
+                            viewModel.defaultModelIds.removeAll { $0 == model.id }
+                        } else {
+                            viewModel.defaultModelIds.append(model.id)
+                        }
+                    } label: {
+                        HStack {
+                            Image(systemName: isDefault ? "checkmark.square.fill" : "square")
+                                .foregroundStyle(isDefault ? theme.brandPrimary : theme.textTertiary)
+                                .scaledFont(size: 16)
+                            Text(model.name)
+                                .scaledFont(size: 14)
+                                .foregroundStyle(theme.textPrimary)
+                            Spacer()
+                        }
+                        .padding(.horizontal, Spacing.screenPadding)
+                        .padding(.vertical, 6)
                     }
+                    .buttonStyle(.plain)
                 }
-                .labelsHidden()
-                .scaledFont(size: 13)
             }
 
             // Pinned models
@@ -964,6 +994,21 @@ struct AdminModelsGlobalSettingsSheet: View {
 
             AnimatedPresence(visible: showSuggestions) {
                 VStack(spacing: Spacing.md) {
+                    HStack {
+                        Text(viewModel.useDefaultSuggestions
+                             ? "Using Open WebUI's built-in starter prompts. Edit any to customise."
+                             : "Custom starter prompts shown on new chats.")
+                            .scaledFont(size: 12)
+                            .foregroundStyle(theme.textTertiary)
+                        Spacer()
+                        if !viewModel.useDefaultSuggestions {
+                            Button("Use Defaults") { viewModel.resetSuggestionsToDefaults() }
+                                .scaledFont(size: 12, weight: .medium)
+                                .foregroundStyle(theme.brandPrimary)
+                                .buttonStyle(.plain)
+                        }
+                    }
+
                     // Use ID-based iteration to avoid index-out-of-bounds crash on delete
                     ForEach(viewModel.suggestions) { suggestion in
                         if let idx = viewModel.suggestions.firstIndex(where: { $0.id == suggestion.id }) {
@@ -1184,7 +1229,8 @@ struct AdminModelsGlobalSettingsSheet: View {
             ("Task Management", $viewModel.btTaskManagement),
             ("Automations", $viewModel.btAutomations),
             ("Calendar", $viewModel.btCalendar),
-            ("Sub-agents", $viewModel.btSubagents)
+            ("Sub-agents", $viewModel.btSubagents),
+            ("Skills", $viewModel.btSkills)
         ]
         return capCheckboxGrid(items: items)
     }
@@ -1780,7 +1826,7 @@ struct AdminModelsGlobalSettingsSheet: View {
                 .listRowSeparatorTint(theme.inputBorder.opacity(0.3))
             }
             .onMove { source, destination in
-                viewModel.modelOrderList.move(fromOffsets: source, toOffset: destination)
+                viewModel.moveModelOrder(fromOffsets: source, toOffset: destination)
             }
         }
         .listStyle(.plain)

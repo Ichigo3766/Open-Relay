@@ -60,6 +60,7 @@ struct PromptsListView: View {
     @State private var showEditor = false
     @State private var editingPrompt: PromptDetail?
     @State private var deletingPrompt: PromptItem?
+    @State private var accessPrompt: PromptItem?
     @State private var errorMessage: String?
 
     // Clone
@@ -137,6 +138,15 @@ struct PromptsListView: View {
             await manager.fetchTags()
         }
         // Create sheet
+        .sheet(item: $accessPrompt) { prompt in
+            WorkspaceItemAccessSheet(
+                title: prompt.name,
+                loadGrants: { try await manager.getPromptDetail(id: prompt.id).accessGrants },
+                save: { grants, isPublic in
+                    try await manager.updateAccessGrants(promptId: prompt.id, grants: grants, isPublic: isPublic)
+                }
+            )
+        }
         .sheet(isPresented: $showEditor) {
             PromptEditorView(
                 existing: nil,
@@ -495,6 +505,11 @@ struct PromptsListView: View {
                 Task { await clonePrompt(prompt, manager: manager) }
             } label: {
                 Label("Clone", systemImage: "plus.square.on.square")
+            }
+            Button {
+                accessPrompt = prompt
+            } label: {
+                Label("Access", systemImage: "person.2.badge.key")
             }
             if dependencies.authViewModel.workspacePermissions.promptsExport {
                 Button {

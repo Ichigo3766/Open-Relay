@@ -96,6 +96,7 @@ struct ModelEditorView: View {
     @State private var builtinAutomations = true
     @State private var builtinCalendar = true
     @State private var builtinSubagents = true
+    @State private var builtinSkills = true
     @State private var builtinWebSearch = true
     @State private var builtinImageGen = true
     @State private var builtinCodeInterpreter = true
@@ -189,6 +190,9 @@ struct ModelEditorView: View {
     @State private var isSaving = false
     @State private var validationError: String? = nil
     @State private var showDiscardConfirm = false
+    /// Version history sheet target.
+    @State private var versionHistoryTarget: ModelDetail?
+    @State private var restoredVersion = false
     /// Fingerprint of the editor state right after loading — used by `hasChanges`.
     @State private var baselinePayload: Data? = nil
 
@@ -240,13 +244,22 @@ struct ModelEditorView: View {
 
     /// Fingerprint of everything `save()` would send (sorted-key JSON).
     private var currentPayloadFingerprint: Data? {
+        try? JSONSerialization.data(withJSONObject: currentPayload, options: [.sortedKeys])
+    }
+
+    /// Same payload, pretty-printed for the "Copy JSON" action.
+    private var currentPayloadFingerprintPretty: Data? {
+        try? JSONSerialization.data(withJSONObject: currentPayload, options: [.sortedKeys, .prettyPrinted, .withoutEscapingSlashes])
+    }
+
+    private var currentPayload: [String: Any] {
         var d = buildDetail(id: existingModel?.id ?? modelId.trimmingCharacters(in: .whitespaces))
         var grants = localAccessGrants
         if !isPrivate {
             grants.append(AccessGrant(id: "", userId: "*", groupId: nil, read: true, write: false))
         }
         d.accessGrants = grants
-        return try? JSONSerialization.data(withJSONObject: d.toCreatePayload(), options: [.sortedKeys])
+        return d.toCreatePayload()
     }
 
     // Resolved profile image URL for displaying in the editor.
@@ -470,6 +483,7 @@ struct ModelEditorView: View {
                         builtinChannels: $builtinChannels, builtinNotifications: $builtinNotifications,
                         builtinTaskManagement: $builtinTaskManagement, builtinAutomations: $builtinAutomations, builtinCalendar: $builtinCalendar,
                         builtinSubagents: $builtinSubagents,
+                        builtinSkills: $builtinSkills,
                         builtinWebSearch: $builtinWebSearch, builtinImageGen: $builtinImageGen,
                         builtinCodeInterpreter: $builtinCodeInterpreter
                     )
@@ -483,6 +497,18 @@ struct ModelEditorView: View {
             .navigationTitle(isEditing ? "Edit Model" : "New Model")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { toolbarContent }
+            .sheet(item: $versionHistoryTarget, onDismiss: {
+                // A restored version replaced the saved model — close the editor so
+                // reopening shows the live version instead of stale fields.
+                if restoredVersion { dismiss() }
+            }) { model in
+                ResourceVersionHistorySheet(
+                    resource: .model(id: model.id),
+                    title: String(localized: "Version History"),
+                    liveVersionId: model.versionId,
+                    onRestored: { restoredVersion = true }
+                )
+            }
             .sheet(isPresented: $isSystemPromptExpanded) {
                 FullscreenContentEditor(
                     title: "System Prompt",
@@ -1292,6 +1318,23 @@ struct ModelEditorView: View {
                           || modelId.trimmingCharacters(in: .whitespaces).isEmpty)
             }
         }
+        // Every save keeps a version — page through, compare, restore.
+        if let existing = existingModel, isEditing {
+            ToolbarItem(placement: .topBarTrailing) {
+                VersionHistoryToolbarButton { versionHistoryTarget = existing }
+            }
+        }
+        // Copy the model's JSON exactly as it would be saved,
+        // including edits that have not been saved yet.
+        ToolbarItem(placement: .topBarTrailing) {
+            Button("Copy JSON", systemImage: "curlybraces") {
+                if let data = currentPayloadFingerprintPretty, let text = String(data: data, encoding: .utf8) {
+                    UIPasteboard.general.string = text
+                    Haptics.notify(.success)
+                }
+            }
+            .labelStyle(.iconOnly)
+        }
     }
 
     // MARK: - Set-based Checkbox (for Tools, Skills, Filters)
@@ -1415,6 +1458,7 @@ struct ModelEditorView: View {
         builtinTaskManagement = model.builtinTaskManagement
         builtinAutomations = model.builtinAutomations
         builtinCalendar = model.builtinCalendar; builtinSubagents = model.builtinSubagents
+        builtinSkills = model.builtinSkills
         builtinWebSearch = model.builtinWebSearch; builtinImageGen = model.builtinImageGen
         builtinCodeInterpreter = model.builtinCodeInterpreter
 
@@ -1553,6 +1597,7 @@ struct ModelEditorView: View {
                 builtinAutomations = tool("automations"); builtinCalendar = tool("calendar")
                 builtinSubagents = tool("subagents"); builtinWebSearch = tool("web_search")
                 builtinImageGen = tool("image_generation"); builtinCodeInterpreter = tool("code_interpreter")
+                builtinSkills = tool("skills")
             }
             return
         }
@@ -1581,6 +1626,7 @@ struct ModelEditorView: View {
         builtinAutomations = tool("automations"); builtinCalendar = tool("calendar")
         builtinSubagents = tool("subagents"); builtinWebSearch = tool("web_search")
         builtinImageGen = tool("image_generation"); builtinCodeInterpreter = tool("code_interpreter")
+        builtinSkills = tool("skills")
     }
 
     private func fetchToolsAndFunctions() async {
@@ -1721,6 +1767,7 @@ struct ModelEditorView: View {
             suggestionPrompts: suggestionPrompts,
             ttsVoice: ttsVoice.trimmingCharacters(in: .whitespaces)
         )
+        detail.builtinSkills = builtinSkills
         detail.advStreamResponse = advStreamResponse
         detail.advStreamDeltaChunkSize = advStreamDeltaChunkSize
         detail.advFunctionCalling = advFunctionCalling
@@ -2420,6 +2467,11 @@ struct ModelAdvancedParamsSection: View {
                     .autocapitalization(.none)
                     .frame(maxWidth: .infinity)
 
+                    SuggestionMenuButton(
+                        options: CustomParamSuggestions.all.map(\.name)
+                            .filter { name in !customParams.contains { $0.key == name } }
+                    ) { customParams[idx].key = $0 }
+
                     Text(":").foregroundStyle(theme.textTertiary)
 
                     TextField("JSON or text", text: Binding(
@@ -2431,6 +2483,10 @@ struct ModelAdvancedParamsSection: View {
                     .autocorrectionDisabled()
                     .autocapitalization(.none)
                     .frame(maxWidth: .infinity)
+
+                    SuggestionMenuButton(options: CustomParamSuggestions.values(for: customParams[idx].key)) {
+                        customParams[idx].value = $0
+                    }
 
                     Button {
                         customParams.remove(at: idx)
@@ -2750,6 +2806,7 @@ struct ModelToolsAndCapabilitiesSection: View {
     @Binding var builtinAutomations: Bool
     @Binding var builtinCalendar: Bool
     @Binding var builtinSubagents: Bool
+    @Binding var builtinSkills: Bool
     @Binding var builtinWebSearch: Bool
     @Binding var builtinImageGen: Bool
     @Binding var builtinCodeInterpreter: Bool
@@ -3091,6 +3148,7 @@ struct ModelToolsAndCapabilitiesSection: View {
                     capCheckbox("Automations", value: $builtinAutomations)
                     capCheckbox("Calendar", value: $builtinCalendar)
                     capCheckbox("Sub-agents", value: $builtinSubagents)
+                    capCheckbox("Skills", value: $builtinSkills)
                     capCheckbox("Web Search", value: $builtinWebSearch)
                     capCheckbox("Image Generation", value: $builtinImageGen)
                     capCheckbox("Code Interpreter", value: $builtinCodeInterpreter)

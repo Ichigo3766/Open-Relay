@@ -1,4 +1,5 @@
 import Foundation
+import SwiftUI
 import os.log
 
 /// ViewModel for the Admin Models Settings screen.
@@ -24,12 +25,15 @@ final class AdminModelsSettingsViewModel {
 
     // MARK: - Settings: Defaults Tab
 
-    var defaultModelId: String = ""
+    /// `DEFAULT_MODELS` — the server stores a comma-separated list (web allows several).
+    var defaultModelIds: [String] = []
     var defaultPinnedModelIds: [String] = []
     var modelOrderList: [String] = []
 
     // Prompt Suggestions
     var suggestions: [SuggestionPrompt] = []
+    /// True = use Open WebUI's built-in starter prompts (`suggestions: null` on the server).
+    var useDefaultSuggestions = false
 
     // Model Capabilities
     var capVision = true
@@ -45,9 +49,9 @@ final class AdminModelsSettingsViewModel {
     var capMemory = true
     var capBuiltinTools = true
 
-    // Default Features
-    var defWebSearch = true
-    var defImageGeneration = true
+    // Default Features (web default: none on until the admin picks them)
+    var defWebSearch = false
+    var defImageGeneration = false
     var defCodeInterpreter = false
 
     // Builtin Tools
@@ -67,6 +71,7 @@ final class AdminModelsSettingsViewModel {
     var btFiles = true
     var btNotifications = true
     var btSubagents = true
+    var btSkills = true
 
     // Model Params (nil = Default)
     var streamChat: Bool? = nil
@@ -127,6 +132,38 @@ final class AdminModelsSettingsViewModel {
     private let logger = Logger(subsystem: "com.openui", category: "AdminModels")
     /// Snapshot of suggestions as loaded from the server — used to detect changes before POSTing.
     private var loadedSuggestions: [SuggestionPrompt] = []
+    private var loadedUseDefaultSuggestions = false
+    /// `default_prompt_suggestions_i18n` as loaded — re-sent on save so web-side
+    /// translations survive (the server replaces them with whatever is posted).
+    private var suggestionsI18n: [String: Any] = [:]
+    /// The saved MODEL_ORDER_LIST (nil when never saved) — only re-sent as-is
+    /// unless the admin actually reorders.
+    private var savedModelOrderList: [String]?
+    private var modelOrderEdited = false
+    /// Sections that failed to load; save refuses to overwrite them with blank values.
+    private(set) var modelsConfigLoaded = false
+    private(set) var suggestionsLoaded = false
+
+    /// Called by the reorder list when the admin moves a model.
+    func moveModelOrder(fromOffsets source: IndexSet, toOffset destination: Int) {
+        modelOrderList.move(fromOffsets: source, toOffset: destination)
+        modelOrderEdited = true
+    }
+
+    /// Restores Open WebUI's built-in starter prompts.
+    func resetSuggestionsToDefaults() {
+        useDefaultSuggestions = true
+        suggestions = Self.builtInSuggestionPrompts
+    }
+
+    static var builtInSuggestionPrompts: [SuggestionPrompt] {
+        BackendConfig.builtInPromptSuggestions.map {
+            let title = $0.title ?? []
+            return SuggestionPrompt(content: $0.content ?? "",
+                                    title: title.first ?? "",
+                                    subtitle: title.count > 1 ? title[1] : "")
+        }
+    }
 
     // MARK: - Configure
 
@@ -167,12 +204,22 @@ final class AdminModelsSettingsViewModel {
     private func fetchMergedModels(api: APIClient) async throws -> [ModelItem] {
         async let baseTask   = fetchMergedBaseModels(api: api)
         async let customTask = api.listWorkspaceModels()
+        async let savedBaseTask = api.listBaseModels()
         let (baseModels, allWorkspace) = try await (baseTask, customTask)
         // Custom models are workspace entries that have a base_model_id (they are not raw base models)
         let baseIds = Set(baseModels.map { $0.id })
         let customModels = allWorkspace.filter { $0.baseModelId != nil && !baseIds.contains($0.id) }
-        return baseModels + customModels
+        // Saved base-model records no connection offers any more are
+        // listed as "Unavailable" leftovers instead of silently disappearing.
+        let saved = (try? await savedBaseTask) ?? []
+        let customIds = Set(customModels.map(\.id))
+        let leftovers = saved.filter { $0.baseModelId == nil && !baseIds.contains($0.id) && !customIds.contains($0.id) }
+        unavailableModelIds = Set(leftovers.map(\.id))
+        return baseModels + customModels + leftovers
     }
+
+    /// Saved base models that no connection currently offers.
+    var unavailableModelIds: Set<String> = []
 
     func loadAll() async {
         guard let api = apiClient else { return }
@@ -180,22 +227,38 @@ final class AdminModelsSettingsViewModel {
         errorMessage = nil
         defer { isLoading = false }
 
-        async let modelsTask      = fetchMergedModels(api: api)
-        async let configTask      = api.getModelsConfig()
-        async let suggestionsTask = api.getSuggestionsConfig()
-        async let ollamaTask      = api.getOllamaConfig()
+        // Each section loads independently — one failing request (e.g. Ollama
+        // disabled, a connection timing out) must not blank the whole tab.
+        async let modelsTask      = Self.capture { try await self.fetchMergedModels(api: api) }
+        async let configTask      = Self.capture { try await api.getModelsConfig() }
+        async let suggestionsTask = Self.capture { try await api.getPromptSuggestionsConfig() }
+        async let ollamaTask      = Self.capture { try await api.getOllamaConfig() }
 
-        do {
-            let (fetchedModels, config, rawSuggestions, ollamaCfg) = try await (
-                modelsTask, configTask, suggestionsTask, ollamaTask
-            )
-            models = fetchedModels
-            ollamaConfig = ollamaCfg
-            applySuggestionsConfig(rawSuggestions)
-            applyModelsConfig(config)
-        } catch {
-            errorMessage = error.localizedDescription
+        let (modelsRes, configRes, suggestionsRes, ollamaRes) =
+            await (modelsTask, configTask, suggestionsTask, ollamaTask)
+
+        var failures: [String] = []
+        switch modelsRes {
+        case .success(let m): models = m
+        case .failure(let e): failures.append("Models: \(e.localizedDescription)")
         }
+        switch configRes {
+        case .success(let c): applyModelsConfig(c); modelsConfigLoaded = true
+        case .failure(let e): failures.append("Model defaults: \(e.localizedDescription)")
+        }
+        switch suggestionsRes {
+        case .success(let s): applySuggestionsConfig(s); suggestionsLoaded = true
+        case .failure(let e): failures.append("Prompt suggestions: \(e.localizedDescription)")
+        }
+        if case .success(let o) = ollamaRes { ollamaConfig = o }
+        else if case .failure(let e) = ollamaRes {
+            logger.warning("Ollama config unavailable: \(e.localizedDescription)")
+        }
+        if !failures.isEmpty { errorMessage = failures.joined(separator: "\n") }
+    }
+
+    private static func capture<T>(_ work: () async throws -> T) async -> Result<T, Error> {
+        do { return .success(try await work()) } catch { return .failure(error) }
     }
 
     // MARK: - Base model DB record
@@ -389,7 +452,8 @@ final class AdminModelsSettingsViewModel {
             "tasks": btTaskManagement,
             "automations": btAutomations,
             "calendar": btCalendar,
-            "subagents": btSubagents
+            "subagents": btSubagents,
+            "skills": btSkills
         ]
         let builtinTools: [String: Any] = allBuiltinTools.filter { !$0.value }.mapValues { $0 as Any }
 
@@ -429,9 +493,10 @@ final class AdminModelsSettingsViewModel {
         }
 
         let payload: [String: Any] = [
-            "DEFAULT_MODELS": defaultModelId,
+            "DEFAULT_MODELS": defaultModelIds.joined(separator: ","),
             "DEFAULT_PINNED_MODELS": defaultPinnedModelIds.joined(separator: ","),
-            "MODEL_ORDER_LIST": modelOrderList,
+            // Only send a new order when the admin reordered; otherwise keep what's saved.
+            "MODEL_ORDER_LIST": modelOrderEdited ? modelOrderList : (savedModelOrderList ?? []),
             "DEFAULT_MODEL_METADATA": [
                 "capabilities": capabilities,
                 "defaultFeatureIds": defaultFeatureIds,
@@ -441,22 +506,32 @@ final class AdminModelsSettingsViewModel {
         ]
 
         do {
-            // Always save the models config
-            try await api.updateModelsConfig(payload)
+            // Never overwrite the server's defaults with blank values from a failed load.
+            if modelsConfigLoaded {
+                try await api.updateModelsConfig(payload)
+                savedModelOrderList = payload["MODEL_ORDER_LIST"] as? [String]
+                modelOrderEdited = false
+            }
 
-            // Only POST suggestions if the user actually changed them — the endpoint is
-            // a full REPLACE, so an accidental empty POST would wipe all suggestions.
+            // Only POST suggestions if the admin changed them — the endpoint is a full
+            // REPLACE, so an accidental empty POST would wipe all suggestions.
             let currentSuggestions = suggestions.filter {
                 !$0.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             }
-            let currentMatchesLoaded = currentSuggestions == loadedSuggestions.filter {
-                !$0.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            // Editing the built-in starters turns them into a custom list (web parity).
+            if useDefaultSuggestions && suggestions != Self.builtInSuggestionPrompts {
+                useDefaultSuggestions = false
             }
-            if !currentMatchesLoaded {
-                let suggestionsPayload = currentSuggestions.map { $0.toJSON() }
-                try await api.updateSuggestionsConfig(suggestions: suggestionsPayload)
-                // Update snapshot so subsequent saves without changes are also skipped
+            let changed = useDefaultSuggestions != loadedUseDefaultSuggestions
+                || (!useDefaultSuggestions && currentSuggestions != loadedSuggestions)
+            if suggestionsLoaded && changed {
+                try await api.updateSuggestionsConfig(
+                    suggestions: useDefaultSuggestions ? nil : currentSuggestions.map { $0.toJSON() },
+                    i18n: suggestionsI18n
+                )
                 loadedSuggestions = currentSuggestions
+                loadedUseDefaultSuggestions = useDefaultSuggestions
+                if !useDefaultSuggestions { suggestions = currentSuggestions }
             }
         } catch {
             errorMessage = error.localizedDescription
@@ -466,19 +541,29 @@ final class AdminModelsSettingsViewModel {
     // MARK: - Private Helpers
 
     private func applyModelsConfig(_ config: [String: Any]) {
-        defaultModelId = config["DEFAULT_MODELS"] as? String ?? ""
-
-        if let pinned = config["DEFAULT_PINNED_MODELS"] as? String, !pinned.isEmpty {
-            defaultPinnedModelIds = pinned.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
-        } else if let pinned = config["DEFAULT_PINNED_MODELS"] as? [String] {
-            defaultPinnedModelIds = pinned
-        }
-
-        if let order = config["MODEL_ORDER_LIST"] as? [String] {
-            modelOrderList = order
+        if let csv = config["DEFAULT_MODELS"] as? String {
+            defaultModelIds = csv.split(separator: ",")
+                .map { $0.trimmingCharacters(in: .whitespaces) }
+                .filter { !$0.isEmpty }
         } else {
-            modelOrderList = models.map { $0.id }
+            defaultModelIds = config["DEFAULT_MODELS"] as? [String] ?? []
         }
+
+        if let pinned = config["DEFAULT_PINNED_MODELS"] as? String {
+            defaultPinnedModelIds = pinned.split(separator: ",")
+                .map { $0.trimmingCharacters(in: .whitespaces) }
+                .filter { !$0.isEmpty }
+        } else {
+            defaultPinnedModelIds = config["DEFAULT_PINNED_MODELS"] as? [String] ?? []
+        }
+
+        // Display order mirrors the web: saved order first (still-existing models),
+        // then any remaining models alphabetically. Only sent back if edited.
+        savedModelOrderList = config["MODEL_ORDER_LIST"] as? [String]
+        modelOrderEdited = false
+        let saved = (savedModelOrderList ?? []).filter { id in models.contains { $0.id == id } }
+        let rest = models.map(\.id).filter { !saved.contains($0) }.sorted { $0.localizedCompare($1) == .orderedAscending }
+        modelOrderList = saved + rest
 
         if let meta = config["DEFAULT_MODEL_METADATA"] as? [String: Any] {
             if let caps = meta["capabilities"] as? [String: Any] {
@@ -517,6 +602,7 @@ final class AdminModelsSettingsViewModel {
                 btFiles = bt["files"] as? Bool ?? true
                 btNotifications = bt["notifications"] as? Bool ?? true
                 btSubagents = bt["subagents"] as? Bool ?? true
+                btSkills = bt["skills"] as? Bool ?? true
             }
         }
 
@@ -556,9 +642,18 @@ final class AdminModelsSettingsViewModel {
         }
     }
 
-    private func applySuggestionsConfig(_ raw: [[String: Any]]) {
-        let parsed = raw.compactMap { SuggestionPrompt(json: $0) }
-        suggestions = parsed
-        loadedSuggestions = parsed
+    private func applySuggestionsConfig(_ config: APIClient.PromptSuggestionsConfig) {
+        suggestionsI18n = config.i18n
+        if let raw = config.suggestions {
+            let parsed = raw.compactMap { SuggestionPrompt(json: $0) }
+            useDefaultSuggestions = false
+            suggestions = parsed
+            loadedSuggestions = parsed
+        } else {
+            // Never configured → the server shows the built-in starters.
+            resetSuggestionsToDefaults()
+            loadedSuggestions = suggestions
+        }
+        loadedUseDefaultSuggestions = useDefaultSuggestions
     }
 }

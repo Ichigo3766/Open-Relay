@@ -302,6 +302,18 @@ struct SSOWebViewRepresentable: UIViewRepresentable {
             // (after the OAuth provider has redirected back)
             guard isOurServer(currentURL) else { return }
 
+            // The callback asked for an authenticator step.
+            // Let the web sign-in page run it, then pick up the session it stores.
+            let query = URLComponents(url: currentURL, resolvingAgainstBaseURL: false)?.queryItems ?? []
+            if query.contains(where: { $0.name == "pending" }) {
+                state.error = "Your account is awaiting approval from an administrator."
+                return
+            }
+            if query.contains(where: { $0.name == "mfa" }) {
+                startMFAPolling()
+                return
+            }
+
             let attemptId = captureAttemptId
             Task { @MainActor in
                 await attemptTokenCaptureWithRetry(attemptId: attemptId)
@@ -461,6 +473,38 @@ struct SSOWebViewRepresentable: UIViewRepresentable {
         }
 
         // MARK: - Token Capture
+
+        private var mfaPollTask: Task<Void, Never>?
+
+        /// Polls for the session the web MFA form saves after a successful code.
+        /// The web app navigates client-side (no navigation callbacks), so poll
+        /// `localStorage.token` and the `token` cookie until one appears.
+        private func startMFAPolling() {
+            mfaPollTask?.cancel()
+            logger.info("SSO: authenticator step shown by the server — waiting for the session")
+            mfaPollTask = Task { @MainActor [weak self] in
+                for _ in 0..<600 {
+                    try? await Task.sleep(nanoseconds: 1_000_000_000)
+                    guard let self, !Task.isCancelled, !self.state.tokenCaptured, let webView = self.webView else { return }
+                    if let token = await self.evaluateJS(webView: webView, script: "localStorage.getItem('token') || ''"),
+                       self.isValidJWT(token) {
+                        await self.handleToken(token)
+                        return
+                    }
+                    let cookies = await webView.configuration.websiteDataStore.httpCookieStore.allCookies()
+                    let host = URL(string: self.serverURL)?.host?.lowercased() ?? ""
+                    if let cookie = cookies.first(where: {
+                        $0.name == "token" && self.isValidJWT($0.value)
+                            && host.hasSuffix($0.domain.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: ".")))
+                    }) {
+                        await self.handleToken(cookie.value)
+                        return
+                    }
+                }
+            }
+        }
+
+        deinit { mfaPollTask?.cancel() }
 
         private func isOurServer(_ url: URL) -> Bool {
             guard let serverURL = URL(string: serverURL) else { return false }

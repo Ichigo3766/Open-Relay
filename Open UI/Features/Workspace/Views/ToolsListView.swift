@@ -25,6 +25,7 @@ struct ToolsListView: View {
     @State private var showCreateSheet = false
     @State private var editingTool: ToolDetail? = nil
     @State private var deletingTool: WorkspaceToolItem? = nil
+    @State private var accessTool: WorkspaceToolItem? = nil
     @State private var errorMessage: String? = nil
 
     // Clone
@@ -97,6 +98,15 @@ struct ToolsListView: View {
             await manager.fetchAllUsers()
         }
         // Create sheet
+        .sheet(item: $accessTool) { tool in
+            WorkspaceItemAccessSheet(
+                title: tool.name,
+                loadGrants: { try await manager.getDetail(id: tool.id).accessGrants },
+                save: { grants, isPublic in
+                    try await manager.updateAccessGrants(toolId: tool.id, grants: grants, isPublic: isPublic)
+                }
+            )
+        }
         .sheet(isPresented: $showCreateSheet) {
             ToolEditorView(
                 existingTool: nil,
@@ -358,6 +368,11 @@ struct ToolsListView: View {
                 Task { await cloneTool(tool, manager: manager) }
             } label: {
                 Label("Clone", systemImage: "plus.square.on.square")
+            }
+            Button {
+                accessTool = tool
+            } label: {
+                Label("Access", systemImage: "person.2.badge.key")
             }
             if dependencies.authViewModel.workspacePermissions.toolsExport {
                 Button {

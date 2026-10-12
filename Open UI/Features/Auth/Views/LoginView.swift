@@ -3,7 +3,7 @@ import SwiftUI
 // MARK: - Auth Header
 
 /// Reusable animated header for auth screens.
-private struct AuthScreenHeader: View {
+struct AuthScreenHeader: View {
     let icon: String
     let title: String
     let subtitle: String
@@ -47,7 +47,7 @@ private struct AuthScreenHeader: View {
 // MARK: - Error Banner
 
 /// Animated error message banner.
-private struct AuthErrorBanner: View {
+struct AuthErrorBanner: View {
     let message: String
     @Environment(\.theme) private var theme
 

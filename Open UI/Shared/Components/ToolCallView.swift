@@ -157,6 +157,8 @@ struct ToolCallData: Identifiable {
     /// Image sources returned by the tool (`files` on the output item): either
     /// `data:image/...` URIs or server paths/URLs.
     var imageSources: [String] = []
+    var isDeferred = false
+    var cachedError: Bool? = nil
 
     /// Name shown in the card header.
     var headerName: String { label ?? name }
@@ -176,7 +178,8 @@ struct ToolCallData: Identifiable {
     /// OpenWebUI marks failed tool calls by embedding an error indicator in the result.
     /// Checks for common patterns: top-level `"error"` JSON key, `Error:` prefix,
     /// `"status": "error"`, or an explicit `"success": false` field.
-    var isError: Bool {
+    nonisolated var isError: Bool {
+        if let cachedError { return cachedError }
         guard isDone, let result, !result.isEmpty else { return false }
         // Fast string checks before attempting JSON parse
         let lower = result.lowercased()
@@ -209,14 +212,16 @@ struct ReasoningData: Identifiable {
     let characterCount: Int
     let duration: String?
     let isDone: Bool
+    let isDeferred: Bool
 
-    nonisolated init(summary: String, content: String, duration: String?, isDone: Bool) {
+    nonisolated init(summary: String, content: String, duration: String?, isDone: Bool, isDeferred: Bool = false) {
         // Use the first 80 characters as a stable anchor — the beginning of
         // a reasoning block is fixed once streaming starts (only the tail grows).
         let prefix = String(content.prefix(80))
         self.id = "reason-\(prefix.hashValue)"
         self.summary = summary
         self.content = content
+        self.isDeferred = isDeferred
         self.characterCount = content.count
         self.duration = duration
         self.isDone = isDone
@@ -536,7 +541,8 @@ enum ToolCallParser {
             summary: summary,
             content: contentText,
             duration: duration,
-            isDone: isDone
+            isDone: isDone,
+            isDeferred: block.attributes["cache-missing"] == "true"
         )
         return (data, spillover)
     }
@@ -566,7 +572,7 @@ enum ToolCallParser {
         let label = attrs["label"].flatMap { $0.isEmpty ? nil : decodeHTMLEntities($0) }
         let imageSources = isDone ? parseImageSources(attrs["files"]) : []
 
-        return ToolCallData(
+        var tool = ToolCallData(
             id: id,
             name: name,
             arguments: decodeHTMLEntities(arguments),
@@ -577,8 +583,12 @@ enum ToolCallParser {
             terminalFile: isDone && name == "display_file"
                 ? TerminalFileAttachment(result: decodeHTMLEntities(result), arguments: decodeHTMLEntities(arguments)) : nil,
             label: label,
-            imageSources: imageSources
+            imageSources: imageSources,
+            isDeferred: attrs["cache-missing"] == "true",
+            cachedError: attrs["cache-error"].map { $0 == "true" }
         )
+        if tool.cachedError == nil { tool.cachedError = tool.isError }
+        return tool
     }
 
     /// Reads the `files` attribute (JSON array of strings or `{type,url,content_type}`
@@ -675,7 +685,7 @@ enum ToolCallParser {
     /// 2. **Unclosed tag**: `<think>content` (mid-stream) → in-progress block
     /// 3. **Incomplete details block**: `<details type="reasoning"><summary>…` → in-progress block
     /// 4. **No matching tags**: content returned unchanged
-    private nonisolated static func preprocessThinkTags(_ content: String) -> String {
+    nonisolated static func preprocessThinkTags(_ content: String) -> String {
         var result = content
 
         // ── Phase 1: Convert raw model reasoning tags ──
@@ -817,7 +827,7 @@ enum ToolCallParser {
     }
 
     /// Decodes common HTML entities in attribute values.
-    private nonisolated static func decodeHTMLEntities(_ string: String?) -> String? {
+    nonisolated static func decodeHTMLEntities(_ string: String?) -> String? {
         guard let string, string.utf8.contains(0x26) else { return string }
         return string
             .replacingOccurrences(of: "&quot;", with: "\"")
@@ -1879,8 +1889,7 @@ private struct RichUIWebView: UIViewRepresentable {
 // MARK: - Tool Call Result Block View
 
 /// Renders the OUTPUT section as a plain monospaced text block.
-/// JSON results are pretty-printed. Uses a simple ScrollView+Text instead of
-/// MarkdownView to avoid async WKWebView zero-height collapse on first render.
+/// JSON results are pretty-printed; the label draws only the visible viewport.
 private struct ToolCallResultBlockView: View {
     let content: String
 
@@ -1893,7 +1902,7 @@ private struct ToolCallResultBlockView: View {
         let key = content as NSString
         if let hit = Self.formattedCache.object(forKey: key) { return hit as String }
         let result = computeFormattedContent()
-        Self.formattedCache.setObject(result as NSString, forKey: key)
+        Self.formattedCache.setObject(result as NSString, forKey: key, cost: (content.utf16.count + result.utf16.count) * 2)
         return result
     }
 
@@ -1901,6 +1910,7 @@ private struct ToolCallResultBlockView: View {
     private static let formattedCache: NSCache<NSString, NSString> = {
         let cache = NSCache<NSString, NSString>()
         cache.countLimit = 60
+        cache.totalCostLimit = 8 * 1024 * 1024
         return cache
     }()
 
@@ -1932,13 +1942,8 @@ private struct ToolCallResultBlockView: View {
 
     var body: some View {
         ZStack(alignment: .topTrailing) {
-            ScrollView([.vertical, .horizontal], showsIndicators: false) {
-                Text(formattedContent)
-                    .font(.system(size: 12, design: .monospaced))
-                    .foregroundStyle(theme.textSecondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .multilineTextAlignment(.leading)
-                    .textSelection(.enabled)
+            ScrollView([.horizontal, .vertical], showsIndicators: false) {
+                ReasoningText(text: formattedContent, fontSize: 12, color: UIColor(theme.textSecondary), monospaced: true)
                     .padding(10)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
@@ -1979,10 +1984,7 @@ private struct ToolCallResultFullPreviewSheet: View {
     var body: some View {
         NavigationView {
             ScrollView {
-                Text(content)
-                    .font(.system(size: 13, design: .monospaced))
-                    .foregroundStyle(theme.textPrimary)
-                    .textSelection(.enabled)
+                ReasoningText(text: content, fontSize: 13, color: UIColor(theme.textPrimary), monospaced: true)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding()
             }
@@ -2165,7 +2167,9 @@ struct ToolCallView: View {
             }
 
             // ── Body ─────────────────────────────────────────────────────
-            if isExpanded {
+            if isExpanded && toolCall.isDeferred {
+                CachedDetailsLoader().padding(.bottom, Spacing.sm)
+            } else if isExpanded {
                 VStack(alignment: .leading, spacing: Spacing.sm) {
                     // Arguments (INPUT)
                     if let args = toolCall.arguments, !args.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -2466,7 +2470,7 @@ struct ReasoningView: View {
         let request = RevealRequest(text: reasoning.content, streaming: streaming,
                                     skipAnimation: reduceMotion || !isExpanded)
         // An empty thinking block keeps its header but can't be expanded (web parity).
-        let hasContent = !reasoning.content.isEmpty
+        let hasContent = reasoning.isDeferred || !reasoning.content.isEmpty
         VStack(alignment: .leading, spacing: 0) {
             // Header — tappable to expand/collapse
             Button {
@@ -2505,7 +2509,9 @@ struct ReasoningView: View {
             // The reasoning text grows live during streaming — AnimatedPresence's
             // GeometryReader-background measures the constrained height, not the
             // natural height, so it locks the frame too early and truncates the text.
-            if isExpanded && hasContent {
+            if isExpanded && reasoning.isDeferred {
+                CachedDetailsLoader().padding(.leading, 22).padding(.bottom, Spacing.sm)
+            } else if isExpanded && hasContent {
                 StreamingReasoningText(
                     reasoning: reasoning, progress: progress, streaming: streaming,
                     fontSize: round(12 * accessibilityScale.uiScale * 10) / 10,
@@ -2673,7 +2679,9 @@ struct AssistantMessageContent: View {
                                 embeds: messageEmbeds,
                                 terminalFile: tc.terminalFile,
                                 label: tc.label,
-                                imageSources: tc.imageSources
+                                imageSources: tc.imageSources,
+                                isDeferred: tc.isDeferred,
+                                cachedError: tc.cachedError
                             ))
                             mutableGroups[i] = .toolCalls(items)
                             return mutableGroups

@@ -41,6 +41,7 @@ final class VoiceCallViewModel {
     var chatViewModel: ChatViewModel?
 
     @ObservationIgnored var orchestrator: CallOrchestrator?
+    @ObservationIgnored var realtimeCall: RealtimeCallSession?
     @ObservationIgnored let audioSession = CallAudioSession()
     @ObservationIgnored var durationTimer: Task<Void, Never>?
     @ObservationIgnored var callStartTime: Date?
@@ -129,7 +130,7 @@ extension VoiceCallViewModel {
         ttsService.stop()
         ttsService.readAloudPlayer.stop()
 
-        guard await Self.requestPermissions(needsSpeech: settings.sttEngine == "apple") else {
+        guard await Self.requestPermissions(needsSpeech: !settings.useRealtimeBridge && settings.sttEngine == "apple") else {
             fail("Please grant microphone and speech recognition permissions in Settings.")
             return
         }
@@ -146,6 +147,34 @@ extension VoiceCallViewModel {
 
         // Load engines + VAD models in parallel with each other.
         let api = apiClientProvider()
+        if settings.useRealtimeBridge {
+            guard let api else { fail("Connect to a server to use Realtime calls."); return }
+            let call = RealtimeCallSession(api: api, chat: chat)
+            realtimeCall = call
+            call.onState = { [weak self] state in
+                guard let self, self.callState != .disconnected else { return }
+                self.callState = state
+                self.updateLiveActivity()
+                self.updateTurnBackgroundTask()
+            }
+            call.onTranscript = { [weak self] in self?.currentTranscript = $0 }
+            call.onLevel = { [weak self] in self?.voiceIntensity = Int(min(10, ($0 * 40).rounded())) }
+            call.onError = { [weak self] in self?.fail($0) }
+            call.setMuted(isMuted)
+            do { try await call.start() } catch {
+                if callState != .disconnected { fail(error.localizedDescription) }
+                return
+            }
+            guard callState != .disconnected, realtimeCall != nil else { call.stop(); return }
+            engineNotice = "Realtime voice"
+            isUsingServerSTT = false
+            wireAudioSession()
+            let start = Date()
+            callStartTime = start
+            startDurationTimer()
+            startLiveActivity(startDate: start)
+            return
+        }
         async let vadReady: Void = vadModelStore.loadIfNeeded()
         let stt = await CallEngineFactory.makeSTT(settings: settings, apiClient: api)
         let tts = await CallEngineFactory.makeTTS(settings: settings, apiClient: api, ttsService: ttsService)
@@ -192,6 +221,9 @@ extension VoiceCallViewModel {
         callState = .disconnected
         stopEngineSync()
         unwireAudioSession()
+        realtimeCall?.stop()
+        realtimeCall = nil
+        engineNotice = nil
         orchestrator?.stop()
         orchestrator = nil
         durationTimer?.cancel()
@@ -212,25 +244,29 @@ extension VoiceCallViewModel {
     }
 
     func pauseListening() {
-        guard orchestrator != nil else { return }
+        guard orchestrator != nil || realtimeCall != nil else { return }
         isPaused = true
         orchestrator?.pause()
+        realtimeCall?.setPaused(true)
     }
 
     func resumeListening() async {
         isPaused = false
         orchestrator?.resume()
+        realtimeCall?.setPaused(false)
     }
 
     /// Mute only silences the mic (voice processing input mute); replies keep playing.
     func toggleMute() {
         isMuted.toggle()
         orchestrator?.isMicMuted = isMuted
+        realtimeCall?.setMuted(isMuted)
         updateLiveActivity()
     }
 
     func cancelSpeaking() async {
         orchestrator?.interrupt()
+        await realtimeCall?.interrupt()
     }
 
     /// Re-reads where call audio is heard (earpiece, speaker, AirPods, car…).
@@ -249,6 +285,7 @@ extension VoiceCallViewModel {
     fileprivate func fail(_ message: String) {
         callState = .error(message)
         errorMessage = message
+        if let realtimeCall { realtimeCall.stop(); self.realtimeCall = nil; audioSession.deactivate() }
         stopEngineSync()
         unwireAudioSession()
         orchestrator?.stop()
@@ -355,12 +392,13 @@ extension VoiceCallViewModel {
     /// audio engine rebuilds itself on the resulting configuration change).
     fileprivate func wireAudioSession() {
         audioSession.onInterruption = { [weak self] type in
-            guard let self, self.orchestrator != nil else { return }
+            guard let self, self.orchestrator != nil || self.realtimeCall != nil else { return }
             switch type {
             case .began:
                 self.logger.info("Audio interruption began — pausing call")
                 self.wasPausedByInterruption = !self.isPaused
                 self.orchestrator?.pause()
+                self.realtimeCall?.setPaused(true)
             case .ended:
                 self.logger.info("Audio interruption ended")
                 guard self.wasPausedByInterruption else { return }
@@ -371,12 +409,13 @@ extension VoiceCallViewModel {
                 self.audioSession.applyInitialRoute(preferSpeaker: self.settings.defaultSpeakerOn)
                 self.refreshOutputRoute()
                 if !self.isPaused { self.orchestrator?.resume() }
+                if !self.isPaused { self.realtimeCall?.setPaused(false) }
             @unknown default:
                 break
             }
         }
         audioSession.onRouteChange = { [weak self] reason in
-            guard let self, self.orchestrator != nil else { return }
+            guard let self, self.orchestrator != nil || self.realtimeCall != nil else { return }
             self.logger.info("Audio route changed (reason \(reason.rawValue))")
             switch reason {
             case .newDeviceAvailable:
@@ -394,6 +433,7 @@ extension VoiceCallViewModel {
             }
             self.refreshOutputRoute()
             self.orchestrator?.audioRouteChanged()
+            self.realtimeCall?.audioRouteChanged()
         }
         backgroundObservers.forEach(NotificationCenter.default.removeObserver)
         backgroundObservers = [

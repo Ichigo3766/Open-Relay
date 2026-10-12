@@ -1582,6 +1582,7 @@ struct KnowledgeFilePreviewSheet: View {
     @State private var draft = ""
     @State private var isSavingContent = false
     @State private var saveError: String?
+    @State private var showOriginalFile = false
 
     var body: some View {
         NavigationStack {
@@ -1646,6 +1647,19 @@ struct KnowledgeFilePreviewSheet: View {
             }
             .navigationTitle(file.name)
             .navigationBarTitleDisplayMode(.inline)
+            .safeAreaInset(edge: .top) {
+                HStack {
+                    Text("Search Text").scaledFont(size: 13, weight: .semibold)
+                    Spacer()
+                    if apiClient != nil && !isEditing {
+                        Button("Original File", systemImage: "doc") { showOriginalFile = true }
+                            .scaledFont(size: 13)
+                    }
+                }
+                .padding(.horizontal, Spacing.md)
+                .padding(.vertical, Spacing.sm)
+                .background(theme.background)
+            }
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     if isEditing {
@@ -1676,6 +1690,9 @@ struct KnowledgeFilePreviewSheet: View {
         .presentationDetents([.medium, .large])
         .presentationDragIndicator(.visible)
         .task { await loadContent() }
+        .sheet(isPresented: $showOriginalFile) {
+            if let apiClient { SearchFilePreview(file: file, api: apiClient) }
+        }
     }
 
     private func saveContent() async {
@@ -1706,10 +1723,8 @@ struct KnowledgeFilePreviewSheet: View {
             }
             // Fallback: try the dedicated data/content endpoint
             if content.isEmpty {
-                let (rawData, _) = try await apiClient?.getFileContent(id: file.id) ?? (Data(), "")
-                if let text = String(data: rawData, encoding: .utf8), !text.isEmpty {
-                    content = text
-                }
+                let json = try await apiClient?.network.requestJSON(path: "/api/v1/files/\(file.id)/data/content") ?? [:]
+                content = json["content"] as? String ?? ""
             }
         } catch {
             errorMessage = error.localizedDescription

@@ -384,9 +384,6 @@ struct ChatDetailView: View {
     /// When set, the assistant displays this overridden content instead.
     @State private var assistantContentOverride: [String: String] = [:]
 
-    // Bug 10: cached indexMap rebuilt only when message count changes.
-    @State private var cachedIndexMap: [String: Int] = [:]
-
     // MARK: Chat menu actions
     @State private var showDeleteChatConfirm = false
 
@@ -690,6 +687,7 @@ struct ChatDetailView: View {
         // very first render.  The `isConfigured` guard prevents a second call if
         // `ActiveChatStore.prewarm()` already ran before navigation.
         .onAppear {
+            dependencies.activeChatStore.appeared(viewModel)
             guard !viewModel.isConfigured, let manager = dependencies.conversationManager else { return }
             viewModel.configure(
                 with: manager,
@@ -704,12 +702,12 @@ struct ChatDetailView: View {
         // (first app launch), rebuild prompts as soon as the config arrives.
         // Watch the suggestion count (Int?) — always Equatable, avoids
         // asking the type-checker to diff the entire BackendConfig struct.
-        .onChange(of: dependencies.authViewModel.backendConfig?.defaultPromptSuggestions?.count) { _, _ in
+        .onChange(of: dependencies.authViewModel.backendConfig?.resolvedAdminPromptSuggestions) { _, _ in
             // Always rebuild when the server config changes — this handles both the
             // first-launch timing case (randomPrompts is empty) AND the case where
             // the admin updates suggestions on the server while the app is running.
             let updated = Self.resolvePromptSuggestions(
-                adminSuggestions: dependencies.authViewModel.backendConfig?.defaultPromptSuggestions,
+                adminSuggestions: dependencies.authViewModel.backendConfig?.resolvedAdminPromptSuggestions,
                 modelSuggestions: viewModel.selectedModel?.suggestionPrompts,
                 count: promptCardCount
             )
@@ -720,7 +718,7 @@ struct ChatDetailView: View {
         // admin hasn't set global prompts.
         .onChange(of: viewModel.selectedModelId) { _, _ in
             let updated = Self.resolvePromptSuggestions(
-                adminSuggestions: dependencies.authViewModel.backendConfig?.defaultPromptSuggestions,
+                adminSuggestions: dependencies.authViewModel.backendConfig?.resolvedAdminPromptSuggestions,
                 modelSuggestions: viewModel.selectedModel?.suggestionPrompts,
                 count: promptCardCount
             )
@@ -860,6 +858,7 @@ struct ChatDetailView: View {
                 }
             }
         }
+        .environment(\.loadCachedDetails, { try await viewModel.loadCachedDetails() })
         .modifier(WebSearchConsentAlert(consent: viewModel.isVoiceMode ? nil : viewModel.webSearchConsent))
         .alert("Add Web Link", isPresented: $showWebURLAlert) {
             TextField("https://example.com", text: $webURLInput)
@@ -1195,11 +1194,13 @@ struct ChatDetailView: View {
             }
 
             Menu {
-                Button {
-                    Haptics.play(.light)
-                    isShowingChatParams = true
-                } label: {
-                    Label("Chat Settings", systemImage: "slider.horizontal.3")
+                if !viewModel.isSharedChat {
+                    Button {
+                        Haptics.play(.light)
+                        isShowingChatParams = true
+                    } label: {
+                        Label("Chat Settings", systemImage: "slider.horizontal.3")
+                    }
                 }
 
                 if viewModel.messages.isEmpty && viewModel.noteChatSession == nil {
@@ -1223,7 +1224,7 @@ struct ChatDetailView: View {
                     .disabled(viewModel.isSavingTemporaryChat)
                 }
 
-                if viewModel.conversation != nil {
+                if viewModel.conversation != nil && !viewModel.isSharedChat {
                     Button(role: .destructive) {
                         showDeleteChatConfirm = true
                     } label: {
@@ -1372,21 +1373,65 @@ struct ChatDetailView: View {
 
     // MARK: - Read-Only Banner
 
-    /// Shown in place of the input field when this chat is from a read-only shared folder.
+    /// Shown in place of the input field when this chat is from a read-only shared folder,
+    /// or is a chat shared with the user in "Clone only" mode.
     private var readOnlyBanner: some View {
-        HStack(spacing: Spacing.sm) {
+        let perms = dependencies.authViewModel.currentUser
+        let canClone = perms?.role == .admin || dependencies.authViewModel.chatPermissions.importChats
+        return HStack(spacing: Spacing.sm) {
             Image(systemName: "lock.fill")
                 .scaledFont(size: 13, weight: .medium)
                 .foregroundStyle(theme.textTertiary)
-            Text("Read only — shared folder")
+            Text(viewModel.isSharedChat ? "Read only — shared with you" : "Read only — shared folder")
                 .scaledFont(size: 14, weight: .medium)
                 .foregroundStyle(theme.textSecondary)
             Spacer()
+            if canClone && viewModel.conversation?.messages.isEmpty == false {
+                Button {
+                    Task { await viewModel.cloneSharedChat() }
+                } label: {
+                    if viewModel.isForkingChat {
+                        ProgressView().controlSize(.small)
+                    } else {
+                        Text("Clone Chat")
+                            .scaledFont(size: 13, weight: .semibold)
+                            .foregroundStyle(theme.buttonPrimaryText)
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 6)
+                            .background(theme.buttonPrimary)
+                            .clipShape(Capsule())
+                    }
+                }
+                .buttonStyle(.plain)
+                .disabled(viewModel.isForkingChat)
+            }
         }
         .padding(.horizontal, Spacing.md)
         .padding(.vertical, 14)
         .background(theme.surfaceContainer.opacity(0.6))
         .overlay(alignment: .top) { Divider().opacity(0.5) }
+    }
+
+    /// "Alex is typing…" above the input in shared chats with replies.
+    @ViewBuilder
+    private func typingIndicator(vm: ChatViewModel) -> some View {
+        let names = vm.typingUsers.map(\.name).filter { !$0.isEmpty }
+        if !names.isEmpty {
+            HStack(spacing: 6) {
+                BlinkingCursorIndicator()
+                    .frame(width: 6, height: 12)
+                Text(names.count == 1
+                     ? String(localized: "\(names[0]) is typing…")
+                     : String(localized: "\(names.joined(separator: ", ")) are typing…"))
+                    .scaledFont(size: 12)
+                    .foregroundStyle(theme.textTertiary)
+                    .lineLimit(1)
+                Spacer()
+            }
+            .padding(.horizontal, Spacing.screenPadding + 4)
+            .padding(.bottom, 4)
+            .transition(.opacity)
+        }
     }
 
     private func inputFieldArea(vm: ChatViewModel) -> AnyView {
@@ -1396,12 +1441,13 @@ struct ChatDetailView: View {
         // @ViewBuilder builds from this function's many branches. Without it the
         // compiler inlines every child view into one enormous type, which blows the
         // thread stack at call time (EXC_BAD_ACCESS in the stack region).
-        if isReadOnly {
+        if isReadOnly || vm.isSharedReadOnly {
             // ── Read-only mode: show banner instead of input field ──────────
             return AnyView(readOnlyBanner)
         }
         // ── Normal mode: full input field ────────────────────────────────────
         return AnyView(VStack(spacing: 0) {
+            typingIndicator(vm: vm)
             inputPickersArea(vm: vm)
             inputBannersArea(vm: vm)
             inputFieldControl(vm: vm)
@@ -2216,7 +2262,7 @@ struct ChatDetailView: View {
                 // should NOT show the FAB. Use a computed distance from the cached sizes —
                 // not perfect but good enough for this phase-change callback.
                 if viewModel.isStreaming && !isScrolledUp {
-                    let distAtDecel = max(0, _pumpRef.contentHeight - viewState_containerHeight)
+                    let distAtDecel = max(0, _pumpRef.contentHeight - viewState_containerHeight - _pumpRef.currentScrollOffsetY)
                     // Only show FAB if the user is clearly away from the bottom (> 60pt).
                     // This prevents the FAB appearing when coasting after a manual scroll-to-bottom.
                     if distAtDecel > 60 {
@@ -2647,40 +2693,23 @@ struct ChatDetailView: View {
         }()
         let streamingId = viewModel.streamingStore.isActive ? viewModel.streamingStore.streamingMessageId : nil
 
-        // Bug 10: indexMap was rebuilt (O(n) allocation) on every messagesList evaluation.
-        // Cache it as a @State dictionary, only rebuilt when the message count changes
-        // (messages are append-only so indices are stable until a deletion).
-        // Avoid mutating @State directly during view update — compute locally and
-        // schedule the cache update for after the current render pass.
-        //
-        let lastMsgId = allMessages.last?.id ?? ""
-        let indexMap: [String: Int]
-        if cachedIndexMap.count == total && !cachedIndexMap.isEmpty && cachedIndexMap[lastMsgId] != nil {
-            indexMap = cachedIndexMap
-        } else {
-            let freshMap = Dictionary(allMessages.enumerated().map { ($1.id, $0) },
-                                      uniquingKeysWith: { first, _ in first })
-            indexMap = freshMap
-            Task { @MainActor in cachedIndexMap = freshMap }
-        }
-
         // Group the messages into turns: each user message starts a turn that holds it
         // and the replies after it. A turn is keyed by its first message, so when a
         // new message is sent the previous turn stays the SAME view — only its
         // reserved height changes. (Splitting "older rows" from "last turn" into two
         // containers moved the previous reply between them on every send, which
         // rebuilt its Markdown views mid-glide.)
-        var turns: [(id: String, messages: [ChatMessage])] = []
-        for message in allMessages {
+        var turns: [(id: String, messages: [(index: Int, message: ChatMessage)])] = []
+        for (index, message) in allMessages.enumerated() {
             if message.role == .user || turns.isEmpty {
-                turns.append((message.id, [message]))
+                turns.append((message.id, [(index, message)]))
             } else {
-                turns[turns.count - 1].messages.append(message)
+                turns[turns.count - 1].messages.append((index, message))
             }
         }
         let lastTurnId = turns.last?.id
         // Only a turn that starts with a user message is a real "last turn".
-        let lastTurnIsUserTurn = turns.last?.messages.first?.role == .user
+        let lastTurnIsUserTurn = turns.last?.messages.first?.message.role == .user
         // The last turn is always drawn: it holds the live reply and the message
         // just sent, and must never flash as a spacer during the send glide.
         let lastTurnStart = total - (turns.last?.messages.count ?? 0)
@@ -2693,8 +2722,9 @@ struct ChatDetailView: View {
 
         return ForEach(turns, id: \.id) { turn in
             VStack(spacing: 0) {
-                ForEach(turn.messages) { message in
-                    let index = indexMap[message.id] ?? 0
+                ForEach(turn.messages, id: \.message.id) { row in
+                    let message = row.message
+                    let index = row.index
                     let isDrawn = index >= lastTurnStart
                         || (drawn?.contains(index) ?? true)
                         || message.id == streamingId
@@ -2976,7 +3006,8 @@ struct ChatDetailView: View {
             // User timestamps sit beneath the bubble; assistant timestamps
             // live at the end of the action bar (OpenWebUI parity).
             showTimestamp: message.role == .user,
-            timestamp: message.timestamp
+            timestamp: message.timestamp,
+            otherAuthorName: viewModel.authorName(of: message)
         ) {
             messageContent(for: message)
         }
@@ -2987,19 +3018,25 @@ struct ChatDetailView: View {
 
     @ViewBuilder
     private func messageContextMenu(for message: ChatMessage) -> some View {
+        // Shared chats: only your own messages can be edited / regenerated / deleted,
+        // and nothing can be changed in a chat you can only view.
+        let canModify = !isReadOnly && !viewModel.isSharedReadOnly && viewModel.isOwnMessage(message)
+            && !viewModel.isSharedChat
+        let canRegenerate = !isReadOnly && !viewModel.isSharedReadOnly && viewModel.isOwnMessage(message)
         Button { copyMessage(message) } label: {
             Label("Copy", systemImage: "doc.on.doc")
         }
-        if message.role == .user && !viewModel.isStreaming {
+        if message.role == .user && !viewModel.isStreaming && canModify {
             Button { beginInlineEdit(message: message) } label: {
                 Label("Edit", systemImage: "pencil")
             }
         }
-        if message.role == .assistant && !viewModel.isStreaming {
+        if message.role == .assistant && !viewModel.isStreaming && canRegenerate {
             Button { Task { await viewModel.regenerateResponse(messageId: message.id) } } label: {
                 Label("Regenerate", systemImage: "arrow.clockwise")
             }
         }
+        if canModify {
         Divider()
         if !viewModel.isStreaming {
             Button(role: .destructive) {
@@ -3028,6 +3065,7 @@ struct ChatDetailView: View {
             } label: {
                 Label("Delete", systemImage: "trash")
             }
+        }
         }
     }
 
@@ -3927,6 +3965,27 @@ struct ChatDetailView: View {
     @ViewBuilder
     private func assistantAction(_ action: MessageAction, for message: ChatMessage, totalVersions: Int) -> some View {
         let chatPerms = dependencies.authViewModel.chatPermissions
+        // Shared chats: only your own turns can be changed or rated, and
+        // view-only chats allow nothing beyond copy / speak / share / fork / info.
+        let ownTurn = !isReadOnly && !viewModel.isSharedReadOnly && viewModel.isOwnMessage(message)
+        let mutating: Set<MessageAction> = [.edit, .regenerate, .continueResponse, .deleteVersion, .thumbsUp, .thumbsDown]
+        if mutating.contains(action) && !ownTurn {
+            EmptyView()
+        } else if action == .edit && viewModel.isSharedChat {
+            // Editing rewrites the owner's saved chat — never allowed for shared chats.
+            EmptyView()
+        } else {
+            assistantActionContent(action, for: message, totalVersions: totalVersions, chatPerms: chatPerms)
+        }
+    }
+
+    @ViewBuilder
+    private func assistantActionContent(
+        _ action: MessageAction,
+        for message: ChatMessage,
+        totalVersions: Int,
+        chatPerms: GroupChatPermissions
+    ) -> some View {
         switch action {
         case .speak:
             // Speak — gated by permissions.chat.tts
@@ -4927,6 +4986,7 @@ struct ChatDetailView: View {
         if dependencies.activeChatStore.serverFeatures == nil {
             dependencies.activeChatStore.serverFeatures = dependencies.authViewModel.featurePermissions
         }
+        dependencies.activeChatStore.currentUserId = dependencies.authViewModel.currentUser?.id
         // Perform non-async setup before awaiting load() so the UI
         // populates prompts and temporary-chat state instantly.
         if viewModel.isNewConversation && viewModel.noteChatSession == nil {
@@ -4936,7 +4996,7 @@ struct ChatDetailView: View {
         // already have a model; we'll resolve after load() below (D10 fix).
         if viewModel.isNewConversation {
             let preLoadPrompts = Self.resolvePromptSuggestions(
-                adminSuggestions: dependencies.authViewModel.backendConfig?.defaultPromptSuggestions,
+                adminSuggestions: dependencies.authViewModel.backendConfig?.resolvedAdminPromptSuggestions,
                 modelSuggestions: viewModel.selectedModel?.suggestionPrompts,
                 count: promptCardCount
             )
@@ -5067,7 +5127,7 @@ struct ChatDetailView: View {
         // model now has per-model suggestions (which override admin suggestions).
         if randomPrompts.isEmpty || hasModelSuggestions {
             let postLoadPrompts = Self.resolvePromptSuggestions(
-                adminSuggestions: dependencies.authViewModel.backendConfig?.defaultPromptSuggestions,
+                adminSuggestions: dependencies.authViewModel.backendConfig?.resolvedAdminPromptSuggestions,
                 modelSuggestions: newModelSuggestions,
                 count: promptCardCount
             )
@@ -5082,6 +5142,8 @@ struct ChatDetailView: View {
     }
 
     private func handleDisappear() {
+        dependencies.activeChatStore.disappeared(viewModel)
+        viewModel.leaveSharedChatRoom()
         ChatReadState.shared.chatScreenClosed(openChatReportId)
         viewModel.webSearchConsent.cancelPending()
         if dependencies.dictationService.context == dictationContext {
@@ -5686,7 +5748,7 @@ private func processSelectedPhotos(_ items: [PhotosPickerItem]) async {
 for item in items {
             do {
                 if let data = try await item.loadTransferable(type: Data.self),
-                   let attachment = FileAttachmentService.makeImageAttachment(data: data) {
+                   let attachment = await FileAttachmentService.prepareImageAttachment(data: data) {
                     viewModel.attachments.append(attachment)
                     // Start uploading immediately so it's ready by send time
                     viewModel.uploadAttachmentImmediately(attachmentId: attachment.id)
@@ -5712,8 +5774,8 @@ for item in items {
                     for: asset, options: opts
                 ) { data, _, _, _ in
                     guard let data else { cont.resume(); return }
-                    DispatchQueue.main.async {
-                        if let attachment = FileAttachmentService.makeImageAttachment(data: data) {
+                    Task { @MainActor in
+                        if let attachment = await FileAttachmentService.prepareImageAttachment(data: data) {
                             withAnimation(.spring(response: 0.35, dampingFraction: 0.78)) {
                                 viewModel.attachments.append(attachment)
                             }
@@ -5734,7 +5796,9 @@ for item in items {
             return
         }
         let isImage = FileAttachmentService.isImageFile(name: url.lastPathComponent)
-        if isImage, let attachment = FileAttachmentService.makeImageAttachment(data: data, name: url.lastPathComponent) {
+        let imageAttachment = isImage ? await FileAttachmentService.prepareImageAttachment(data: data, name: url.lastPathComponent) : nil
+        guard !Task.isCancelled else { return }
+        if let attachment = imageAttachment {
             viewModel.attachments.append(attachment)
             viewModel.uploadAttachmentImmediately(attachmentId: attachment.id)
         } else {

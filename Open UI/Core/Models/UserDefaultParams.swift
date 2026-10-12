@@ -43,6 +43,7 @@ struct UserDefaultParams: Codable, Sendable, Equatable {
 
     // MARK: Reasoning
     var reasoningEffort: String?
+    var modelControls: [String: [String: String]]?
 
     // MARK: Streaming
     var streamResponse: Bool?
@@ -109,6 +110,7 @@ struct UserDefaultParams: Codable, Sendable, Equatable {
 
         // All other params live under "ui.params"
         let p = uiDict["params"] as? [String: Any] ?? [:]
+        modelControls = p["model_controls"] as? [String: [String: String]]
 
         if let v = p["temperature"] as? Double { temperature = v }
         else if let v = p["temperature"] as? Int { temperature = Double(v) }
@@ -168,7 +170,7 @@ struct UserDefaultParams: Codable, Sendable, Equatable {
         mirostat != nil || mirostatEta != nil || mirostatTau != nil ||
         repeatLastN != nil || tfsZ != nil || repeatPenalty != nil ||
         numKeep != nil || numCtx != nil || numBatch != nil ||
-        reasoningEffort != nil || streamResponse != nil ||
+        reasoningEffort != nil || modelControls?.isEmpty == false || streamResponse != nil ||
         functionCalling != nil || toolApprovalMode == "ask" ||
         format != nil ||
         thinkEnabled != nil || (thinkCustom != nil && !thinkCustom!.isEmpty) ||
@@ -201,6 +203,7 @@ struct UserDefaultParams: Codable, Sendable, Equatable {
         if let v = numCtx              { p["num_ctx"] = v }
         if let v = numBatch            { p["num_batch"] = v }
         if let v = reasoningEffort, !v.isEmpty { p["reasoning_effort"] = v }
+        if let v = modelControls, !v.isEmpty { p["model_controls"] = v }
         if let v = streamResponse      { p["stream_response"] = v }
         if let v = functionCalling, !v.isEmpty { p["function_calling"] = v }
         // tool_approval_mode: only send "ask" — "full" is the server default, no need to send it

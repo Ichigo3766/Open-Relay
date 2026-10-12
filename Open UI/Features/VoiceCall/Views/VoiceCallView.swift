@@ -347,6 +347,7 @@ struct VoiceCallView: View {
             ) {
                 viewModel.toggleMute()
             }
+            .accessibilityLabel(viewModel.isMuted ? "Unmute microphone" : "Mute microphone")
 
             Spacer()
 
@@ -364,6 +365,7 @@ struct VoiceCallView: View {
             compactControl(icon: "slider.horizontal.3", isActive: false) {
                 showVoiceSettings = true
             }
+            .accessibilityLabel("Voice settings")
 
             Spacer()
 
@@ -379,6 +381,7 @@ struct VoiceCallView: View {
                     dismiss()
                 }
             }
+            .accessibilityLabel("End call")
 
             Spacer()
         }
@@ -398,18 +401,22 @@ struct VoiceCallView: View {
             compactControl(icon: "forward.fill", isActive: false) {
                 Task { await viewModel.cancelSpeaking() }
             }
+            .accessibilityLabel("Skip response")
         case .paused:
             compactControl(icon: "play.fill", isActive: false) {
                 Task { await viewModel.resumeListening() }
             }
+            .accessibilityLabel("Resume call")
         case .listening:
             compactControl(icon: "pause.fill", isActive: false) {
                 viewModel.pauseListening()
             }
+            .accessibilityLabel("Pause call")
         case .error:
             compactControl(icon: "arrow.clockwise", isActive: false) {
                 Task { await initializeCall() }
             }
+            .accessibilityLabel("Retry call")
         default:
             compactControl(icon: "pause.fill", isActive: false) {}
                 .opacity(0.2)

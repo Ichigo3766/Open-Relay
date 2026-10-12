@@ -67,6 +67,7 @@ final class AdminAuthenticationViewModel {
         authConfigError = nil
         do {
             authConfig = try await api.getAdminAuthConfig()
+            mfaPolicySnapshot = currentMFAPolicy
             logger.info("Loaded admin auth config")
         } catch {
             let apiError = APIError.from(error)
@@ -82,20 +83,48 @@ final class AdminAuthenticationViewModel {
         authConfigError = nil
         authConfigSuccess = false
         do {
-            authConfig = try await api.updateAdminAuthConfig(authConfig)
+            var toSave = authConfig
+            let mfaChanged = authConfig.supportsMFA && mfaPolicySnapshot != currentMFAPolicy
+            toSave.includeMFAPolicy = mfaChanged
+            authConfig = try await api.updateAdminAuthConfig(toSave)
+            mfaPolicySnapshot = currentMFAPolicy
             authConfigSuccess = true
             logger.info("Saved admin auth config")
+            if mfaChanged {
+                // Changing the MFA policy signs every account out, including this one.
+                isSavingAuthConfig = false
+                onSessionsRevoked?()
+                return
+            }
             Task {
                 try? await Task.sleep(nanoseconds: 3_000_000_000)
                 authConfigSuccess = false
             }
         } catch {
             let apiError = APIError.from(error)
-            authConfigError = apiError.errorDescription ?? "Failed to save configuration."
+            if case .httpError(403, let message, _) = apiError, let message {
+                authConfigError = message
+            } else {
+                authConfigError = apiError.errorDescription ?? "Failed to save configuration."
+            }
             logger.error("Failed to save auth config: \(error.localizedDescription)")
         }
         isSavingAuthConfig = false
     }
+
+    // MARK: - MFA Policy
+
+    /// The MFA policy as last loaded/saved — used to detect edits.
+    private var mfaPolicySnapshot: [Bool] = []
+    private var currentMFAPolicy: [Bool] {
+        [authConfig.enableMFA, authConfig.mfaAllowOAuthBypass, authConfig.mfaAllowTrustedHeaderBypass]
+    }
+    /// True when the admin edited the MFA policy (saving will sign everyone out).
+    var hasPendingMFAPolicyChange: Bool {
+        authConfig.supportsMFA && !mfaPolicySnapshot.isEmpty && mfaPolicySnapshot != currentMFAPolicy
+    }
+    /// Called after an MFA policy change revoked every session.
+    var onSessionsRevoked: (() -> Void)?
 
     // MARK: - LDAP
 

@@ -12,6 +12,9 @@ struct FolderData: Sendable, Hashable {
     var systemPrompt: String?
     /// Knowledge bases / files attached to this folder.
     var knowledgeItems: [FolderKnowledgeItem]
+    /// Sharing mode for people the folder is shared with:
+    /// nil = Clone only, "continue" = Allow replies.
+    var shareMode: String? = nil
 
     init(
         modelIds: [String] = [],
@@ -26,6 +29,7 @@ struct FolderData: Sendable, Hashable {
     init?(json: [String: Any]) {
         modelIds = json["model_ids"] as? [String] ?? []
         systemPrompt = json["system_prompt"] as? String
+        shareMode = json["share_mode"] as? String
         if let rawItems = json["knowledge_items"] as? [[String: Any]] {
             knowledgeItems = rawItems.compactMap { FolderKnowledgeItem(json: $0) }
         } else {
@@ -43,6 +47,7 @@ struct FolderData: Sendable, Hashable {
         if !knowledgeItems.isEmpty {
             dict["knowledge_items"] = knowledgeItems.map { $0.toJSON() }
         }
+        if let shareMode { dict["share_mode"] = shareMode }
         return dict
     }
 }

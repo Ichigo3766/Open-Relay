@@ -112,7 +112,7 @@ struct ShareChatSheet: View {
             sharedChatDetailSheet
         }
         .sheet(isPresented: $showAccessSheet) {
-            SharedChatAccessSheet(chatId: conversation.id)
+            SharedChatAccessSheet(chatId: conversation.id, shareId: currentShareId)
                 .presentationDetents([.medium, .large])
         }
     }

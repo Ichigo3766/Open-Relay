@@ -338,7 +338,29 @@ struct ChannelMember: Identifiable, Hashable, Sendable {
     /// Driven directly by the server's `is_active` bool, which the server computes
     /// as `last_active_at >= now - 180s` on every channel list/detail response.
     var isOnline: Bool { isActive }
-    
+
+    /// The person's IANA time zone (e.g. "Europe/Berlin").
+    var timezone: String?
+    /// When they were last active (epoch seconds).
+    var lastActiveAt: TimeInterval?
+
+    /// "3:42 PM" in the person's own time zone, when known.
+    var localTimeText: String? {
+        guard let timezone, let zone = TimeZone(identifier: timezone) else { return nil }
+        let formatter = DateFormatter()
+        formatter.timeStyle = .short
+        formatter.dateStyle = .none
+        formatter.timeZone = zone
+        return formatter.string(from: Date())
+    }
+
+    /// "5 minutes ago" for the last-active time, when known.
+    var lastSeenText: String? {
+        guard let lastActiveAt, lastActiveAt > 0 else { return nil }
+        let formatter = RelativeDateTimeFormatter()
+        formatter.unitsStyle = .full
+        return formatter.localizedString(for: Date(timeIntervalSince1970: lastActiveAt), relativeTo: Date())
+    }    
     /// Resolves the correct avatar URL for this member.
     /// Always uses the `/api/v1/users/{id}/profile/image` endpoint which
     /// returns the current avatar dynamically (same as the Admin Console).
@@ -372,6 +394,9 @@ struct ChannelMember: Identifiable, Hashable, Sendable {
         member.statusEmoji = json["status_emoji"] as? String
         member.statusMessage = json["status_message"] as? String
         member.bio = json["bio"] as? String
+        member.timezone = json["timezone"] as? String
+        if let last = json["last_active_at"] as? Double { member.lastActiveAt = last }
+        else if let last = json["last_active_at"] as? Int { member.lastActiveAt = Double(last) }
         if let groups = json["groups"] as? [[String: Any]] {
             member.groupNames = groups.compactMap { $0["name"] as? String }
         }

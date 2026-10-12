@@ -26,6 +26,7 @@ nonisolated struct Conversation: Identifiable, Hashable, Sendable {
     var updatedAt: Date
     var model: String?
     var systemPrompt: String?
+    var hasDeferredDetails = false
     /// Native chat-level variables, separate from prompt substitution variables.
     /// Raw JSON values — not truly `Sendable`, matching the `ChatMessage.usage` pattern.
     nonisolated(unsafe) var chatVariables: [String: Any] = [:]
@@ -68,6 +69,21 @@ nonisolated struct Conversation: Identifiable, Hashable, Sendable {
     /// A chat is unread when `updatedAt` is later than this (web ChatItem).
     var lastReadAt: TimeInterval?
 
+    /// Server `user_id` — the chat's owner. Differs from the signed-in user for
+    /// chats opened through a share or a folder shared with them.
+    var ownerUserId: String?
+    /// `chat.share_mode`. `"continue"` means people the chat
+    /// is shared with may reply; nil means view / clone only.
+    var shareMode: String?
+
+    /// Whether non-owners may write in this chat ("Allow replies").
+    var allowsSharedReplies: Bool { shareMode == "continue" }
+
+    /// True when `userId` is set and the chat belongs to someone else.
+    func isShared(withViewer userId: String?) -> Bool {
+        guard let ownerUserId, !ownerUserId.isEmpty, let userId, !userId.isEmpty else { return false }
+        return ownerUserId != userId
+    }
     init(
         id: String = UUID().uuidString,
         title: String,

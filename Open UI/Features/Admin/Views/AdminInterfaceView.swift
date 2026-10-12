@@ -177,6 +177,47 @@ struct AdminInterfaceView: View {
 
                 Divider().padding(.horizontal, Spacing.md)
 
+                // Tool Search — defer long tool definitions; the model looks them up.
+                experimentalToggleRow(
+                    title: "Tool Search",
+                    subtitle: "Leave long tool definitions out of the request and list them by name, so the model loads only the tools it needs.",
+                    isOn: $viewModel.chatConfig.enableToolSearch
+                )
+
+                if viewModel.chatConfig.enableToolSearch {
+                    Divider().padding(.horizontal, Spacing.md)
+                    inlineTextFieldRow(
+                        title: "Defer Threshold (tokens)",
+                        placeholder: "400",
+                        text: Binding(
+                            get: { String(viewModel.chatConfig.toolSearchDeferThreshold) },
+                            set: { viewModel.chatConfig.toolSearchDeferThreshold = Int($0.filter(\.isNumber)) ?? 400 }
+                        ),
+                        keyboardType: .numberPad
+                    )
+                    Divider().padding(.horizontal, Spacing.md)
+                    inlineTextFieldRow(
+                        title: "Always Loaded Tools",
+                        placeholder: "tool_id_1, tool_id_2",
+                        text: Binding(
+                            get: { viewModel.chatConfig.toolSearchAlwaysLoaded.joined(separator: ", ") },
+                            set: {
+                                viewModel.chatConfig.toolSearchAlwaysLoaded = $0.split(separator: ",")
+                                    .map { $0.trimmingCharacters(in: .whitespaces) }
+                                    .filter { !$0.isEmpty }
+                            }
+                        )
+                    )
+                    Divider().padding(.horizontal, Spacing.md)
+                    inlineToggleRow(
+                        title: "Defer Builtin Tools",
+                        subtitle: "Also list builtin tools by name only.",
+                        isOn: $viewModel.chatConfig.toolSearchDeferBuiltinTools
+                    )
+                }
+
+                Divider().padding(.horizontal, Spacing.md)
+
                 // Context Compaction
                 inlineToggleRow(
                     title: "Context Compaction",

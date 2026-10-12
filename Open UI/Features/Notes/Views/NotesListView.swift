@@ -4,6 +4,7 @@ import SwiftUI
 /// pinned section, and swipe actions for delete/pin.
 struct NotesListView: View {
     @State private var viewModel = NotesListViewModel()
+    @State private var sharingModel: NoteSharingModel?
     @Environment(AppDependencyContainer.self) private var dependencies
     @Environment(AppRouter.self) private var router
     @Environment(\.theme) private var theme
@@ -32,6 +33,9 @@ struct NotesListView: View {
             prompt: "Search Notes"
         )
         .onChange(of: viewModel.searchText) { _, _ in viewModel.triggerSearch() }
+        .sheet(isPresented: Binding(get: { sharingModel != nil }, set: { if !$0 { sharingModel = nil } })) {
+            if let sharingModel { NoteSharingView(model: sharingModel) }
+        }
         .onDisappear { viewModel.clearSearch() }
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
@@ -211,6 +215,17 @@ struct NotesListView: View {
                 )
             }
             .disabled(viewModel.pinningNoteIDs.contains(note.id))
+            // Manage who can see the note straight from the list.
+            if note.canEdit, let api = dependencies.apiClient, let user = dependencies.authViewModel.currentUser {
+                Button {
+                    let container = dependencies
+                    sharingModel = NoteSharingModel(noteId: note.id, api: api, user: user) { [weak container] in
+                        container?.apiClient === api && container?.authViewModel.currentUser?.id == user.id
+                    }
+                } label: {
+                    SwiftUI.Label("Access", systemImage: "person.2.badge.key")
+                }
+            }
             Button(role: .destructive) {
                 viewModel.deletingNote = note
             } label: {

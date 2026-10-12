@@ -325,75 +325,75 @@ final class APIClient: @unchecked Sendable {
 
     // MARK: - Authentication
 
-    func login(email: String, password: String) async throws -> User {
-        let response = try await network.request(
-            AuthResponse.self,
-            path: "/api/v1/auths/signin",
+    /// Posts a sign-in style request and resolves it into a session, an MFA
+    /// Challenge or a pending marker.
+    private func performSignin(
+        path: String,
+        body: [String: String],
+        fallbackName: String,
+        fallbackEmail: String
+    ) async throws -> SigninOutcome {
+        let bodyData = try JSONEncoder().encode(body)
+        let (data, _) = try await network.requestRaw(
+            path: path,
             method: .post,
-            body: ["email": email, "password": password] as [String: String],
+            body: bodyData,
             authenticated: false
         )
+        switch try SigninResponseParser.parse(data) {
+        case .mfa(let challenge):
+            return .mfa(challenge)
+        case .pending:
+            return .pending
+        case .session(let response):
+            return .authenticated(try await installSession(response, fallbackName: fallbackName, fallbackEmail: fallbackEmail))
+        }
+    }
 
+    /// Stores the session token and loads the full user (with permissions).
+    private func installSession(_ response: AuthResponse, fallbackName: String, fallbackEmail: String) async throws -> User {
         network.saveAuthToken(response.token)
-
         // Fetch full user from /api/v1/auths/ to capture permissions field.
         // AuthResponse doesn't include permissions — only the GET /api/v1/auths/ response does.
         if let fullUser = try? await getCurrentUser() { return fullUser }
         return User(
             id: response.id ?? "",
-            username: response.name ?? email,
-            email: response.email ?? email,
+            username: response.name ?? fallbackName,
+            email: response.email ?? fallbackEmail,
             name: response.name,
             profileImageURL: response.profileImageUrl,
             role: User.UserRole(rawValue: response.role ?? "user") ?? .user
         )
     }
 
-    func ldapLogin(username: String, password: String) async throws -> User {
-        let response = try await network.request(
-            AuthResponse.self,
+    func login(email: String, password: String) async throws -> SigninOutcome {
+        try await performSignin(
+            path: "/api/v1/auths/signin",
+            body: ["email": email, "password": password],
+            fallbackName: email,
+            fallbackEmail: email
+        )
+    }
+
+    func ldapLogin(username: String, password: String) async throws -> SigninOutcome {
+        try await performSignin(
             path: "/api/v1/auths/ldap",
-            method: .post,
-            body: ["user": username, "password": password] as [String: String],
-            authenticated: false
-        )
-
-        network.saveAuthToken(response.token)
-
-        // Fetch full user from /api/v1/auths/ to capture permissions field.
-        if let fullUser = try? await getCurrentUser() { return fullUser }
-        return User(
-            id: response.id ?? "",
-            username: response.name ?? username,
-            email: response.email ?? "",
-            name: response.name,
-            profileImageURL: response.profileImageUrl,
-            role: User.UserRole(rawValue: response.role ?? "user") ?? .user
+            body: ["user": username, "password": password],
+            fallbackName: username,
+            fallbackEmail: ""
         )
     }
 
-    func signup(name: String, email: String, password: String) async throws -> User {
-        let response = try await network.request(
-            AuthResponse.self,
+    func signup(name: String, email: String, password: String) async throws -> SigninOutcome {
+        try await performSignin(
             path: "/api/v1/auths/signup",
-            method: .post,
-            body: ["name": name, "email": email, "password": password] as [String: String],
-            authenticated: false
-        )
-
-        network.saveAuthToken(response.token)
-
-        // Fetch full user from /api/v1/auths/ to capture permissions field.
-        if let fullUser = try? await getCurrentUser() { return fullUser }
-        return User(
-            id: response.id ?? "",
-            username: response.name ?? name,
-            email: response.email ?? email,
-            name: response.name,
-            profileImageURL: response.profileImageUrl,
-            role: User.UserRole(rawValue: response.role ?? "user") ?? .user
+            body: ["name": name, "email": email, "password": password],
+            fallbackName: name,
+            fallbackEmail: email
         )
     }
+
+    // MARK: - Session
 
     func logout() async throws {
         try await network.requestVoid(path: "/api/v1/auths/signout")
@@ -466,16 +466,16 @@ final class APIClient: @unchecked Sendable {
         guard let payload = try JSONSerialization.jsonObject(with: data) as? [String: Any]
         else {
             if let array = try JSONSerialization.jsonObject(with: data) as? [[String: Any]] {
-                return parseModelArray(array)
+                return parseModelArray(array, controls: NamedModelControl.decode(data, locales: LocalizedContent.deviceLocaleCandidates()))
             }
             return []
         }
 
         if let modelsArray = payload["data"] as? [[String: Any]] {
-            return parseModelArray(modelsArray)
+            return parseModelArray(modelsArray, controls: NamedModelControl.decode(data, locales: LocalizedContent.deviceLocaleCandidates()))
         }
         if let modelsArray = payload["models"] as? [[String: Any]] {
-            return parseModelArray(modelsArray)
+            return parseModelArray(modelsArray, controls: NamedModelControl.decode(data, locales: LocalizedContent.deviceLocaleCandidates()))
         }
 
         return []
@@ -491,16 +491,16 @@ final class APIClient: @unchecked Sendable {
         guard let payload = try JSONSerialization.jsonObject(with: data) as? [String: Any]
         else {
             if let array = try JSONSerialization.jsonObject(with: data) as? [[String: Any]] {
-                return parseModelArray(array, includeHidden: true)
+                return parseModelArray(array, includeHidden: true, controls: NamedModelControl.decode(data, locales: LocalizedContent.deviceLocaleCandidates()))
             }
             return []
         }
 
         if let modelsArray = payload["data"] as? [[String: Any]] {
-            return parseModelArray(modelsArray, includeHidden: true)
+            return parseModelArray(modelsArray, includeHidden: true, controls: NamedModelControl.decode(data, locales: LocalizedContent.deviceLocaleCandidates()))
         }
         if let modelsArray = payload["models"] as? [[String: Any]] {
-            return parseModelArray(modelsArray, includeHidden: true)
+            return parseModelArray(modelsArray, includeHidden: true, controls: NamedModelControl.decode(data, locales: LocalizedContent.deviceLocaleCandidates()))
         }
 
         return []
@@ -537,8 +537,12 @@ final class APIClient: @unchecked Sendable {
     ///
     /// Called when a model is selected to get authoritative config for that model.
     func fetchModelConfig(modelId: String) async throws -> AIModel? {
-        let raw = try await getModelDetails(modelId: modelId)
-        return parseModelConfig(raw)
+        let (data, _) = try await network.requestRaw(
+            path: "/api/v1/models/model", queryItems: [URLQueryItem(name: "id", value: modelId)])
+        guard let raw = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              var model = parseModelConfig(raw) else { return nil }
+        model.namedControls = NamedModelControl.decode(data, locales: LocalizedContent.deviceLocaleCandidates())[modelId]
+        return model
     }
 
     /// Parses a full model config response from `/api/v1/models/model`.
@@ -811,14 +815,14 @@ final class APIClient: @unchecked Sendable {
         }
     }
 
-    func cachedConversation(id: String) async -> (conversation: Conversation, isRecent: Bool, validatedAt: Date)? {
+    func cachedConversation(id: String) async -> (conversation: Conversation, isRecent: Bool, validatedAt: Date, allowsStale: Bool?)? {
         let revision = await ConversationCache.shared.currentRevision()
         let scope = network.conversationCacheScope
         guard let cached = await ConversationCache.shared.cached(scope: scope, id: id) else { return nil }
         let conversation = await decodeConversation(cached.response)
         guard scope == network.conversationCacheScope,
               revision == (await ConversationCache.shared.currentRevision()) else { return nil }
-        return (conversation, cached.entry.isRecent(), cached.entry.validatedAt)
+        return (conversation, cached.entry.isRecent(), cached.entry.validatedAt, cached.entry.allowsStale)
     }
 
     func getConversation(id: String, preferRecent: Bool = false) async throws -> Conversation {
@@ -857,6 +861,9 @@ final class APIClient: @unchecked Sendable {
         chatFiles: [ChatMessageFile] = [],
         variables: [String: Any] = [:]
     ) async throws -> Conversation {
+        guard !history.nodes.values.contains(where: { $0.role == .assistant && CachedConversationSnapshot.hasDeferredContent($0.content) }) else {
+            throw APIError.requestEncoding(underlying: CocoaError(.coderInvalidValue))
+        }
         // Build flat messages array
         let flatMessages = history.createMessagesList()
         let messagesArray: [[String: Any]] = flatMessages.map { msg in
@@ -933,6 +940,9 @@ final class APIClient: @unchecked Sendable {
         folderId: String? = nil,
         variables: [String: Any] = [:]
     ) async throws -> Conversation {
+        guard !messages.contains(where: { $0.role == .assistant && CachedConversationSnapshot.hasDeferredContent($0.content) }) else {
+            throw APIError.requestEncoding(underlying: CocoaError(.coderInvalidValue))
+        }
         let chatData = buildChatPayload(
             title: title,
             messages: messages,
@@ -1167,6 +1177,9 @@ final class APIClient: @unchecked Sendable {
         title: String? = nil,
         chatFiles: [ChatMessageFile] = []
     ) async throws {
+        guard !messages.contains(where: { $0.role == .assistant && CachedConversationSnapshot.hasDeferredContent($0.content) }) else {
+            throw APIError.requestEncoding(underlying: CocoaError(.coderInvalidValue))
+        }
         let chatData = buildChatPayload(
             title: title ?? "",
             messages: messages,
@@ -1197,6 +1210,9 @@ final class APIClient: @unchecked Sendable {
         title: String? = nil,
         chatFiles: [ChatMessageFile] = []
     ) async throws {
+        guard !history.nodes.values.contains(where: { $0.role == .assistant && CachedConversationSnapshot.hasDeferredContent($0.content) }) else {
+            throw APIError.requestEncoding(underlying: CocoaError(.coderInvalidValue))
+        }
         // Build the flat messages array from the current branch (for server compat)
         let flatMessages = history.createMessagesList()
         let messagesArray: [[String: Any]] = flatMessages.map { msg in
@@ -1421,6 +1437,12 @@ final class APIClient: @unchecked Sendable {
         return UserDefaultParams(from: ui)
     }
 
+    func saveModelControlSelections(modelID: String, controlIDs: [String], selections: [String: String]) async throws {
+        let current = try await getUserSettings()
+        let ui = NamedModelControl.settingsUI(current, modelID: modelID, controlIDs: controlIDs, selections: selections)
+        try await updateUserSettings(["ui": ui])
+    }
+
     /// Saves user-level default params to `POST /api/v1/users/user/settings/update`.
     /// Merges only `system` and `params` keys into the existing `ui` dict so other
     /// ui settings (models, pinnedModels, version, audio, etc.) are preserved.
@@ -1610,8 +1632,10 @@ final class APIClient: @unchecked Sendable {
     /// Replaces the access grants for a folder.
     /// Pass an empty array to make the folder private (owner-only).
     @discardableResult
-    func updateFolderAccessGrants(id: String, grants: [[String: Any]]) async throws -> [String: Any] {
-        let body: [String: Any] = ["access_grants": grants]
+    func updateFolderAccessGrants(id: String, grants: [[String: Any]], shareMode: String?? = .none) async throws -> [String: Any] {
+        var body: [String: Any] = ["access_grants": grants]
+        // Only send share_mode when the caller set it; nil inner = Clone only.
+        if case .some(let mode) = shareMode { body["share_mode"] = mode.map { $0 as Any } ?? NSNull() }
         return try await network.requestJSON(
             path: "/api/v1/folders/\(id)/access/update",
             method: .post,
@@ -2141,6 +2165,14 @@ final class APIClient: @unchecked Sendable {
         return all
     }
 
+    /// GET /api/v1/prompts/id/{id}/history/diff?from_id=...&to_id=...
+    func getPromptDiff(id: String, from: String, to: String) async throws -> PromptVersionDiff {
+        let (data, _) = try await network.requestRaw(
+            path: "/api/v1/prompts/id/\(id)/history/diff",
+            queryItems: [URLQueryItem(name: "from_id", value: from), URLQueryItem(name: "to_id", value: to)])
+        return try JSONDecoder().decode(PromptVersionDiff.self, from: data)
+    }
+
     /// DELETE /api/v1/prompts/id/{id}/history/{history_id}
     func deletePromptHistoryEntry(id: String, historyId: String) async throws {
         try await network.requestVoid(
@@ -2452,29 +2484,36 @@ final class APIClient: @unchecked Sendable {
         return json["DEFAULT_MODEL_METADATA"] as? [String: Any] ?? [:]
     }
 
-    /// GET /api/v1/configs/suggestions — prompt suggestions.
-    /// Falls back to /api/config → default_prompt_suggestions if the dedicated endpoint returns empty.
-    func getSuggestionsConfig() async throws -> [[String: Any]] {
-        let (data, _) = try await network.requestRaw(path: "/api/v1/configs/suggestions")
-        if let dict = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-           let arr = dict["suggestions"] as? [[String: Any]], !arr.isEmpty {
-            return arr
-        }
-        if let arr = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]], !arr.isEmpty {
-            return arr
-        }
-        // Fallback: read default_prompt_suggestions from /api/config
-        if let (cfgData, _) = try? await network.requestRaw(path: "/api/config"),
-           let cfgDict = try? JSONSerialization.jsonObject(with: cfgData) as? [String: Any],
-           let arr = cfgDict["default_prompt_suggestions"] as? [[String: Any]], !arr.isEmpty {
-            return arr
-        }
-        return []
+    /// Admin prompt suggestions as stored on the server.
+    /// `suggestions == nil` means "use Open WebUI's built-in starter prompts".
+    struct PromptSuggestionsConfig {
+        var suggestions: [[String: Any]]?
+        var i18n: [String: Any]
     }
 
-    /// POST /api/v1/configs/suggestions — update prompt suggestions
-    func updateSuggestionsConfig(suggestions: [[String: Any]]) async throws {
-        let body = try JSONSerialization.data(withJSONObject: ["suggestions": suggestions])
+    /// Reads `default_prompt_suggestions` (+ `_i18n`) from `/api/config`.
+    /// The server has no GET for `/api/v1/configs/suggestions` (POST only) — the web
+    /// admin reads these from the app config the same way.
+    func getPromptSuggestionsConfig() async throws -> PromptSuggestionsConfig {
+        let (data, _) = try await network.requestRaw(path: "/api/config", authenticated: true, deduplicate: false)
+        guard let dict = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw APIError.responseDecoding(underlying: NSError(domain: "parse", code: -1), data: data)
+        }
+        return PromptSuggestionsConfig(
+            suggestions: dict["default_prompt_suggestions"] as? [[String: Any]],
+            i18n: dict["default_prompt_suggestions_i18n"] as? [String: Any] ?? [:]
+        )
+    }
+
+    /// POST /api/v1/configs/suggestions — full replace of the admin prompt suggestions.
+    /// Pass `nil` suggestions to restore the built-in defaults. `i18n` is always sent:
+    /// the server replaces the stored translations with whatever arrives (missing = wiped).
+    func updateSuggestionsConfig(suggestions: [[String: Any]]?, i18n: [String: Any]) async throws {
+        let payload: [String: Any] = [
+            "suggestions": suggestions.map { $0 as Any } ?? NSNull(),
+            "i18n": i18n
+        ]
+        let body = try JSONSerialization.data(withJSONObject: payload)
         _ = try await network.requestRaw(path: "/api/v1/configs/suggestions", method: .post, body: body)
     }
 
@@ -3984,7 +4023,7 @@ final class APIClient: @unchecked Sendable {
     /// - Parameter includeHidden: When `true`, models with `info.meta.hidden == true` are
     ///   included in the result. Use this for the workspace model editor base model picker,
     ///   where admins need to see all enabled models. Defaults to `false` (chat picker behaviour).
-    private func parseModelArray(_ models: [[String: Any]], includeHidden: Bool = false) -> [AIModel] {
+    private func parseModelArray(_ models: [[String: Any]], includeHidden: Bool = false, controls: [String: [NamedModelControl]] = [:]) -> [AIModel] {
         return models.compactMap { raw -> AIModel? in
             guard let id = raw["id"] as? String else { return nil }
             let name = raw["name"] as? String ?? id
@@ -4133,7 +4172,8 @@ final class APIClient: @unchecked Sendable {
                 actionIds: actionIds,
                 actions: actions,
                 suggestionPrompts: suggestionPrompts,
-                rawModelItem: raw
+                rawModelItem: raw,
+                namedControls: raw["direct"] as? Bool == true ? nil : controls[id]
             )
         }
     }
@@ -4276,9 +4316,12 @@ final class APIClient: @unchecked Sendable {
             tasks: tasks,
             files: chatFiles
         )
+        conv.hasDeferredDetails = (json["chat"] as? [String: Any])?[CachedConversationSnapshot.marker] as? Bool == true
         conv.chatParams = chatParams
         conv.contextUsage = ChatContextUsage.parse(json["context_usage"])
         conv.chatVariables = json["variables"] as? [String: Any] ?? [:]
+        conv.ownerUserId = json["user_id"] as? String
+        conv.shareMode = (json["chat"] as? [String: Any])?["share_mode"] as? String
         return conv
     }
 
@@ -5979,10 +6022,18 @@ final class APIClient: @unchecked Sendable {
 
     /// GET `/api/v1/groups/` — fetch all groups with full detail.
     func getGroupDetails() async throws -> [GroupDetail] {
+        try await getGroupDetailsWithCapabilities().groups
+    }
+
+    /// Groups plus whether the server knows about nested groups (adds
+    /// `parent_group_id` to every group, even when null).
+    func getGroupDetailsWithCapabilities() async throws -> (groups: [GroupDetail], supportsNesting: Bool) {
         let (data, _) = try await network.requestRaw(path: "/api/v1/groups/")
         let decoder = JSONDecoder()
-        if let groups = try? decoder.decode([GroupDetail].self, from: data) { return groups }
-        return []
+        let groups = (try? decoder.decode([GroupDetail].self, from: data)) ?? []
+        let raw = (try? JSONSerialization.jsonObject(with: data) as? [[String: Any]]) ?? []
+        let supportsNesting = raw.first.map { $0.keys.contains("parent_group_id") } ?? false
+        return (groups, supportsNesting)
     }
 
     /// POST `/api/v1/groups/create` — create a new group.
@@ -6419,6 +6470,12 @@ final class APIClient: @unchecked Sendable {
     }
 
     // MARK: - Tool Servers Config
+
+    /// Discovers individual tools from an accessible MCP connection, using the user's session.
+    func getMCPToolSpecs(id: String) async throws -> [MCPToolSpec] {
+        let (data, _) = try await network.requestRaw(path: "/api/v1/tools/id/\(id)/specs", timeout: 25)
+        return try JSONDecoder().decode(MCPToolSpecsResponse.self, from: data).specs
+    }
 
     /// GET `/api/v1/configs/tool_servers`
     func getToolServersConfig() async throws -> ToolServersConfigForm {

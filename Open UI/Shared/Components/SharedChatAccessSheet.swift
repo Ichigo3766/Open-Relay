@@ -31,6 +31,10 @@ struct SharedChatAccessSheet: View {
     @State var isLoading = true
     @State var isSaving = false
     @State var error: String?
+    /// "Sharing mode": nil = Clone only, "continue" = Allow replies.
+    @State var shareMode: String?
+    /// The share id, used to read the current sharing mode.
+    var shareId: String? = nil
 
     private var user: User? { dependencies.authViewModel.currentUser }
     private var isAdmin: Bool { user?.role == .admin }
@@ -72,6 +76,22 @@ struct SharedChatAccessSheet: View {
                                 await save()
                             },
                             onAddGrants: { userIds, groupIds in await add(userIds: userIds, groupIds: groupIds) })
+                    }
+
+                    // Once people or groups are added, choose whether
+                    // they can only view/clone the chat or also reply in it.
+                    if !grants.isEmpty || visibility != .private {
+                        Section {
+                            Picker("Sharing mode", selection: $shareMode) {
+                                Text("Clone only").tag(String?.none)
+                                Text("Allow replies").tag(String?.some("continue"))
+                            }
+                            .onChange(of: shareMode) { _, _ in Task { await save() } }
+                        } footer: {
+                            Text(shareMode == "continue"
+                                 ? "Everyone it's shared with can keep writing in this conversation. Only you can change its settings and title."
+                                 : "People it's shared with can view the chat and make their own copy.")
+                        }
                     }
                 }
                 if let error { Section { Text(error).foregroundStyle(.red).font(.footnote) } }

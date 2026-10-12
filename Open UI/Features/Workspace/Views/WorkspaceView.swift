@@ -41,6 +41,8 @@ struct WorkspaceView: View {
             case .prompts:   return wp.prompts
             case .skills:    return wp.skills
             case .tools:     return wp.tools
+                // Hidden when the admin turned workspace tools off server-wide.
+                && dependencies.authViewModel.backendConfig?.features?.enableTools != false
             }
         }
     }

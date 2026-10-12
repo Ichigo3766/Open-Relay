@@ -7,7 +7,8 @@ import MLXAudioCore
 #endif
 
 /// One mic tap buffer: the native buffer (Apple STT), the same audio
-/// converted to 16 kHz mono (VAD + utterance STT), its RMS level, and when it
+/// converted to mono at the requested rate (16 kHz VAD/STT or 24 kHz Realtime),
+/// its RMS level, and when it
 /// was captured on the call's wall clock (start of the buffer).
 nonisolated struct MicFrame: @unchecked Sendable {
     let native: AVAudioPCMBuffer
@@ -24,14 +25,16 @@ private nonisolated final class TapState: @unchecked Sendable {
     private var converter: PCMStreamConverter?
     #endif
     private var continuation: AsyncStream<MicFrame>.Continuation?
+    private var sampleRate = CallAudioEngine.vadSampleRate
 
-    func configure(continuation: AsyncStream<MicFrame>.Continuation?) {
+    func configure(continuation: AsyncStream<MicFrame>.Continuation?, sampleRate: Double = CallAudioEngine.vadSampleRate) {
         lock.lock()
         self.continuation = continuation
+        self.sampleRate = sampleRate
         #if canImport(MLXAudioCore)
         converter = AVAudioFormat(
             commonFormat: .pcmFormatFloat32,
-            sampleRate: CallAudioEngine.vadSampleRate,
+            sampleRate: sampleRate,
             channels: 1, interleaved: false
         ).map { PCMStreamConverter(outputFormat: $0) }
         #endif
@@ -40,8 +43,11 @@ private nonisolated final class TapState: @unchecked Sendable {
 
     /// Recreate the converter (input format changed after a route change).
     func resetConverter() {
+        lock.lock()
         let c = continuation
-        configure(continuation: c)
+        let rate = sampleRate
+        lock.unlock()
+        configure(continuation: c, sampleRate: rate)
     }
 
     func clear() {
@@ -127,13 +133,13 @@ final class CallAudioEngine {
     // MARK: - Lifecycle
 
     /// Starts the engine and returns the mic frame stream for this call.
-    func start() throws -> AsyncStream<MicFrame> {
+    func start(sampleRate: Double = CallAudioEngine.vadSampleRate) throws -> AsyncStream<MicFrame> {
         if isRunning { stop() }
         // Bounded: if the consumer stalls, drop the oldest audio (~3 s kept).
         let (stream, continuation) = AsyncStream<MicFrame>.makeStream(
             bufferingPolicy: .bufferingNewest(150)
         )
-        tapState.configure(continuation: continuation)
+        tapState.configure(continuation: continuation, sampleRate: sampleRate)
         try buildGraphAndStart()
         isRunning = true
         observeConfigurationChanges()
@@ -225,6 +231,7 @@ private extension CallAudioEngine {
     /// Reverse of `buildGraphAndStart`. VP is disabled only after the engine
     /// has stopped — toggling it on a running engine is unsupported.
     func teardownGraph() {
+        guard playerNode.engine != nil else { return }
         let input = engine.inputNode
         input.removeTap(onBus: 0)
         playerNode.stop()

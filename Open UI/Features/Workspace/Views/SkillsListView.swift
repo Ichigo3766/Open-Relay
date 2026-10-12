@@ -76,6 +76,8 @@ struct SkillsListView: View {
 
     // Import
     @State private var showImportPicker = false
+    @State private var accessSkill: SkillItem?
+    @State private var showURLImport = false
     @State private var importedSkill: ImportedSkillData? = nil
     @State private var showImportEditor = false
     @State private var showBatchImportConfirm = false
@@ -162,9 +164,28 @@ struct SkillsListView: View {
             SkillShareSheet(items: shareItems)
         }
         // Document picker for import
+        .sheet(item: $accessSkill) { skill in
+            WorkspaceItemAccessSheet(
+                title: skill.name,
+                loadGrants: { try await manager.getDetail(id: skill.id).accessGrants },
+                save: { grants, isPublic in
+                    try await manager.updateAccessGrants(skillId: skill.id, grants: grants, isPublic: isPublic)
+                }
+            )
+        }
+        .sheet(isPresented: $showURLImport) {
+            if let apiClient = dependencies.apiClient {
+                SkillURLImportView(apiClient: apiClient) { await manager.fetchAll() }
+            }
+        }
         .sheet(isPresented: $showImportPicker) {
-            DocumentPicker(types: [.plainText, .json]) { url in
-                handleImportedFile(url: url, manager: manager)
+            if dependencies.authViewModel.serverIsAtLeast("0.12.0"), let apiClient = dependencies.apiClient {
+                // Server-side preview handles ZIP / JSON / SKILL.md and keeps all files.
+                SkillFileImportView(apiClient: apiClient) { await manager.fetchAll() }
+            } else {
+                DocumentPicker(types: [.plainText, .json]) { url in
+                    handleImportedFile(url: url, manager: manager)
+                }
             }
         }
         // Delete confirmation
@@ -213,9 +234,9 @@ struct SkillsListView: View {
                 let isAdmin = dependencies.authViewModel.currentUser?.role == .admin
                 // Import button (admin only — no dedicated skills_import permission in API)
                 if isAdmin {
-                    Button {
-                        Haptics.play(.light)
-                        showImportPicker = true
+                    Menu {
+                        Button("Import from File", systemImage: "doc") { showImportPicker = true }
+                        Button("Import from URL", systemImage: "link") { showURLImport = true }
                     } label: {
                         Image(systemName: "square.and.arrow.down")
                             .scaledFont(size: 15, weight: .medium)
@@ -397,6 +418,12 @@ struct SkillsListView: View {
                 Task { await cloneSkill(skill, manager: manager) }
             } label: {
                 Label("Clone", systemImage: "plus.square.on.square")
+            }
+            // Change who can use it without opening the editor.
+            Button {
+                accessSkill = skill
+            } label: {
+                Label("Access", systemImage: "person.2.badge.key")
             }
             if dependencies.authViewModel.currentUser?.role == .admin {
                 Button {

@@ -349,6 +349,8 @@ func encodeOriginalMeta(_ json: [String: Any]) -> Data? {
 struct SkillDetail: Identifiable, Sendable {
     let id: String
     var name: String
+    /// Live version.
+    var versionId: String? = nil
     var slug: String          // the "id" field in the API (URL-safe slug)
     var description: String
     var content: String       // markdown instruction text
@@ -390,10 +392,13 @@ struct SkillDetail: Identifiable, Sendable {
 
         self.id = id
         self.name = name
+        self.versionId = json["version_id"] as? String
         // The API uses "id" as the slug field; we store separately to avoid confusion.
         self.slug = json["id"] as? String ?? id
         self.description = json["description"] as? String ?? ""
-        self.content = json["content"] as? String ?? ""
+        // Export packages carry the instructions only as files[SKILL.md].
+        let skillFile = (json["files"] as? [[String: Any]])?.first { ($0["path"] as? String) == "SKILL.md" }
+        self.content = json["content"] as? String ?? skillFile?["content"] as? String ?? ""
         self.isActive = json["is_active"] as? Bool ?? true
         self.userId = json["user_id"] as? String ?? ""
         let meta = json["meta"] as? [String: Any] ?? [:]
@@ -481,6 +486,8 @@ struct SkillDetail: Identifiable, Sendable {
 struct ToolDetail: Identifiable, Sendable {
     let id: String           // API slug (e.g. "weather_tool")
     var name: String
+    /// Live version.
+    var versionId: String? = nil
     var content: String      // Python code
     var description: String  // from meta.description
     var manifest: ToolManifest
@@ -529,6 +536,7 @@ struct ToolDetail: Identifiable, Sendable {
 
         self.id = id
         self.name = name
+        self.versionId = json["version_id"] as? String
         self.content = json["content"] as? String ?? ""
         self.hasUserValves = json["has_user_valves"] as? Bool ?? false
         self.userId = json["user_id"] as? String ?? ""
@@ -1027,6 +1035,8 @@ struct FunctionItem: Identifiable, Sendable {
 struct FunctionDetail: Identifiable, Sendable {
     let id: String
     var name: String
+    /// Live version.
+    var versionId: String? = nil
     var type: String           // "filter", "action", or "pipe"
     var content: String        // Python code
     var description: String    // from meta.description
@@ -1069,6 +1079,7 @@ struct FunctionDetail: Identifiable, Sendable {
 
         self.id = id
         self.name = name
+        self.versionId = json["version_id"] as? String
         self.type = json["type"] as? String ?? "filter"
         self.content = json["content"] as? String ?? ""
         self.userId = json["user_id"] as? String ?? ""
@@ -1260,6 +1271,8 @@ struct ModelItem: Identifiable, Sendable {
 struct ModelDetail: Identifiable, Sendable {
     let id: String
     var name: String
+    /// Live version.
+    var versionId: String? = nil
     var baseModelId: String?
     var description: String?
     var profileImageURL: String?
@@ -1318,6 +1331,8 @@ struct ModelDetail: Identifiable, Sendable {
     var builtinAutomations: Bool
     var builtinCalendar: Bool
     var builtinSubagents: Bool
+    /// `builtinTools.skills` — let the model find and load skills on its own.
+    var builtinSkills: Bool = true
     var builtinWebSearch: Bool
     var builtinImageGen: Bool
     var builtinCodeInterpreter: Bool
@@ -1451,6 +1466,7 @@ struct ModelDetail: Identifiable, Sendable {
     init?(json: [String: Any]) {
         guard let id = json["id"] as? String, let name = json["name"] as? String else { return nil }
         self.id = id; self.name = name
+        self.versionId = json["version_id"] as? String
         self.baseModelId = json["base_model_id"] as? String
         self.isActive = json["is_active"] as? Bool ?? true
         self.writeAccess = json["write_access"] as? Bool ?? true
@@ -1539,6 +1555,7 @@ struct ModelDetail: Identifiable, Sendable {
         self.builtinAutomations = bt["automations"] as? Bool ?? true
         self.builtinCalendar = bt["calendar"] as? Bool ?? true
         self.builtinSubagents = bt["subagents"] as? Bool ?? true
+        self.builtinSkills = bt["skills"] as? Bool ?? true
         self.builtinWebSearch = bt["web_search"] as? Bool ?? true
         self.builtinImageGen = bt["image_generation"] as? Bool ?? true
         self.builtinCodeInterpreter = bt["code_interpreter"] as? Bool ?? true
@@ -1704,7 +1721,7 @@ struct ModelDetail: Identifiable, Sendable {
             "files": builtinFiles, "channels": builtinChannels, "notifications": builtinNotifications,
             // Web UI key is "tasks" (not "task_management")
             "tasks": builtinTaskManagement, "automations": builtinAutomations,
-            "calendar": builtinCalendar, "subagents": builtinSubagents,
+            "calendar": builtinCalendar, "subagents": builtinSubagents, "skills": builtinSkills,
             "web_search": builtinWebSearch, "image_generation": builtinImageGen,
             "code_interpreter": builtinCodeInterpreter
         ]
