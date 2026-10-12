@@ -3754,13 +3754,14 @@ final class ChatViewModel {
         messageFiles += currentNotes.map {
             ChatMessageFile(type: "note", url: $0.id, name: $0.title.isEmpty ? "Untitled" : $0.title)
         }
+        let sharedAuthor = isSharedChat ? viewerUserId : nil
         let userMessage = ChatMessage(
             role: .user,
             content: currentText,
             timestamp: .now,
             attachmentIds: uploadedAttachmentIds,
             files: messageFiles
-        ).withAuthor(id: isSharedChat ? viewerUserId : nil, name: nil)
+        ).withAuthor(id: sharedAuthor, name: nil)
 
         // Capture the ID of the last message before appending the user message.
         // This becomes the user message's parentId in the history tree.
@@ -3795,7 +3796,7 @@ final class ChatViewModel {
         conversation?.messages.append(ChatMessage(
             id: assistantMessageId, role: .assistant, content: "",
             timestamp: .now, model: modelId, isStreaming: true
-        ).withAuthor(id: isSharedChat ? viewerUserId : nil, name: nil))
+        ).withAuthor(id: sharedAuthor, name: nil))
 
         // ── Build / update the history tree ─────────────────────────────────
         // This ensures the tree is always populated with correct parentId /
@@ -3803,7 +3804,6 @@ final class ChatViewModel {
         // editMessage() (which bootstraps the tree if empty) see a proper
         // branching structure instead of an orphaned root node.
         let userNodeModels = [modelId]
-        let sharedAuthor = isSharedChat ? viewerUserId : nil
         let userHistoryNode = HistoryNode(
             id: userMessage.id,
             parentId: userMessageParentId,
