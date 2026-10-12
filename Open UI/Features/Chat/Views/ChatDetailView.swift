@@ -5065,7 +5065,7 @@ struct ChatDetailView: View {
                         // includes the full resolved string, and citations are stable once
                         // the message is loaded.
                         let raw = msg.content
-                        guard !raw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+                        guard MessageParseCache.containsStructuralMarkers(raw) else { return nil }
                         let resolved = IsolatedAssistantMessage.resolveRelativeURLs(raw, baseURL: serverBase)
                         // Skip citation preprocessing here — sources may be empty and the
                         // resolved-only string is a different cache key than the cited version.
