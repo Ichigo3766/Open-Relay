@@ -654,7 +654,7 @@ struct ChatInputField: View {
                     .contentTransition(.symbolEffect(.replace))
             }
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.pressable)
         .composerHitTarget()
         .disabled(!isEnabled)
         .opacity(isEnabled ? 1.0 : 0.4)
@@ -787,7 +787,7 @@ struct ChatInputField: View {
                 } label: {
                     terminalIconLabel
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(.pressable)
                 .composerHitTarget()
                 .disabled(!isEnabled)
                 .animation(.easeInOut(duration: 0.15), value: terminalEnabled)
@@ -1079,7 +1079,7 @@ struct ChatInputField: View {
                     )
             )
         }
-        .buttonStyle(.plain)
+        .buttonStyle(PressableButtonStyle(scale: 0.96, dimsTo: 0.8))
         .disabled(!isEnabled)
         .animation(.easeInOut(duration: 0.15), value: pill.isActive)
     }

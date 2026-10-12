@@ -50,6 +50,18 @@ struct DrawerFolderRow: View {
         folderVM.dragTargetFolderId == folder.id
     }
 
+    // MARK: - Indent Geometry
+    // Chevron column: depth indent + 8pt leading + 12pt wide.
+
+    /// Horizontal centre of this folder's chevron (where the guide line sits).
+    private var chevronCenterX: CGFloat { CGFloat(depth) * 16 + Spacing.sm + 6 }
+    /// Leading edge of a chat row's highlight pill.
+    private var chatRowLeading: CGFloat { chevronCenterX + 4 }
+    /// Inner padding of a chat row, so chat text lines up with the folder icon.
+    private let chatRowInnerPadding: CGFloat = 6
+    /// Leading position of chat text (used for the empty "No chats" label).
+    private var chatTextLeading: CGFloat { chatRowLeading + chatRowInnerPadding }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             // ── Folder header ────────────────────────────────────────
@@ -281,7 +293,7 @@ struct DrawerFolderRow: View {
                         Text("No chats")
                             .scaledFont(size: 12, weight: .medium)
                             .foregroundStyle(theme.textTertiary)
-                            .padding(.leading, CGFloat(depth + 2) * 12 + 12)
+                            .padding(.leading, chatTextLeading)
                             .padding(.vertical, Spacing.xs)
                     } else {
                         // Selection mode header — shown when this folder is in selection mode
@@ -298,6 +310,12 @@ struct DrawerFolderRow: View {
                                     // without measuring every off-screen row.
                                     // Row = 12pt top padding + ~14pt font cap height + 12pt bottom = ~38pt
                                     .frame(height: 38)
+                                    // Continuous guide line under the folder's chevron so it's
+                                    // clear which folder these chats belong to.
+                                    .padding(.leading, chatRowLeading)
+                                    .background(alignment: .leading) {
+                                        SidebarGuideLine(x: chevronCenterX)
+                                    }
                             }
                         }
 
@@ -477,7 +495,6 @@ struct DrawerFolderRow: View {
                         .animation(MicroAnimation.quick, value: isSelected)
                             .scaledFont(size: 16)
                             .foregroundStyle(isSelected ? theme.brandPrimary : theme.textTertiary)
-                            .padding(.leading, 22 + CGFloat(depth) * 16)
 
                         Text(chat.title)
                             .scaledFont(size: 14)
@@ -486,6 +503,7 @@ struct DrawerFolderRow: View {
 
                         Spacer()
                     }
+                    .padding(.leading, chatRowInnerPadding)
                     .padding(.vertical, 6)
                     .padding(.trailing, Spacing.sm)
                     .background(
@@ -504,13 +522,6 @@ struct DrawerFolderRow: View {
                     onSelectChat(chat.id)
                 } label: {
                     HStack(spacing: Spacing.sm) {
-                        // Indent + accent bar — indent increases with subfolder depth
-                        Rectangle()
-                            .fill(theme.brandPrimary.opacity(0.3))
-                            .frame(width: 2)
-                            .cornerRadius(1)
-                            .padding(.leading, 22 + CGFloat(depth) * 16)
-
                         if let store = dependencies?.activeChatStore {
                             ChatUnreadDot(conversation: chat, activeChatStore: store)
                         }
@@ -527,6 +538,7 @@ struct DrawerFolderRow: View {
 
                         Spacer()
                     }
+                    .padding(.leading, chatRowInnerPadding)
                     .padding(.vertical, 6)
                     .padding(.trailing, Spacing.sm)
                     .background(

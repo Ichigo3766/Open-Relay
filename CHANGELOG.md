@@ -1,5 +1,16 @@
 # Changelog
 
+## v6.4.1 — October 12, 2026
+
+### Improvements
+- Made the sidebar easier to read.
+- Reduced memory use when switching between chats while they are still loading.
+- Opening new chats no longer re-checks your pinned models and message queue settings every time.
+- Long chats open with less background work by skipping formatting that plain-text replies don't need.
+
+### Bug Fixes
+- Fixed a crash when sending a message.
+
 ## v6.4 — October 11, 2026
 
 ### What's New

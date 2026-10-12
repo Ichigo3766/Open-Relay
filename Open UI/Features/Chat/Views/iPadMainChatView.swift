@@ -1347,41 +1347,19 @@ struct iPadSidebarContent: View {
 
     // MARK: - Section Label (same as the iPhone drawer's `drawerSectionLabel`)
 
+    /// Top-level section header (level 0 in the sidebar hierarchy).
     @ViewBuilder
     private func drawerSectionLabel(
         title: String,
-        icon: String,
         isExpanded: Bool,
         tintOverride: Color? = nil,
         trailingButton: (() -> AnyView)? = nil
     ) -> some View {
-        let labelColor = tintOverride ?? theme.textTertiary
-        HStack(spacing: 6) {
-            Image(systemName: "chevron.down")
-                .scaledFont(size: 9, weight: .bold, context: .list)
-                .foregroundStyle(labelColor)
-                .rotationEffect(.degrees(isExpanded ? 0 : -90))
-                .animation(MicroAnimation.snappy, value: isExpanded)
-
-            Image(systemName: icon)
-                .scaledFont(size: 10, weight: .semibold, context: .list)
-                .foregroundStyle(labelColor)
-
-            Text(title)
-                .scaledFont(size: 11, weight: .bold, context: .list)
-                .foregroundStyle(labelColor)
-                .textCase(.uppercase)
-                .tracking(0.6)
-
-            Spacer()
-
+        SidebarSectionHeader(title: title, isExpanded: isExpanded, tint: tintOverride) {
             if let trailingButton {
                 trailingButton()
             }
         }
-        .padding(.horizontal, Spacing.md)
-        .padding(.vertical, Spacing.sm)
-        .contentShape(Rectangle())
     }
 
     // MARK: - Selection Mode Header
@@ -1453,7 +1431,7 @@ struct iPadSidebarContent: View {
                     }
                     Haptics.play(.light)
                 } label: {
-                    drawerSectionLabel(title: "Models", icon: "cpu", isExpanded: modelsExpanded)
+                    drawerSectionLabel(title: "Models", isExpanded: modelsExpanded)
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("Models")
@@ -1489,11 +1467,12 @@ struct iPadSidebarContent: View {
                                     .foregroundStyle(theme.brandPrimary)
                                     .opacity(isSelected ? 1 : 0)
                             }
-                            .padding(.horizontal, Spacing.md)
+                            .padding(.horizontal, SidebarMetrics.rowInnerPadding)
                             .padding(.vertical, 7)
                             .background(isSelected ? theme.brandPrimary.opacity(0.1) : Color.clear)
                             .clipShape(RoundedRectangle(cornerRadius: CornerRadius.sm, style: .continuous))
                             .contentShape(Rectangle())
+                            .sidebarChildRow()
                         }
                         .buttonStyle(.plain)
                         .transaction { $0.animation = nil }
@@ -1530,33 +1509,23 @@ struct iPadSidebarContent: View {
                 }
                 Haptics.play(.light)
             } label: {
-                HStack(spacing: 6) {
-                    Image(systemName: "chevron.down")
-                        .scaledFont(size: 8, weight: .bold, context: .list)
-                        .foregroundStyle(theme.textTertiary)
-                        .rotationEffect(.degrees(foldersExpanded ? 0 : -90))
-                        .animation(MicroAnimation.snappy, value: foldersExpanded)
-
-                    Image(systemName: "folder")
-                        .scaledFont(size: 10, weight: .semibold, context: .list)
-                        .foregroundStyle(theme.textTertiary)
-                    Text("Folders")
-                        .scaledFont(size: 12, weight: .medium, context: .list)
-                        .fontWeight(.bold)
-                        .foregroundStyle(theme.textTertiary)
-                        .textCase(.uppercase)
-                        .tracking(0.5)
-                    Spacer()
-                    Button { showCreateFolderSheet = true } label: {
-                        Image(systemName: "folder.badge.plus")
-                            .scaledFont(size: 13, context: .list)
-                            .foregroundStyle(theme.textTertiary)
+                drawerSectionLabel(
+                    title: "Folders",
+                    isExpanded: foldersExpanded,
+                    trailingButton: {
+                        AnyView(
+                            Button { showCreateFolderSheet = true } label: {
+                                Image(systemName: "folder.badge.plus")
+                                    .scaledFont(size: 13, context: .list)
+                                    .foregroundStyle(theme.textTertiary)
+                                    .frame(width: 28, height: 28)
+                                    .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityLabel("New Folder")
+                        )
                     }
-                    .buttonStyle(.plain)
-                }
-                .padding(.horizontal, Spacing.md)
-                .padding(.vertical, Spacing.sm)
-                .contentShape(Rectangle())
+                )
             }
             .buttonStyle(.plain)
 
@@ -1646,7 +1615,8 @@ struct iPadSidebarContent: View {
                             Task { await folderVM.beginEdit(folder: folder) }
                         }
                     )
-                    .padding(.horizontal, Spacing.sm)
+                    .padding(.leading, SidebarMetrics.folderRowLeading)
+                    .padding(.trailing, SidebarMetrics.rowTrailing)
                 }
             }
         }
@@ -1664,36 +1634,15 @@ struct iPadSidebarContent: View {
                 }
                 Haptics.play(.light)
             } label: {
-                HStack(spacing: 6) {
-                    Image(systemName: "chevron.down")
-                        .scaledFont(size: 8, weight: .bold, context: .list)
-                        .foregroundStyle(theme.textTertiary)
-                        .rotationEffect(.degrees(sharedFoldersExpanded ? 0 : -90))
-                        .animation(MicroAnimation.snappy, value: sharedFoldersExpanded)
-
-                    Image(systemName: "person.2.fill")
-                        .scaledFont(size: 10, weight: .semibold, context: .list)
-                        .foregroundStyle(theme.textTertiary)
-
-                    Text("Shared with Me")
-                        .scaledFont(size: 12, weight: .medium, context: .list)
-                        .fontWeight(.bold)
-                        .foregroundStyle(theme.textTertiary)
-                        .textCase(.uppercase)
-                        .tracking(0.5)
-
-                    Spacer()
-                }
-                .padding(.horizontal, Spacing.md)
-                .padding(.vertical, Spacing.sm)
-                .contentShape(Rectangle())
+                drawerSectionLabel(title: "Shared with Me", isExpanded: sharedFoldersExpanded)
             }
             .buttonStyle(.plain)
 
             if sharedFoldersExpanded {
                 ForEach(folderVM.sharedFolders) { folder in
                     sharedFolderRow(folder: folder, folderVM: folderVM)
-                        .padding(.horizontal, Spacing.sm)
+                        .padding(.leading, SidebarMetrics.folderRowLeading)
+                        .padding(.trailing, SidebarMetrics.rowTrailing)
                 }
             }
         }
@@ -1707,31 +1656,38 @@ struct iPadSidebarContent: View {
                 Task { await folderVM.toggleSharedFolderExpanded(folder: folder) }
                 Haptics.play(.light)
             } label: {
-                HStack(spacing: 6) {
+                HStack(spacing: 0) {
+                    // Chevron column matches DrawerFolderRow so shared and
+                    // regular folders line up.
                     Image(systemName: "chevron.right")
-                        .scaledFont(size: 8, weight: .bold, context: .list)
+                        .scaledFont(size: 9, weight: .semibold, context: .list)
                         .foregroundStyle(theme.textTertiary)
                         .rotationEffect(.degrees(folder.isExpanded ? 90 : 0))
                         .animation(MicroAnimation.snappy, value: folder.isExpanded)
+                        .frame(width: 12)
+                        .padding(.leading, Spacing.sm)
+                        .padding(.trailing, 4)
 
-                    Image(systemName: "folder.fill.badge.person.crop")
-                        .scaledFont(size: 13, context: .list)
-                        .foregroundStyle(theme.brandPrimary.opacity(0.8))
+                    HStack(spacing: Spacing.sm) {
+                        Image(systemName: "folder.fill.badge.person.crop")
+                            .scaledFont(size: 12, context: .list)
+                            .foregroundStyle(theme.brandPrimary.opacity(0.8))
 
-                    Text(folder.name)
-                        .scaledFont(size: 14, context: .list)
-                        .foregroundStyle(theme.textPrimary)
-                        .lineLimit(1)
+                        Text(folder.name)
+                            .scaledFont(size: 14, weight: .medium, context: .list)
+                            .foregroundStyle(theme.textPrimary)
+                            .lineLimit(1)
 
-                    Spacer()
+                        Spacer()
 
-                    if folder.readonly {
-                        Image(systemName: "eye")
-                            .scaledFont(size: 10, context: .list)
-                            .foregroundStyle(theme.textTertiary)
+                        if folder.readonly {
+                            Image(systemName: "eye")
+                                .scaledFont(size: 10, context: .list)
+                                .foregroundStyle(theme.textTertiary)
+                        }
                     }
                 }
-                .padding(.horizontal, Spacing.md)
+                .padding(.trailing, Spacing.sm)
                 .padding(.vertical, 7)
                 .contentShape(Rectangle())
             }
@@ -1740,10 +1696,10 @@ struct iPadSidebarContent: View {
             if folder.isExpanded {
                 if folder.chats.isEmpty {
                     Text("No chats")
-                        .scaledFont(size: 13, context: .list)
+                        .scaledFont(size: 12, weight: .medium, context: .list)
                         .foregroundStyle(theme.textTertiary)
-                        .padding(.horizontal, Spacing.md + 20)
-                        .padding(.vertical, 4)
+                        .padding(.leading, 24)
+                        .padding(.vertical, Spacing.xs)
                 } else {
                     ForEach(folder.chats) { chat in
                         Button {
@@ -1753,7 +1709,7 @@ struct iPadSidebarContent: View {
                         } label: {
                             HStack {
                                 Text(chat.title)
-                                    .scaledFont(size: 13, context: .list)
+                                    .scaledFont(size: 14, context: .list)
                                     .fontWeight(activeConversationId == chat.id ? .semibold : .regular)
                                     .foregroundStyle(
                                         activeConversationId == chat.id ? theme.textPrimary : theme.textSecondary
@@ -1766,9 +1722,8 @@ struct iPadSidebarContent: View {
                                         .foregroundStyle(theme.textTertiary)
                                 }
                             }
-                            .padding(.leading, Spacing.md + 20)
-                            .padding(.trailing, Spacing.md)
-                            .padding(.vertical, 6)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 7)
                             .background(
                                 activeConversationId == chat.id
                                     ? theme.brandPrimary.opacity(0.08)
@@ -1779,6 +1734,9 @@ struct iPadSidebarContent: View {
                         }
                         .buttonStyle(.plain)
                         .transaction { $0.animation = nil }
+                        // Guide line under the folder chevron; text lines up with the folder icon.
+                        .padding(.leading, 18)
+                        .background(alignment: .leading) { SidebarGuideLine(x: 14) }
                     }
                 }
             }
@@ -1798,7 +1756,6 @@ struct iPadSidebarContent: View {
             } label: {
                 drawerSectionLabel(
                     title: "Channels",
-                    icon: "bubble.left.and.bubble.right",
                     isExpanded: channelsExpanded,
                     trailingButton: {
                         AnyView(
@@ -1824,26 +1781,27 @@ struct iPadSidebarContent: View {
                     Text("No channels yet")
                         .scaledFont(size: 13, context: .list)
                         .foregroundStyle(theme.textTertiary)
-                        .padding(.horizontal, Spacing.md)
+                        .padding(.leading, SidebarMetrics.childInset)
+                        .padding(.trailing, Spacing.md)
                         .padding(.vertical, 4)
                 } else {
                     // DMs first
                     if !channelListVM.dmChannels.isEmpty {
-                        channelGroupLabel("Direct Messages", icon: "person.crop.circle")
+                        channelGroupLabel("Direct Messages")
                         ForEach(channelListVM.dmChannels) { channel in
                             channelRow(channel)
                         }
                     }
                     // Groups
                     if !channelListVM.groupChannels.isEmpty {
-                        channelGroupLabel("Groups", icon: "person.3")
+                        channelGroupLabel("Groups")
                         ForEach(channelListVM.groupChannels) { channel in
                             channelRow(channel)
                         }
                     }
                     // Standard channels
                     if !channelListVM.standardChannels.isEmpty {
-                        channelGroupLabel("Channels", icon: "number")
+                        channelGroupLabel("Channels")
                         ForEach(channelListVM.standardChannels) { channel in
                             channelRow(channel)
                         }
@@ -1855,20 +1813,8 @@ struct iPadSidebarContent: View {
 
     /// Small sub-group label inside the channels section (mirrors iPhone drawer).
     @ViewBuilder
-    private func channelGroupLabel(_ title: String, icon: String) -> some View {
-        HStack(spacing: 4) {
-            Image(systemName: icon)
-                .scaledFont(size: 9, weight: .medium, context: .list)
-                .foregroundStyle(theme.textTertiary.opacity(0.7))
-            Text(title)
-                .scaledFont(size: 10, weight: .medium, context: .list)
-                .foregroundStyle(theme.textTertiary.opacity(0.7))
-                .textCase(.uppercase)
-                .tracking(0.4)
-        }
-        .padding(.horizontal, Spacing.md)
-        .padding(.top, 6)
-        .padding(.bottom, 2)
+    private func channelGroupLabel(_ title: String) -> some View {
+        SidebarGroupLabel(title: title)
     }
 
     /// A single channel row in the sidebar (with context menu for hide/delete).
@@ -1883,8 +1829,10 @@ struct iPadSidebarContent: View {
                 channel: channel,
                 isActive: activeChannelId == channel.id,
                 serverBaseURL: dependencies.apiClient?.baseURL ?? "",
-                authToken: dependencies.apiClient?.network.authToken
+                authToken: dependencies.apiClient?.network.authToken,
+                appliesOuterPadding: false
             )
+            .sidebarNestedRow()
         }
         .buttonStyle(.plain)
         .contextMenu {
@@ -1927,7 +1875,6 @@ struct iPadSidebarContent: View {
             } label: {
                 drawerSectionLabel(
                     title: drawerChatsDropActive ? "Drop here" : "Chats",
-                    icon: "bubble.left.and.text.bubble.right",
                     isExpanded: chatsExpanded,
                     tintOverride: drawerChatsDropActive ? theme.brandPrimary : nil
                 )
@@ -1955,6 +1902,7 @@ struct iPadSidebarContent: View {
                             ForEach(listViewModel.pinnedConversations) { conversation in
                                 conversationRow(conversation)
                                     .frame(minHeight: 36)
+                                    .sidebarNestedRow()
                                     .transition(.opacity)
                             }
                         }
@@ -1975,6 +1923,7 @@ struct iPadSidebarContent: View {
                             ForEach(group.1) { conversation in
                                 conversationRow(conversation)
                                     .frame(minHeight: 36)
+                                    .sidebarNestedRow()
                                     .transition(.opacity)
                             }
                         }
@@ -2027,30 +1976,10 @@ struct iPadSidebarContent: View {
             }
             Haptics.play(.light)
         } label: {
-            HStack(spacing: 6) {
-                Image(systemName: "chevron.down")
-                    .scaledFont(size: 8, weight: .bold, context: .list)
-                    .foregroundStyle(theme.textTertiary)
-                    .rotationEffect(.degrees(isCollapsed ? -90 : 0))
-                    .animation(.easeInOut(duration: AnimDuration.fast), value: isCollapsed)
-                Text(title)
-                    .scaledFont(size: 12, weight: .medium, context: .list)
-                    .fontWeight(.semibold)
-                    .foregroundStyle(theme.textTertiary)
-                    .textCase(.uppercase)
-                    .tracking(0.5)
-                if let count {
-                    Text("\(count)")
-                        .scaledFont(size: 10, weight: .medium, context: .list)
-                        .foregroundStyle(theme.textTertiary)
-                        .padding(.horizontal, 5).padding(.vertical, 1)
-                        .background(theme.surfaceContainer).clipShape(Capsule())
-                }
-                Spacer()
-            }
-            .padding(.horizontal, Spacing.md).padding(.vertical, 10).contentShape(Rectangle())
+            SidebarGroupLabel(title: title, count: count, isCollapsed: isCollapsed)
         }
         .buttonStyle(.plain)
+        .accessibilityValue(isCollapsed ? "Collapsed" : "Expanded")
     }
 
     // MARK: - Conversation Row
@@ -2076,7 +2005,7 @@ struct iPadSidebarContent: View {
                             .lineLimit(1)
                         Spacer()
                     }
-                    .padding(.horizontal, Spacing.md)
+                    .padding(.horizontal, SidebarMetrics.rowInnerPadding)
                     .padding(.vertical, 7)
                     .background(listViewModel.isSelected(conversation.id)
                         ? theme.brandPrimary.opacity(0.1) : Color.clear)
@@ -2118,7 +2047,7 @@ struct iPadSidebarContent: View {
                             tint: theme.brandPrimary
                         )
                     }
-                    .padding(.horizontal, Spacing.md)
+                    .padding(.horizontal, SidebarMetrics.rowInnerPadding)
                     .padding(.vertical, 7)
                     .background(
                         isActive

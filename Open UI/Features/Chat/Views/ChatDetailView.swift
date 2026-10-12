@@ -61,6 +61,16 @@ private final class PumpRef {
     /// without waiting for a SwiftUI @State propagation cycle. This eliminates the race where
     /// the geometry callback reads a stale isFingerDriving (@State) value at the start of a touch.
     var isFingerScrolling: Bool = false
+    /// Waits for the typewriter to finish after a reply ends, then releases the
+    /// reply's reserved writing space (see `heldReservationTurnId`).
+    var reservationReleaseTask: Task<Void, Never>?
+    /// The release is due but was deferred because the user was touching / coasting.
+    var reservationReleasePending = false
+    /// Natural (unreserved) height of the last turn and when it last grew. Inside the
+    /// reserved space the scroll content doesn't grow while a short reply types, so
+    /// this is what tells us the typewriter has finished.
+    var lastTurnHeight: CGFloat = 0
+    var lastTurnGrowthAt: Date = .distantPast
 }
 
 // MARK: - Scroll-Linked Top Bar
@@ -295,6 +305,11 @@ struct ChatDetailView: View {
     /// Held in @State so the same instance survives parent re-renders (a plain `let`
     /// was re-created with every struct copy, orphaning the attached scroll view).
     @State private var _pumpRef = PumpRef()
+    /// Turn whose viewport-height writing space outlives the stream itself. The server
+    /// finishing used to drop the space at once while the typewriter was still typing,
+    /// so a short reply jumped down mid-reveal. It's held until typing has finished,
+    /// then eased away — never while the user is touching or has scrolled up.
+    @State private var heldReservationTurnId: String?
     /// Scroll-linked position of the top bar. Written at scroll rate from the geometry
     /// callback; only `SlidingTopBar` observes it, so this body is never re-evaluated.
     @State private var navBar = NavBarScrollState()
@@ -329,6 +344,8 @@ struct ChatDetailView: View {
     @State private var copiedActionMessageId: String?
     /// Starter prompt card that was just tapped and is waiting for the message to go out.
     @State private var sendingPromptId: String?
+    /// Shown only once a starter prompt send has taken longer than a moment.
+    @State private var promptSpinnerVisible = false
     /// True while the follow-up chips fold away just before their message is sent.
     @State private var followUpsCollapsing = false
     @State private var activeVersionIndex: [String: Int] = [:]
@@ -1678,7 +1695,10 @@ struct ChatDetailView: View {
                 attachmentUsage: vm.attachmentUsage,
                 placeholder: placeholderText,
                 isKeyboardVisible: keyboard.isVisible,
-                isEnabled: !vm.isCreatingConversation && !vm.isCreatingNoteChat && (!vm.isStreaming || vm.enableMessageQueue),
+                // Creating a new chat is excluded here: it used to fade every control and
+                // drop the keyboard for a beat on the first send. `.disabled` below still
+                // blocks input while the chat is being created.
+                isEnabled: !vm.isCreatingNoteChat && (!vm.isStreaming || vm.enableMessageQueue),
                 onSend: { Task { await viewModel.sendMessage() } },
                 onStopGenerating: vm.isStreaming ? { viewModel.stopStreaming() } : nil,
                 webSearchEnabled: $vm.webSearchEnabled,
@@ -2081,6 +2101,15 @@ struct ChatDetailView: View {
         // performs any structural view swap, and the follower tracks the typewriter's
         // last characters via lastContentGrowthAt — nothing to do here.
         .onChange(of: viewModel.isStreaming) { oldStreaming, newStreaming in
+            if newStreaming {
+                // Hold the writing space from the start, so the moment the server
+                // finishes can't drop it while the reply is still being typed out.
+                _pumpRef.reservationReleaseTask?.cancel()
+                _pumpRef.reservationReleasePending = false
+                heldReservationTurnId = viewModel.messages.last(where: { $0.role == .user })?.id
+            } else if oldStreaming {
+                scheduleReservationRelease()
+            }
             if newStreaming && streamingAutoScroll {
                 // Stream started — re-engage auto-scroll.
                 isScrolledUp = false
@@ -2288,6 +2317,14 @@ struct ChatDetailView: View {
             // Scroll came to rest with the bar part-way: snap it to the nearer end.
             if newPhase == .idle {
                 navBar.settle(contentOffsetY: _pumpRef.currentScrollOffsetY)
+                // A writing-space release deferred by the touch can run now — if the
+                // reader came to rest at the bottom (isScrolledUp otherwise cancels it).
+                if _pumpRef.reservationReleasePending {
+                    Task { @MainActor in
+                        try? await Task.sleep(nanoseconds: 150_000_000)
+                        releaseHeldReservationIfSafe()
+                    }
+                }
             }
         }
         // ── Direct finger break-out ──────────────────────────────────────────
@@ -2716,11 +2753,13 @@ struct ChatDetailView: View {
 
         let reservedHeight: CGFloat? = {
             guard lastTurnIsUserTurn,
-                  viewModel.isStreaming || viewModel.streamingStore.isActive else { return nil }
+                  viewModel.isStreaming || viewModel.streamingStore.isActive
+                    || (lastTurnId != nil && heldReservationTurnId == lastTurnId) else { return nil }
             return max(viewState_containerHeight, 0)
         }()
 
         return ForEach(turns, id: \.id) { turn in
+            let isLastTurn = turn.id == lastTurnId
             VStack(spacing: 0) {
                 ForEach(turn.messages, id: \.message.id) { row in
                     let message = row.message
@@ -2732,9 +2771,18 @@ struct ChatDetailView: View {
                     messageSlot(message: message, index: index, isDrawn: isDrawn)
                 }
             }
+            // Natural height of the last turn (measured before the reserved minimum),
+            // written to PumpRef only — never triggers a body re-evaluation.
+            .onGeometryChange(for: CGFloat.self) { proxy in
+                proxy.size.height
+            } action: { [pump = _pumpRef] height in
+                guard isLastTurn else { return }
+                if height > pump.lastTurnHeight + 0.5 { pump.lastTurnGrowthAt = Date() }
+                pump.lastTurnHeight = height
+            }
             // Keep writing space through final processing, then let completed
             // turns use their natural height after blocks collapse.
-            .frame(minHeight: turn.id == lastTurnId ? reservedHeight : nil, alignment: .top)
+            .frame(minHeight: isLastTurn ? reservedHeight : nil, alignment: .top)
         }
     }
 
@@ -2769,6 +2817,54 @@ struct ChatDetailView: View {
 
     /// Coordinate space of the messages VStack (list coordinates for virtualization).
     private static let messagesSpace = "chatMessagesList"
+
+    // MARK: - Reserved Writing Space Release
+
+    /// After a reply ends, waits for the typewriter to finish (the store has gone idle
+    /// and the content has stopped growing), then releases the held writing space.
+    private func scheduleReservationRelease() {
+        guard heldReservationTurnId != nil else { return }
+        _pumpRef.reservationReleaseTask?.cancel()
+        let ended = Date()
+        _pumpRef.reservationReleaseTask = Task { @MainActor in
+            let deadline = ended.addingTimeInterval(6)
+            while Date() < deadline {
+                try? await Task.sleep(nanoseconds: 100_000_000)
+                guard !Task.isCancelled, !viewModel.isStreaming else { return }
+                // Typing is done once the store is idle and neither the reply itself
+                // nor the scroll content has grown for a moment.
+                let lastGrowth = max(_pumpRef.lastTurnGrowthAt, _pumpRef.lastContentGrowthAt)
+                let typingDone = !viewModel.streamingStore.isActive
+                    && Date().timeIntervalSince(ended) >= 0.5
+                    && Date().timeIntervalSince(lastGrowth) >= 0.5
+                if typingDone { break }
+            }
+            guard !Task.isCancelled, !viewModel.isStreaming else { return }
+            _pumpRef.reservationReleasePending = true
+            releaseHeldReservationIfSafe()
+        }
+    }
+
+    /// Eases the held writing space away — only while the reader is resting at the
+    /// bottom. If they're touching, coasting or have scrolled up, the release stays
+    /// pending and runs once they come to rest back at the bottom, so nothing they're
+    /// reading ever moves under them.
+    private func releaseHeldReservationIfSafe() {
+        guard _pumpRef.reservationReleasePending, heldReservationTurnId != nil else { return }
+        guard !viewModel.isStreaming, !viewModel.streamingStore.isActive else { return }
+        guard !isScrolledUp, userMessageJumpIndex == nil else { return }
+        guard !isUserDriving, !isDecelerating, !_pumpRef.isFingerScrolling else { return }
+        _pumpRef.reservationReleasePending = false
+        // The offset settles as the space shrinks; keep that from reading as a user
+        // scroll (nav bar / scroll-to-bottom button).
+        _pumpRef.programmaticScrollUntil = Date().addingTimeInterval(0.8)
+        // Shrink the space and glide the bottom down in one animation, so the reply
+        // eases into place above the composer instead of snapping.
+        withAnimation(MicroAnimation.glide) {
+            heldReservationTurnId = nil
+            scrollPosition.scrollTo(edge: .bottom)
+        }
+    }
 
     // MARK: - Message Row
 
@@ -3739,17 +3835,29 @@ struct ChatDetailView: View {
     private func promptCard(_ prompt: SuggestedPrompt) -> some View {
         let isSending = sendingPromptId == prompt.id
         let othersDimmed = sendingPromptId != nil && !isSending
+        // The spinner only appears when the send is actually slow, so a quick
+        // send goes straight to the welcome screen fading out with no flash.
+        let showsSpinner = isSending && promptSpinnerVisible
         Button {
             // Ignore taps while one prompt is already going out.
             guard sendingPromptId == nil else { return }
             Haptics.play(.light)
-            withAnimation(MicroAnimation.snappy) { sendingPromptId = prompt.id }
+            withAnimation(MicroAnimation.quick) { sendingPromptId = prompt.id }
+            let spinnerDelay = Task { @MainActor in
+                try? await Task.sleep(nanoseconds: 250_000_000)
+                guard !Task.isCancelled, sendingPromptId == prompt.id else { return }
+                withAnimation(MicroAnimation.quick) { promptSpinnerVisible = true }
+            }
             // Send the prompt directly without populating the bound input field —
             // this avoids the text briefly flashing in the input box before send.
             Task { @MainActor in
                 _ = await viewModel.sendMessage(directText: prompt.fullText)
+                spinnerDelay.cancel()
                 // If it didn't go out (blocked / failed) the card springs back.
-                withAnimation(MicroAnimation.snappy) { sendingPromptId = nil }
+                withAnimation(MicroAnimation.snappy) {
+                    sendingPromptId = nil
+                    promptSpinnerVisible = false
+                }
             }
         } label: {
 
@@ -3786,7 +3894,7 @@ struct ChatDetailView: View {
                     )
             )
             .overlay(alignment: .topTrailing) {
-                if isSending {
+                if showsSpinner {
                     ProgressView()
                         .controlSize(.mini)
                         .tint(theme.brandPrimary)
@@ -3798,7 +3906,6 @@ struct ChatDetailView: View {
         .buttonStyle(PromptCardButtonStyle())
         .scaleEffect(isSending ? 0.97 : 1)
         .opacity(othersDimmed ? 0.45 : 1)
-        .animation(MicroAnimation.snappy, value: sendingPromptId)
     }
 
     // MARK: - Assistant Action Bar
@@ -4790,23 +4897,20 @@ struct ChatDetailView: View {
         // The whole group folds away (fade + shrink slightly) when one is tapped.
         .opacity(followUpsCollapsing ? 0 : 1)
         .scaleEffect(followUpsCollapsing ? 0.97 : 1, anchor: .top)
-        .animation(MicroAnimation.snappy, value: followUpsCollapsing)
         .allowsHitTesting(!followUpsCollapsing)
     }
 
-    /// Sends a follow-up in two calm steps: the chips fold away first, then the message
-    /// goes out. Sending first would remove the chips and add the new message in the
-    /// same frame, so the page height jumped right as the send glide began.
+    /// Sends a follow-up the moment it's tapped. The chips fade out quickly while
+    /// the send starts in parallel; by the time the new message is appended (after the
+    /// send's pre-flight checks) they're already gone, so the page doesn't jump.
     private func sendFollowUp(_ suggestion: String) {
         guard !followUpsCollapsing else { return }
         Haptics.play(.light)
-        withAnimation(MicroAnimation.snappy) { followUpsCollapsing = true }
+        withAnimation(MicroAnimation.quick) { followUpsCollapsing = true }
+        isScrolledUp = false
+        isUserDriving = false
+        _pumpRef.programmaticScrollUntil = Date().addingTimeInterval(0.6)
         Task { @MainActor in
-            // Let the chips fold (the spring is ~0.25s) before the layout changes.
-            try? await Task.sleep(nanoseconds: 170_000_000)
-            isScrolledUp = false
-            isUserDriving = false
-            _pumpRef.programmaticScrollUntil = Date().addingTimeInterval(0.6)
             // Send the suggestion directly: routing it through the composer
             // filled and resized the input field for a frame before sending.
             viewModel.inputText = ""
@@ -5005,6 +5109,11 @@ struct ChatDetailView: View {
         NotificationService.shared.activeConversationId =
             viewModel.conversationId ?? viewModel.conversation?.id
         await viewModel.load()
+        // Joining a reply that is already streaming: onChange(of: isStreaming) won't
+        // fire for the initial value, so hold its writing space here too.
+        if viewModel.isStreaming {
+            heldReservationTurnId = viewModel.messages.last(where: { $0.role == .user })?.id
+        }
         // After messages load, draw only the rows at the bottom of the chat.
         let loadedCount = viewModel.messages.count
         if loadedCount > 0 {
@@ -5065,7 +5174,7 @@ struct ChatDetailView: View {
                         // includes the full resolved string, and citations are stable once
                         // the message is loaded.
                         let raw = msg.content
-                        guard !raw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+                        guard MessageParseCache.containsStructuralMarkers(raw) else { return nil }
                         let resolved = IsolatedAssistantMessage.resolveRelativeURLs(raw, baseURL: serverBase)
                         // Skip citation preprocessing here — sources may be empty and the
                         // resolved-only string is a different cache key than the cited version.

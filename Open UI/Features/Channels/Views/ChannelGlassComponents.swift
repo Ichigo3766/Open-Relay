@@ -430,6 +430,9 @@ struct ChannelSidebarRowLabel: View {
     let isActive: Bool
     let serverBaseURL: String
     let authToken: String?
+    /// When false, the caller supplies the outer horizontal inset
+    /// (e.g. via `sidebarNestedRow()`), so the row can be indented.
+    var appliesOuterPadding: Bool = true
     @Environment(\.theme) private var theme
 
     private var dmPartner: ChannelMember? {
@@ -470,7 +473,7 @@ struct ChannelSidebarRowLabel: View {
             }
         }
         .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-        .padding(.horizontal, 6)
+        .padding(.horizontal, appliesOuterPadding ? 6 : 0)
     }
 
     @ViewBuilder

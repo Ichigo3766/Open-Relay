@@ -336,11 +336,20 @@ final class ChatViewModel {
         return tool.isAuthenticated
     }
 
-    /// Loads tools once if they haven't been fetched yet.
+    /// Loads tools once if they haven't been fetched yet. Concurrent callers share
+    /// one load, so a send never proceeds against a half-loaded tool list.
     func ensureToolsLoaded() async {
         guard !toolsHaveLoaded else { return }
-        await loadTools()
+        if let toolsLoadTask { await toolsLoadTask.value; return }
+        let task = Task { [weak self] () -> Void in
+            guard let self else { return }
+            await self.loadTools()
+        }
+        toolsLoadTask = task
+        await task.value
+        if toolsLoadTask == task { toolsLoadTask = nil }
     }
+    private var toolsLoadTask: Task<Void, Never>?
     /// Tools the user has explicitly toggled OFF during this chat session.
     /// Prevents `syncToolSelectionWithDefaults()` from re-enabling them.
     private var userDisabledToolIds: Set<String> = []
@@ -1246,8 +1255,9 @@ final class ChatViewModel {
         // the UI. The socket will be ready by the time the user sends a
         // message; if not, sendMessage() can await it at that point.
         if let socket = socketService, !socket.isConnected {
-            Task {
+            Task { [weak self] in
                 let connected = await socket.ensureConnected(timeout: 5.0)
+                guard let self else { return }
                 self.logger.info("Socket connect on load: \(connected)")
                 // Start passive listener once socket is actually connected
                 // (only meaningful for existing conversations).
@@ -1265,7 +1275,7 @@ final class ChatViewModel {
 
         // Fetch terminal servers in the background (fire-and-forget).
         // This is lightweight and determines whether to show the terminal pill.
-        Task { await loadTerminalServers() }
+        loadTerminalServers()
 
         // Now that all initial data is loaded, enable message appear animations.
         // New messages sent/received during this session will animate in smoothly.
@@ -2160,31 +2170,35 @@ final class ChatViewModel {
     ///
     /// Called once at chat load time. If any terminals are available, the
     /// user can toggle them on via the terminal pill in the input field.
-    func loadTerminalServers() async {
+    func loadTerminalServers() {
         guard let manager else { return }
-        do {
-            availableTerminalServers = try await manager.fetchTerminalServers()
-            activeChatStore?.cachedTerminalServers = availableTerminalServers
-            // Auto-select first terminal if only one is available and nothing is selected yet.
-            if selectedTerminalServer == nil, let first = availableTerminalServers.first {
-                selectedTerminalServer = first
-            }
-            // If the previously selected server was removed or disabled server-side,
-            // clear the selection so the user isn't silently routed to a dead server.
-            if let current = selectedTerminalServer,
-               !availableTerminalServers.contains(current) {
-                selectedTerminalServer = availableTerminalServers.first
-                // If terminal was enabled and we had to change/clear the server, disable
-                // terminal so the user makes an explicit choice rather than silently
-                // switching servers mid-session.
-                if terminalEnabled && selectedTerminalServer == nil {
-                    terminalEnabled = false
+        Task { [weak self] in
+            do {
+                let servers = try await manager.fetchTerminalServers()
+                guard let self else { return }
+                availableTerminalServers = servers
+                activeChatStore?.cachedTerminalServers = availableTerminalServers
+                // Auto-select first terminal if only one is available and nothing is selected yet.
+                if selectedTerminalServer == nil, let first = availableTerminalServers.first {
+                    selectedTerminalServer = first
                 }
+                // If the previously selected server was removed or disabled server-side,
+                // clear the selection so the user isn't silently routed to a dead server.
+                if let current = selectedTerminalServer,
+                   !availableTerminalServers.contains(current) {
+                    selectedTerminalServer = availableTerminalServers.first
+                    // If terminal was enabled and we had to change/clear the server, disable
+                    // terminal so the user makes an explicit choice rather than silently
+                    // switching servers mid-session.
+                    if terminalEnabled && selectedTerminalServer == nil {
+                        terminalEnabled = false
+                    }
+                }
+            } catch {
+                self?.logger.debug("Terminal servers fetch failed: \(error.localizedDescription)")
             }
-        } catch {
-            logger.debug("Terminal servers fetch failed: \(error.localizedDescription)")
+            self?.applyPendingModelDefaultTerminal()
         }
-        applyPendingModelDefaultTerminal()
     }
 
     /// Model-configured default terminal (`info.meta.terminalId`), if the model's
@@ -2239,8 +2253,11 @@ final class ChatViewModel {
             // These are filter functions that can be toggled per-message, like
             // "OpenRouter Search" or "Direct Uploads". They show as toggleable
             // tools in the ToolsMenuSheet alongside regular tools.
+            // One /api/v1/functions/ fetch serves both the toggle filters and the
+            // Controls panel valves (it used to be requested twice in a row).
+            // A failure aborts the load (as before) so it is retried later.
+            let functions = try await manager.apiClient.getFunctions()
             do {
-                let functions = try await manager.apiClient.getFunctions()
                 let toggleFilters = functions.filter { $0.type == "filter" && $0.isActive && $0.hasToggle }
                 // Resolve defaultFilterIds from rawModelItem["info"]["meta"]["defaultFilterIds"].
                 // This is where the web UI stores the per-chat toggle default for filter functions.
@@ -2272,15 +2289,10 @@ final class ChatViewModel {
                 }
             }
 
-                // Also populate availableFunctions for the Controls panel Valves section.
-            // Fetch ALL active functions (not just toggle-filters) so the Valves section
+            // Also populate availableFunctions for the Controls panel Valves section.
+            // Uses ALL active functions (not just toggle-filters) so the Valves section
             // can show any tool/function that has user-configurable valve settings.
-            do {
-                let allFunctions = try await manager.apiClient.getFunctions()
-                availableFunctions = allFunctions.filter { $0.isActive && $0.hasUserValves }
-            } catch {
-                logger.debug("Failed to fetch functions for valves: \(error.localizedDescription)")
-            }
+            availableFunctions = functions.filter { $0.isActive && $0.hasUserValves }
 
             if scope == manager.apiClient.network.conversationCacheScope {
                 availableTools = allItems
@@ -3501,6 +3513,9 @@ final class ChatViewModel {
         }
         let text = (directText ?? inputText).trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty || !attachments.isEmpty else { return sendBlocked(.empty, "empty message") }
+        // Start loading the tool list (if it isn't yet) alongside the model refresh
+        // below instead of after it; checkToolConnections() awaits the same load.
+        if !toolsHaveLoaded { Task { await ensureToolsLoaded() } }
         guard await authorizeWebSearch() else {
             return sendBlocked(.webSearch, "web search was not approved")
         }
@@ -3754,13 +3769,14 @@ final class ChatViewModel {
         messageFiles += currentNotes.map {
             ChatMessageFile(type: "note", url: $0.id, name: $0.title.isEmpty ? "Untitled" : $0.title)
         }
+        let sharedAuthor = isSharedChat ? viewerUserId : nil
         let userMessage = ChatMessage(
             role: .user,
             content: currentText,
             timestamp: .now,
             attachmentIds: uploadedAttachmentIds,
             files: messageFiles
-        ).withAuthor(id: isSharedChat ? viewerUserId : nil, name: nil)
+        ).withAuthor(id: sharedAuthor, name: nil)
 
         // Capture the ID of the last message before appending the user message.
         // This becomes the user message's parentId in the history tree.
@@ -3795,7 +3811,7 @@ final class ChatViewModel {
         conversation?.messages.append(ChatMessage(
             id: assistantMessageId, role: .assistant, content: "",
             timestamp: .now, model: modelId, isStreaming: true
-        ).withAuthor(id: isSharedChat ? viewerUserId : nil, name: nil))
+        ).withAuthor(id: sharedAuthor, name: nil))
 
         // ── Build / update the history tree ─────────────────────────────────
         // This ensures the tree is always populated with correct parentId /
@@ -3803,7 +3819,6 @@ final class ChatViewModel {
         // editMessage() (which bootstraps the tree if empty) see a proper
         // branching structure instead of an orphaned root node.
         let userNodeModels = [modelId]
-        let sharedAuthor = isSharedChat ? viewerUserId : nil
         let userHistoryNode = HistoryNode(
             id: userMessage.id,
             parentId: userMessageParentId,
@@ -6591,6 +6606,8 @@ final class ChatViewModel {
     /// the per-send refresh so we don't add 100-500ms of network latency
     /// to every message when the models haven't changed.
     private var lastModelMetadataRefreshTime: Date = .distantPast
+    /// Model the timestamp above belongs to — a different model always refreshes.
+    private var lastModelMetadataRefreshModelId: String?
 
     /// Fetches full model config from `/api/v1/models/model?id={id}` for the selected model.
     ///
@@ -6628,6 +6645,7 @@ final class ChatViewModel {
                     availableModels.append(fullModel)
                 }
                 lastModelMetadataRefreshTime = Date()
+                lastModelMetadataRefreshModelId = modelId
                 syncUIWithModelDefaults()
                 logger.info("Model config loaded: \(modelId) function_calling=\(fullModel.functionCallingMode ?? "(absent)") isPipe=\(fullModel.isPipeModel)")
             }
@@ -6664,9 +6682,11 @@ final class ChatViewModel {
 
     private func refreshSelectedModelMetadata() async {
         guard let modelId = selectedModelId, let manager else { return }
-        // Voice turns are latency-critical: model defaults change rarely, so
-        // refresh at most every 60 s during a call (as the original throttle did).
-        if isVoiceMode, Date().timeIntervalSince(lastModelMetadataRefreshTime) < 60 { return }
+        // Model defaults change rarely and are already fetched when the model is
+        // picked or the chat opens, so refresh at most every 60 s. Doing it on
+        // every send put two network round trips in front of each message.
+        if lastModelMetadataRefreshModelId == modelId,
+           Date().timeIntervalSince(lastModelMetadataRefreshTime) < 60 { return }
         let scope = manager.apiClient.network.conversationCacheScope
         let context = toolCheckContext
         let chatId = conversationId ?? conversation?.id
@@ -6691,6 +6711,7 @@ final class ChatViewModel {
                       context == toolCheckContext, chatId == (conversationId ?? conversation?.id),
                       modelId == selectedModelId, !Task.isCancelled else { return }
                 lastModelMetadataRefreshTime = Date()
+                lastModelMetadataRefreshModelId = modelId
                 if let idx = availableModels.firstIndex(where: { $0.id == modelId }) {
                     availableModels[idx] = fullModel
                 }
@@ -6902,7 +6923,7 @@ final class ChatViewModel {
         // Store the task so populateCommonRequestFields can await it before
         // building a request — prevents the race where params are read before
         // the fetch completes (which caused the system prompt to be ignored).
-        userDefaultParamsTask = Task { await fetchUserDefaultParamsFromServer() }
+        userDefaultParamsTask = makeUserDefaultParamsTask()
 
         // Make sure the tool list is known so stale IDs get pruned.
         Task { await ensureToolsLoaded() }
@@ -7041,13 +7062,15 @@ final class ChatViewModel {
         }
         guard let apiClient = manager?.apiClient else { return }
         do {
+            let cacheGeneration = activeChatStore?.generation
             let settings = try await apiClient.getUserSettings()
-            if let ui = settings["ui"] as? [String: Any],
-               let enabled = ui["enableMessageQueue"] as? Bool {
-                enableMessageQueue = enabled
-                activeChatStore?.cachedMessageQueueSetting = enabled
-                logger.debug("Message queue setting fetched from server: \(enabled)")
-            }
+            guard cacheGeneration == activeChatStore?.generation else { return }
+            guard settings["ui"] == nil || settings["ui"] is NSNull || settings["ui"] is [String: Any] else { return }
+            let value = (settings["ui"] as? [String: Any])?["enableMessageQueue"]
+            guard let enabled = value == nil ? (activeChatStore?.cachedMessageQueueSetting ?? enableMessageQueue) : value as? Bool else { return }
+            enableMessageQueue = enabled
+            activeChatStore?.cachedMessageQueueSetting = enabled
+            logger.debug("Message queue setting fetched from server: \(enabled)")
         } catch {
             logger.debug("Failed to fetch message queue setting: \(error.localizedDescription)")
         }
@@ -7075,23 +7098,31 @@ final class ChatViewModel {
     /// The result is stored in `activeChatStore?.cachedUserDefaultParams` for use
     /// by the current request; previous value is replaced on each successful fetch.
     func fetchUserDefaultParamsFromServer() async {
-        guard let apiClient = manager?.apiClient else { return }
-        do {
-            let params = try await apiClient.fetchUserDefaultParams()
-            activeChatStore?.cachedUserDefaultParams = params
-            for index in attachments.indices where attachments[index].uploadContext == nil {
-                attachments[index].uploadContext = params.defaultUploadContext
+        guard let task = makeUserDefaultParamsTask() else { return }
+        await withTaskCancellationHandler(operation: { await task.value }, onCancel: { task.cancel() })
+    }
+
+    private func makeUserDefaultParamsTask() -> Task<Void, Never>? {
+        guard let apiClient = manager?.apiClient else { return nil }
+        return Task { [weak self] in
+            do {
+                let params = try await apiClient.fetchUserDefaultParams()
+                guard let self else { return }
+                activeChatStore?.cachedUserDefaultParams = params
+                for index in attachments.indices where attachments[index].uploadContext == nil {
+                    attachments[index].uploadContext = params.defaultUploadContext
+                }
+                for index in selectedKnowledgeItems.indices where selectedKnowledgeItems[index].context == nil {
+                    selectedKnowledgeItems[index].context = params.defaultUploadContext
+                }
+                logger.debug("User default params fetched from server (hasOverride=\(params.hasAnyOverride))")
+                // Re-run restoreToolApprovalMode so the server-stored tool_approval_mode
+                // takes effect immediately if no per-conversation override is set.
+                // This ensures changing the setting on the web syncs to the app on next load.
+                restoreToolApprovalMode()
+            } catch {
+                self?.logger.debug("Failed to fetch user default params: \(error.localizedDescription)")
             }
-            for index in selectedKnowledgeItems.indices where selectedKnowledgeItems[index].context == nil {
-                selectedKnowledgeItems[index].context = params.defaultUploadContext
-            }
-            logger.debug("User default params fetched from server (hasOverride=\(params.hasAnyOverride))")
-            // Re-run restoreToolApprovalMode so the server-stored tool_approval_mode
-            // takes effect immediately if no per-conversation override is set.
-            // This ensures changing the setting on the web syncs to the app on next load.
-            restoreToolApprovalMode()
-        } catch {
-            logger.debug("Failed to fetch user default params: \(error.localizedDescription)")
         }
     }
 
@@ -7109,13 +7140,15 @@ final class ChatViewModel {
         }
         guard let apiClient = manager?.apiClient else { return }
         do {
+            let cacheGeneration = activeChatStore?.generation
             let settings = try await apiClient.getUserSettings()
-            if let ui = settings["ui"] as? [String: Any],
-               let pinned = ui["pinnedModels"] as? [String] {
-                pinnedModelIds = pinned
-                activeChatStore?.cachedPinnedModelIds = pinned
-                logger.debug("Pinned models fetched: \(pinned)")
-            }
+            guard cacheGeneration == activeChatStore?.generation else { return }
+            guard settings["ui"] == nil || settings["ui"] is NSNull || settings["ui"] is [String: Any] else { return }
+            let value = (settings["ui"] as? [String: Any])?["pinnedModels"]
+            guard let pinned = value == nil ? (activeChatStore?.cachedPinnedModelIds ?? pinnedModelIds) : value as? [String] else { return }
+            pinnedModelIds = pinned
+            activeChatStore?.cachedPinnedModelIds = pinned
+            logger.debug("Pinned models fetched: \(pinned)")
         } catch {
             logger.debug("Failed to fetch pinned models: \(error.localizedDescription)")
         }

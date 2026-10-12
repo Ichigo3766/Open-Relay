@@ -200,7 +200,9 @@ struct ComposerPressFeedback: ViewModifier {
     func body(content: Content) -> some View {
         content
             .scaleEffect(isPressed ? 0.985 : 1)
-            .animation(.spring(response: 0.25, dampingFraction: 0.7), value: isPressed)
+            // Firm and critically damped: the box settles at once instead of
+            // wobbling, so taps on it (and its buttons) feel immediate.
+            .animation(MicroAnimation.stiff, value: isPressed)
             .simultaneousGesture(
                 DragGesture(minimumDistance: 0)
                     .onChanged { value in

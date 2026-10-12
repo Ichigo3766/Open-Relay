@@ -64,6 +64,11 @@ actor MessageParseCache {
         return obj.entry.result
     }
 
+    nonisolated static func containsStructuralMarkers(_ content: String) -> Bool {
+        guard content.utf8.contains(0x3C) || content.utf8.contains(0xE2) else { return false }
+        return content.contains("<") || content.contains("◁")
+    }
+
     // MARK: - Nonisolated synchronous read (for SwiftUI body)
 
     /// Synchronous, non-actor-isolated cache lookup for use inside SwiftUI `body`.
@@ -89,6 +94,7 @@ actor MessageParseCache {
     /// Returns the result so callers can chain without a second lookup.
     @discardableResult
     func parseAndStore(content: String) -> ToolCallParser.OrderedParseResult {
+        guard !Task.isCancelled else { return .init(segments: [], allToolCalls: []) }
         // Check again — another Task may have already done this.
         let key = cacheKey(content)
         if let existing = cache.object(forKey: key as NSString) as? EntryBox,
@@ -2618,7 +2624,7 @@ struct AssistantMessageContent: View {
     }
 
     private var isPlainText: Bool {
-        !content.contains("<") && !content.contains("◁")
+        !MessageParseCache.containsStructuralMarkers(content)
     }
 
     var body: some View {
