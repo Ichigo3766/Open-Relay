@@ -7041,13 +7041,15 @@ final class ChatViewModel {
         }
         guard let apiClient = manager?.apiClient else { return }
         do {
+            let cacheGeneration = activeChatStore?.generation
             let settings = try await apiClient.getUserSettings()
-            if let ui = settings["ui"] as? [String: Any],
-               let enabled = ui["enableMessageQueue"] as? Bool {
-                enableMessageQueue = enabled
-                activeChatStore?.cachedMessageQueueSetting = enabled
-                logger.debug("Message queue setting fetched from server: \(enabled)")
-            }
+            guard cacheGeneration == activeChatStore?.generation else { return }
+            guard settings["ui"] == nil || settings["ui"] is NSNull || settings["ui"] is [String: Any] else { return }
+            let value = (settings["ui"] as? [String: Any])?["enableMessageQueue"]
+            guard let enabled = value == nil ? (activeChatStore?.cachedMessageQueueSetting ?? enableMessageQueue) : value as? Bool else { return }
+            enableMessageQueue = enabled
+            activeChatStore?.cachedMessageQueueSetting = enabled
+            logger.debug("Message queue setting fetched from server: \(enabled)")
         } catch {
             logger.debug("Failed to fetch message queue setting: \(error.localizedDescription)")
         }
@@ -7109,13 +7111,15 @@ final class ChatViewModel {
         }
         guard let apiClient = manager?.apiClient else { return }
         do {
+            let cacheGeneration = activeChatStore?.generation
             let settings = try await apiClient.getUserSettings()
-            if let ui = settings["ui"] as? [String: Any],
-               let pinned = ui["pinnedModels"] as? [String] {
-                pinnedModelIds = pinned
-                activeChatStore?.cachedPinnedModelIds = pinned
-                logger.debug("Pinned models fetched: \(pinned)")
-            }
+            guard cacheGeneration == activeChatStore?.generation else { return }
+            guard settings["ui"] == nil || settings["ui"] is NSNull || settings["ui"] is [String: Any] else { return }
+            let value = (settings["ui"] as? [String: Any])?["pinnedModels"]
+            guard let pinned = value == nil ? (activeChatStore?.cachedPinnedModelIds ?? pinnedModelIds) : value as? [String] else { return }
+            pinnedModelIds = pinned
+            activeChatStore?.cachedPinnedModelIds = pinned
+            logger.debug("Pinned models fetched: \(pinned)")
         } catch {
             logger.debug("Failed to fetch pinned models: \(error.localizedDescription)")
         }

@@ -32,7 +32,7 @@ final class ActiveChatStore {
     @ObservationIgnored private var working: [ObjectIdentifier: ChatViewModel] = [:]
     @ObservationIgnored private var drafts: [String: Draft] = [:]
     @ObservationIgnored private var navigation: ChatViewModel?
-    @ObservationIgnored private var generation = UUID()
+    @ObservationIgnored private(set) var generation = UUID()
 
     // MARK: - Shared Model/Tools Cache
 
