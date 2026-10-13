@@ -122,6 +122,7 @@ struct MainChatView: View {
     @AppStorage("sidebar_channels_expanded") private var channelsExpanded: Bool = true
     @AppStorage("sidebar_chats_expanded") private var chatsExpanded: Bool = true
     @AppStorage("sidebarBorderEnabled") private var sidebarBorderEnabled = true
+    @AppStorage("sidebarBlurEnabled") private var sidebarBlurEnabled = true
     /// Tracks which time-group sub-sections are collapsed (e.g. "Pinned", "Today").
     /// Persisted across launches as a comma-separated string in AppStorage.
     @AppStorage("sidebar_collapsed_sections") private var collapsedSectionsRaw: String = ""
@@ -238,6 +239,10 @@ struct MainChatView: View {
     /// Highest open fraction of either panel — controls dismissal hit-testing.
     private var maxPanelFraction: CGFloat {
         max(drawerFraction, fileBrowserFraction)
+    }
+
+    private var panelBlurFraction: CGFloat {
+        max(sidebarBlurEnabled ? drawerFraction : 0, fileBrowserFraction)
     }
 
     private var usesPageCardSidebar: Bool {
@@ -467,7 +472,7 @@ struct MainChatView: View {
             // Soft blur of the card's content while the sidebar is open. Applied before the
             // mask so the rounded edges, border and glow stay crisp. Not `opaque`: that mode
             // renders the card into a solid layer that turned white in dark mode.
-            .blur(radius: usesPageCardSidebar ? maxPanelFraction * 4 : 0)
+            .blur(radius: usesPageCardSidebar ? panelBlurFraction * 4 : 0)
             .mask {
                 if #available(iOS 26.0, *) {
                     ConcentricRectangle(corners: .concentric, isUniform: true)
@@ -477,8 +482,8 @@ struct MainChatView: View {
                         .ignoresSafeArea()
                 }
             }
-            // Page-card style (iOS 26) leaves the page unblurred for both panels.
-            .blur(radius: (usesPageCardSidebar ? 0 : maxPanelFraction) * 8 + contentTransitionBlur)
+            // Keep chat-switch transitions separate from the panel blur preference.
+            .blur(radius: (usesPageCardSidebar ? 0 : panelBlurFraction) * 8 + contentTransitionBlur)
             // Shadow on the active edge: left when drawer open, right when file browser open
             // Dark mode: a black shadow can't show on the black sidebar, so use a faint glow.
             .shadow(color: (theme.isDark ? Color.white.opacity(0.07) : Color.black.opacity(0.22)).opacity(drawerFraction), radius: theme.isDark ? 16 : 20, x: -4)

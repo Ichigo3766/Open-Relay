@@ -12,6 +12,7 @@ struct AppearanceSettingsView: View {
     @AppStorage("streamingBlurAnimation") private var streamingBlurEnabled: Bool = true
     @AppStorage("transparentChatToolbar") private var transparentChatToolbar = false
     @AppStorage("sidebarBorderEnabled") private var sidebarBorderEnabled = true
+    @AppStorage("sidebarBlurEnabled") private var sidebarBlurEnabled = true
     /// iPad-only: whether the sidebar is pinned as a persistent left column.
     @AppStorage("ipad_sidebar_always_shown") private var iPadSidebarAlwaysShown: Bool = false
 
@@ -62,20 +63,27 @@ struct AppearanceSettingsView: View {
 
                 }
 
-                // Chat toolbar
+                // Chat appearance
                 if #available(iOS 26.0, *) {
                     SettingsSection(header: "Chat Appearance") {
                         SettingsCell(
                             icon: "rectangle.on.rectangle",
                             title: "Transparent Chat Toolbar",
                             subtitle: "Show conversation text between the glass controls",
-                            showDivider: false,
+                            showDivider: UIDevice.current.userInterfaceIdiom != .pad,
                             accessory: .toggle(
                                 isOn: transparentChatToolbar,
                                 onChange: { transparentChatToolbar = $0 }
                             )
                         )
                         .accessibilityIdentifier("transparentChatToolbar")
+                        if UIDevice.current.userInterfaceIdiom != .pad {
+                            sidebarBlurToggle
+                        }
+                    }
+                } else if UIDevice.current.userInterfaceIdiom != .pad {
+                    SettingsSection(header: "Chat Appearance") {
+                        sidebarBlurToggle
                     }
                 }
 
@@ -119,6 +127,20 @@ struct AppearanceSettingsView: View {
         .background(theme.background)
         .navigationTitle("Appearance")
         .navigationBarTitleDisplayMode(.inline)
+    }
+
+    private var sidebarBlurToggle: some View {
+        SettingsCell(
+            icon: "drop.halffull",
+            title: "Blur Chat Behind Sidebar",
+            subtitle: "Blur the chat while the sidebar is open",
+            showDivider: false,
+            accessory: .toggle(
+                isOn: sidebarBlurEnabled,
+                onChange: { sidebarBlurEnabled = $0 }
+            )
+        )
+        .accessibilityIdentifier("sidebarBlurEnabled")
     }
 
     // MARK: - Live Preview Card
