@@ -200,9 +200,9 @@ actor ConversationCache {
 
     nonisolated private static func hasUnfinishedMessages(_ chat: [String: Any]) -> Bool {
         let history = chat["history"] as? [String: Any]
-        let messages = history?["messages"] as? [String: [String: Any]]
-        return messages?.values.contains { $0["done"] as? Bool == false } == true
-            || (chat["messages"] as? [[String: Any]])?.contains { $0["done"] as? Bool == false } == true
+        let messages = history?["messages"] as? [String: Any]
+        return messages?.values.contains { ($0 as? NSDictionary)?["done"] as? Bool == false } == true
+            || (chat["messages"] as? [Any])?.contains { ($0 as? NSDictionary)?["done"] as? Bool == false } == true
     }
 
     // Versioned lossless envelope; legacy uncompressed property lists remain readable.
