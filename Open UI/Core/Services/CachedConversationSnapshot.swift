@@ -5,6 +5,13 @@ nonisolated enum CachedConversationSnapshot {
     static let marker = "openrelay_cache_compact"
 
     static func compact(_ data: Data) -> Data? {
+        // Escaped, wide-encoded and structured JSON can still reconstruct detail tags.
+        guard data.prefix(4).contains(0)
+            || data.prefix(4096).range(of: Data("\"output\"".utf8)) != nil
+            || data.prefix(4096).range(of: Data("\\u".utf8)) != nil
+            || data.range(of: Data("<".utf8)) != nil
+            || data.range(of: Data("\\u".utf8)) != nil
+            || data.range(of: Data("\"output\"".utf8)) != nil else { return nil }
         guard var json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               var chat = json["chat"] as? [String: Any] else { return nil }
         var changed = false
