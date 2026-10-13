@@ -157,8 +157,11 @@ final class ChatViewModel {
     private func applyContextMetadata(_ refreshed: Conversation) {
         guard refreshed.id == (conversationId ?? conversation?.id) else { return }
         conversation?.contextUsage = refreshed.contextUsage
-        for (id, node) in refreshed.history.nodes {
-            conversation?.history.updateNode(id: id) { $0.contextSummary = node.contextSummary }
+        if var history = conversation?.history {
+            for (id, node) in refreshed.history.nodes {
+                history.updateNode(id: id) { $0.contextSummary = node.contextSummary }
+            }
+            conversation?.history = history
         }
         contextNeedsRefresh = false
     }
@@ -1398,10 +1401,10 @@ final class ChatViewModel {
         // the server appends only to the history tree — `chat.messages` stays at 2 entries
         // while the tree has 4. After re-deriving, push the updated currentId to the
         // server so WebUI also navigates to the full branch.
-        if conversation?.history.isPopulated == true {
+        if conversation!.history.nodes.count > conversation!.messages.count {
             let treeMessages = conversation!.history.createMessagesList()
             if treeMessages.count > (conversation?.messages.count ?? 0) {
-                conversation!.rederiveMessages()
+                conversation!.messages = treeMessages
                 logger.info("loadConversation: re-derived \(treeMessages.count) messages from tree (was \(self.conversation?.messages.count ?? 0) from flat array)")
                 if conversation?.hasDeferredDetails != true && allowSync { Task { await self.syncCurrentIdToServer() } }
             }
@@ -1587,8 +1590,9 @@ final class ChatViewModel {
         // Merge the server's history tree into our local history.
         // The server tree is authoritative for all non-streaming nodes.
         if serverConversation.history.isPopulated {
+            var history = conversation!.history
             for (id, serverNode) in serverConversation.history.nodes {
-                if let localNode = conversation?.history.nodes[id] {
+                if let localNode = history.nodes[id] {
                     // Node exists locally — update content fields but keep local
                     // content if we're actively streaming this message.
                     let isActivelyStreaming = streamingStore.streamingMessageId == id && streamingStore.isActive
@@ -1615,12 +1619,12 @@ final class ChatViewModel {
                             updated.content = localNode.content
                             updated.done = true
                         }
-                        conversation?.history.nodes[id] = updated
+                        history.nodes[id] = updated
                     }
                 } else {
                     // New node from server — add only if not explicitly deleted this session
                     if !deletedMessageIds.contains(id) {
-                        conversation?.history.nodes[id] = serverNode
+                        history.nodes[id] = serverNode
                     }
                 }
             }
@@ -1631,8 +1635,9 @@ final class ChatViewModel {
             // chain to the tip of the active branch, matching WebUI's loadChat().
             if !isStreaming, let serverCurrentId = serverConversation.history.currentId {
                 let leaf = serverConversation.history.deepestLeaf(from: serverCurrentId)
-                conversation?.history.currentId = leaf
+                history.currentId = leaf
             }
+            conversation?.history = history
         }
 
         let serverMessages = serverConversation.messages
@@ -1802,7 +1807,7 @@ final class ChatViewModel {
         // also navigates to the full branch (WebUI uses currentId to walk the tree).
         //
         // Guard: only when not actively streaming (never interrupt a live stream).
-        if !isStreaming, conversation?.history.isPopulated == true {
+        if !isStreaming, conversation!.history.nodes.count > conversation!.messages.count {
             let treeMessages = conversation!.history.createMessagesList()
             if treeMessages.count > (conversation?.messages.count ?? 0) {
                 conversation!.rederiveMessages()
