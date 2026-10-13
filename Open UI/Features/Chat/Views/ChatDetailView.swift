@@ -327,9 +327,8 @@ struct ChatDetailView: View {
 
     // MARK: Message virtualization (memory optimization)
     //
-    // Every message keeps a slot in the VStack; only rows near the viewport are
-    // fully drawn, the rest are height-matched empty spacers. See
-    // ChatRowVirtualizer for the full rationale.
+    // Only nearby turns are drawn; offscreen runs share cached-height spacers.
+    // ChatRowVirtualizer preserves the reading anchor when measured heights change.
     /// Indices of fully drawn rows. `nil` means "follow the bottom" — the last
     /// ~2.5 screens of the chat are drawn.
     @State private var drawnRange: ClosedRange<Int>? = nil
@@ -2179,9 +2178,6 @@ struct ChatDetailView: View {
                 // (4 skeleton rows → N message rows) that happened even under opacity 0.
                 messagesList
             }
-            // List coordinates for virtualization: row frames measured here don't
-            // change while scrolling, only when layout actually changes.
-            .coordinateSpace(name: Self.messagesSpace)
         .padding(.top, ChatRowVirtualizer.contentTopPadding)
         .padding(.bottom, 8)
         .frame(maxWidth: iPadMaxContentWidth)
@@ -2717,106 +2713,91 @@ struct ChatDetailView: View {
     /// Completed turns in a freshly opened chat use their natural height, so no
     /// empty space is left below the reply. All earlier turns render at their
     /// natural height.
+    private enum ChatRenderItemID: Hashable {
+        case turn(String), gap(String)
+    }
+
     private var messagesList: some View {
         let allMessages = viewModel.messages
         let total = allMessages.count
-
-        // ── Virtualization: which rows are fully drawn ──
-        // Every message keeps its slot; rows outside `drawn` are empty spacers
-        // sized to their last measured height, so nothing ever shifts.
         let drawn: ClosedRange<Int>? = {
             if let r = drawnRange, r.upperBound < total { return r }
             return virtualizer.bottomRange(messages: allMessages, viewportHeight: viewState_containerHeight)
         }()
         let streamingId = viewModel.streamingStore.isActive ? viewModel.streamingStore.streamingMessageId : nil
-
-        // Group the messages into turns: each user message starts a turn that holds it
-        // and the replies after it. A turn is keyed by its first message, so when a
-        // new message is sent the previous turn stays the SAME view — only its
-        // reserved height changes. (Splitting "older rows" from "last turn" into two
-        // containers moved the previous reply between them on every send, which
-        // rebuilt its Markdown views mid-glide.)
-        var turns: [(id: String, messages: [(index: Int, message: ChatMessage)])] = []
-        for (index, message) in allMessages.enumerated() {
-            if message.role == .user || turns.isEmpty {
-                turns.append((message.id, [(index, message)]))
-            } else {
-                turns[turns.count - 1].messages.append((index, message))
-            }
+        let forced = [streamingId, editingMessageId].compactMap { id in
+            id.flatMap { id in allMessages.indices.first { allMessages[$0].id == id } }
         }
-        let lastTurnId = turns.last?.id
-        // Only a turn that starts with a user message is a real "last turn".
-        let lastTurnIsUserTurn = turns.last?.messages.first?.message.role == .user
-        // The last turn is always drawn: it holds the live reply and the message
-        // just sent, and must never flash as a spacer during the send glide.
-        let lastTurnStart = total - (turns.last?.messages.count ?? 0)
-
+        var turnStarts: [Int] = []
+        for index in allMessages.indices where allMessages[index].role == .user || turnStarts.isEmpty {
+            turnStarts.append(index)
+        }
+        let lastTurnStart = turnStarts.last ?? 0
+        let lastTurnId = allMessages.indices.contains(lastTurnStart) ? allMessages[lastTurnStart].id : nil
+        let lastTurnIsUser = allMessages.indices.contains(lastTurnStart) && allMessages[lastTurnStart].role == .user
         let reservedHeight: CGFloat? = {
-            guard lastTurnIsUserTurn,
-                  viewModel.isStreaming || viewModel.streamingStore.isActive
+            guard lastTurnIsUser, viewModel.isStreaming || viewModel.streamingStore.isActive
                     || (lastTurnId != nil && heldReservationTurnId == lastTurnId) else { return nil }
             return max(viewState_containerHeight, 0)
         }()
-
-        return ForEach(turns, id: \.id) { turn in
-            let isLastTurn = turn.id == lastTurnId
-            VStack(spacing: 0) {
-                ForEach(turn.messages, id: \.message.id) { row in
-                    let message = row.message
-                    let index = row.index
-                    let isDrawn = index >= lastTurnStart
-                        || (drawn?.contains(index) ?? true)
-                        || message.id == streamingId
-                        || message.id == editingMessageId
-                    messageSlot(message: message, index: index, isDrawn: isDrawn)
+        var items: [(id: ChatRenderItemID, rows: [(index: Int, message: ChatMessage, isDrawn: Bool)]?, height: CGFloat)] = []
+        var gapStart = 0
+        for turn in turnStarts.indices {
+            let start = turnStarts[turn]
+            let end = turn + 1 < turnStarts.count ? turnStarts[turn + 1] : total
+            let range = start..<end
+            guard turn == turnStarts.count - 1 || (drawn?.overlaps(start...(end - 1)) ?? true)
+                    || forced.contains(where: range.contains) else { continue }
+            if gapStart < start {
+                items.append((.gap(allMessages[gapStart].id), nil,
+                              virtualizer.height(for: gapStart..<start, messages: allMessages)))
+            }
+            items.append((.turn(allMessages[start].id), range.map {
+                ($0, allMessages[$0], $0 >= lastTurnStart || (drawn?.contains($0) ?? true) || forced.contains($0))
+            }, 0))
+            gapStart = end
+        }
+        return ForEach(items, id: \.id) { item in
+            if let rows = item.rows {
+                let isLastTurn = lastTurnId.map { item.id == .turn($0) } == true
+                VStack(spacing: 0) {
+                    ForEach(rows, id: \.message.id) { row in
+                        messageSlot(message: row.message, index: row.index, isDrawn: row.isDrawn)
+                    }
                 }
+                // Preserve the last turn's natural-height signal for writing-space release.
+                .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { [pump = _pumpRef] height in
+                    guard isLastTurn else { return }
+                    if height > pump.lastTurnHeight + 0.5 { pump.lastTurnGrowthAt = Date() }
+                    pump.lastTurnHeight = height
+                }
+                .frame(minHeight: isLastTurn ? reservedHeight : nil, alignment: .top)
+            } else {
+                Color.clear.frame(height: item.height)
+                    .allowsHitTesting(false).accessibilityHidden(true)
             }
-            // Natural height of the last turn (measured before the reserved minimum),
-            // written to PumpRef only — never triggers a body re-evaluation.
-            .onGeometryChange(for: CGFloat.self) { proxy in
-                proxy.size.height
-            } action: { [pump = _pumpRef] height in
-                guard isLastTurn else { return }
-                if height > pump.lastTurnHeight + 0.5 { pump.lastTurnGrowthAt = Date() }
-                pump.lastTurnHeight = height
-            }
-            // Keep writing space through final processing, then let completed
-            // turns use their natural height after blocks collapse.
-            .frame(minHeight: isLastTurn ? reservedHeight : nil, alignment: .top)
         }
     }
 
-    /// One message slot: the full row near the viewport, otherwise an empty
-    /// spacer of the row's last measured (or estimated) height. Both report their
-    /// frame so heights stay cached and off-screen size changes can be offset.
-    @ViewBuilder
+    /// Measure drawn rows; offscreen runs use the cumulative height index.
     private func messageSlot(message: ChatMessage, index: Int, isDrawn: Bool) -> some View {
         let virtualizer = self.virtualizer
         let messageId = message.id
-        Group {
+        return AnyView(Group {
             if isDrawn {
                 messageRow(message: message, index: index)
+                    .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { height in
+                        virtualizer.report(id: messageId, index: index, height: height)
+                    }
             } else {
-                Color.clear
-                    .frame(maxWidth: .infinity)
-                    .frame(height: virtualizer.height(for: message))
-                    .allowsHitTesting(false)
-                    .accessibilityHidden(true)
+                Color.clear.frame(height: virtualizer.height(for: message))
+                    .allowsHitTesting(false).accessibilityHidden(true)
             }
-        }
-        .onGeometryChange(for: CGRect.self) { proxy in
-            proxy.frame(in: .named(Self.messagesSpace))
-        } action: { frame in
-            virtualizer.report(id: messageId, minY: frame.minY, height: frame.height, isDrawn: isDrawn)
-        }
-        .id(messageId)
-        // Fade rows in/out when the list changes inside an animation (delete version,
-        // regenerate). Outside an animation transaction this has no effect.
-        .transition(.opacity)
+        })
+            .id(messageId)
+            // Animated version changes still fade; ordinary range updates do not.
+            .transition(.opacity)
     }
-
-    /// Coordinate space of the messages VStack (list coordinates for virtualization).
-    private static let messagesSpace = "chatMessagesList"
 
     // MARK: - Reserved Writing Space Release
 

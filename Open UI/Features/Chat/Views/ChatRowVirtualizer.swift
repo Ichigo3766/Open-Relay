@@ -3,20 +3,11 @@ import UIKit
 
 // MARK: - Chat Row Virtualizer
 //
-// Keeps chat memory bounded WITHOUT a LazyVStack and WITHOUT a sliding window.
-//
-// Every message always occupies a slot in the chat's VStack, so rows are never
-// inserted or removed above the viewport (the root cause of the old paging
-// jumps). Rows far from the viewport are drawn as an empty spacer sized to the
-// row's last measured height, so the heavy Markdown / WKWebView / image views
-// only exist for roughly three screens of content regardless of chat length.
-//
-// Swapping a measured row for a spacer of the same height is invisible. Rows
-// that have never been measured use an estimate. When any row that sits fully
-// above the viewport changes height (estimate → real height, async Markdown
-// settling, images loading), the scroll offset is shifted by exactly that
-// difference in the same layout pass — the technique UITableView uses for
-// estimated row heights — so the content being read never moves.
+// Draw only turns near the viewport; represent offscreen runs with their
+// combined cached height. The cumulative height index serves range selection,
+// programmatic jumps, and reading-anchor correction without observing row positions.
+// When a measured height above the anchor changes, shift the UIKit offset by
+// the same delta so the content being read remains in place.
 
 @MainActor
 final class ChatRowVirtualizer {
@@ -52,15 +43,9 @@ final class ChatRowVirtualizer {
 
     // MARK: Offset correction
 
-    private struct SlotFrame {
-        var minY: CGFloat
-        var height: CGFloat
-    }
-    /// Latest reported frame of every row slot (drawn row or spacer), in
-    /// messages-list coordinates.
-    private var frames: [String: SlotFrame] = [:]
     /// The slot under the reading line, and its list position when picked.
     private var anchorId: String?
+    private var anchorIndex: Int?
     private var anchorMinY: CGFloat = 0
     /// Offset corrections applied since the scroll observer last read them.
     private var pendingCompensation: CGFloat = 0
@@ -122,8 +107,8 @@ final class ChatRowVirtualizer {
     // MARK: - Layout
 
     private func rebuildLayoutIfNeeded(_ messages: [ChatMessage]) {
-        if !layoutDirty,
-           layoutIds.elementsEqual(messages.lazy.map(\.id)) {
+        if !layoutDirty, layoutIds.count == messages.count,
+           layoutIds.indices.allSatisfy({ layoutIds[$0] == messages[$0].id }) {
             return
         }
         layoutIds = messages.map(\.id)
@@ -135,6 +120,17 @@ final class ChatRowVirtualizer {
             rowEnds.append(y)
         }
         layoutDirty = false
+        if let anchorId, let index = layoutIds.firstIndex(of: anchorId) {
+            anchorIndex = index
+            let nextTop = rowTop(index)
+            let delta = nextTop - anchorMinY
+            anchorMinY = nextTop
+            if abs(delta) > 0.5, Date() >= compensationHoldUntil, let scrollView {
+                compensate(by: delta, in: scrollView)
+            }
+        } else {
+            anchorIndex = nil
+        }
     }
 
     private func rowTop(_ index: Int) -> CGFloat {
@@ -157,6 +153,13 @@ final class ChatRowVirtualizer {
         let first = min(firstIndex(endingAfter: top), last)
         let end = min(firstIndex(endingAfter: bottom), last)
         return first...max(first, end)
+    }
+
+    /// Combined height of an offscreen run, without creating a view per row.
+    func height(for range: Range<Int>, messages: [ChatMessage]) -> CGFloat {
+        guard !range.isEmpty, range.lowerBound >= 0, range.upperBound <= messages.count else { return 0 }
+        rebuildLayoutIfNeeded(messages)
+        return rowEnds[range.upperBound - 1] - rowTop(range.lowerBound)
     }
 
     /// Index of the message at the top of the viewport.
@@ -229,58 +232,39 @@ final class ChatRowVirtualizer {
         return min(r.lowerBound, clamped)...max(r.upperBound, clamped)
     }
 
-    // MARK: - Measurement + offset correction
-    //
-    // Anchor-based: on every user scroll the slot under the reading line (top of
-    // the visible area) becomes the anchor. Whenever that slot's position in the
-    // list moves — because any row ABOVE it changed height (estimate → real
-    // height, a spacer swapped for a freshly drawn row, async Markdown settling)
-    // — the scroll offset is moved by exactly the same amount, in the same
-    // layout pass. The anchor's own growth (e.g. expanding a reasoning block)
-    // doesn't move its top, so on-screen content expands naturally downward.
-    // Order-independent: however many rows above change, the anchor's single
-    // position delta is the total correction.
+    // MARK: - Height measurement + offset correction
 
-    /// Called by every row slot whenever its height or list position changes.
-    /// Scrolling never triggers this (list coordinates don't change on scroll).
-    func report(id: String, minY: CGFloat, height: CGFloat, isDrawn: Bool) {
-        if isDrawn, height > 0.5, abs((measuredHeights[id] ?? -1) - height) > 0.5 {
-            measuredHeights[id] = height
-            layoutDirty = true
-        }
-        frames[id] = SlotFrame(minY: minY, height: height)
-
-        guard id == anchorId else { return }
-        let delta = minY - anchorMinY
-        anchorMinY = minY
-        guard abs(delta) > 0.5, Date() >= compensationHoldUntil, let sv = scrollView else { return }
-        compensate(by: delta, in: sv)
+    /// Row positions come from the height index; geometry observes height only.
+    /// A change above the reading anchor shifts the offset by the same delta.
+    func report(id: String, index: Int, height: CGFloat) {
+        guard height > 0.5 else { return }
+        let oldHeight = measuredHeights[id] ?? estimatedHeights[id] ?? height
+        guard measuredHeights[id] != height else { return }
+        measuredHeights[id] = height
+        layoutDirty = true
+        guard anchorId != nil, let anchorIndex, index < anchorIndex,
+              layoutIds.indices.contains(index), layoutIds[index] == id else { return }
+        let delta = height - oldHeight
+        anchorMinY += delta
+        guard Date() >= compensationHoldUntil, let scrollView else { return }
+        compensate(by: delta, in: scrollView)
     }
 
-    /// Re-picks the anchor slot from the latest reported frames. Called by the
-    /// scroll observer when the offset moves.
+    /// Pick the row under the reading line from the cumulative height index.
     func updateAnchor(messages: [ChatMessage]) {
         guard Date() >= compensationHoldUntil, !messages.isEmpty, viewportHeight > 0 else {
             anchorId = nil
+            anchorIndex = nil
             return
         }
         rebuildLayoutIfNeeded(messages)
         let readingLine = visibleTop + 1
-        // Nothing above the viewport → nothing that could push content around.
-        guard readingLine > 1 else { anchorId = nil; return }
-        let guess = min(firstIndex(endingAfter: readingLine), messages.count - 1)
-        let lower = max(0, guess - 3)
-        let upper = min(messages.count - 1, guess + 3)
-        for i in lower...upper {
-            let id = messages[i].id
-            guard let f = frames[id], f.height > 0.5 else { continue }
-            if f.minY <= readingLine && f.minY + f.height > readingLine {
-                anchorId = id
-                anchorMinY = f.minY
-                return
-            }
-        }
-        anchorId = nil
+        guard readingLine > 1 else { anchorId = nil; anchorIndex = nil; return }
+        let index = min(firstIndex(endingAfter: readingLine), messages.count - 1)
+        guard readingLine < rowEnds[index] else { anchorId = nil; anchorIndex = nil; return }
+        anchorId = messages[index].id
+        anchorIndex = index
+        anchorMinY = rowTop(index)
     }
 
     private func compensate(by delta: CGFloat, in sv: UIScrollView) {
@@ -294,6 +278,7 @@ final class ChatRowVirtualizer {
         let target = max(minOffset, current + delta)
         guard abs(target - current) > 0.01 else { return }
         pendingCompensation += target - current
+        visibleTop += target - current
         sv.contentOffset = CGPoint(x: sv.contentOffset.x, y: target)
     }
 
