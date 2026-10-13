@@ -4255,13 +4255,10 @@ final class APIClient: @unchecked Sendable {
 
             // Parse the history tree directly into MessageHistory
             if let historyJSON = chat["history"] as? [String: Any],
-               let messagesMap = historyJSON["messages"] as? [String: [String: Any]],
-               let currentId = historyJSON["currentId"] as? String {
-                history = MessageHistory.fromServerJSON(
-                    historyJSON,
-                    messagesMap: messagesMap,
-                    currentId: currentId
-                )
+               let messagesMap = historyJSON["messages"] as? [String: Any],
+               let currentId = historyJSON["currentId"] as? String,
+               let parsedHistory = MessageHistory.fromServerJSON(messagesMap: messagesMap, currentId: currentId) {
+                history = parsedHistory
                 messages = history.createMessagesList()
             } else if let msgArray = chat["messages"] as? [[String: Any]] {
                 // Fallback for legacy format without history tree

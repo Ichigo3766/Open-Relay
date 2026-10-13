@@ -469,14 +469,16 @@ nonisolated struct MessageHistory: Sendable {
     /// Populates the tree from the server's `history` JSON object.
     ///
     /// Expects: `{"messages": {id: nodeDict, ...}, "currentId": "..."}`
-    static func fromServerJSON(_ historyJSON: [String: Any],
-                               messagesMap: [String: [String: Any]],
-                               currentId: String?) -> MessageHistory {
+    static func fromServerJSON(messagesMap: [String: Any],
+                               currentId: String?) -> MessageHistory? {
         var history = MessageHistory()
         history.currentId = currentId
 
-        for (id, msgData) in messagesMap {
-            history.nodes[id] = parseNode(id: id, from: msgData)
+        for (id, value) in messagesMap {
+            guard let node = autoreleasepool(invoking: {
+                (value as? [String: Any]).map { parseNode(id: id, from: $0) }
+            }) else { return nil }
+            history.nodes[id] = node
         }
 
         return history
