@@ -724,24 +724,17 @@ final class NetworkManager: NSObject, Sendable {
     /// instead of opening a new connection. Cleans up automatically on completion.
     func deduplicatedGET(_ urlRequest: URLRequest) async throws -> (Data, URLResponse) {
         guard urlRequest.httpMethod == "GET" || urlRequest.httpMethod == nil,
-              let key = urlRequest.url?.absoluteString
+              urlRequest.httpBody == nil, urlRequest.httpBodyStream == nil,
+              urlRequest.url != nil
         else {
             // Non-GET or no URL — perform directly
             return try await performRequest(urlRequest)
         }
 
-        // Check for an existing in-flight task (actor-isolated, async-safe)
-        if let existing = await deduplicator.existing(for: key) {
-            return try await existing.value
-        }
-
-        let task = Task<(Data, URLResponse), Error> { [weak self] in
+        return try await deduplicator.perform(urlRequest) { [weak self] in
             guard let self else { throw APIError.unknown(underlying: nil) }
-            defer { Task { await self.deduplicator.remove(key) } }
             return try await self.performRequest(urlRequest)
         }
-        await deduplicator.register(task, for: key)
-        return try await task.value
     }
 
     // MARK: - Auth Token Management
@@ -759,6 +752,19 @@ final class NetworkManager: NSObject, Sendable {
     // MARK: - Internal Helpers
 
     private func performRequest(_ request: URLRequest) async throws -> (Data, URLResponse) {
+        let method = request.httpMethod ?? "GET"
+        let isMutation = method != "GET" && method != "HEAD" && method != "OPTIONS"
+        do {
+            let result = try await performAuthenticatedRequest(request)
+            if isMutation { await deduplicator.invalidate() }
+            return result
+        } catch {
+            if isMutation { await deduplicator.invalidate() }
+            throw error
+        }
+    }
+
+    private func performAuthenticatedRequest(_ request: URLRequest) async throws -> (Data, URLResponse) {
         do {
             let result = try await session.data(for: request)
             // Native SSO only: an authenticated request that got a 401 gets ONE
@@ -810,7 +816,7 @@ final class NetworkManager: NSObject, Sendable {
 
         for attempt in 0...maxRetries {
             do {
-                let (data, response) = try await performRequest(request)
+                let (data, response) = try await deduplicatedGET(request)
 
                 if let httpResponse = response as? HTTPURLResponse,
                    httpResponse.statusCode >= 500 && attempt < maxRetries {
@@ -922,18 +928,28 @@ enum HTTPMethod: String, Sendable {
 /// Actor-isolated store for in-flight GET tasks.
 /// Replaces the old NSLock-based approach which was unavailable in async contexts (Swift 6).
 actor GETDeduplicator {
-    private var inFlight: [String: Task<(Data, URLResponse), Error>] = [:]
+    private struct Key: Hashable {
+        let request: URLRequest
+        let timeout: TimeInterval
+        let cachePolicy: URLRequest.CachePolicy
+        let generation: UInt64
+    }
+    private var generation: UInt64 = 0
+    private var inFlight: [Key: Task<(Data, URLResponse), Error>] = [:]
 
-    func existing(for key: String) -> Task<(Data, URLResponse), Error>? {
-        inFlight[key]
+    func invalidate() {
+        generation &+= 1
+        inFlight.removeAll()
     }
 
-    func register(_ task: Task<(Data, URLResponse), Error>, for key: String) {
+    func perform(_ request: URLRequest,
+                 operation: @escaping @Sendable () async throws -> (Data, URLResponse)) async throws -> (Data, URLResponse) {
+        let key = Key(request: request, timeout: request.timeoutInterval, cachePolicy: request.cachePolicy, generation: generation)
+        if let existing = inFlight[key] { return try await existing.value }
+        let task = Task { try await operation() }
         inFlight[key] = task
-    }
-
-    func remove(_ key: String) {
-        inFlight.removeValue(forKey: key)
+        defer { inFlight.removeValue(forKey: key) }
+        return try await task.value
     }
 }
 

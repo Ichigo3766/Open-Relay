@@ -2125,11 +2125,13 @@ final class ChatViewModel {
         guard let manager else { return }
         isLoadingModels = true
         do {
+            let defaultModel = Task { await manager.fetchDefaultModel() }
+            defer { defaultModel.cancel() }
             availableModels = try await manager.fetchModels()
             // Always fetch the server default model and cache it.
             // This ensures new chats always use the server-configured default,
             // not whatever model the user last switched to in a different chat.
-            let serverDefault = await manager.fetchDefaultModel()
+            let serverDefault = await defaultModel.value
             if let store = activeChatStore {
                 store.cachedDefaultModelId = serverDefault
             }
