@@ -167,6 +167,9 @@ final class ChatViewModel {
     var regenerateScrollToken: UUID = UUID()
     var inputText: String = "" {
         didSet {
+            if queuedDraftId != nil, inputText != oldValue {
+                queuedDraftId = nil
+            }
             // Shared chats with replies: tell others while the user types.
             if joinedChatRoomId != nil, inputText != oldValue {
                 emitTyping(!inputText.isEmpty)
@@ -439,6 +442,8 @@ final class ChatViewModel {
     var isSavingChatVariables = false
     var isCreatingConversation = false
     private var pendingSendAttempt: UUID?
+    private var isRecoveringSendAcknowledgement = false
+    private var queuedDraftId: UUID?
     private var pendingChatVariables: [String: Any] = [:]
     private var chatVariablesDraftGeneration = 0
 
@@ -746,7 +751,7 @@ final class ChatViewModel {
             || (!isStreaming
                 && !attachments.contains(where: { $0.type == .audio && $0.isTranscribing }))
         return notBlocked && !isCompactingContext && !contextNeedsRefresh
-            && pendingSendAttempt == nil && !isSavingChatVariables && !isCreatingConversation && !isCreatingNoteChat
+            && pendingSendAttempt == nil && pendingQueueDrains == 0 && !isSavingChatVariables && !isCreatingConversation && !isCreatingNoteChat
             && (!inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                 || !attachments.isEmpty)
     }
@@ -3507,8 +3512,8 @@ final class ChatViewModel {
     /// returns `false`, `lastSendBlockReason` says why (voice calls use this
     /// instead of silently waiting for a reply that will never come).
     @discardableResult
-    func sendMessage(directText: String? = nil) async -> Bool {
-        guard pendingSendAttempt == nil else { return sendBlocked(.busy, "waiting for send acknowledgement") }
+    func sendMessage(directText: String? = nil, fromQueue: Bool = false, queuedComposerId: UUID? = nil) async -> Bool {
+        guard pendingSendAttempt == nil, fromQueue || pendingQueueDrains == 0 else { return sendBlocked(.busy, "waiting for send acknowledgement") }
         let sendAttempt = UUID()
         pendingSendAttempt = sendAttempt
         var submissionStarted = false
@@ -3557,7 +3562,12 @@ final class ChatViewModel {
         // If message queue is enabled and we're currently streaming, enqueue the text
         // (only text messages can be queued — attachments are sent normally when not streaming)
         if enableMessageQueue && isStreaming && !isVoiceMode && !text.isEmpty && attachments.isEmpty {
-            messageQueue.append(QueuedMessage(id: UUID(), text: text))
+            if directText == nil, let queuedDraftId, messageQueue.contains(where: { $0.id == queuedDraftId }) {
+                return sendBlocked(.queued, "draft already queued")
+            }
+            let queued = QueuedMessage(id: UUID(), text: text)
+            messageQueue.append(queued)
+            if directText == nil || (fromQueue && inputText.trimmingCharacters(in: .whitespacesAndNewlines) == text) { queuedDraftId = queued.id }
             return sendBlocked(.queued, "queued while streaming")
         }
 
@@ -3967,7 +3977,11 @@ final class ChatViewModel {
         let capturedUseSSEFallback = useSSEFallback
         streamingTask = Task { [weak self] in
             guard let self else { return }
-            defer { if self.pendingSendAttempt == sendAttempt { self.pendingSendAttempt = nil } }
+            defer {
+                if self.pendingSendAttempt == sendAttempt, !self.isRecoveringSendAcknowledgement {
+                    self.pendingSendAttempt = nil
+                }
+            }
             do {
                 var request = ChatCompletionRequest(
                     model: modelId, messages: apiMessages, stream: true,
@@ -4054,7 +4068,8 @@ final class ChatViewModel {
 
                 // Consume only the acknowledged draft; preserve edits and new selections.
                 if self.inputText == draftBeforeSend,
-                   directText == nil || draftBeforeSend.trimmingCharacters(in: .whitespacesAndNewlines) == currentText {
+                   directText == nil || draftBeforeSend.trimmingCharacters(in: .whitespacesAndNewlines) == currentText
+                    || (fromQueue && queuedComposerId != nil && self.queuedDraftId == queuedComposerId) {
                     self.inputText = ""
                 }
                 let sentAttachments = Set(originalAttachments.map(\.id))
@@ -4141,6 +4156,8 @@ final class ChatViewModel {
                 if !Task.isCancelled {
                     let apiError = APIError.from(error)
                     if case .networkError = apiError, apiError.isConnectivityError, effectiveChatId != nil {
+                        guard !self.hasFinishedStreaming else { return }
+                        self.isRecoveringSendAcknowledgement = true
                         self.appendStatusUpdate(id: assistantMessageId, status: ChatStatusUpdate(action: "reconnecting", description: "Connection interrupted. Checking server…", done: false))
                         self.startRecoveryTimer(assistantMessageId: assistantMessageId, chatId: effectiveChatId)
                         return
@@ -6463,6 +6480,10 @@ final class ChatViewModel {
         toolEventPrompts.cancelAll()
         cancelLiveAskUser()
         guard !hasFinishedStreaming else { return }
+        if isRecoveringSendAcknowledgement {
+            isRecoveringSendAcknowledgement = false
+            pendingSendAttempt = nil
+        }
         stopSwitchStatusPolling()
         hasFinishedStreaming = true
         isStreaming = false
@@ -6578,15 +6599,16 @@ final class ChatViewModel {
 
     // The delay is still ongoing work even after the visible queue has been emptied.
     private func drainMessageQueue(after delay: UInt64) {
-        guard pendingSendAttempt == nil, !messageQueue.isEmpty else { return }
+        guard pendingSendAttempt == nil, pendingQueueDrains == 0, !messageQueue.isEmpty else { return }
         let combined = messageQueue.map(\.text).joined(separator: "\n\n")
+        let composerId = messageQueue.contains { $0.id == queuedDraftId } ? queuedDraftId : nil
         pendingQueueDrains += 1
         messageQueue.removeAll()
         Task { [weak self] in
             try? await Task.sleep(nanoseconds: delay)
             guard let self else { return }
             defer { self.pendingQueueDrains -= 1 }
-            await self.sendMessage(directText: combined)
+            await self.sendMessage(directText: combined, fromQueue: true, queuedComposerId: composerId)
         }
     }
 

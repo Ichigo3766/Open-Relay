@@ -9,6 +9,7 @@ struct Manager:Sendable {var apiClient=API()}
     var inputText="Invented original draft"
     var attachments=[Item(id:"invented-file")],selectedKnowledgeItems=[Item(id:"invented-knowledge")],selectedReferenceChats=[Item(id:"invented-reference")],selectedNotes=[Item(id:"invented-note")]
     var selectedSkillIds=["invented-skill"]
+    var queuedDraftId:UUID?
     var pendingSendAttempt:UUID?
     var streamingSessionId=1
     var activeTaskIds=[String]()
@@ -18,7 +19,7 @@ struct Manager:Sendable {var apiClient=API()}
     func updateAssistantMessage(id:String,content:String,isStreaming:Bool,error:ChatMessageError?){errors+=1}
     func cleanupStreaming(){cleanups+=1}
     INSERT_PARSE
-    func acknowledge(_ json:[String:Any],directText:String?=nil) {
+    func acknowledge(_ json:[String:Any],directText:String?=nil,fromQueue:Bool=false,queuedComposerId:UUID?=nil) {
         let sendScope:String?="invented-scope",sendSessionId=1,assistantMessageId="invented-assistant"
         let sendAttempt=pendingSendAttempt ?? UUID()
         let currentText=directText ?? "Invented original draft",draftBeforeSend="Invented original draft"

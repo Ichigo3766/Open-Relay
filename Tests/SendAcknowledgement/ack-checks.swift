@@ -7,6 +7,7 @@ enum CatchUpReason:String{case chatOpened}
 struct Logger{func info(_ text:String){}}
 @MainActor final class Subject {
     var recovery=0,updates=0,cleanups=0,attached=0,finished=0,syncs=0
+    var hasFinishedStreaming=false,isRecoveringSendAcknowledgement=false
     var isExternallyStreaming=false
     var resulting:ChatMessage?
     let assistantMessageId="invented-response"
