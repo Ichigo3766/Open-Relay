@@ -73,9 +73,13 @@ struct DictationContext: Codable, Equatable {
         try save(entry, for: context)
     }
 
-    /// Only drafts that have used dictation are persisted; ordinary composers are unchanged.
+    /// Updates an existing recovery entry; ordinary typing does not create files.
     func saveDraft(_ text: String, for context: DictationContext) throws {
         guard var entry = try load(context), entry.draft != text else { return }
+        if text.isEmpty, entry.recording == nil {
+            try FileManager.default.removeItem(at: metadataURL(context))
+            return
+        }
         entry.draft = text
         try save(entry, for: context)
     }

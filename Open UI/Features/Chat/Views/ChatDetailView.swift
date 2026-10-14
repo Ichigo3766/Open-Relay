@@ -4913,7 +4913,6 @@ struct ChatDetailView: View {
         Task { @MainActor in
             // Send the suggestion directly: routing it through the composer
             // filled and resized the input field for a frame before sending.
-            viewModel.inputText = ""
             let sent = await viewModel.sendMessage(directText: suggestion)
             // If it didn't go out (blocked / failed) bring the chips back.
             if !sent { withAnimation(MicroAnimation.snappy) { followUpsCollapsing = false } }

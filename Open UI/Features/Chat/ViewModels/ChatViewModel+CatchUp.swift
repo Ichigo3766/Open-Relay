@@ -78,12 +78,32 @@ extension ChatViewModel {
         }
     }
 
+    /// Validate an unfinished loaded reply without downloading the chat again.
+    func checkLoadedReply() {
+        guard let chatId = conversationId ?? conversation?.id,
+              let message = conversation?.messages.last, message.isStreaming, let manager else { return }
+        let messageId = message.id
+        let scope = manager.apiClient.network.conversationCacheScope
+        Task { [weak self] in
+            let tasks = try? await manager.apiClient.getTasksForChat(chatId: chatId)
+            guard let self, scope == manager.apiClient.network.conversationCacheScope, !self.selfInitiatedStream,
+                  let last = self.conversation?.messages.last, last.id == messageId, last.isStreaming else { return }
+            self.resolveLastReply(last, serverSaysGenerating: true,
+                generationRunning: tasks.map { !$0.isEmpty }, reason: .chatOpened)
+        }
+    }
+
     private func resolveLastReply(_ serverLast: ChatMessage?, serverSaysGenerating: Bool,
                                   generationRunning: Bool?, reason: CatchUpReason) {
         guard let serverLast else { return }
         if serverSaysGenerating, generationRunning != false {
             attachToLiveReply(serverLast, reason: reason)
         } else if serverSaysGenerating {
+            if serverLast.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                updateAssistantMessage(id: serverLast.id, content: "", isStreaming: false,
+                    error: ChatMessageError(content: "No response received. Check your connection and retry this response."))
+                return
+            }
             // The generation ended while we were away; only the flag is stale. Re-fetch
             // once for the final content, files, sources and follow-ups.
             logger.info("Catch-up(\(reason.rawValue)): reply \(serverLast.id) ended while away — final sync")

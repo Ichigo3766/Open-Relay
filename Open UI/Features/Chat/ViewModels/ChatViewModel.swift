@@ -438,6 +438,7 @@ final class ChatViewModel {
     var chatVariableForm: ChatVariableForm?
     var isSavingChatVariables = false
     var isCreatingConversation = false
+    private var pendingSendAttempt: UUID?
     private var pendingChatVariables: [String: Any] = [:]
     private var chatVariablesDraftGeneration = 0
 
@@ -745,7 +746,7 @@ final class ChatViewModel {
             || (!isStreaming
                 && !attachments.contains(where: { $0.type == .audio && $0.isTranscribing }))
         return notBlocked && !isCompactingContext && !contextNeedsRefresh
-            && !isSavingChatVariables && !isCreatingConversation && !isCreatingNoteChat
+            && pendingSendAttempt == nil && !isSavingChatVariables && !isCreatingConversation && !isCreatingNoteChat
             && (!inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                 || !attachments.isEmpty)
     }
@@ -765,7 +766,7 @@ final class ChatViewModel {
         isStreaming || hasActiveTranscriptions || hasUploadingAttachments
             || attachments.contains { $0.isTranscribing }
             || pendingTextAfterUpload != nil || !messageQueue.isEmpty || pendingQueueDrains > 0
-            || isCreatingConversation || isCreatingNoteChat || isSavingContext
+            || pendingSendAttempt != nil || isCreatingConversation || isCreatingNoteChat || isSavingContext
             || isCompactingContext || isSavingChatVariables || isSavingTemporaryChat
             || isResolvingToolCall || isResolvingAskUser || isCheckingToolConnections
             || isVoiceMode || liveAskUserPrompt != nil || !toolEventPrompts.requests.isEmpty
@@ -1269,6 +1270,8 @@ final class ChatViewModel {
             // Socket already connected — start passive listener immediately
             startPassiveSocketListener()
         }
+
+        checkLoadedReply()
 
         // Start listening for app foreground events to sync with server
         startForegroundSyncListener()
@@ -3505,13 +3508,30 @@ final class ChatViewModel {
     /// instead of silently waiting for a reply that will never come).
     @discardableResult
     func sendMessage(directText: String? = nil) async -> Bool {
+        guard pendingSendAttempt == nil else { return sendBlocked(.busy, "waiting for send acknowledgement") }
+        let sendAttempt = UUID()
+        pendingSendAttempt = sendAttempt
+        var submissionStarted = false
+        defer { if !submissionStarted, pendingSendAttempt == sendAttempt { pendingSendAttempt = nil } }
+        let text = (directText ?? inputText).trimmingCharacters(in: .whitespacesAndNewlines)
+        let draftBeforeSend = inputText
+        if !draftBeforeSend.isEmpty, let context = dictationDraftContext {
+            do {
+                var entry = try DictationRecoveryStore.shared.load(context)
+                    ?? DictationRecoveryStore.Entry(draft: draftBeforeSend, recording: nil)
+                entry.draft = draftBeforeSend
+                try DictationRecoveryStore.shared.save(entry, for: context)
+            } catch {
+                errorMessage = "Could not preserve your draft. " + error.localizedDescription
+                return sendBlocked(.failed, "saving draft recovery failed")
+            }
+        }
         guard await restoreDetailsForAction() else { return false }
         lastSendBlockReason = nil
         guard !isCompactingContext, !contextNeedsRefresh,
               !isSavingChatVariables, !isCreatingConversation else {
             return sendBlocked(.busy, "chat is busy (compacting / saving / creating)")
         }
-        let text = (directText ?? inputText).trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty || !attachments.isEmpty else { return sendBlocked(.empty, "empty message") }
         // Start loading the tool list (if it isn't yet) alongside the model refresh
         // below instead of after it; checkToolConnections() awaits the same load.
@@ -3538,7 +3558,6 @@ final class ChatViewModel {
         // (only text messages can be queued — attachments are sent normally when not streaming)
         if enableMessageQueue && isStreaming && !isVoiceMode && !text.isEmpty && attachments.isEmpty {
             messageQueue.append(QueuedMessage(id: UUID(), text: text))
-            inputText = ""
             return sendBlocked(.queued, "queued while streaming")
         }
 
@@ -3547,7 +3566,6 @@ final class ChatViewModel {
         // can see the message is "pending". The upload completion handler will auto-send.
         if attachments.contains(where: { $0.isUploading }) && !text.isEmpty {
             pendingTextAfterUpload = text
-            inputText = ""
             logger.info("A4: attachments uploading — queued '\(text.prefix(30))…' for auto-send on upload complete")
             return sendBlocked(.queued, "waiting for attachments to upload")
         }
@@ -3652,26 +3670,20 @@ final class ChatViewModel {
             }
         }
 
-        // Capture and clear knowledge items — they attach to this message only.
+        // Capture knowledge items — consume them only after acknowledgement.
         // The server handles RAG retrieval per-message from the files array.
         var currentKnowledgeItems = selectedKnowledgeItems
-        selectedKnowledgeItems = []
-        // Capture and clear reference chats — they attach to this message only.
+        // Capture reference chats for this message.
         let currentReferenceChats = selectedReferenceChats
-        selectedReferenceChats = []
 
-        // Capture and clear notes — sent as file refs (type "note") in the API request.
+        // Capture notes — sent as file refs (type "note") in the API request.
         let currentNotes = selectedNotes
-        selectedNotes = []
 
-        // Capture and clear skill IDs — sent as skill_ids in the API request.
+        // Capture skill IDs — sent as skill_ids in the API request.
         let currentSkillIds = selectedSkillIds
-        selectedSkillIds = []
 
         let currentText = text
         var currentAttachments = processedAttachments
-        inputText = ""
-        attachments = []
         errorMessage = nil
 
         await userDefaultParamsTask?.value
@@ -3942,20 +3954,10 @@ final class ChatViewModel {
                   streamingSessionId == sendSessionId else {
                 return sendBlocked(.busy, "chat changed while saving the message")
             }
-            // Keep queued messages and anything typed since, without auto-resending.
-            let restoredText = ([currentText] + messageQueue.map(\.text) + [inputText])
-                .filter { !$0.isEmpty }.joined(separator: "\n\n")
-            messageQueue.removeAll()
             cleanupStreaming()
             conversation = conversationBeforeSend
             chatFiles = chatFilesBeforeSend
-            inputText = restoredText
-            attachments = originalAttachments + attachments
-            selectedKnowledgeItems = currentKnowledgeItems + selectedKnowledgeItems
-            selectedReferenceChats = currentReferenceChats + selectedReferenceChats
-            selectedNotes = currentNotes + selectedNotes
-            selectedSkillIds = currentSkillIds + selectedSkillIds
-            errorMessage = "Couldn’t save your message. Your draft has been restored. Please try again."
+            errorMessage = "Couldn’t save your message. Your draft has been kept. Please try again."
             return sendBlocked(.failed, "saving the message history failed")
         }
 
@@ -3965,6 +3967,7 @@ final class ChatViewModel {
         let capturedUseSSEFallback = useSSEFallback
         streamingTask = Task { [weak self] in
             guard let self else { return }
+            defer { if self.pendingSendAttempt == sendAttempt { self.pendingSendAttempt = nil } }
             do {
                 var request = ChatCompletionRequest(
                     model: modelId, messages: apiMessages, stream: true,
@@ -4022,6 +4025,50 @@ final class ChatViewModel {
                 // Sent as `skill_ids` in the top-level request body (separate from tool_ids).
                 if !currentSkillIds.isEmpty { request.skillIds = currentSkillIds }
 
+                let json = try await manager.sendMessageHTTP(request: request)
+                guard !Task.isCancelled, self.streamingSessionId == sendSessionId,
+                      sendScope == self.manager?.apiClient.network.conversationCacheScope else { return }
+
+
+                if let err = json["error"] as? String, !err.isEmpty {
+                    self.updateAssistantMessage(id: assistantMessageId, content: "",
+                                                 isStreaming: false, error: ChatMessageError(content: err))
+                    self.cleanupStreaming()
+                    return
+                }
+                if let detail = json["detail"] as? String, !detail.isEmpty, json["choices"] == nil {
+                    self.updateAssistantMessage(id: assistantMessageId, content: "",
+                                                 isStreaming: false, error: ChatMessageError(content: detail))
+                    self.cleanupStreaming()
+                    return
+                }
+                let acknowledgedTaskIds = self.parseTaskIdsFromCompletionResponse(json)
+                guard json["status"] as? Bool != false,
+                      json["status"] as? Bool == true || !acknowledgedTaskIds.isEmpty || json["choices"] is [[String: Any]] else {
+                    self.updateAssistantMessage(id: assistantMessageId, content: "", isStreaming: false,
+                        error: ChatMessageError(content: "The server did not acknowledge this message. Your draft has been kept."))
+                    self.cleanupStreaming()
+                    return
+                }
+                self.activeTaskIds = acknowledgedTaskIds
+
+                // Consume only the acknowledged draft; preserve edits and new selections.
+                if self.inputText == draftBeforeSend,
+                   directText == nil || draftBeforeSend.trimmingCharacters(in: .whitespacesAndNewlines) == currentText {
+                    self.inputText = ""
+                }
+                let sentAttachments = Set(originalAttachments.map(\.id))
+                self.attachments.removeAll { sentAttachments.contains($0.id) }
+                let sentKnowledge = Set(currentKnowledgeItems.map(\.id))
+                self.selectedKnowledgeItems.removeAll { sentKnowledge.contains($0.id) }
+                let sentReferences = Set(currentReferenceChats.map(\.id))
+                self.selectedReferenceChats.removeAll { sentReferences.contains($0.id) }
+                let sentNotes = Set(currentNotes.map(\.id))
+                self.selectedNotes.removeAll { sentNotes.contains($0.id) }
+                self.selectedSkillIds.removeAll { currentSkillIds.contains($0) }
+                if self.pendingSendAttempt == sendAttempt { self.pendingSendAttempt = nil }
+                if self.hasFinishedStreaming { self.drainMessageQueue(after: 800_000_000) }
+
                 if capturedUseSSEFallback {
                     // ── HTTP + POLLING FALLBACK ──
                     // Socket.IO is unavailable (e.g., Cloudflare blocks WebSocket).
@@ -4029,22 +4076,6 @@ final class ChatViewModel {
                     // use HTTP POST + aggressive server polling to pick up content
                     // in near-real-time. Poll every 1.5s with no initial delay.
                     self.logger.info("Using HTTP + polling fallback (no socket)")
-                    let json = try await manager.sendMessageHTTP(request: request)
-
-                    if let err = json["error"] as? String, !err.isEmpty {
-                        self.updateAssistantMessage(id: assistantMessageId, content: "",
-                                                     isStreaming: false, error: ChatMessageError(content: err))
-                        self.cleanupStreaming()
-                        return
-                    }
-                    if let detail = json["detail"] as? String, !detail.isEmpty, json["choices"] == nil {
-                        self.updateAssistantMessage(id: assistantMessageId, content: "",
-                                                     isStreaming: false, error: ChatMessageError(content: detail))
-                        self.cleanupStreaming()
-                        return
-                    }
-                    self.activeTaskIds = self.parseTaskIdsFromCompletionResponse(json)
-
                     // Aggressive polling: start immediately, poll every 1.5s
                     // Content is being generated server-side and persisted to DB
                     // in real-time. Each poll picks up the latest accumulated text.
@@ -4103,29 +4134,17 @@ final class ChatViewModel {
                 } else {
                     // ── SOCKET PATH (normal) ──
                     // HTTP POST returns immediately; content delivered via socket events
-                    let json = try await manager.sendMessageHTTP(request: request)
-
-                    if let err = json["error"] as? String, !err.isEmpty {
-                        self.updateAssistantMessage(id: assistantMessageId, content: "",
-                                                     isStreaming: false, error: ChatMessageError(content: err))
-                        self.cleanupStreaming()
-                        return
-                    }
-                    if let detail = json["detail"] as? String, !detail.isEmpty, json["choices"] == nil {
-                        self.updateAssistantMessage(id: assistantMessageId, content: "",
-                                                     isStreaming: false, error: ChatMessageError(content: detail))
-                        self.cleanupStreaming()
-                        return
-                    }
-
-                    // Capture the server's task IDs for server-side stop
-                    self.activeTaskIds = self.parseTaskIdsFromCompletionResponse(json)
-
                     self.logger.info("HTTP POST done – waiting for socket events")
                     self.startRecoveryTimer(assistantMessageId: assistantMessageId, chatId: effectiveChatId)
                 }
             } catch {
                 if !Task.isCancelled {
+                    let apiError = APIError.from(error)
+                    if case .networkError = apiError, apiError.isConnectivityError, effectiveChatId != nil {
+                        self.appendStatusUpdate(id: assistantMessageId, status: ChatStatusUpdate(action: "reconnecting", description: "Connection interrupted. Checking server…", done: false))
+                        self.startRecoveryTimer(assistantMessageId: assistantMessageId, chatId: effectiveChatId)
+                        return
+                    }
                     self.updateAssistantMessage(id: assistantMessageId, content: "",
                                                  isStreaming: false,
                                                  error: ChatMessageError(content: error.localizedDescription))
@@ -4133,6 +4152,7 @@ final class ChatViewModel {
                 }
             }
         }
+        submissionStarted = true
         return true
     }
 
@@ -6226,7 +6246,9 @@ final class ChatViewModel {
                                 self.updateAssistantMessage(
                                     id: assistantMessageId,
                                     content: lastAssistant.content,
-                                    isStreaming: false)
+                                    isStreaming: false,
+                                    error: lastAssistant.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                                        ? ChatMessageError(content: "No response received. Check your connection and retry this response.") : nil)
                                 let doneContent = lastAssistant.content
                                 Task { await self.sendCompletionNotificationIfNeeded(content: doneContent) }
                             } else {
@@ -6556,7 +6578,7 @@ final class ChatViewModel {
 
     // The delay is still ongoing work even after the visible queue has been emptied.
     private func drainMessageQueue(after delay: UInt64) {
-        guard !messageQueue.isEmpty else { return }
+        guard pendingSendAttempt == nil, !messageQueue.isEmpty else { return }
         let combined = messageQueue.map(\.text).joined(separator: "\n\n")
         pendingQueueDrains += 1
         messageQueue.removeAll()
