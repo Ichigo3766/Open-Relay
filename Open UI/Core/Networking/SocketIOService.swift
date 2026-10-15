@@ -138,6 +138,8 @@ final class SocketIOService: NSObject, @unchecked Sendable, URLSessionWebSocketD
     private var handlerSeed = 0
     private let handlerLock = NSLock()
 
+    var onServerPing: (() -> Void)?
+
     /// Fires when the socket connects or reconnects.
     var onConnect: (() -> Void)?
 
@@ -172,6 +174,8 @@ final class SocketIOService: NSObject, @unchecked Sendable, URLSessionWebSocketD
         DispatchQueue.main.async { [weak self] in
             self?.reconnectTimer?.invalidate()
             self?.reconnectTimer = nil
+            self?.pingTimer?.invalidate()
+            self?.pingTimer = nil
         }
     }
 
@@ -187,6 +191,7 @@ final class SocketIOService: NSObject, @unchecked Sendable, URLSessionWebSocketD
         }
         // Reset backoff counter so the next reconnect starts from attempt 0
         reconnectAttempt = 0
+        if isConnected { resetPingTimeout() }
         guard !isConnected, !isConnecting, autoReconnectEnabled else { return }
         reconnectCount += 1
         connect()
@@ -732,6 +737,7 @@ final class SocketIOService: NSObject, @unchecked Sendable, URLSessionWebSocketD
     func dispose() {
         disconnect()
         clearAllHandlers()
+        onServerPing = nil
         onConnect = nil
         onDisconnect = nil
         onReconnect = nil
@@ -753,6 +759,7 @@ final class SocketIOService: NSObject, @unchecked Sendable, URLSessionWebSocketD
         didCloseWith closeCode: URLSessionWebSocketTask.CloseCode,
         reason: Data?
     ) {
+        guard webSocketTask === self.webSocketTask else { return }
         let reasonStr = reason.flatMap { String(data: $0, encoding: .utf8) }
         logger.info("WebSocket closed: \(closeCode.rawValue) \(reasonStr ?? "")")
         handleDisconnect(reason: reasonStr)
@@ -786,8 +793,9 @@ final class SocketIOService: NSObject, @unchecked Sendable, URLSessionWebSocketD
     }
 
     private func receiveMessage() {
-        webSocketTask?.receive { [weak self] result in
-            guard let self else { return }
+        guard let task = webSocketTask else { return }
+        task.receive { [weak self] result in
+            guard let self, self.webSocketTask === task else { return }
 
             switch result {
             case .success(let message):
@@ -850,6 +858,8 @@ final class SocketIOService: NSObject, @unchecked Sendable, URLSessionWebSocketD
         case "2":
             // Engine.IO PING → respond with PONG
             send("3")
+            resetPingTimeout()
+            onServerPing?()
 
         case "3":
             // Engine.IO PONG
@@ -885,9 +895,6 @@ final class SocketIOService: NSObject, @unchecked Sendable, URLSessionWebSocketD
             }
 
             startPing()
-
-            // Start heartbeat
-            startHeartbeat()
 
             logger.info("Socket.IO connected, sid=\(self.sid ?? "nil")")
 
@@ -1155,6 +1162,7 @@ final class SocketIOService: NSObject, @unchecked Sendable, URLSessionWebSocketD
     /// to track `last_seen_at` in SESSION_POOL. It does NOT send Engine.IO PINGs.
     private func startPing() {
         stopPing()
+        resetPingTimeout()
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
             // OpenWebUI expects a Socket.IO `heartbeat` event every 30 seconds
@@ -1169,9 +1177,22 @@ final class SocketIOService: NSObject, @unchecked Sendable, URLSessionWebSocketD
         }
     }
 
-    private func startHeartbeat() {
-        // No-op: heartbeat is now consolidated into startPing() above.
-        // Engine.IO v4 PING/PONG is handled server→client in handleEngineIOMessage.
+    /// Engine.IO v4 servers must ping within their negotiated interval + timeout.
+    private func resetPingTimeout() {
+        let generation = connectionGeneration
+        DispatchQueue.main.async { [weak self] in
+            guard let self, generation == self.connectionGeneration, self.isConnected,
+                  !self.isAppInBackground || CallAudioSession.isCallActive else { return }
+            self.pingTimer?.invalidate()
+            let timer = Timer(timeInterval: self.pingInterval + self.pingTimeout, repeats: false) { [weak self] _ in
+                guard let self, generation == self.connectionGeneration, self.isConnected,
+                      !self.isAppInBackground || CallAudioSession.isCallActive else { return }
+                self.disconnectInternal()
+                self.handleDisconnect(reason: "Server heartbeat timed out")
+            }
+            self.pingTimer = timer
+            RunLoop.main.add(timer, forMode: .common)
+        }
     }
 
     private func stopPing() {

@@ -110,6 +110,8 @@ final class ServerConnectionMonitor: @unchecked Sendable {
 
     /// Flag to coalesce rapid immediate-check requests.
     @ObservationIgnored private var immediateCheckInFlight = false
+    @ObservationIgnored private var lastServerActivity = Date.distantPast
+    @ObservationIgnored private var generation = UUID()
 
     /// Consecutive health check failure counter.
     /// We require `failureThreshold` consecutive failures before declaring
@@ -158,6 +160,19 @@ final class ServerConnectionMonitor: @unchecked Sendable {
         isAppInBackground = false
         consecutiveFailures = 0
 
+        let revision = generation
+        apiClient.network.onConnectionResult = { [weak self] connected in
+            Task { @MainActor in
+                guard let self, revision == self.generation else { return }
+                self.recordConnectionResult(connected)
+            }
+        }
+        socketService?.onServerPing = { [weak self] in
+            Task { @MainActor in
+                guard let self, revision == self.generation else { return }
+                self.recordConnectionResult(true)
+            }
+        }
         startPathMonitor()
         startHealthPoll()
 
@@ -167,6 +182,10 @@ final class ServerConnectionMonitor: @unchecked Sendable {
     /// Stops all monitoring. Call on server switch or logout.
     func stop() {
         isRunning = false
+        generation = UUID()
+        apiClient?.network.onConnectionResult = nil
+        socketService?.onServerPing = nil
+        lastServerActivity = .distantPast
         pathMonitor?.cancel()
         pathMonitor = nil
         healthPollTask?.cancel()
@@ -266,14 +285,19 @@ final class ServerConnectionMonitor: @unchecked Sendable {
 
     /// Triggers an immediate health check, e.g. on explicit user action.
     func triggerImmediateCheck() {
-        // Suppress while backgrounded — the OS may have suspended our network
-        // activity, so a failure here would be a false positive.
-        guard isRunning, !immediateCheckInFlight, !isAppInBackground else { return }
-        immediateCheckInFlight = true
+        Task { @MainActor [weak self] in await self?.checkServerHealth() }
+    }
 
-        Task { [weak self] in
-            await self?.checkServerHealth()
-            self?.immediateCheckInFlight = false
+    @MainActor
+    func recordConnectionResult(_ connected: Bool) {
+        guard isRunning, !isAppInBackground else { return }
+        if connected {
+            lastServerActivity = .now
+            consecutiveFailures = 0
+            transitionTo(.connected)
+        } else {
+            consecutiveFailures = max(1, consecutiveFailures)
+            triggerImmediateCheck()
         }
     }
 
@@ -335,16 +359,17 @@ final class ServerConnectionMonitor: @unchecked Sendable {
     // MARK: - Health Polling
 
     private func startHealthPoll() {
+        let initialDelay = connectedPollInterval
         healthPollTask = Task { [weak self] in
-            // Initial small delay to let the app finish launching
-            try? await Task.sleep(for: .seconds(2))
+            // Real traffic establishes reachability; defer the idle fallback until needed.
+            try? await Task.sleep(for: .seconds(initialDelay))
 
             while !Task.isCancelled {
                 guard let self, self.isRunning else { break }
 
                 // Skip health polls while backgrounded — they'd fail spuriously
                 // and we have NWPathMonitor for background internet loss
-                if !self.isAppInBackground {
+                if !self.isAppInBackground, Date().timeIntervalSince(self.lastServerActivity) >= self.connectedPollInterval {
                     await self.checkServerHealth()
                 }
 
@@ -367,52 +392,27 @@ final class ServerConnectionMonitor: @unchecked Sendable {
 
     // MARK: - Health Check
 
+    @MainActor
     private func checkServerHealth() async {
-        guard let apiClient else { return }
-
+        guard isRunning, !isAppInBackground, !immediateCheckInFlight, let apiClient else { return }
+        let revision = generation
+        let activity = lastServerActivity
+        immediateCheckInFlight = true
+        defer { if revision == generation { immediateCheckInFlight = false } }
         let healthy = await apiClient.checkHealthFast(timeout: healthCheckTimeout)
-
-        await MainActor.run { [weak self] in
-            guard let self else { return }
-
-            if healthy {
-                // Reset failure counter on any success
-                self.consecutiveFailures = 0
-                self.transitionTo(.connected)
-            } else {
-                // Don't count background failures
-                if !self.isAppInBackground {
-                    self.consecutiveFailures += 1
-                    self.logger.debug("Health check failure \(self.consecutiveFailures)/\(self.failureThreshold)")
-                }
-
-                // Only declare a problem after threshold consecutive failures
-                guard self.consecutiveFailures >= self.failureThreshold else {
-                    self.logger.debug("Health check failed but below threshold — ignoring")
-                    return
-                }
-
-                if !self.isNetworkAvailable {
-                    // Device-level network is gone — this is an internet-down state.
-                    self.transitionTo(.internetDown)
-                } else {
-                    // NWPath says a network interface is available — check whether
-                    // internet actually works (distinguishes captive portals / DNS-only
-                    // environments from a genuinely unreachable server). Behaviour is
-                    // identical regardless of whether the server is on a LAN or the
-                    // public internet — only the /health poll result matters.
-                    Task { [weak self] in
-                        guard let self else { return }
-                        let externalReachable = await self.pingExternalEndpoint()
-                        await MainActor.run {
-                            self.transitionTo(externalReachable ? .serverDown : .internetDown)
-                        }
-                    }
-                }
-            }
+        guard revision == generation, !isAppInBackground else { return }
+        if healthy {
+            recordConnectionResult(true)
+        } else {
+            // A successful request/ping received during this probe supersedes its failure.
+            guard activity == lastServerActivity else { return }
+            consecutiveFailures += 1
+            guard consecutiveFailures >= failureThreshold else { return }
+            let internetAvailable = isNetworkAvailable ? await pingExternalEndpoint() : false
+            guard revision == generation, !isAppInBackground, activity == lastServerActivity else { return }
+            transitionTo(internetAvailable ? .serverDown : .internetDown)
         }
     }
-
 
     /// Pings Apple's captive portal URL to determine if the device actually
     /// has working internet (as opposed to a captive portal or blocked network).

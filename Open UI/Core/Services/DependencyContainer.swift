@@ -817,9 +817,12 @@ final class AppDependencyContainer: ServiceContainer {
     /// Called whenever a new `socketService` is created, wires its state to
     /// the dependency container's observable `socketConnectionState`.
     private func wireSocketStateTracking() {
-        socketService?.onConnectionStateChange = { [weak self] state in
+        socketService?.onConnectionStateChange = { [weak self, weak socket = socketService] state in
             Task { @MainActor in
-                self?.socketConnectionState = state
+                guard let self, let socket, self.socketService === socket else { return }
+                self.socketConnectionState = state
+                if state == .connected { self.connectionMonitor.recordConnectionResult(true) }
+                if case .reconnecting = state { self.connectionMonitor.recordConnectionResult(false) }
             }
         }
     }

@@ -27,6 +27,7 @@ final class NetworkManager: NSObject, Sendable {
     private let _tokenExpiredLock = NSLock()
     private var _tokenExpiredFired = false
     var onTokenExpired: (() -> Void)?
+    var onConnectionResult: (@Sendable (Bool) -> Void)?
 
     // MARK: - Native SSO 401 recovery (opt-in)
 
@@ -761,6 +762,10 @@ final class NetworkManager: NSObject, Sendable {
     private func performRequest(_ request: URLRequest) async throws -> (Data, URLResponse) {
         do {
             let result = try await session.data(for: request)
+            if request.url?.lastPathComponent != "health",
+               let http = result.1 as? HTTPURLResponse, (200..<500).contains(http.statusCode) {
+                onConnectionResult?(true)
+            }
             // Native SSO only: an authenticated request that got a 401 gets ONE
             // silent renewal attempt (shared across concurrent 401s) and is retried
             // with the fresh token. `onUnauthorizedRecover` is nil for every server
@@ -795,7 +800,11 @@ final class NetworkManager: NSObject, Sendable {
             }
             return result
         } catch {
-            throw APIError.from(error)
+            let apiError = APIError.from(error)
+            if request.url?.lastPathComponent != "health", apiError.isConnectivityError {
+                onConnectionResult?(false)
+            }
+            throw apiError
         }
     }
 
