@@ -461,24 +461,39 @@ final class APIClient: @unchecked Sendable {
     // MARK: - Models
 
     func getModels() async throws -> [AIModel] {
-        let (data, _) = try await network.requestRaw(path: "/api/models")
+        let scope = network.conversationCacheScope
+        let revision = await ConversationCache.shared.currentRevision()
+        let (data, response) = try await network.requestRaw(path: "/api/models")
+        let models = try decodeModels(data)
+        let cacheable = !(response.value(forHTTPHeaderField: "Cache-Control") ?? "").lowercased().contains("no-store")
+            && response.value(forHTTPHeaderField: "Vary") != "*"
+        await ConversationCache.shared.saveMetadata(cacheable ? data : nil, scope: scope, id: "models", revision: revision)
+        return models
+    }
 
-        guard let payload = try JSONSerialization.jsonObject(with: data) as? [String: Any]
-        else {
-            if let array = try JSONSerialization.jsonObject(with: data) as? [[String: Any]] {
-                return parseModelArray(array, controls: NamedModelControl.decode(data, locales: LocalizedContent.deviceLocaleCandidates()))
-            }
-            return []
-        }
+    /// Reuse the original JSON so cached pipe models retain their full model_item.
+    func cachedModelDiscovery() async -> (models: [AIModel], defaultId: String?)? {
+        let scope = network.conversationCacheScope
+        guard let data = await ConversationCache.shared.cachedMetadata(scope: scope, id: "models"),
+              let models = try? decodeModels(data), !models.isEmpty else { return nil }
+        let defaultId = await cachedDefaultModel(scope: scope)
+        guard scope == network.conversationCacheScope else { return nil }
+        return (models, defaultId)
+    }
 
-        if let modelsArray = payload["data"] as? [[String: Any]] {
-            return parseModelArray(modelsArray, controls: NamedModelControl.decode(data, locales: LocalizedContent.deviceLocaleCandidates()))
-        }
-        if let modelsArray = payload["models"] as? [[String: Any]] {
-            return parseModelArray(modelsArray, controls: NamedModelControl.decode(data, locales: LocalizedContent.deviceLocaleCandidates()))
-        }
+    private func cachedDefaultModel(scope: String?) async -> String? {
+        let data = await ConversationCache.shared.cachedMetadata(scope: scope, id: "default-model")
+        guard scope == network.conversationCacheScope else { return nil }
+        let id = data.flatMap { String(data: $0, encoding: .utf8) }
+        return id?.isEmpty == false ? id : nil
+    }
 
-        return []
+    private func decodeModels(_ data: Data) throws -> [AIModel] {
+        let json = try JSONSerialization.jsonObject(with: data)
+        let payload = json as? [String: Any]
+        guard let models = (json as? [[String: Any]]) ?? (payload?["data"] as? [[String: Any]])
+            ?? (payload?["models"] as? [[String: Any]]) else { return [] }
+        return parseModelArray(models, controls: NamedModelControl.decode(data, locales: LocalizedContent.deviceLocaleCandidates()))
     }
 
     /// Fetches all models including ones marked as hidden — for use in the workspace
@@ -507,15 +522,16 @@ final class APIClient: @unchecked Sendable {
     }
 
     func getDefaultModel() async -> String? {
+        let scope = network.conversationCacheScope
+        let revision = await ConversationCache.shared.currentRevision()
         do {
             let settings = try await getUserSettings()
-            if let ui = settings["ui"] as? [String: Any],
-               let models = ui["models"] as? [String],
-               let first = models.first, !first.isEmpty {
-                return first
-            }
-        } catch {}
-        return nil
+            let first = ((settings["ui"] as? [String: Any])?["models"] as? [String])?.first
+            await ConversationCache.shared.saveMetadata(Data((first ?? "").utf8), scope: scope, id: "default-model", revision: revision)
+            return first?.isEmpty == false ? first : nil
+        } catch {
+            return await cachedDefaultModel(scope: scope)
+        }
     }
 
     func getModelDetails(modelId: String) async throws -> [String: Any] {

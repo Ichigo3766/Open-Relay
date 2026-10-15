@@ -1223,12 +1223,13 @@ final class AuthViewModel {
 
         for attempt in 1...maxRetries {
             do {
+                async let config = try? client.getBackendConfig()
                 currentUser = try await client.getCurrentUser()
                 if currentUser?.role == .pending {
                     phase = .pendingApproval
                     return
                 }
-                backendConfig = try? await client.getBackendConfig()
+                backendConfig = await config
                 connectSocketWithToken()
                 cacheCurrentUser()
                 saveCurrentUserAsAccount()

@@ -111,6 +111,16 @@ actor ConversationCache {
         store(Entry(data: data, etag: nil, validatedAt: .now, freshFor: 0), scope: scope, id: "index:sidebar")
     }
 
+    func cachedMetadata(scope: String?, id: String) -> Data? {
+        read(scope: scope, id: "metadata:" + id)?.data
+    }
+
+    func saveMetadata(_ data: Data?, scope: String?, id: String, revision: UUID) {
+        guard let scope, revision == generation else { return }
+        guard let data else { invalidate(scope: scope, id: "metadata:" + id); return }
+        store(Entry(data: data, etag: nil, validatedAt: .now, freshFor: 0), scope: scope, id: "metadata:" + id)
+    }
+
     private func read(scope: String?, id: String, details: Bool = false, now: Date = .now) -> Entry? {
         // Writes still enforce the budget immediately; reads need only periodic cleanup.
         if now.timeIntervalSince(lastPrunedAt) >= 600 || now < lastPrunedAt || limit == 0 {

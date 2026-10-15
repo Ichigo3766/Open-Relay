@@ -1226,6 +1226,18 @@ final class ChatViewModel {
         //
         // If this is the very first VM and the cache is empty, do an initial
         // model fetch so the user has something to select.
+        let cacheGeneration = activeChatStore?.generation
+        if availableModels.isEmpty, let cached = await manager?.apiClient.cachedModelDiscovery() {
+            guard cacheGeneration == activeChatStore?.generation else { return }
+            availableModels = cached.models
+            activeChatStore?.cachedDefaultModelId = cached.defaultId
+            if selectedModelId == nil { selectedModelId = cached.defaultId ?? cached.models.first?.id }
+            activeChatStore?.updateModelCache(models: cached.models, selectedId: selectedModelId)
+            Task { [weak self] in
+                guard let self, cacheGeneration == self.activeChatStore?.generation else { return }
+                await self.loadModels()
+            }
+        }
         let needsModelFetch = availableModels.isEmpty
 
         if isNew {
@@ -2124,37 +2136,36 @@ final class ChatViewModel {
     func loadModels() async {
         guard let manager else { return }
         isLoadingModels = true
+        defer { isLoadingModels = false }
+        let cacheGeneration = activeChatStore?.generation
+        let previousModels = Dictionary(availableModels.map { ($0.id, $0) }, uniquingKeysWith: { _, last in last })
+        let previousDefault = activeChatStore?.cachedDefaultModelId ?? availableModels.first?.id
         do {
-            availableModels = try await manager.fetchModels()
+            let models = try await manager.fetchModels()
+            guard cacheGeneration == activeChatStore?.generation else { return }
+            availableModels = models
             // Always fetch the server default model and cache it.
             // This ensures new chats always use the server-configured default,
             // not whatever model the user last switched to in a different chat.
             let serverDefault = await manager.fetchDefaultModel()
+            guard cacheGeneration == activeChatStore?.generation else { return }
             if let store = activeChatStore {
                 store.cachedDefaultModelId = serverDefault
             }
-            if selectedModelId == nil {
+            if selectedModelId == nil || (conversationId == nil && selectedModelId == previousDefault) {
                 selectedModelId = serverDefault ?? availableModels.first?.id
             }
             // Write back to shared cache so subsequent VMs are pre-populated
             activeChatStore?.updateModelCache(models: availableModels, selectedId: selectedModelId)
 
-            // Evict model avatar cache entries so admin-changed avatars are
-            // picked up on the next render. Runs in the background — does not
-            // block the model load or the UI. Uses prefetchWithAuth so images
-            // are re-downloaded with the Bearer token immediately after eviction.
-            let avatarURLs = availableModels.compactMap { $0.resolveAvatarURL(baseURL: serverBaseURL) }
-            let authToken = manager.apiClient.network.authToken
-            Task {
-                for url in avatarURLs {
-                    await ImageCacheService.shared.evict(for: url)
-                }
-                await ImageCacheService.shared.prefetchWithAuth(urls: avatarURLs, authToken: authToken)
-            }
+            // Invalidate only avatars whose metadata changed; visible images load on demand.
+            let changed = availableModels.filter { model in
+                previousModels[model.id].map { $0.profileImageURL != model.profileImageURL } ?? false
+            }.compactMap { $0.resolveAvatarURL(baseURL: serverBaseURL) }
+            Task { for url in changed { await ImageCacheService.shared.evict(for: url) } }
         } catch {
             logger.error("Failed to load models: \(error.localizedDescription)")
         }
-        isLoadingModels = false
         // Sync UI toggles with model defaults after models are loaded
         syncUIWithModelDefaults()
     }

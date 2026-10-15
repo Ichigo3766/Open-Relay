@@ -1102,11 +1102,6 @@ struct RootView: View {
                 // Optimistic auth — chat view is already rendered underneath the overlay.
                 // Fire-and-forget background validation — never needs to block the overlay.
                 Task { await viewModel.validateSessionInBackground() }
-                // Await model prefetch with its built-in 3 s timeout (races loadModels()
-                // against Task.sleep — whichever finishes first wins). This ensures the
-                // model selector is already populated when the overlay fades, so the UI
-                // appears fully ready with no post-reveal flicker or loading state.
-                await dependencies.activeChatStore.prewarmModels(using: dependencies)
                 dismissLaunchOverlay()
 
             case .restoringSession:
@@ -1118,9 +1113,6 @@ struct RootView: View {
                     await viewModel.restoreSession()
                     return ()
                 }
-                // Await model prefetch with its built-in 3 s timeout so the overlay
-                // only fades once models are ready (or 3 s have passed on slow servers).
-                await dependencies.activeChatStore.prewarmModels(using: dependencies)
                 dismissLaunchOverlay()
 
             case .authMethodSelection:

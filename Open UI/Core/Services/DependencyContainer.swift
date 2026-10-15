@@ -243,25 +243,6 @@ final class ActiveChatStore {
         )
     }
 
-    /// Pre-fetches models for the new-chat VM so the model selector is already
-    /// populated when the launch overlay fades on cold launch.
-    ///
-    /// Called from `RootView.task` before `dismissLaunchOverlay()` — while the
-    /// overlay is still covering the screen, so the user never sees an empty state.
-    /// Bounded by `timeout` seconds so it can never delay the overlay indefinitely.
-    /// No-ops immediately if models are already cached from a previous fetch.
-    func prewarmModels(using dependencies: AppDependencyContainer, timeout: Double = 3) async {
-        guard cachedModels.isEmpty else { return }
-        prewarm(conversationId: nil, using: dependencies)
-        let vm = viewModel(for: nil)
-        await withTaskGroup(of: Void.self) { group in
-            group.addTask { await vm.loadModels() }
-            group.addTask { try? await Task.sleep(for: .seconds(timeout)) }
-            _ = await group.next()
-            group.cancelAll()
-        }
-    }
-
     /// Explicitly discard a draft without interrupting its ongoing work.
     func remove(_ conversationId: String?) {
         let key = conversationId ?? "__new__"
