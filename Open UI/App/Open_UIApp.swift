@@ -189,17 +189,6 @@ struct Open_UIApp: App {
                         // and run any validation deferred while in the background.
                         Task { await dependencies.authViewModel.handleAppDidBecomeActive() }
 
-                        // Re-check for app + server updates whenever the app returns
-                        // to the foreground (handles the case where an update ships
-                        // while the app is backgrounded). Fails silently on any error.
-                        // Staggered after the return animation so it doesn't compete.
-                        Task {
-                            try? await Task.sleep(nanoseconds: 1_200_000_000)
-                            async let appCheck: () = dependencies.updateChecker.checkForUpdates()
-                            async let serverCheck: () = dependencies.serverUpdateChecker.checkForUpdates(using: dependencies.apiClient)
-                            _ = await (appCheck, serverCheck)
-                        }
-
                         // Keep the Apple Watch app's chat list fresh (also staggered).
                         Task {
                             try? await Task.sleep(nanoseconds: 1_500_000_000)
@@ -1030,6 +1019,7 @@ private struct AppLaunchErrorView: View {
 
 /// Root view that manages the full authentication flow using a phase-based state machine.
 struct RootView: View {
+    @Environment(\.scenePhase) private var scenePhase
     @Environment(AppDependencyContainer.self) private var dependencies
     @Environment(AppRouter.self) private var router
     @State private var showOnboarding = false
@@ -1329,9 +1319,12 @@ struct RootView: View {
             // This begins NWPathMonitor + /health polling.
             dependencies.startServerConnectionMonitor()
         }
-        .task {
+        .task(id: scenePhase) {
             // Check for app updates (App Store) and server updates in parallel.
-            // Runs once after authentication on every app launch.
+            // One owner for launch and foreground checks; let the first UI settle.
+            guard scenePhase == .active else { return }
+            try? await Task.sleep(nanoseconds: 1_200_000_000)
+            guard !Task.isCancelled else { return }
             async let appCheck: () = dependencies.updateChecker.checkForUpdates()
             async let serverCheck: () = dependencies.serverUpdateChecker.checkForUpdates(using: dependencies.apiClient)
             _ = await (appCheck, serverCheck)
