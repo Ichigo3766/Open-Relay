@@ -280,21 +280,26 @@ final class ChatListViewModel {
 
     // MARK: - Loading
 
-    func loadConversations() async {
+    /// Notifies navigation after cached content and after the first server page.
+    func loadConversations(onInitialContent: (@MainActor () -> Void)? = nil) async {
         guard let manager, !isLoading, !isRefreshing, !isFetchingAllPages else { return }
         let scope = manager.apiClient.network.conversationCacheScope
         let generation = refreshGeneration
         let savedContent = contentRevision
         isLoading = conversations.isEmpty
         if conversations.isEmpty, let saved = await ConversationCache.shared.cachedIndex(scope: scope) {
-            guard generation == refreshGeneration, scope == manager.apiClient.network.conversationCacheScope else { return }
-            guard savedContent == contentRevision else { isLoading = false; return }
+            guard generation == refreshGeneration else { return }
+            guard scope == self.manager?.apiClient.network.conversationCacheScope, savedContent == contentRevision else { isLoading = false; return }
             conversations = saved.conversations.map(\.conversation)
             pinnedConversations = saved.pinned.map(\.conversation)
             lastReconciledAt = saved.reconciledAt
             isLoading = false
+            if !Task.isCancelled { onInitialContent?() }
         }
         await refreshConversations()
+        if !Task.isCancelled, scope == self.manager?.apiClient.network.conversationCacheScope {
+            onInitialContent?()
+        }
     }
 
     /// Keep the existing list visible; publish page one before fetching older pages.

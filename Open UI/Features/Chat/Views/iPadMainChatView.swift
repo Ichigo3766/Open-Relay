@@ -2764,28 +2764,30 @@ private extension View {
     ) -> some View {
         self
             .task {
+                let initialNewChatGeneration = newChatGeneration.wrappedValue
                 if let manager = dependencies.conversationManager {
                     listViewModel.configure(with: manager)
                 }
                 if let folderManager = dependencies.folderManager {
                     listViewModel.folderViewModel.configure(with: folderManager)
                 }
+                let restoreLastConversation = { @MainActor in
+                    if activeConversationId.wrappedValue == nil,
+                       newChatGeneration.wrappedValue == initialNewChatGeneration,
+                       activeChannelId.wrappedValue == nil,
+                       activeFolderWorkspaceId.wrappedValue == nil,
+                       dependencies.pendingChannelId == nil,
+                       let lastId = SharedDataService.shared.lastActiveConversationId,
+                       listViewModel.conversations.contains(where: { $0.id == lastId }) {
+                        activeConversationId.wrappedValue = lastId
+                    }
+                }
                 await withTaskGroup(of: Void.self) { group in
-                    group.addTask { await listViewModel.loadConversations() }
+                    group.addTask { await listViewModel.loadConversations(onInitialContent: restoreLastConversation) }
                     group.addTask { await listViewModel.folderViewModel.loadFolders() }
                     group.addTask { await dependencies.fetchTaskConfig() }
                 }
-                // Restore the last active conversation after a cold launch or process kill.
-                // activeConversationId is @State and resets to nil on every process restart.
-                // SharedDataService persists the last-opened ID across kills so we can
-                // land the user back in their chat instead of the blank new-chat screen.
-                // Only restore if the conversation still exists in the loaded list — this
-                // guards against navigating to a deleted or archived chat.
-                if activeConversationId.wrappedValue == nil,
-                   let lastId = SharedDataService.shared.lastActiveConversationId,
-                   listViewModel.conversations.contains(where: { $0.id == lastId }) {
-                    activeConversationId.wrappedValue = lastId
-                }
+                if !Task.isCancelled { restoreLastConversation() }
                 onSocketSetup()
             }
             .onChange(of: scenePhase) { oldPhase, newPhase in
