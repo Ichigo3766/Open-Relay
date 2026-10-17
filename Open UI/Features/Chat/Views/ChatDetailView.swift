@@ -670,26 +670,33 @@ struct ChatDetailView: View {
             }
         }
         .chatChromeBar(edge: .bottom) {
-            if editingMessageId != nil {
-                editInputBar
-                    // In landscape (HStack split layout) iOS does not propagate keyboard
-                    // safe-area insets into NavigationStack children — safeAreaInset alone
-                    // won't lift the bar. keyboard.height is driven by raw UIKit notifications
-                    // and is always correct.
-                    // IMPORTANT: only apply this manual padding when the terminal HStack layout
-                    // is actually active (landscape + terminal enabled). Without terminal,
-                    // the portrait ZStack layout is used even in landscape, and iOS propagates
-                    // keyboard safe-area normally — adding keyboard.height there causes double-lift.
-                    // iPad: the split view column already ends at the keyboard.
-                    .padding(.bottom, manualKeyboardLift)
-            } else {
-                inputFieldArea(vm: vm)
-                    .padding(.bottom, keyboard.height > 0 ? Spacing.sm : 0)
-                    // Same scoping as above — only the terminal HStack landscape layout
-                    // needs manual keyboard avoidance. All other cases rely on normal
-                    // iOS propagation.
-                    .padding(.bottom, manualKeyboardLift)
+            VStack(spacing: 0) {
+                if let error = vm.errorMessage {
+                    errorBannerView(error)
+                        .accessibilityIdentifier("composer-status")
+                }
+                if editingMessageId != nil {
+                    editInputBar
+                        // In landscape (HStack split layout) iOS does not propagate keyboard
+                        // safe-area insets into NavigationStack children — safeAreaInset alone
+                        // won't lift the bar. keyboard.height is driven by raw UIKit notifications
+                        // and is always correct.
+                        // IMPORTANT: only apply this manual padding when the terminal HStack layout
+                        // is actually active (landscape + terminal enabled). Without terminal,
+                        // the portrait ZStack layout is used even in landscape, and iOS propagates
+                        // keyboard safe-area normally — adding keyboard.height there causes double-lift.
+                        // iPad: the split view column already ends at the keyboard.
+                        .padding(.bottom, manualKeyboardLift)
+                } else {
+                    inputFieldArea(vm: vm)
+                        .padding(.bottom, keyboard.height > 0 ? Spacing.sm : 0)
+                        // Same scoping as above — only the terminal HStack landscape layout
+                        // needs manual keyboard avoidance. All other cases rely on normal
+                        // iOS propagation.
+                        .padding(.bottom, manualKeyboardLift)
+                }
             }
+            .animation(MicroAnimation.gentle, value: vm.errorMessage != nil)
         }
         // Keep the explicit backdrop unless this build supports native status-area blur.
         .statusBarGlassBackdrop(background: theme.background)
@@ -846,14 +853,6 @@ struct ChatDetailView: View {
             if showCopiedToast { copiedToastView }
         }
         .animation(MicroAnimation.gentle, value: showCopiedToast)
-        .overlay(alignment: .bottom) {
-            if let error = viewModel.errorMessage {
-                errorBannerView(error)
-                    .padding(.bottom, keyboard.height + 80)
-            }
-        }
-        // Attached outside the overlay so the banner animates in as well as out.
-        .animation(MicroAnimation.gentle, value: viewModel.errorMessage != nil)
         // Sheets & alerts
         .modifier(ToolConnectionSheetModifier(
             tool: Binding(get: { viewModel.toolConnectionRequested }, set: { viewModel.toolConnectionRequested = $0 }),
@@ -1179,6 +1178,10 @@ struct ChatDetailView: View {
                 modelSelectorButton
             }
             .frame(maxWidth: .infinity)
+
+            ConnectionStatusButton()
+                .layoutPriority(1)
+                .chatControlGlass(in: Capsule(), fallback: .ultraThinMaterial)
 
             // Trailing: all action icons in one grouped pill (matching image 2)
             trailingActionsPill
@@ -4959,13 +4962,16 @@ struct ChatDetailView: View {
                     .frame(width: 28, height: 28)
                     .contentShape(Circle())
             }
+            .accessibilityLabel("Dismiss message")
         }
-        .padding(Spacing.md)
+        .padding(.horizontal, Spacing.md)
+        .padding(.vertical, Spacing.sm)
         .background(theme.errorBackground)
+        .background(theme.surfaceContainer)
         .clipShape(RoundedRectangle(cornerRadius: CornerRadius.md, style: .continuous))
         .padding(.horizontal, Spacing.screenPadding)
         .padding(.bottom, Spacing.sm)
-        .transition(.move(edge: .bottom).combined(with: .opacity))
+        .transition(.opacity)
     }
 
     // MARK: - Copied Toast

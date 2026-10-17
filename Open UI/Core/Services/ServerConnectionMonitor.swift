@@ -26,7 +26,7 @@ enum ServerConnectionState: Equatable, Sendable {
 ///    distinguish "internet is down" from "server is down" when NWPath
 ///    reports satisfied but /health fails (e.g. captive portals).
 ///
-/// Exposes an `@Observable` `connectionState` that the UI overlay reads,
+/// Exposes an `@Observable` `connectionState` shared by the toolbar and sidebar,
 /// and auto-reconnects the Socket.IO service when the server comes back.
 ///
 /// Key reliability behaviours:
@@ -44,7 +44,7 @@ final class ServerConnectionMonitor: @unchecked Sendable {
     // MARK: - Observable State
 
     /// The current connection state. SwiftUI views observe this.
-    var connectionState: ServerConnectionState = .connected
+    var connectionState: ServerConnectionState = .checking
 
     /// When the connection was first lost (nil when connected).
     var disconnectedSince: Date?
@@ -52,25 +52,15 @@ final class ServerConnectionMonitor: @unchecked Sendable {
     /// Number of reconnect attempts since the last disconnect.
     var reconnectAttempt: Int = 0
 
-    /// Whether the disconnect overlay should be visible.
-    /// Uses a debounce so transient blips don't flash the overlay.
-    var isShowingOverlay: Bool = false
-
     /// Other saved servers the user could switch to.
     /// Set by `AppDependencyContainer.startServerConnectionMonitor()`.
-    /// Used by `ConnectionOverlayView` to offer a "Switch Server" escape hatch.
+    /// Used by the status menu to offer a "Switch Server" escape hatch.
     var otherAvailableServers: [ServerConfig] = []
 
-    /// `true` when at least one other saved server has a cached token,
-    /// meaning a switch would succeed even without internet.
+    /// Whether another saved server is available to switch to.
     var canSwitchServer: Bool {
         !otherAvailableServers.isEmpty
     }
-
-    /// `true` when the ConversationCache has a saved sidebar index for the current
-    /// server/session scope, meaning the user can browse cached chats offline.
-    /// Updated whenever the connection state changes.
-    var hasCachedContent: Bool = false
 
     // MARK: - Private State
 
@@ -92,9 +82,6 @@ final class ServerConnectionMonitor: @unchecked Sendable {
 
     /// The polling task that periodically checks /health.
     @ObservationIgnored private var healthPollTask: Task<Void, Never>?
-
-    /// The debounce task for showing/hiding the overlay.
-    @ObservationIgnored private var debounceTask: Task<Void, Never>?
 
     /// Pending foreground-return work: health check + socket reconnect.
     @ObservationIgnored private var foregroundTask: Task<Void, Never>?
@@ -127,11 +114,6 @@ final class ServerConnectionMonitor: @unchecked Sendable {
 
     /// Maximum backoff delay when disconnected (seconds).
     private let disconnectedMaxDelay: TimeInterval = 15
-
-    /// How long to wait before showing the overlay (debounce, seconds).
-    /// 3 s covers brief network hiccups and background→foreground transitions
-    /// without flashing the overlay to the user.
-    private let overlayDebounce: TimeInterval = 3.0
 
     /// Timeout for a single /health request (seconds).
     /// Fast enough to detect real failures; long enough for slow networks.
@@ -171,18 +153,15 @@ final class ServerConnectionMonitor: @unchecked Sendable {
         pathMonitor = nil
         healthPollTask?.cancel()
         healthPollTask = nil
-        debounceTask?.cancel()
-        debounceTask = nil
         foregroundTask?.cancel()
         foregroundTask = nil
         immediateCheckInFlight = false
         consecutiveFailures = 0
 
         // Reset state
-        connectionState = .connected
+        connectionState = .checking
         disconnectedSince = nil
         reconnectAttempt = 0
-        isShowingOverlay = false
 
         logger.info("Connection monitor stopped")
     }
@@ -215,30 +194,9 @@ final class ServerConnectionMonitor: @unchecked Sendable {
         consecutiveFailures = 0
         logger.debug("App foregrounded — triggering immediate health check + socket reconnect")
 
-        // Optimistically assume we're connected on foreground return.
-        //
-        // When the app is backgrounded for a long time the OS may drop the
-        // network path, causing NWPathMonitor to fire transitionTo(.internetDown)
-        // which sets isShowingOverlay = true.  If we don't clear that overlay
-        // here, the full-screen black "Connection lost" view blocks all tap-based
-        // interactions while we wait for the first post-resume health check to
-        // complete (which can take several seconds while the iOS network stack wakes
-        // back up). Gesture recognizers still work, which is why swiping the drawer
-        // would "unblock" things.
-        //
-        // By optimistically marking the connection as restored here we immediately
-        // hide the overlay, restoring touch interactivity. If the health check that
-        // follows actually fails (real server down), the overlay will reappear after
-        // the normal 3-second debounce — which is the correct behaviour.
-        if connectionState != .connected {
-            connectionState = .connected
-            disconnectedSince = nil
-            reconnectAttempt = 0
-            isShowingOverlay = false
-            debounceTask?.cancel()
-            debounceTask = nil
-            logger.info("Foreground: optimistically cleared disconnect overlay — health check will follow")
-        }
+        // Keep a known outage visible until a server response confirms recovery.
+        // An initial/renewed check must never produce a false green sidebar dot.
+        if connectionState != .connected { connectionState = .checking }
 
         foregroundTask?.cancel()
         foregroundTask = Task { [weak self] in
@@ -270,6 +228,7 @@ final class ServerConnectionMonitor: @unchecked Sendable {
         // activity, so a failure here would be a false positive.
         guard isRunning, !immediateCheckInFlight, !isAppInBackground else { return }
         immediateCheckInFlight = true
+        if connectionState != .connected { connectionState = .checking }
 
         Task { [weak self] in
             await self?.checkServerHealth()
@@ -446,13 +405,12 @@ final class ServerConnectionMonitor: @unchecked Sendable {
             // Reconnected!
             if oldState != .connected {
                 logger.info("Connection restored after \(self.reconnectAttempt) attempts")
-                onReconnected()
+                if disconnectedSince != nil { onReconnected() }
             }
             reconnectAttempt = 0
             consecutiveFailures = 0
             disconnectedSince = nil
             connectionState = .connected
-            updateOverlayVisibility(disconnected: false)
         } else {
             // Entering a disconnected state
 
@@ -463,7 +421,7 @@ final class ServerConnectionMonitor: @unchecked Sendable {
                 return
             }
 
-            if oldState == .connected {
+            if oldState == .connected || disconnectedSince == nil {
                 disconnectedSince = Date()
                 logger.warning("Connection lost: \(String(describing: newState))")
             }
@@ -473,7 +431,6 @@ final class ServerConnectionMonitor: @unchecked Sendable {
             }
 
             connectionState = newState
-            updateOverlayVisibility(disconnected: true)
         }
     }
 
@@ -484,38 +441,6 @@ final class ServerConnectionMonitor: @unchecked Sendable {
         if let socket = socketService, !socket.isConnected {
             socket.resetBackoffAndReconnect()
             logger.info("Triggered socket reconnection after server recovery")
-        }
-    }
-
-    // MARK: - Overlay Debounce
-
-    /// Updates the overlay visibility with a debounce to prevent flickering.
-    /// When ConversationCache has content, `hasCachedContent` is set so the UI
-    /// can render a dismissible banner instead of a blocking overlay.
-    @MainActor
-    private func updateOverlayVisibility(disconnected: Bool) {
-        debounceTask?.cancel()
-
-        if !disconnected {
-            // Hide overlay immediately on reconnection
-            isShowingOverlay = false
-            hasCachedContent = false
-        } else if !isShowingOverlay {
-            // Show overlay after debounce delay — prevents flickering on transient blips
-            debounceTask = Task { @MainActor [weak self] in
-                guard let self else { return }
-                try? await Task.sleep(for: .seconds(self.overlayDebounce))
-                guard !Task.isCancelled else { return }
-                // Double-check we're still disconnected and in the foreground
-                guard self.connectionState != .connected, !self.isAppInBackground else { return }
-                // Check whether there is cached sidebar content to browse offline
-                if let apiClient = self.apiClient {
-                    let scope = apiClient.network.conversationCacheScope
-                    let hasIndex = await ConversationCache.shared.cachedIndex(scope: scope) != nil
-                    self.hasCachedContent = hasIndex
-                }
-                self.isShowingOverlay = true
-            }
         }
     }
 
@@ -534,36 +459,26 @@ final class ServerConnectionMonitor: @unchecked Sendable {
 
     // MARK: - User-Facing Message
 
-    /// A contextual disconnect message for the overlay.
-    var disconnectMessage: String {
-        switch connectionState {
-        case .connected:
-            return ""
-        case .checking:
-            return String(localized: "Checking connection…")
-        case .serverDown:
-            return String(localized: "Your server appears to be offline. Reconnecting…")
-        case .internetDown:
-            return String(localized: "Check your WiFi or cellular connection.")
-        }
-    }
-
-    /// A contextual title for the overlay.
+    /// One label for the toolbar, sidebar and connection menu.
     var disconnectTitle: String {
         switch connectionState {
-        case .connected, .checking:
-            return ""
+        case .connected:
+            return String(localized: "Connected")
+        case .checking:
+            return disconnectedSince == nil ? String(localized: "Connecting…") : String(localized: "Reconnecting…")
         case .serverDown:
-            return String(localized: "Server Unreachable")
+            return String(localized: "Server unreachable")
         case .internetDown:
-            return String(localized: "No Internet Connection")
+            return String(localized: "Offline")
         }
     }
 
-    /// The SF Symbol name for the overlay icon.
+    /// The SF Symbol shared by both status controls.
     var disconnectIcon: String {
         switch connectionState {
-        case .connected, .checking:
+        case .connected:
+            return "circle.fill"
+        case .checking:
             return "arrow.triangle.2.circlepath"
         case .serverDown:
             return "server.rack"

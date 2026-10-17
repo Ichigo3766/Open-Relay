@@ -1035,8 +1035,6 @@ struct RootView: View {
     @State private var showOnboarding = false
     @State private var showSettings = false
     @State private var hasAttemptedRestore = false
-    /// Controls the "Switch Server" sheet presented from the connection overlay.
-    @State private var showServerSwitcherSheet = false
 
     // Launch overlay — starts visible for any startup path that needs validation.
     // Set to true only when we begin from an authenticated/restoring phase (i.e. a
@@ -1280,48 +1278,6 @@ struct RootView: View {
                 iPadMainChatView()
             } else {
                 MainChatView()
-            }
-        }
-        .overlay {
-            // Connection lost overlay — blocks interaction when server/internet is down.
-            // The "Switch Server" button presents the switcher as a sheet so the user
-            // can browse options and dismiss without committing to a switch.
-            ConnectionOverlayView(monitor: dependencies.connectionMonitor) {
-                showServerSwitcherSheet = true
-            }
-        }
-        .sheet(isPresented: $showServerSwitcherSheet) {
-            // Server switcher as a dismissible sheet — swipe down or X to cancel.
-            // The sheet is self-contained: onDismiss closes the sheet; switching a
-            // server also closes the sheet and transitions the app phase.
-            NavigationStack {
-                ScrollView {
-                    SavedServersView(
-                        viewModel: viewModel,
-                        showAddServerButton: true,
-                        onDismiss: { showServerSwitcherSheet = false }
-                    )
-                }
-                .background(Color(uiColor: .systemGroupedBackground).ignoresSafeArea())
-                .navigationTitle("Switch Server")
-                .navigationBarTitleDisplayMode(.inline)
-                .toolbar {
-                    ToolbarItem(placement: .cancellationAction) {
-                        Button("Close", systemImage: "xmark") {
-                            showServerSwitcherSheet = false
-                        }
-                        .labelStyle(.iconOnly)
-                        .tint(.secondary)
-                        .accessibilityLabel("Dismiss server switcher")
-                    }
-                }
-            }
-        }
-        .onChange(of: viewModel.phase) { _, newPhase in
-            // Auto-close the overlay sheet once a server switch completes
-            // (phase transitions away from serverSwitcher → authenticated / authMethod)
-            if newPhase == .authenticated || newPhase == .authMethodSelection {
-                showServerSwitcherSheet = false
             }
         }
         .task {

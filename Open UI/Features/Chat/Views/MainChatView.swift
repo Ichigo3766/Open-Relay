@@ -1975,6 +1975,8 @@ struct MainChatView: View {
                 .buttonStyle(.plain)
                 .accessibilityLabel("Server Settings")
 
+                ConnectionStatusButton(isSidebar: true)
+
                 Spacer()
 
                 // Chat management menu (select, archive, delete, archived/shared chats)

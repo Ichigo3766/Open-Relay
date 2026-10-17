@@ -598,6 +598,10 @@ struct ChannelDetailView: View {
             .frame(maxWidth: .infinity)
             .accessibilityLabel("\(viewModel.channelDisplayTitle), channel info")
 
+            ConnectionStatusButton()
+                .layoutPriority(1)
+                .chatControlGlass(in: Capsule(), fallback: .ultraThinMaterial)
+
             trailingActionsPill
         }
         .padding(.horizontal, Spacing.sm)
