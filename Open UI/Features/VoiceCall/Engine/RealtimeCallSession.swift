@@ -45,7 +45,7 @@ final class RealtimeCallSession {
         player.onFinished = { [weak self] in
             guard let self, !self.stopped else { return }
             self.playback = nil
-            self.onState?(self.paused ? .paused : .listening)
+            self.onState?(self.paused ? .paused : (self.replyTask == nil ? .listening : .processing))
         }
         audioEngine.onRebuilt = { [weak self] in Task { await self?.interrupt() } }
     }
@@ -134,6 +134,7 @@ final class RealtimeCallSession {
     func audioRouteChanged() { player.refreshRoute() }
 
     func interrupt() async {
+        onState?(paused ? .paused : .listening)
         let position = playback
         let time = audioEngine.playerNode.lastRenderTime.flatMap { audioEngine.playerNode.playerTime(forNodeTime: $0) }
         let milliseconds = position?.heardMilliseconds(currentSample: time?.sampleTime ?? 0, outputRate: time?.sampleRate ?? 0) ?? 0
@@ -211,6 +212,7 @@ final class RealtimeCallSession {
             onState?(.processing)
             try await send(["type": "bridge.respond", "item_id": id])
         case "response.created":
+            onState?(paused ? .paused : .processing)
             responseID = (event["response"] as? [String: Any])?["id"] as? String
             playback = nil
             player.beginSession()
@@ -262,6 +264,7 @@ final class RealtimeCallSession {
             Task { try? await result(callID, response: response, status: "deferred", answer: "The chat is busy, needs approval or input, or its model changed. Open the chat before continuing.") }
             return
         }
+        if !player.isSpeaking { onState?(.processing) }
         replyTask = Task { [weak self] in
             guard let self else { return }
             defer { self.replyTask = nil; self.ownsReply = false }
@@ -299,6 +302,7 @@ final class RealtimeCallSession {
     private func respondToResult(_ callID: String, response: String) async throws {
         pendingResults.removeValue(forKey: callID)
         guard !paused, !interrupted.contains(response) else { return }
+        if !player.isSpeaking { onState?(.processing) }
         try await send(["type": "bridge.respond", "call_id": callID])
     }
 

@@ -69,6 +69,12 @@ final class VoiceCallSettings {
         set { set(newValue, Keys.defaultSpeakerOn) }
     }
 
+    /// A quiet loop while a call waits for its reply. Off unless opted in.
+    var thinkingSoundEnabled: Bool {
+        get { bool("voiceCall.thinkingSound", default: false) }
+        set { set(newValue, "voiceCall.thinkingSound") }
+    }
+
     // MARK: - Advanced
 
     /// Neural voice detection (Silero). Off: turns end on silence by mic

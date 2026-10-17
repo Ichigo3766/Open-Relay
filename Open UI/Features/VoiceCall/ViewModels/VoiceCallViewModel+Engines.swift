@@ -28,17 +28,10 @@ extension VoiceCallViewModel {
         )
     }
 
-    /// Starts watching for settings changes (the start signatures were
-    /// already recorded on the orchestrator).
+    /// Refreshes notices after recording the starting engine signatures.
     func startEngineSync() {
         orchestrator?.onEnginesChanged = { [weak self] in self?.refreshEngineNotice() }
         refreshEngineNotice()
-        if let settingsObserver { NotificationCenter.default.removeObserver(settingsObserver) }
-        settingsObserver = NotificationCenter.default.addObserver(
-            forName: UserDefaults.didChangeNotification, object: nil, queue: .main
-        ) { [weak self] _ in
-            MainActor.assumeIsolated { self?.scheduleEngineSync() }
-        }
     }
 
     func stopEngineSync() {

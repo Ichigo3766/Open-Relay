@@ -15,12 +15,16 @@ final class VoiceCallViewModel {
         case disconnected
     }
 
-    private(set) var callState: CallState = .idle
+    private(set) var callState: CallState = .idle {
+        didSet { updateThinkingSound() }
+    }
     private(set) var currentTranscript: String = ""
     /// Voice intensity for the waveform (0–10).
     private(set) var voiceIntensity: Int = 0
     private(set) var isMuted = false
-    private(set) var isPaused = false
+    private(set) var isPaused = false {
+        didSet { updateThinkingSound() }
+    }
     /// Where call audio is currently heard — drives the route picker button.
     private(set) var outputRoute: CallOutputRoute = .speaker
     private(set) var modelName = ""
@@ -47,7 +51,9 @@ final class VoiceCallViewModel {
     @ObservationIgnored var callStartTime: Date?
     @ObservationIgnored let logger = Logger(subsystem: "com.openui", category: "VoiceCall")
     @ObservationIgnored var backgroundObservers: [NSObjectProtocol] = []
-    @ObservationIgnored var wasPausedByInterruption = false
+    @ObservationIgnored var wasPausedByInterruption = false {
+        didSet { updateThinkingSound() }
+    }
     @ObservationIgnored let liveActivity = VoiceCallLiveActivityController()
     /// Short background-task assertion held while a turn is being answered, so
     /// iOS doesn't suspend networking in the gap between mic and speaker audio.
@@ -282,6 +288,11 @@ extension VoiceCallViewModel {
 
 extension VoiceCallViewModel {
 
+    func updateThinkingSound() {
+        let active = settings.thinkingSoundEnabled && callState == .processing && !isPaused && !wasPausedByInterruption
+        (orchestrator?.audioEngine ?? realtimeCall?.audioEngine)?.thinkingSound.setActive(active)
+    }
+
     fileprivate func fail(_ message: String) {
         callState = .error(message)
         errorMessage = message
@@ -391,6 +402,16 @@ extension VoiceCallViewModel {
     /// when they end; route changes re-apply the speaker preference (the
     /// audio engine rebuilds itself on the resulting configuration change).
     fileprivate func wireAudioSession() {
+        if let settingsObserver { NotificationCenter.default.removeObserver(settingsObserver) }
+        settingsObserver = NotificationCenter.default.addObserver(
+            forName: UserDefaults.didChangeNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.updateThinkingSound()
+                self?.scheduleEngineSync()
+            }
+        }
+        updateThinkingSound()
         audioSession.onInterruption = { [weak self] type in
             guard let self, self.orchestrator != nil || self.realtimeCall != nil else { return }
             switch type {
