@@ -29,6 +29,11 @@ struct VoiceCallSettingsView: View {
             } footer: {
                 Text("Realtime uses the server's voice and turn-taking, with your selected chat model and tools. Enable it in the server's Audio settings.")
             }
+            Section {
+                Toggle("Thinking Sound", isOn: $settings.thinkingSoundEnabled)
+            } footer: {
+                Text("Play a quiet loop while waiting for a reply. Stops when the assistant speaks or the call returns to listening.")
+            }
             if settings.useRealtimeBridge {
                 Section { Toggle("Start on Speaker", isOn: $settings.defaultSpeakerOn) }
             } else {

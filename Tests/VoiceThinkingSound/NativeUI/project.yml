@@ -1,0 +1,31 @@
+name: VoiceThinking
+options:
+  deploymentTarget: {iOS: '18.1'}
+settings:
+  base:
+    CODE_SIGNING_ALLOWED: NO
+    GENERATE_INFOPLIST_FILE: YES
+    SWIFT_VERSION: '5.0'
+targets:
+  Preview:
+    type: application
+    platform: iOS
+    sources: Host
+    settings:
+      PRODUCT_BUNDLE_IDENTIFIER: org.example.voice-thinking.preview
+      TARGETED_DEVICE_FAMILY: '1,2'
+      INFOPLIST_KEY_UILaunchScreen_Generation: YES
+  Checks:
+    type: bundle.ui-testing
+    platform: iOS
+    sources: Tests
+    settings:
+      PRODUCT_BUNDLE_IDENTIFIER: org.example.voice-thinking.checks
+      TEST_TARGET_NAME: Preview
+    dependencies: [{target: Preview}]
+schemes:
+  VoiceThinking:
+    build:
+      targets: {Preview: all, Checks: [test]}
+    test:
+      targets: [Checks]

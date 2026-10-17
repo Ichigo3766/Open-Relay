@@ -109,6 +109,7 @@ final class CallAudioEngine {
     private let logger = Logger(subsystem: "com.openui", category: "CallAudioEngine")
     private(set) var engine = AVAudioEngine()
     let playerNode = AVAudioPlayerNode()
+    let thinkingSound = CallThinkingSound()
     private(set) var isRunning = false
     private var configChangeObserver: Task<Void, Never>?
     private nonisolated let tapState = TapState()
@@ -147,6 +148,7 @@ final class CallAudioEngine {
     }
 
     func stop() {
+        thinkingSound.setActive(false)
         configChangeObserver?.cancel()
         configChangeObserver = nil
         teardownGraph()
@@ -185,6 +187,8 @@ private extension CallAudioEngine {
         // 1. Playback path — this is what voice processing uses as its echo reference.
         if playerNode.engine == nil { engine.attach(playerNode) }
         engine.connect(playerNode, to: engine.mainMixerNode, format: nil)
+        if thinkingSound.node.engine == nil { engine.attach(thinkingSound.node) }
+        engine.connect(thinkingSound.node, to: engine.mainMixerNode, format: nil)
         engine.connect(engine.mainMixerNode, to: output, format: nil)
 
         // 2. Voice processing (the engine must be stopped).
@@ -211,6 +215,7 @@ private extension CallAudioEngine {
             playbackFormat = fmt
         }
         engine.connect(playerNode, to: engine.mainMixerNode, format: playbackFormat)
+        engine.connect(thinkingSound.node, to: engine.mainMixerNode, format: playbackFormat)
 
         // 3. Capture — tap in the post-VP format (nil = the node's output format).
         input.removeTap(onBus: 0)
@@ -222,6 +227,7 @@ private extension CallAudioEngine {
 
         engine.prepare()
         try engine.start()
+        thinkingSound.resumeIfNeeded()
 
         let micRate = input.outputFormat(forBus: 0).sampleRate
         let outRate = playbackFormat.sampleRate
@@ -235,9 +241,11 @@ private extension CallAudioEngine {
         let input = engine.inputNode
         input.removeTap(onBus: 0)
         playerNode.stop()
+        thinkingSound.node.stop()
         if engine.isRunning { engine.stop() }
         if input.isVoiceProcessingEnabled { try? input.setVoiceProcessingEnabled(false) }
         engine.disconnectNodeOutput(playerNode)
+        engine.disconnectNodeOutput(thinkingSound.node)
     }
 
     func observeConfigurationChanges() {
