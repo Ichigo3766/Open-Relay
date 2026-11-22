@@ -77,7 +77,7 @@ struct VoiceModelsStorageView: View {
                         .foregroundStyle(.secondary)
                 }
                 .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-                    if size > 0 {
+                    if size > 0 && canDelete(model) {
                         Button(role: .destructive) { pendingDelete = model } label: {
                             Label("Delete", systemImage: "trash")
                         }
@@ -99,7 +99,16 @@ struct VoiceModelsStorageView: View {
         ]
     }
 
+    private func canDelete(_ model: Model) -> Bool {
+        switch model {
+        case .fourier: return dependencies.asrService.canDeleteVariant(.fourier)
+        case .qwen3ASR: return dependencies.asrService.canDeleteVariant(.qwen3ASR)
+        default: return true
+        }
+    }
+
     private func delete(_ model: Model) {
+        guard canDelete(model) else { return }
         let tts = dependencies.textToSpeechService
         let selected = tts.kokoroService.config.activeModel
         switch model {

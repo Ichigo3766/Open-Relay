@@ -63,7 +63,7 @@ enum ASRError: LocalizedError {
 
 // MARK: - OnDeviceASRService
 
-/// On-device automatic speech recognition using Qwen3 ASR 0.6B.
+/// On-device automatic speech recognition using the selected Qwen-compatible model.
 ///
 /// Backed by the mlx-audio-swift library. Audio is downsampled to 16 kHz
 /// off the main actor so the UI spinner remains responsive.
@@ -199,7 +199,7 @@ final class OnDeviceASRService {
     /// Switches to a different model variant. Unloads the current model if one
     /// is loaded, so only one model is ever in memory at a time.
     func switchVariant(_ variant: ASRModelVariant) {
-        guard variant != activeVariant, !isLoadInProgress, state != .transcribing else { return }
+        guard variant != activeVariant, canDeleteVariant(activeVariant) else { return }
         if state != .unloaded { unloadModel() }
         activeVariant = variant
         UserDefaults.standard.set(variant.rawValue, forKey: "onDeviceASR.model")
@@ -255,33 +255,45 @@ final class OnDeviceASRService {
     private func fourierModelDirectory(cache: HubCache) async throws -> URL {
         let repo = ASRModelVariant.fourier.repoId
         guard let id = Repo.ID(rawValue: repo) else { throw ASRError.modelLoadFailed(repo) }
-        let revision = "f1efa79222a012f8c8ea5307e02298f4ca18c9b7"
-        let root = StorageManager.modelCacheDirectory.appendingPathComponent("mlx-audio/oruk-fourier-2b")
-            .appendingPathComponent(revision)
-        let folder = "mlx/8bit"
-        let local = root.appendingPathComponent(folder)
-        let required: [String: Int64] = [
-            "model.safetensors": 2463307581, "model.safetensors.index.json": 78928,
-            "config.json": 3164, "generation_config.json": 836102, "processor_config.json": 487,
-            "tokenizer.json": 11429377, "tokenizer_config.json": 1446, "chat_template.jinja": 1434,
-        ]
-        func complete() -> Bool {
-            required.allSatisfy { name, bytes in
-                let attributes = try? FileManager.default.attributesOfItem(atPath: local.appendingPathComponent(name).path)
-                return (attributes?[.size] as? NSNumber)?.int64Value == bytes
-            }
-        }
-        if complete() { return local }
+        if fourierFilesComplete() { return fourierDirectory }
+        let root = fourierRoot
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         _ = try await HubClient(cache: cache).downloadSnapshot(
-            of: id, kind: .model, to: root, revision: revision,
-            matching: required.keys.map { "\(folder)/\($0)" },
+            of: id, kind: .model, to: root, revision: Self.fourierRevision,
+            matching: Self.fourierFiles.keys.map { "mlx/8bit/\($0)" },
             progressHandler: { _ in }
         )
-        guard complete() else { throw ASRError.modelLoadFailed("Incomplete Fourier model download.") }
-        return local
+        guard fourierFilesComplete() else { throw ASRError.modelLoadFailed("Incomplete Fourier model download.") }
+        return fourierDirectory
     }
     #endif
+
+    private static let fourierRevision = "f1efa79222a012f8c8ea5307e02298f4ca18c9b7"
+    private static let fourierFiles: [String: Int64] = [
+        "model.safetensors": 2463307581, "model.safetensors.index.json": 78928,
+        "config.json": 3164, "generation_config.json": 836102, "processor_config.json": 487,
+        "tokenizer.json": 11429377, "tokenizer_config.json": 1446, "chat_template.jinja": 1434,
+    ]
+    private var fourierRoot: URL {
+        StorageManager.modelCacheDirectory.appendingPathComponent("mlx-audio/oruk-fourier-2b")
+            .appendingPathComponent(Self.fourierRevision)
+    }
+    private var fourierDirectory: URL { fourierRoot.appendingPathComponent("mlx/8bit") }
+
+    private func fourierFilesComplete() -> Bool {
+        Self.fourierFiles.allSatisfy { name, bytes in
+            let attributes = try? FileManager.default.attributesOfItem(atPath: fourierDirectory.appendingPathComponent(name).path)
+            return (attributes?[.size] as? NSNumber)?.int64Value == bytes
+        }
+    }
+
+    func hasDownloadedFiles(for variant: ASRModelVariant) -> Bool {
+        variant == .fourier ? fourierFilesComplete() : modelSize(for: variant) > 0
+    }
+
+    func canDeleteVariant(_ variant: ASRModelVariant) -> Bool {
+        variant != activeVariant || (!isLoadInProgress && state != .transcribing)
+    }
 
     func unloadModel() {
         #if canImport(MLXAudioSTT)
@@ -297,12 +309,7 @@ final class OnDeviceASRService {
     /// Unloads the model AND deletes the downloaded files from disk.
     /// The model will re-download on next use.
     func unloadAndDeleteModel() {
-        let variantName = activeVariant.displayName
-        unloadModel()
-        let freed = StorageManager.shared.deleteASRModelFiles(activeVariant)
-        if freed > 0 {
-            logger.info("\(variantName, privacy: .public) files deleted (\(ByteCountFormatter.string(fromByteCount: freed, countStyle: .file), privacy: .public))")
-        }
+        unloadAndDeleteVariant(activeVariant)
     }
 
     /// Returns the on-disk size (bytes) of the cached model files.
@@ -312,6 +319,7 @@ final class OnDeviceASRService {
 
     /// Unloads (if active) and deletes the model files from disk.
     func unloadAndDeleteVariant(_ variant: ASRModelVariant) {
+        guard canDeleteVariant(variant) else { return }
         if variant == activeVariant { unloadModel() }
         let freed = StorageManager.shared.deleteASRModelFiles(variant)
         if freed > 0 {

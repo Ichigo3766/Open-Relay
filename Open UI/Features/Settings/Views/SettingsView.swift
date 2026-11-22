@@ -1449,10 +1449,7 @@ struct STTSettingsView: View {
     @State private var speechPermissionGranted = false
     @State private var asrModelSize: String = "–"
 
-    /// True when ASR model files are already cached on disk (but not necessarily loaded into memory).
-    private var asrFilesOnDisk: Bool {
-        asrModelSize != "–" && asrModelSize != "Not downloaded"
-    }
+    @State private var asrFilesOnDisk = false
 
     private var asr: OnDeviceASRService { dependencies.asrService }
 
@@ -1752,6 +1749,9 @@ struct STTSettingsView: View {
                 NavigationLink("Models & Storage") { VoiceModelsStorageView() }
             }
         }
+        .onChange(of: asr.state) { _, state in
+            if state == .ready { refreshModelSizes() }
+        }
         .navigationTitle("Your Voice")
         .navigationBarTitleDisplayMode(.inline)
         .onAppear {
@@ -1828,6 +1828,7 @@ struct STTSettingsView: View {
     }
 
     private func refreshModelSizes() {
+        asrFilesOnDisk = asr.hasDownloadedFiles(for: asr.activeVariant)
         let p = asr.modelSize(for: asr.activeVariant)
         asrModelSize = p > 0 ? ByteCountFormatter.string(fromByteCount: p, countStyle: .file) : "Not downloaded"
     }
