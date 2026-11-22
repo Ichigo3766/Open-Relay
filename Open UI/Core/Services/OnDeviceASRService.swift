@@ -16,8 +16,14 @@ import HuggingFace
 enum ASRModelVariant: String, CaseIterable, Sendable {
     case qwen3ASR = "qwen3asr"
 
-    var displayName: String { "Qwen3 ASR 0.6B" }
-    var repoId: String { "mlx-community/Qwen3-ASR-0.6B-8bit" }
+    case fourier = "oruk-fourier-2b"
+
+    var displayName: String { self == .fourier ? "Oruk Fourier 2B" : "Qwen3 ASR 0.6B" }
+    var repoId: String { self == .fourier ? "oruk/oruk-fourier-2b" : "mlx-community/Qwen3-ASR-0.6B-8bit" }
+    var downloadDescription: String {
+        self == .fourier ? "English · 2.48 GB · CC BY-NC 4.0" : "Multilingual · about 700 MB"
+    }
+    var storagePattern: String { self == .fourier ? "oruk-fourier-2b" : "Qwen3-ASR" }
 }
 
 // MARK: - State
@@ -193,7 +199,7 @@ final class OnDeviceASRService {
     /// Switches to a different model variant. Unloads the current model if one
     /// is loaded, so only one model is ever in memory at a time.
     func switchVariant(_ variant: ASRModelVariant) {
-        guard variant != activeVariant else { return }
+        guard variant != activeVariant, !isLoadInProgress, state != .transcribing else { return }
         if state != .unloaded { unloadModel() }
         activeVariant = variant
         UserDefaults.standard.set(variant.rawValue, forKey: "onDeviceASR.model")
@@ -220,7 +226,12 @@ final class OnDeviceASRService {
 
         do {
             let modelCache = HubCache(location: .fixed(directory: StorageManager.modelCacheDirectory))
-            qwen3Model = try await Qwen3ASRModel.fromPretrained(variant.repoId, cache: modelCache)
+            if variant == .fourier {
+                let directory = try await fourierModelDirectory(cache: modelCache)
+                qwen3Model = try await Qwen3ASRModel.fromModelDirectory(directory)
+            } else {
+                qwen3Model = try await Qwen3ASRModel.fromPretrained(variant.repoId, cache: modelCache)
+            }
             state = .ready
             isLoadInProgress = false
             logger.info("ASR model loaded: \(variant.displayName, privacy: .public)")
@@ -240,6 +251,38 @@ final class OnDeviceASRService {
         #endif
     }
 
+    #if canImport(MLXAudioSTT)
+    private func fourierModelDirectory(cache: HubCache) async throws -> URL {
+        let repo = ASRModelVariant.fourier.repoId
+        guard let id = Repo.ID(rawValue: repo) else { throw ASRError.modelLoadFailed(repo) }
+        let revision = "f1efa79222a012f8c8ea5307e02298f4ca18c9b7"
+        let root = StorageManager.modelCacheDirectory.appendingPathComponent("mlx-audio/oruk-fourier-2b")
+            .appendingPathComponent(revision)
+        let folder = "mlx/8bit"
+        let local = root.appendingPathComponent(folder)
+        let required: [String: Int64] = [
+            "model.safetensors": 2463307581, "model.safetensors.index.json": 78928,
+            "config.json": 3164, "generation_config.json": 836102, "processor_config.json": 487,
+            "tokenizer.json": 11429377, "tokenizer_config.json": 1446, "chat_template.jinja": 1434,
+        ]
+        func complete() -> Bool {
+            required.allSatisfy { name, bytes in
+                let attributes = try? FileManager.default.attributesOfItem(atPath: local.appendingPathComponent(name).path)
+                return (attributes?[.size] as? NSNumber)?.int64Value == bytes
+            }
+        }
+        if complete() { return local }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        _ = try await HubClient(cache: cache).downloadSnapshot(
+            of: id, kind: .model, to: root, revision: revision,
+            matching: required.keys.map { "\(folder)/\($0)" },
+            progressHandler: { _ in }
+        )
+        guard complete() else { throw ASRError.modelLoadFailed("Incomplete Fourier model download.") }
+        return local
+    }
+    #endif
+
     func unloadModel() {
         #if canImport(MLXAudioSTT)
         qwen3Model = nil
@@ -256,7 +299,7 @@ final class OnDeviceASRService {
     func unloadAndDeleteModel() {
         let variantName = activeVariant.displayName
         unloadModel()
-        let freed = StorageManager.shared.deleteASRModelFiles()
+        let freed = StorageManager.shared.deleteASRModelFiles(activeVariant)
         if freed > 0 {
             logger.info("\(variantName, privacy: .public) files deleted (\(ByteCountFormatter.string(fromByteCount: freed, countStyle: .file), privacy: .public))")
         }
@@ -264,13 +307,13 @@ final class OnDeviceASRService {
 
     /// Returns the on-disk size (bytes) of the cached model files.
     func modelSize(for variant: ASRModelVariant) -> Int64 {
-        StorageManager.shared.asrModelSize()
+        StorageManager.shared.asrModelSize(variant)
     }
 
     /// Unloads (if active) and deletes the model files from disk.
     func unloadAndDeleteVariant(_ variant: ASRModelVariant) {
         if variant == activeVariant { unloadModel() }
-        let freed = StorageManager.shared.deleteASRModelFiles()
+        let freed = StorageManager.shared.deleteASRModelFiles(variant)
         if freed > 0 {
             logger.info("\(variant.displayName) files deleted (\(ByteCountFormatter.string(fromByteCount: freed, countStyle: .file)))")
         }
@@ -396,7 +439,7 @@ final class OnDeviceASRService {
         // Use generate() for file transcription.
         // language: nil lets Qwen3 ASR auto-detect the spoken language.
         let params = STTGenerateParameters(
-            language: nil,
+            language: variant == .fourier ? "English" : nil,
             chunkDuration: 30
         )
 

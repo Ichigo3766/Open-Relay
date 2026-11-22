@@ -654,8 +654,8 @@ final class StorageManager: @unchecked Sendable {
 
     /// Returns the on-disk size of the ASR model files (Qwen3-ASR only;
     /// Parakeet is the voice-call recogniser and is listed separately).
-    func asrModelSize() -> Int64 {
-        modelSize(patterns: ["Qwen3-ASR"])
+    func asrModelSize(_ variant: ASRModelVariant = .qwen3ASR) -> Int64 {
+        modelSize(patterns: [variant.storagePattern])
     }
 
     /// Returns the on-disk size of the Kokoro TTS model files.
@@ -741,8 +741,8 @@ final class StorageManager: @unchecked Sendable {
     /// Deletes Qwen3 ASR model files from Documents/Models. Parakeet (the
     /// voice-call recogniser) has its own delete in Models & Storage.
     @discardableResult
-    func deleteASRModelFiles() -> Int64 {
-        let freed = deleteModelDirs(patterns: ["Qwen3-ASR"])
+    func deleteASRModelFiles(_ variant: ASRModelVariant = .qwen3ASR) -> Int64 {
+        let freed = deleteModelDirs(patterns: [variant.storagePattern])
         if freed > 0 {
             logger.info("Deleted ASR model files: \(ByteCountFormatter.string(fromByteCount: freed, countStyle: .file))")
         }
