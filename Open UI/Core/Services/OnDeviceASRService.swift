@@ -260,7 +260,7 @@ final class OnDeviceASRService {
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         _ = try await HubClient(cache: cache).downloadSnapshot(
             of: id, kind: .model, to: root, revision: Self.fourierRevision,
-            matching: Self.fourierFiles.keys.map { "mlx/8bit/\($0)" },
+            matching: Self.fourierFiles.keys.map { "mlx/8bit/\($0)" } + [Self.fourierRootConfig],
             progressHandler: { _ in }
         )
         guard fourierFilesComplete() else { throw ASRError.modelLoadFailed("Incomplete Fourier model download.") }
@@ -269,6 +269,8 @@ final class OnDeviceASRService {
     #endif
 
     private static let fourierRevision = "f1efa79222a012f8c8ea5307e02298f4ca18c9b7"
+    private static let fourierRootConfig = "config.json"
+    private static let fourierRootConfigSize: Int64 = 2479
     private static let fourierFiles: [String: Int64] = [
         "model.safetensors": 2463307581, "model.safetensors.index.json": 78928,
         "config.json": 3164, "generation_config.json": 836102, "processor_config.json": 487,
@@ -281,7 +283,13 @@ final class OnDeviceASRService {
     private var fourierDirectory: URL { fourierRoot.appendingPathComponent("mlx/8bit") }
 
     private func fourierFilesComplete() -> Bool {
-        Self.fourierFiles.allSatisfy { name, bytes in
+        let rootConfigAttributes = try? FileManager.default.attributesOfItem(
+            atPath: fourierRoot.appendingPathComponent(Self.fourierRootConfig).path
+        )
+        guard (rootConfigAttributes?[.size] as? NSNumber)?.int64Value == Self.fourierRootConfigSize else {
+            return false
+        }
+        return Self.fourierFiles.allSatisfy { name, bytes in
             let attributes = try? FileManager.default.attributesOfItem(atPath: fourierDirectory.appendingPathComponent(name).path)
             return (attributes?[.size] as? NSNumber)?.int64Value == bytes
         }
