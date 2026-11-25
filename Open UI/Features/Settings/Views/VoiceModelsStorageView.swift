@@ -8,13 +8,14 @@ struct VoiceModelsStorageView: View {
     @State private var pendingDelete: Model?
 
     enum Model: String, CaseIterable, Identifiable {
-        case kokoro, qwen3TTS, qwen3ASR, parakeet, voiceDetection
+        case kokoro, qwen3TTS, qwen3ASR, fourier, parakeet, voiceDetection
         var id: String { rawValue }
 
         var title: String {
             switch self {
             case .kokoro:         return "Kokoro"
             case .qwen3TTS:       return "Qwen3 TTS"
+            case .fourier:        return "Oruk Fourier 2B"
             case .qwen3ASR:       return "Qwen3 ASR"
             case .parakeet:       return "Parakeet"
             case .voiceDetection: return "Voice Detection"
@@ -25,6 +26,7 @@ struct VoiceModelsStorageView: View {
             switch self {
             case .kokoro:         return "On-device assistant voice"
             case .qwen3TTS:       return "On-device assistant voice (multilingual)"
+            case .fourier:        return "English dictation and audio files"
             case .qwen3ASR:       return "Dictation, audio files, calls"
             case .parakeet:       return "Voice call listening"
             case .voiceDetection: return "Silero + Smart Turn for calls · re-downloads automatically"
@@ -35,7 +37,7 @@ struct VoiceModelsStorageView: View {
     var body: some View {
         List {
             section("Speaking", [.kokoro, .qwen3TTS])
-            section("Listening", [.qwen3ASR, .parakeet])
+            section("Listening", [.qwen3ASR, .fourier, .parakeet])
             section("Voice Calls", [.voiceDetection])
             Section {
                 LabeledContent("Apple Speech", value: "Managed by iOS")
@@ -75,7 +77,7 @@ struct VoiceModelsStorageView: View {
                         .foregroundStyle(.secondary)
                 }
                 .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-                    if size > 0 {
+                    if size > 0 && canDelete(model) {
                         Button(role: .destructive) { pendingDelete = model } label: {
                             Label("Delete", systemImage: "trash")
                         }
@@ -91,12 +93,22 @@ struct VoiceModelsStorageView: View {
             .kokoro: s.kokoroTTSModelSize(),
             .qwen3TTS: s.qwen3TTSModelSize(),
             .qwen3ASR: s.asrModelSize(),
+            .fourier: s.asrModelSize(.fourier),
             .parakeet: s.parakeetModelSize(),
             .voiceDetection: s.voiceDetectionModelSize(),
         ]
     }
 
+    private func canDelete(_ model: Model) -> Bool {
+        switch model {
+        case .fourier: return dependencies.asrService.canDeleteVariant(.fourier)
+        case .qwen3ASR: return dependencies.asrService.canDeleteVariant(.qwen3ASR)
+        default: return true
+        }
+    }
+
     private func delete(_ model: Model) {
+        guard canDelete(model) else { return }
         let tts = dependencies.textToSpeechService
         let selected = tts.kokoroService.config.activeModel
         switch model {
@@ -108,6 +120,8 @@ struct VoiceModelsStorageView: View {
             tts.kokoroService.config.activeModel = .qwen3
             tts.kokoroService.unloadAndDeleteModel()
             tts.kokoroService.config.activeModel = selected
+        case .fourier:
+            dependencies.asrService.unloadAndDeleteVariant(.fourier)
         case .qwen3ASR:
             dependencies.asrService.unloadAndDeleteVariant(.qwen3ASR)
         case .parakeet:

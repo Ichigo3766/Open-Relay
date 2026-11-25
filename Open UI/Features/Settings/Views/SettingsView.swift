@@ -1449,10 +1449,7 @@ struct STTSettingsView: View {
     @State private var speechPermissionGranted = false
     @State private var asrModelSize: String = "–"
 
-    /// True when ASR model files are already cached on disk (but not necessarily loaded into memory).
-    private var asrFilesOnDisk: Bool {
-        asrModelSize != "–" && asrModelSize != "Not downloaded"
-    }
+    @State private var asrFilesOnDisk = false
 
     private var asr: OnDeviceASRService { dependencies.asrService }
 
@@ -1500,8 +1497,8 @@ struct STTSettingsView: View {
                 } label: {
                     engineRow(
                         value: "device",
-                        label: "On-Device (Qwen3)",
-                        description: "Private, works offline · ~700 MB download on first use",
+                        label: "On-Device (\(asr.activeVariant.displayName))",
+                        description: asr.activeVariant.downloadDescription,
                         selected: selectedSTTEngine == "device"
                     )
                 }
@@ -1558,17 +1555,16 @@ struct STTSettingsView: View {
                     Button {
                         withAnimation(.easeOut(duration: 0.15)) {
                             audioFileMode = "device"
-                            asr.switchVariant(.qwen3ASR)
                         }
                         Haptics.play(.light)
                     } label: {
                         HStack(spacing: Spacing.md) {
                             VStack(alignment: .leading, spacing: 2) {
-                                Text("On-Device (Qwen3 ASR)")
+                                Text("On-Device (\(asr.activeVariant.displayName))")
                                     .scaledFont(size: 16)
                                     .fontWeight(.medium)
                                     .foregroundStyle(theme.textPrimary)
-                                Text("Multilingual with auto language detection, fully on-device")
+                                Text(asr.activeVariant.downloadDescription)
                                     .scaledFont(size: 12, weight: .medium)
                                     .foregroundStyle(theme.textTertiary)
                             }
@@ -1588,16 +1584,29 @@ struct STTSettingsView: View {
                 if audioFileMode == "server" {
                     Text("Audio files attached in chat are uploaded to your server, which handles transcription automatically. No extra downloads needed.")
                 } else {
-                    Text("Audio files are transcribed locally on your device using Qwen3 ASR. Fully private — no audio sent to the server. Supports multiple languages with auto-detection.")
+                    Text("Audio files are transcribed on your device using \(asr.activeVariant.displayName).")
                 }
             }
 
             // On-Device Model Settings (Qwen3 ASR) — only when device mode is selected
-            if audioFileMode == "device" && asr.isAvailable {
-                let activeVariant: ASRModelVariant = .qwen3ASR
+            if (audioFileMode == "device" || selectedSTTEngine == "device") && asr.isAvailable {
+                let activeVariant = asr.activeVariant
                 let currentModelSize = asrModelSize
                 let modelLabel = activeVariant.displayName
                 Section {
+                    Picker("Recognition model", selection: Binding(get: { asr.activeVariant }, set: {
+                        asr.switchVariant($0)
+                        refreshModelSizes()
+                    })) {
+                        ForEach(ASRModelVariant.allCases, id: \.self) { variant in
+                            Text(variant.displayName).tag(variant)
+                        }
+                    }
+                    .disabled(asr.state == .loading || asr.state == .transcribing)
+                    if activeVariant == .fourier {
+                        Link("English · 2.48 GB · Model license (CC BY-NC 4.0)",
+                             destination: URL(string: "https://huggingface.co/oruk/oruk-fourier-2b#license")!)
+                    }
                     HStack {
                         Text("Status")
                             .scaledFont(size: 16)
@@ -1740,6 +1749,9 @@ struct STTSettingsView: View {
                 NavigationLink("Models & Storage") { VoiceModelsStorageView() }
             }
         }
+        .onChange(of: asr.state) { _, state in
+            if state == .ready { refreshModelSizes() }
+        }
         .navigationTitle("Your Voice")
         .navigationBarTitleDisplayMode(.inline)
         .onAppear {
@@ -1816,7 +1828,8 @@ struct STTSettingsView: View {
     }
 
     private func refreshModelSizes() {
-        let p = asr.modelSize(for: .qwen3ASR)
+        asrFilesOnDisk = asr.hasDownloadedFiles(for: asr.activeVariant)
+        let p = asr.modelSize(for: asr.activeVariant)
         asrModelSize = p > 0 ? ByteCountFormatter.string(fromByteCount: p, countStyle: .file) : "Not downloaded"
     }
 
